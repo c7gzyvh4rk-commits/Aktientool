@@ -1,0 +1,9 @@
+{
+  "name": "aktientool",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Testinfrastruktur für das US-Aktienbewertungstool (einzelne HTML-Datei). Kein Build, keine Laufzeit-Abhängigkeiten.",
+  "scripts": {
+    "test": "node test/run-calc-tests.js"
+  }
+}
