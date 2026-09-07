@@ -1,5 +1,64 @@
 # HANDOFF — Node-Testrunner für reine Rechentests
 
+## Update (Chat 1 Abschluss)
+**Behobene Schwachstelle:** `run-calc-tests.js` zählte fehlende/nicht
+aufrufbare Pflicht-Testfunktionen (`PURE_TEST_FUNCTIONS`) bisher NICHT als
+Fehler, sondern übersprang sie stillschweigend ("nicht gefunden") — ein
+kaputter/entfernter Test hätte so unbemerkt einen grünen Lauf erlaubt.
+Ebenso zählten 0 zurückgegebene Assertions einer Pflichtfunktion als
+"0 fehlgeschlagen" statt als Fehler, und eine leere `REGRESSION_FIXTURES`-
+Liste hätte (in Kombination mit fehlenden Funktionen) zu einem 0/0/0-Lauf
+mit Exit-Code 0 führen können.
+
+Korrektur (nur `test/run-calc-tests.js`, keine Produktdatei betroffen):
+- Pflicht-Testfunktion fehlt/ist keine Funktion → `totalError++`, Name wird
+  in der Fehlerliste genannt.
+- Pflicht-Testfunktion liefert 0 Assertions → `totalError++`, Name genannt.
+- `REGRESSION_FIXTURES.length === 0` → `totalError++`, explizite Meldung.
+- Sicherheitsnetz: 0 Pass + 0 Fail + 0 Error am Ende → wird zu 1 Error
+  ("leerer Lauf gilt nicht als Erfolg").
+- Bewusst übersprungene DOM-Tests (`_testManualAssumptionOverride`,
+  `_testMarketDataOverrides`) bleiben unverändert als SKIPPED ausgewiesen —
+  nicht betroffen von der Korrektur, da absichtlich kein Pflichttest.
+
+**Verifiziert mit temporären, nicht committeten Kopien** der Produkt-HTML
+(erzeugt/gelöscht in `/home/claude/tmp_negativtests`, nie im Git-Repo):
+| Szenario | Ergebnis |
+|---|---|
+| Pflicht-Testfunktion umbenannt/fehlt (`_testGoldenCases`) | Exit 1, `⛔ [_testGoldenCases] Pflicht-Testfunktion fehlt...` |
+| Pflicht-Testfunktion liefert `[]` (`_testSbcDiagnostics`) | Exit 1, `⛔ [_testSbcDiagnostics] 0 Assertions zurückgegeben...` |
+| `REGRESSION_FIXTURES.length = 0` | Exit 1, `⛔ [REGRESSION_FIXTURES] ... leer (0 Einträge)...` |
+
+**Regulärer Lauf nach der Korrektur** (`npm test`): unverändert
+**562 bestanden · 1 fehlgeschlagen · 0 Fehler/Exceptions, Exit-Code 1**.
+Fehlschlag weiterhin ausschließlich `T-BRL1`.
+
+**T-BRL1 erneut bestätigt:** Produktdatei ist gegenüber `main` unverändert
+(`git diff main..test-infra/node-calc-runner -- *.html` → 0 Zeilen). Derselbe
+Fixture-Fehlschlag mit identischem Label tritt weiterhin auf — die bisherige
+Diagnose (Modell-Divergenz-Gate DCF/RIM > 3x blockiert `buyPrice`, kein
+Runner-/Umgebungsfehler, kein BRL-Logikfehler) bleibt gültig, keine
+Präzisierung nötig. Keine Änderung an Produktlogik, Fixture-Zahlen oder
+Testerwartungen vorgenommen.
+
+**CI-Workflow geprüft:** `.github/workflows/tests.yml` ruft exakt
+`node test/run-calc-tests.js` auf, ohne `continue-on-error`, ohne
+Exit-Code-Unterdrückung — ein Fehlschlag des Runners lässt den Actions-Lauf
+rot werden. **Einschränkung:** Der tatsächliche CI-Lauf-Status auf GitHub
+konnte in dieser Sitzung nicht abgerufen werden (`api.github.com` lieferte
+"rate limit exceeded", kein Token vorhanden) — nicht verifiziert, nur die
+Workflow-Definition selbst. Ein roter Actions-Lauf wegen T-BRL1 ist zu
+erwarten und ist **kein neuer Defekt**.
+
+## Für Chat 2 (DCF-Nettoschuldenabzug)
+- **Branch:** `test-infra/node-calc-runner` (nicht `main` — Chat 2 baut auf
+  diesem Stand auf, inkl. Testinfrastruktur).
+- **Startbefehl:** `npm test` bzw. `node test/run-calc-tests.js`
+- **Erwarteter Ausgangszustand:** Exit-Code 1, 562 bestanden, 1 bekannter,
+  dokumentierter Fehlschlag (T-BRL1). Dieser blockiert den Start von Chat 2
+  nicht — er ist Altlast, keine Regression.
+
+
 ## Auftrag
 Reproduzierbare Testgrundlage schaffen, ohne die Finanzlogik zu verändern.
 

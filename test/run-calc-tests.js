@@ -179,6 +179,16 @@ function main() {
     process.exit(2);
   }
 
+  // Eine leere Fixture-Liste ist kein bestandener Lauf, sondern ein Defekt
+  // (Datei-Struktur geändert, Registrierung fehlgeschlagen o.ä.) — muss
+  // sichtbar als Fehler zählen statt stillschweigend 0/0 zu melden.
+  if (sandbox.__fixtures.length === 0) {
+    totalError++;
+    const msg = 'REGRESSION_FIXTURES ist leer (0 Einträge) — das zählt als Fehler, nicht als bestandener Lauf.';
+    console.error(`⛔ ${msg}`);
+    failureDetails.push(`⛔ [REGRESSION_FIXTURES] ${msg}`);
+  }
+
   console.log(`\n== Fixture-Pipeline: ${sandbox.__fixtures.length} Fixtures ==`);
   for (const fixture of sandbox.__fixtures) {
     let result;
@@ -209,9 +219,14 @@ function main() {
   // ── 2) Eigenständige reine Testfunktionen ──
   console.log(`\n== Eigenständige Rechentests ==`);
   for (const name of PURE_TEST_FUNCTIONS) {
-    vm.runInContext(`globalThis.__fnExists = (typeof ${name} !== "undefined");`, sandbox);
+    // Pflicht-Testfunktion: muss existieren UND eine Funktion sein.
+    // "typeof x !== 'undefined'" allein wäre unzureichend (z.B. wenn der
+    // Name aus Versehen zu einer Nicht-Funktion umdeklariert wird).
+    vm.runInContext(`globalThis.__fnExists = (typeof ${name} === "function");`, sandbox);
     if (!sandbox.__fnExists) {
-      console.log(`—  ${name}: nicht gefunden (übersprungen, evtl. umbenannt/entfernt)`);
+      totalError++;
+      console.log(`⛔ ${name}: FEHLT oder ist keine Funktion (Pflicht-Testfunktion)`);
+      failureDetails.push(`⛔ [${name}] Pflicht-Testfunktion fehlt oder ist nicht aufrufbar — zählt als Fehler, nicht als übersprungen.`);
       continue;
     }
     let raw, threw = null;
@@ -228,6 +243,15 @@ function main() {
       continue;
     }
     const norm = normalizeResult(name, raw);
+    // Eine Pflicht-Testfunktion, die 0 Assertions liefert, hat nichts
+    // geprüft — das darf nicht stillschweigend als "bestanden" (0 fail)
+    // durchgehen, sondern zählt als Fehler.
+    if (norm.pass + norm.fail === 0) {
+      totalError++;
+      console.log(`⛔ ${name}: lieferte 0 Assertions — leeres Ergebnis zählt als Fehler`);
+      failureDetails.push(`⛔ [${name}] 0 Assertions zurückgegeben — Pflicht-Test hat nichts geprüft.`);
+      continue;
+    }
     totalPass += norm.pass;
     totalFail += norm.fail;
     const status = norm.fail === 0 ? '✅' : '❌';
@@ -249,6 +273,17 @@ function main() {
   for (const name of KNOWN_DEAD_TEST_FUNCTIONS) {
     vm.runInContext(`globalThis.__fnExists = (typeof ${name} !== "undefined");`, sandbox);
     console.log(`—  ${name}: ${sandbox.__fnExists ? 'unerwartet vorhanden (bitte Liste in run-calc-tests.js prüfen)' : 'nicht vorhanden (im Quelltext auskommentiert, kein Widerspruch)'}`);
+  }
+
+  // Sicherheitsnetz: Wurde trotz allem keine einzige Assertion ausgeführt
+  // und auch kein Fehler gezählt (z.B. durch einen hier nicht bedachten
+  // Fall), gilt der Lauf als Fehler — ein leeres Ergebnis ist niemals ein
+  // bestandener Testlauf.
+  if (totalPass + totalFail === 0 && totalError === 0) {
+    totalError++;
+    const msg = 'Keine einzige Assertion wurde ausgeführt (0 Checks) — ein leerer Lauf gilt nicht als Erfolg.';
+    console.error(`⛔ ${msg}`);
+    failureDetails.push(`⛔ [Runner] ${msg}`);
   }
 
   console.log(`\n════════════════════════════════════════`);
