@@ -157,7 +157,13 @@ wurde geändert.**
 Übergabebranch: `claude/us-stock-tool-precision-og5azo`
 (Basis `ef9fce2` auf `claude/dcf-bridge-period-lock`).
 Tool-Datei: `us-aktienbewertungstool-v1036-sector-classification-patch.html`.
-Testbefehl: `npm test`. Ergebniscommit siehe Abschlussmeldung des Chats.
+Testbefehl: `npm test`.
+Code-Commit dieses Schritts: `87ce510` — Ergebniscommit ist die Spitze des
+Übergabebranches (dieser Nachtrag).
+Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/us-stock-tool-precision-og5azo
+
+**Der nächste Schritt setzt auf `origin/claude/us-stock-tool-precision-og5azo`
+auf, nicht auf `main`.**
 
 ## Update (Chat 7): Nettoschulden-Periodensperre in der DCF-Wertbrücke (V1.0.39)
 
