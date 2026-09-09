@@ -12,5 +12,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Reine Rechen-/Regressionstests ausführen
-        run: node test/run-calc-tests.js
+      # Gemeinsamer Aufruf: fuehrt beide Suiten aus (Rechen-/Regressionstests
+      # UND SEC-Ableitungstests). Die zweite Suite laeuft auch dann, wenn die
+      # erste fehlschlaegt; der Schritt endet rot, sobald eine Suite rot ist.
+      - name: Beide Testsuiten ausführen
+        run: node test/run-all.js

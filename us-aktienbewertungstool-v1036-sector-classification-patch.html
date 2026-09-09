@@ -5870,6 +5870,97 @@ function _selectBestDpsSeries(f, meta) {
 //   Wenn null: Fallback auf mj.meta._sec_fetch.anchor_year
 //   Wenn beides null: Rebuild ohne Anchor-Filter (alle Perioden erlaubt).
 // ════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════
+// V1.0.38 — PERIODENSPERREN GEGEN INDEX-ABLEITUNGEN
+// ════════════════════════════════════════════════════════════════
+// Abgeleitete Reihen (FCF, Net Debt) wurden von applyDerivedFieldsV4 erneut
+// ueber Array-Indizes gebildet, sobald sie leer oder komplett null waren —
+// also genau dann, wenn der period-keyed Pfad sie zuvor bewusst verworfen
+// hatte. Damit liess sich eine Periodensperre durch einen zweiten
+// Ableitungslauf umgehen. Die folgenden Helfer erzwingen: sobald
+// Periodenkontext vorliegt, wird ausschliesslich period-keyed verknuepft;
+// scheitert das, bleibt der Wert fehlend. Ohne jeden Periodenkontext
+// (manueller Import) bleibt der bisherige Index-Pfad unveraendert.
+// ────────────────────────────────────────────────────────────────
+
+// Periodenkontext einer Reihe: echte Periodenmetadaten, eine dokumentierte
+// period-keyed Ableitung oder eine gesetzte Periodensperre.
+function _seriesHasPeriodContext(f, field) {
+  const meta = f && f._v4_meta && f._v4_meta[field];
+  if (!meta) return false;
+  if (meta.periodLocked === true) return true;
+  if (Array.isArray(meta.periods) && meta.periods.some(p => p != null)) return true;
+  const ref = typeof meta.source_reference === 'string' ? meta.source_reference : '';
+  if (ref.indexOf('period-keyed') >= 0) return true;
+  return false;
+}
+
+// Ableitung aus zwei Reihen mit Periodenschutz.
+// Rueckgabe: { mode: 'index'|'period'|'blocked', values, meta, reason }
+function _derivePairPeriodAware(f, targetField, aField, bField, combine, label) {
+  const aArr = Array.isArray(f[aField]) ? f[aField] : [];
+  const bArr = Array.isArray(f[bField]) ? f[bField] : [];
+  const targetMeta = (f._v4_meta && f._v4_meta[targetField]) || null;
+  const hasCtx = _seriesHasPeriodContext(f, aField) ||
+                 _seriesHasPeriodContext(f, bField) ||
+                 !!(targetMeta && targetMeta.periodLocked === true);
+
+  if (!hasCtx) {
+    // Legacy-Pfad: manueller Import ohne Periodenmetadaten — unveraendert.
+    const len = Math.min(aArr.length, bArr.length);
+    if (len === 0) return { mode: 'blocked', values: [], reason: 'keine Daten' };
+    const out = [];
+    for (let i = 0; i < len; i++) out.push(combine(aArr[i], bArr[i]));
+    return { mode: 'index', values: out, meta: null };
+  }
+
+  if (aArr.length === 0 || bArr.length === 0) {
+    return { mode: 'blocked', values: [], reason: `${aArr.length === 0 ? aField : bField} ohne Werte` };
+  }
+
+  const joined = (typeof _joinPeriodKeyed === 'function')
+    ? _joinPeriodKeyed(
+        [
+          { name: 'a', values: aArr, meta: (f._v4_meta && f._v4_meta[aField]) || {} },
+          { name: 'b', values: bArr, meta: (f._v4_meta && f._v4_meta[bField]) || {} }
+        ],
+        (v) => combine(v.a, v.b),
+        { label, requireSameUnit: false }
+      )
+    : { ok: false, meta: { unavailable_reason: '_joinPeriodKeyed nicht verfuegbar' } };
+
+  if (!joined.ok) {
+    return { mode: 'blocked', values: [],
+             reason: (joined.meta && joined.meta.unavailable_reason) || 'keine gemeinsamen Perioden',
+             meta: joined.meta };
+  }
+  // Der Join kann formal gelingen und trotzdem in jeder Periode leer bleiben
+  // (keine Periode der Leitserie hat ein Gegenstueck). Das ist fachlich
+  // dasselbe wie ein gescheiterter Join und wird als Sperre dokumentiert,
+  // statt eine reine null-Reihe als 'derived' auszugeben.
+  if (joined.values.every(v => v == null)) {
+    return { mode: 'blocked', values: [],
+             reason: 'keine Periode mit Gegenstück (alle Slots leer)',
+             meta: joined.meta };
+  }
+  return { mode: 'period', values: joined.values, meta: joined.meta };
+}
+
+// Setzt die Sperr-Metadaten fuer ein wegen Periodenproblemen fehlendes Feld.
+function _markPeriodLocked(f, field, sourceRef, reason) {
+  if (!f._v4_meta) f._v4_meta = {};
+  f._v4_meta[field] = {
+    source_type: 'unavailable',
+    source_reference: sourceRef,
+    confidence: 'none',
+    periods: null,
+    periodLocked: true,
+    notes: `${field} nicht ableitbar (Periodenabgleich): ${reason}. `
+         + 'Fehlende Perioden gelten NICHT als 0; eine Index-Ableitung wuerde '
+         + 'Werte verschiedener Geschaeftsjahre verrechnen.'
+  };
+}
+
 function _applyDebtComponentRebuild(mj, anchorYearHint) {
   if (!mj || !mj.fundamentals) return;
   const f = mj.fundamentals;
@@ -6150,6 +6241,7 @@ function _applyDebtComponentRebuild(mj, anchorYearHint) {
     // V1.0.37: period-keyed, wenn beide Reihen Perioden-Meta haben. Nach einem
     // Komponenten-Rebuild kann total_debt eine andere Jahresabdeckung haben als cash;
     // ein Index-Join würde dann Schulden und Cash verschiedener FY verrechnen.
+    const _cashField = (f._v4_meta && f._v4_meta['cash_and_equivalents']) ? 'cash_and_equivalents' : 'cash';
     const _cashMeta = (f._v4_meta && (f._v4_meta['cash_and_equivalents'] || f._v4_meta['cash'])) || {};
     const _ndJoin = (typeof _joinPeriodKeyed === 'function')
       ? _joinPeriodKeyed(
@@ -6161,7 +6253,11 @@ function _applyDebtComponentRebuild(mj, anchorYearHint) {
           { label: 'Net Debt = total_debt − cash (period-keyed)' }
         )
       : { ok: false };
-    if (_ndJoin.ok) {
+    // V1.0.38: Ein formal gelungener Join ohne einen einzigen Wert ist fachlich
+    // ein gescheiterter Join — sonst überschriebe der zweite Ableitungspass die
+    // Periodensperre mit einer reinen null-Reihe als 'derived'.
+    const _ndUsable = _ndJoin.ok && Array.isArray(_ndJoin.values) && _ndJoin.values.some(v => v != null);
+    if (_ndUsable) {
       f.net_debt = _ndJoin.values;
       f._v4_meta['net_debt'] = Object.assign({}, _ndJoin.meta, {
         source_type: 'derived',
@@ -6169,8 +6265,21 @@ function _applyDebtComponentRebuild(mj, anchorYearHint) {
         confidence: 'high',
         notes: 'Rebuild nach total_debt-Änderung · Perioden period-keyed abgeglichen'
       });
+    } else if (_seriesHasPeriodContext(f, 'total_debt') ||
+               _seriesHasPeriodContext(f, _cashField) ||
+               (f._v4_meta['net_debt'] && f._v4_meta['net_debt'].periodLocked === true)) {
+      // V1.0.38: Periodenkontext vorhanden, aber kein gemeinsamer Zeitraum —
+      // der frühere Index-Fallback hätte hier Schulden und Cash verschiedener
+      // Geschäftsjahre verrechnet. Net Debt bleibt fehlend und gesperrt.
+      f.net_debt = [];
+      _markPeriodLocked(f, 'net_debt', 'total_debt - cash_and_equivalents (period-keyed)',
+        (_ndJoin.meta && _ndJoin.meta.unavailable_reason) || 'keine gemeinsamen Perioden');
+      if (!mj.meta._debt_warnings) mj.meta._debt_warnings = [];
+      mj.meta._debt_warnings.push(
+        'net_debt nicht ableitbar: keine gemeinsame Berichtsperiode von total_debt und ' +
+        _cashField + ' — kein Index-Fallback (Jahresmix).');
     } else {
-      // Ohne Perioden-Meta (z.B. manueller Import) bleibt der Index-Pfad bestehen.
+      // Ohne jeden Periodenkontext (manueller Import) bleibt der Index-Pfad bestehen.
       const len2 = Math.min(f.total_debt.length, _cash.length);
       f.net_debt = f.total_debt.slice(0, len2).map((d, i) =>
         d != null && _cash[i] != null ? d - _cash[i] : null);
@@ -6257,20 +6366,29 @@ function applyDerivedFieldsV4(mj) {
   if (useOverride) {
     f.fcf = fcfDerived.override_series;
     applied.push('fcf (override)');
-  } else {
-    const cfoArr  = Array.isArray(f.cfo)   ? f.cfo   : [];
-    const capexArr = Array.isArray(f.capex) ? f.capex : [];
-    const len = Math.min(cfoArr.length, capexArr.length);
-    if (len > 0) {
-      const derived = [];
-      for (let i = 0; i < len; i++) {
-        derived.push((cfoArr[i] != null && capexArr[i] != null) ? cfoArr[i] - capexArr[i] : null);
-      }
-      // Nur setzen wenn noch nicht vorhanden oder leer
-      if (!Array.isArray(f.fcf) || f.fcf.filter(v => v != null).length === 0) {
-        f.fcf = derived;
-        applied.push('fcf');
-      }
+  } else if (!Array.isArray(f.fcf) || f.fcf.filter(v => v != null).length === 0) {
+    // V1.0.38: Re-Ableitung nur period-keyed, sobald Periodenkontext vorliegt.
+    // Vorher konnte dieser zweite Pass eine zuvor bewusst verworfene FCF-Reihe
+    // ueber Array-Indizes neu bilden und damit die Periodensperre umgehen.
+    const _fcfRes = _derivePairPeriodAware(f, 'fcf', 'cfo', 'capex',
+      (a, b) => (a != null && b != null) ? a - b : null, 'FCF = CFO − Capex (period-keyed)');
+    if (_fcfRes.mode === 'index') {
+      f.fcf = _fcfRes.values;
+      applied.push('fcf');
+    } else if (_fcfRes.mode === 'period') {
+      f.fcf = _fcfRes.values;
+      if (!f._v4_meta) f._v4_meta = {};
+      f._v4_meta['fcf'] = Object.assign({}, _fcfRes.meta, {
+        source_type: 'derived',
+        source_reference: 'cfo - capex (period-keyed)',
+        confidence: 'high',
+        notes: 'Automatisch abgeleitet · Perioden cfo/capex period-keyed abgeglichen'
+      });
+      applied.push('fcf (period-keyed)');
+    } else if (_seriesHasPeriodContext(f, 'cfo') || _seriesHasPeriodContext(f, 'capex') ||
+               (f._v4_meta && f._v4_meta['fcf'] && f._v4_meta['fcf'].periodLocked === true)) {
+      f.fcf = [];
+      _markPeriodLocked(f, 'fcf', 'cfo - capex (period-keyed)', _fcfRes.reason || 'keine gemeinsamen Perioden');
     }
   }
 
@@ -6281,19 +6399,30 @@ function applyDerivedFieldsV4(mj) {
   if (useNdOverride) {
     f.net_debt = ndDerived.override_series;
     applied.push('net_debt (override)');
-  } else {
-    const tdArr   = Array.isArray(f.total_debt) ? f.total_debt : [];
-    const cashArr = Array.isArray(f.cash_and_equivalents || f.cash) ? (f.cash_and_equivalents || f.cash) : [];
-    const len2 = Math.min(tdArr.length, cashArr.length);
-    if (len2 > 0) {
-      const ndDer = [];
-      for (let i = 0; i < len2; i++) {
-        ndDer.push((tdArr[i] != null && cashArr[i] != null) ? tdArr[i] - cashArr[i] : null);
-      }
-      if (!Array.isArray(f.net_debt) || f.net_debt.filter(v => v != null).length === 0) {
-        f.net_debt = ndDer;
-        applied.push('net_debt');
-      }
+  } else if (!Array.isArray(f.net_debt) || f.net_debt.filter(v => v != null).length === 0) {
+    // V1.0.38: identischer Periodenschutz wie bei FCF (siehe D-01).
+    const _cashFld = (Array.isArray(f.cash_and_equivalents) && f.cash_and_equivalents.length > 0)
+      ? 'cash_and_equivalents' : 'cash';
+    const _ndRes = _derivePairPeriodAware(f, 'net_debt', 'total_debt', _cashFld,
+      (a, b) => (a != null && b != null) ? a - b : null, 'Net Debt = total_debt − cash (period-keyed)');
+    if (_ndRes.mode === 'index') {
+      f.net_debt = _ndRes.values;
+      applied.push('net_debt');
+    } else if (_ndRes.mode === 'period') {
+      f.net_debt = _ndRes.values;
+      if (!f._v4_meta) f._v4_meta = {};
+      f._v4_meta['net_debt'] = Object.assign({}, _ndRes.meta, {
+        source_type: 'derived',
+        source_reference: 'total_debt - cash_and_equivalents (period-keyed)',
+        confidence: 'high',
+        notes: 'Automatisch abgeleitet · Perioden period-keyed abgeglichen'
+      });
+      applied.push('net_debt (period-keyed)');
+    } else if (_seriesHasPeriodContext(f, 'total_debt') || _seriesHasPeriodContext(f, _cashFld) ||
+               (f._v4_meta && f._v4_meta['net_debt'] && f._v4_meta['net_debt'].periodLocked === true)) {
+      f.net_debt = [];
+      _markPeriodLocked(f, 'net_debt', 'total_debt - cash_and_equivalents (period-keyed)',
+        _ndRes.reason || 'keine gemeinsamen Perioden');
     }
   }
 
@@ -18996,6 +19125,7 @@ function _joinPeriodKeyed(inputs, combine, options) {
   const warnings      = [];
   const skippedPeriods = [];    // Perioden, für die gar kein Slot entsteht
   const incompletePeriods = []; // Slots, die mangels Gegenwert null bleiben
+  const incompatiblePeriods = []; // Slots mit unvereinbaren Periodenenden (Position bleibt)
 
   const _empty = (reason) => ({
     ok: false, values: [], warnings: warnings.concat(reason ? [reason] : []),
@@ -19102,22 +19232,38 @@ function _joinPeriodKeyed(inputs, combine, options) {
 
     // Gleiches Fiskaljahr, aber weit auseinanderliegende Periodenenden →
     // das sind unterschiedliche Berichtsperioden (z.B. Rumpfgeschäftsjahr).
-    let spreadOk = true;
+    const spreadReasons = [];
     for (const nm of Object.keys(entries)) {
       const d = _secPeriodDaysApart(leadEntry.period, entries[nm].period);
       if (d != null && d > maxSpreadDays) {
-        warnings.push(`FY${year}: ${nm}@${entries[nm].period} weicht ${Math.round(d)} Tage von ${leadSource.name}@${leadEntry.period} ab — Slot verworfen`);
-        spreadOk = false;
+        const txt = `${nm}@${entries[nm].period} weicht ${Math.round(d)} Tage von ${leadSource.name}@${leadEntry.period} ab`;
+        warnings.push(`FY${year}: ${txt}`);
+        spreadReasons.push(txt);
       }
     }
-    if (!spreadOk) { skippedPeriods.push(leadEntry.period); continue; }
+    // V1.0.38: Im lead-Modus behaelt jede Periode der Leitserie ihre Position.
+    // Ein unzulaessiger Vergleich ergibt null MIT Periodenzuordnung; frueher wurde
+    // der ganze Slot uebersprungen, wodurch aeltere Werte nach vorn rueckten
+    // (z.B. net_debt [450] mit FY2023 an Index 0 statt [null, 450]).
+    // In union/intersect ist die Position ohnehin nicht positionstreu — dort
+    // bleibt das bisherige Ueberspringen.
+    if (spreadReasons.length > 0 && mode !== 'lead') {
+      skippedPeriods.push(leadEntry.period);
+      continue;
+    }
 
-    const valsByName = {};
-    for (const nm of Object.keys(entries)) valsByName[nm] = entries[nm].value;
-    const value = combine(valsByName, { year, period: leadEntry.period, present, entries });
-    if (value == null) {
-      const miss = prepared.filter(p => p.required && (!entries[p.name] || entries[p.name].value == null)).map(p => p.name);
-      incompletePeriods.push(`${leadEntry.period}${miss.length > 0 ? ':' + miss.join('+') + ' fehlt' : ''}`);
+    let value;
+    if (spreadReasons.length > 0) {
+      value = null;
+      incompatiblePeriods.push(`${leadEntry.period}: ${spreadReasons.join('; ')}`);
+    } else {
+      const valsByName = {};
+      for (const nm of Object.keys(entries)) valsByName[nm] = entries[nm].value;
+      value = combine(valsByName, { year, period: leadEntry.period, present, entries });
+      if (value == null) {
+        const miss = prepared.filter(p => p.required && (!entries[p.name] || entries[p.name].value == null)).map(p => p.name);
+        incompletePeriods.push(`${leadEntry.period}${miss.length > 0 ? ':' + miss.join('+') + ' fehlt' : ''}`);
+      }
     }
 
     outValues.push(value == null ? null : value);
@@ -19156,9 +19302,11 @@ function _joinPeriodKeyed(inputs, combine, options) {
       componentPeriods: outComponents,
       derivationWarnings: warnings.length > 0 ? warnings : null,
       skippedPeriods:  skippedPeriods.length > 0 ? skippedPeriods : null,
-      incompletePeriods: incompletePeriods.length > 0 ? incompletePeriods : null
+      incompletePeriods: incompletePeriods.length > 0 ? incompletePeriods : null,
+      incompatiblePeriods: incompatiblePeriods.length > 0 ? incompatiblePeriods : null
     },
-    incompletePeriods
+    incompletePeriods,
+    incompatiblePeriods
   };
 }
 
@@ -19215,6 +19363,17 @@ function _deriveGoodwillIntangibles(extracted) {
     const ignored = [];
     if (gw   && Array.isArray(gw.values)   && gw.values.some(v => v != null))   ignored.push(gw.usedTag   || 'Goodwill');
     if (intg && Array.isArray(intg.values) && intg.values.some(v => v != null)) ignored.push(intg.usedTag || 'IntangibleAssetsNetExcludingGoodwill');
+    // V1.0.38: Vollstaendigkeit je Periode. Das kombinierte Tag ist vollstaendig,
+    // wo es einen Wert liefert (explizite 0 eingeschlossen).
+    const combCompleteness = {};
+    const combPeriods = (comb.meta && Array.isArray(comb.meta.periods)) ? comb.meta.periods : [];
+    for (let i = 0; i < comb.values.length; i++) {
+      const per = combPeriods[i];
+      if (per == null) continue;
+      combCompleteness[per] = comb.values[i] != null
+        ? { complete: true, source: 'combined' }
+        : { complete: false, reason: `kombiniertes Tag ${comb.usedTag} ohne Wert für ${per}` };
+    }
     return {
       values: comb.values, derived: false,
       usedTag: comb.usedTag,
@@ -19223,13 +19382,17 @@ function _deriveGoodwillIntangibles(extracted) {
         componentsIgnored: ignored.length > 0 ? ignored : null,
         doubleCountGuard: ignored.length > 0
           ? `Einzeltags nicht addiert (Doppelzählung): ${ignored.join(', ')}`
-          : null
+          : null,
+        componentCompleteness: combCompleteness
       })
     };
   }
 
   const label = 'Goodwill + Intangibles ex Goodwill (period-keyed Summe)';
   const partialPeriods = [];
+  // V1.0.38: Vollstaendigkeit je Periode mitschreiben. Eine Teilsumme bleibt
+  // nachrichtlich erhalten, darf aber keinen regulaeren TBV speisen.
+  const completeness = {};
   const joined = _joinPeriodKeyed(
     [
       { name: 'goodwill',    values: gw   && gw.values,   meta: gw   && gw.meta,   required: false },
@@ -19238,10 +19401,21 @@ function _deriveGoodwillIntangibles(extracted) {
     (v, ctx) => {
       const a = v.goodwill    != null ? v.goodwill    : null;
       const b = v.intangibles != null ? v.intangibles : null;
-      if (a == null && b == null) return null;
+      if (a == null && b == null) {
+        completeness[ctx.period] = { complete: false, reason: `weder Goodwill noch Intangibles für ${ctx.period} berichtet` };
+        return null;
+      }
       // Fehlende Komponente wird NICHT als 0 behandelt, sondern als unvollständig
-      // markiert — der Wert bleibt nutzbar, ist aber sichtbar nur eine Teilsumme.
-      if (a == null || b == null) partialPeriods.push(`${ctx.period}:nur ${a != null ? 'goodwill' : 'intangibles'}`);
+      // markiert — der Wert bleibt als Teilsumme sichtbar (explizite 0 zählt als
+      // vorhanden und damit als vollständig).
+      if (a == null || b == null) {
+        const missing = a != null ? 'Intangibles ex Goodwill' : 'Goodwill';
+        partialPeriods.push(`${ctx.period}:nur ${a != null ? 'goodwill' : 'intangibles'}`);
+        completeness[ctx.period] = { complete: false, source: 'partial_sum',
+          reason: `${missing} für ${ctx.period} nicht berichtet — nur Teilsumme` };
+      } else {
+        completeness[ctx.period] = { complete: true, source: 'component_sum' };
+      }
       return (a != null ? a : 0) + (b != null ? b : 0);
     },
     { label, mode: 'union' }
@@ -19256,7 +19430,8 @@ function _deriveGoodwillIntangibles(extracted) {
     meta: Object.assign({}, joined.meta, {
       derivation: `${label}: ${parts.join(' + ') || '—'}`,
       partialPeriods: partialPeriods.length > 0 ? partialPeriods : null,
-      confidenceHint: partialPeriods.length > 0 ? 'medium' : 'high'
+      confidenceHint: partialPeriods.length > 0 ? 'medium' : 'high',
+      componentCompleteness: completeness
     })
   };
 }
@@ -19267,22 +19442,48 @@ function _deriveGoodwillIntangibles(extracted) {
 function _deriveTangibleBookValue(extracted) {
   const ex = extracted || {};
   const label = 'Tangible Book Value = total_equity − goodwill_and_intangibles (period-keyed)';
+  const gwiMeta = (ex.goodwill_and_intangibles && ex.goodwill_and_intangibles.meta) || {};
+  const completeness = gwiMeta.componentCompleteness || null;
+  // V1.0.38: Eine unvollstaendige Abzugsgroesse (Teilsumme, weil eine Komponente
+  // nicht berichtet ist) ergibt KEINEN regulaeren TBV — sonst waere der Abzug
+  // stillschweigend zu klein und der TBV zu hoch. Die Teilsumme bleibt in
+  // goodwill_and_intangibles nachrichtlich erhalten.
+  const unavailablePeriods = [];
   const joined = _joinPeriodKeyed(
     [
       { name: 'equity', values: ex.total_equity && ex.total_equity.values, meta: ex.total_equity && ex.total_equity.meta },
       { name: 'gwi',    values: ex.goodwill_and_intangibles && ex.goodwill_and_intangibles.values,
-        meta: ex.goodwill_and_intangibles && ex.goodwill_and_intangibles.meta }
+        meta: gwiMeta }
     ],
-    (v) => (v.equity != null && v.gwi != null) ? v.equity - v.gwi : null,
+    (v, ctx) => {
+      if (v.equity == null || v.gwi == null) return null;
+      const gwiPeriod = (ctx.entries && ctx.entries.gwi) ? ctx.entries.gwi.period : ctx.period;
+      const c = completeness ? completeness[gwiPeriod] : null;
+      if (c && c.complete === false) {
+        unavailablePeriods.push(`${ctx.period}: ${c.reason || 'Abzugsgröße unvollständig'}`);
+        return null;
+      }
+      if (!c && completeness) {
+        unavailablePeriods.push(`${ctx.period}: keine Vollständigkeitsangabe zur Abzugsgröße`);
+        return null;
+      }
+      return v.equity - v.gwi;
+    },
     { label }
   );
   if (!joined.ok) return _secUnavailable(label, joined);
   const _gwiTag = (ex.goodwill_and_intangibles && ex.goodwill_and_intangibles.usedTag) || 'goodwill_and_intangibles';
+  const _unavailNote = unavailablePeriods.length > 0
+    ? `TBV für ${unavailablePeriods.length} Periode(n) nicht berechenbar — ${unavailablePeriods.slice(0, 3).join('; ')}`
+    : null;
   return {
     values: joined.values, derived: true,
     usedTag: `total_equity-(${_gwiTag})`,
     meta: Object.assign({}, joined.meta, {
-      derivation: `${label}: ${(ex.total_equity && ex.total_equity.usedTag) || 'total_equity'} − (${_gwiTag})`
+      derivation: `${label}: ${(ex.total_equity && ex.total_equity.usedTag) || 'total_equity'} − (${_gwiTag})`,
+      unavailablePeriods: unavailablePeriods.length > 0 ? unavailablePeriods : null,
+      unavailableNote: _unavailNote,
+      confidenceHint: unavailablePeriods.length > 0 ? 'medium' : 'high'
     })
   };
 }
@@ -19736,7 +19937,11 @@ function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
       notes: `FY-only (10-K) · ${vals.length} Jahre · CIK ${cik}`
         + (_derivationTxt ? ` · Herleitung: ${_derivationTxt}` : '')
         + (exMeta.doubleCountGuard ? ` · ${exMeta.doubleCountGuard}` : '')
-        + (exMeta.reconstructionNote ? ` · ${exMeta.reconstructionNote}` : ''),
+        + (exMeta.reconstructionNote ? ` · ${exMeta.reconstructionNote}` : '')
+        // V1.0.38: Grund fuer nicht berechenbare Perioden sichtbar weiterreichen
+        + (exMeta.unavailableNote ? ` · ${exMeta.unavailableNote}` : ''),
+      unavailablePeriods: exMeta.unavailablePeriods || null,
+      incompatiblePeriods: exMeta.incompatiblePeriods || null,
       // V1.0.37: Einheit, Start-Datum und Filing-ID bleiben erhalten
       unit:      exMeta.unit      || null,
       starts:    exMeta.starts    || null,
@@ -20221,8 +20426,10 @@ function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
       // Ohne verwertbare Perioden wird FCF nicht geraten, sondern als fehlend markiert.
       f.fcf = [];
       f._v4_meta['fcf'] = {
-        source_type: 'unavailable', source_reference: 'cfo - capex',
+        source_type: 'unavailable', source_reference: 'cfo - capex (period-keyed)',
         confidence: 'none', periods: null,
+        // V1.0.38: Sperre, damit ein spaeterer Ableitungslauf nicht per Index nachrechnet
+        periodLocked: true,
         notes: `FCF nicht ableitbar: ${(_fcfJoin.meta && _fcfJoin.meta.unavailable_reason) || 'keine gemeinsamen Perioden'}`
       };
     }
@@ -20236,7 +20443,7 @@ function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
       (v) => (v.debt != null && v.cash != null) ? v.debt - v.cash : null,
       { label: 'Net Debt = total_debt − cash (period-keyed)' }
     );
-    if (_ndJoin.ok) {
+    if (_ndJoin.ok && _ndJoin.values.some(v => v != null)) {
       f.net_debt = _ndJoin.values;
       f._v4_meta['net_debt'] = Object.assign({}, _ndJoin.meta, {
         source_type: 'derived',
@@ -20244,6 +20451,11 @@ function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
         confidence: 'high',
         notes: 'Automatisch abgeleitet · Perioden period-keyed abgeglichen'
       });
+    } else {
+      // V1.0.38: keine gemeinsame Periode → fehlend und gesperrt statt Index-Mix
+      f.net_debt = [];
+      _markPeriodLocked(f, 'net_debt', 'total_debt - cash_and_equivalents (period-keyed)',
+        (_ndJoin.meta && _ndJoin.meta.unavailable_reason) || 'keine gemeinsamen Perioden');
     }
   }
 
@@ -27443,8 +27655,12 @@ const REGRESSION_FIXTURES = [
   });
   const _rE = _deriveGoodwillIntangibles(_build(_fE, DERIV_FIELDS));
 
-  // F) TBV: Equity 12000/11000, Goodwill nur FY2024 = 3000
-  //    Erwartet [9000, null] — fehlender Goodwill wird nicht als 0 behandelt.
+  // F) TBV: Equity 12000/11000, Goodwill nur FY2024 = 3000, Intangibles ex
+  //    Goodwill gar nicht berichtet.
+  //    ERWARTUNG GEÄNDERT (V1.0.38, fachlich begründet): vorher [9000, null] —
+  //    die Teilsumme (nur Goodwill) speiste einen regulären TBV, der Abzug war
+  //    damit stillschweigend zu klein. Jetzt [null, null]: ohne vollständige
+  //    Abzugsgröße ist TBV nicht berechenbar (Fehler 2).
   const _fF = _facts({
     StockholdersEquity: [_stock(2024,12000), _stock(2023,11000)],
     Goodwill: [_stock(2024,3000)]
@@ -27452,6 +27668,36 @@ const REGRESSION_FIXTURES = [
   const _eF = _build(_fF, DERIV_FIELDS);
   _eF.goodwill_and_intangibles = _deriveGoodwillIntangibles(_eF);
   const _rF = _deriveTangibleBookValue(_eF);
+
+  // G) TBV mit vollständiger Abzugsgröße: 12000 − (3000 + 2000) = 7000
+  const _fG = _facts({
+    StockholdersEquity: [_stock(2024,12000)],
+    Goodwill: [_stock(2024,3000)],
+    IntangibleAssetsNetExcludingGoodwill: [_stock(2024,2000)]
+  });
+  const _eG = _build(_fG, DERIV_FIELDS);
+  _eG.goodwill_and_intangibles = _deriveGoodwillIntangibles(_eG);
+  const _rG = _deriveTangibleBookValue(_eG);
+
+  // H) TBV mit ausdrücklich 0 sonstigen immateriellen Werten: 12000 − 3000 = 9000
+  const _fH = _facts({
+    StockholdersEquity: [_stock(2024,12000)],
+    Goodwill: [_stock(2024,3000)],
+    IntangibleAssetsNetExcludingGoodwill: [_stock(2024,0)]
+  });
+  const _eH = _build(_fH, DERIV_FIELDS);
+  _eH.goodwill_and_intangibles = _deriveGoodwillIntangibles(_eH);
+  const _rH = _deriveTangibleBookValue(_eH);
+
+  // I) Fehler 1: Slot-Erhalt bei unvereinbarem Periodenende
+  //    Schulden [600,500] @ [2024-12-31, 2023-12-31] · Cash [100,50] @ [2024-01-31, 2023-12-31]
+  //    Erwartet [null, 450] mit unveränderter Periodenzuordnung.
+  const _rI = _joinPeriodKeyed(
+    [{ name:'debt', values:[600,500], meta:{ periods:['2024-12-31','2023-12-31'], isFlowConcept:false, unit:'USD' } },
+     { name:'cash', values:[100,50],  meta:{ periods:['2024-01-31','2023-12-31'], isFlowConcept:false, unit:'USD' } }],
+    (v) => (v.debt != null && v.cash != null) ? v.debt - v.cash : null,
+    { label: 'Net Debt' }
+  );
 
   REGRESSION_FIXTURES.push({
     id: 'T-SECD1',
@@ -27485,9 +27731,131 @@ const REGRESSION_FIXTURES = [
       { path: '__secd_gwi_sum', expected: '5000', op: 'eq',
         label: 'Ohne kombiniertes Tag: Goodwill 3000 + Intangibles 2000 = 5000',
         _value: String(_rE.values[0]) },
-      { path: '__secd_tbv', expected: '9000,null', op: 'eq',
-        label: 'TBV = Equity − GW&I; fehlender Goodwill ergibt null statt Equity',
+      { path: '__secd_tbv', expected: 'null,null', op: 'eq',
+        label: 'TBV: unvollständige Abzugsgröße (nur Goodwill) ergibt null, kein Teilsummen-TBV',
         _value: _rF.values.map(v => v === null ? 'null' : v).join(',') },
+      { path: '__secd_tbv_note', expected: true, op: 'eq',
+        label: 'TBV nennt den Grund der Nichtverfügbarkeit in der Meta',
+        _value: /nicht berechenbar/.test(String(_rF.meta.unavailableNote || '')) },
+      { path: '__secd_tbv_full', expected: '7000', op: 'eq',
+        label: 'TBV bei vollständigen Komponenten: 12000 − (3000+2000) = 7000',
+        _value: String(_rG.values[0]) },
+      { path: '__secd_tbv_zero', expected: '9000', op: 'eq',
+        label: 'Ausdrücklich 0 sonstige immaterielle Werte bleibt gültig: TBV = 9000',
+        _value: String(_rH.values[0]) },
+      { path: '__secd_slot_values', expected: 'null,450', op: 'eq',
+        label: 'Unvereinbares Periodenende ergibt null an Ort und Stelle (kein Vorrücken)',
+        _value: _rI.values.map(v => v === null ? 'null' : v).join(',') },
+      { path: '__secd_slot_periods', expected: '2024-12-31,2023-12-31', op: 'eq',
+        label: 'Periodenzuordnung bleibt bei unvereinbarem Slot unverändert',
+        _value: (_rI.meta.periods || []).join(',') },
+    ]
+  });
+})();
+
+// ── V1.0.38: Periodensperren ueber die tatsaechlichen Aufrufwege ────────────
+// Prueft applyDerivedFieldsV4 (inkl. _applyDebtComponentRebuild) in genau der
+// Reihenfolge, in der die Import-Pipeline sie aufruft: erster Pass, Shares-
+// Normalisierung, zweiter Pass. Ein wegen Periodenproblemen verworfener Wert
+// muss ueber beide Pässe fehlend bleiben.
+(function _registerSecPeriodLockTests() {
+  const _per = (arr) => ({ source_type: 'reported', source_reference: 'SEC EDGAR XBRL: test',
+                           confidence: 'high', periods: arr });
+
+  const _mkMj = (fundOverrides, metaOverrides) => {
+    const f = _makeBaseFundamentals(fundOverrides);
+    f._v4_meta = Object.assign({}, f._v4_meta, metaOverrides || {});
+    return {
+      schema_version: '4.0',
+      meta: { ticker: 'SECD2', company: 'Period Lock Test', country: 'US', currency: 'USD',
+              as_of_date: '2024-12-31', source_primary: 'SEC_EDGAR', cik: '0000778',
+              sub_classification: 'standard_nonfin' },
+      fundamentals: f,
+      valuation: _makeBaseValuation(),
+      market: { price: 45.00, market_cap: 45000, price_currency: 'USD' },
+      quality_inputs: { piotroski: {} }
+    };
+  };
+  // Beide Ableitungspässe wie in der echten Pipeline
+  const _runPasses = (mj) => { applyDerivedFieldsV4(mj); applyDerivedFieldsV4(mj); return mj.fundamentals; };
+  const _join = (a) => (Array.isArray(a) ? a.map(v => v === null ? 'null' : v).join(',') : 'KEIN-ARRAY');
+
+  // A) CFO und CapEx ohne gemeinsame Periode → FCF bleibt fehlend
+  const _fA = _runPasses(_mkMj(
+    { cfo: [900, 860], capex: [300, 280], fcf: [] },
+    { cfo:   _per(['2024-12-31', '2023-12-31']),
+      capex: _per(['2021-12-31', '2020-12-31']) }));
+
+  // B) Schulden und Cash ohne gemeinsame Periode → Nettoschulden bleiben fehlend
+  const _fB = _runPasses(_mkMj(
+    { total_debt: [1200, 1150], cash_and_equivalents: [800, 750], net_debt: [] },
+    { total_debt:           _per(['2024-12-31', '2023-12-31']),
+      cash_and_equivalents: _per(['2021-12-31', '2020-12-31']) }));
+
+  // C) Teilweise passende Reihen behalten ihre null-Slots
+  //    CFO 2024/2023/2022 = 900/860/820 · CapEx nur 2024/2022 = 300/260
+  //    Erwartet: [600, null, 560]
+  const _fC = _runPasses(_mkMj(
+    { cfo: [900, 860, 820], capex: [300, null, 260], fcf: [] },
+    { cfo:   _per(['2024-12-31', '2023-12-31', '2022-12-31']),
+      capex: _per(['2024-12-31', '2023-12-31', '2022-12-31']) }));
+
+  // D) Manueller Import ohne Periodenmetadaten → Index-Pfad unveraendert
+  //    CFO 900/860 − CapEx 300/280 = 600/580
+  const _mjD = _mkMj({ cfo: [900, 860], capex: [300, 280], fcf: [],
+                       total_debt: [1200, 1150], cash_and_equivalents: [800, 750], net_debt: [] }, null);
+  delete _mjD.fundamentals._v4_meta.cfo;
+  delete _mjD.fundamentals._v4_meta.capex;
+  delete _mjD.fundamentals._v4_meta.total_debt;
+  delete _mjD.fundamentals._v4_meta.cash_and_equivalents;
+  const _fD = _runPasses(_mjD);
+
+  // E) Unvereinbares Periodenende in der echten Ableitung (Fehler 1 im Aufrufweg):
+  //    Schulden [600,500] @ [2024-12-31, 2023-12-31] · Cash [100,50] @ [2024-01-31, 2023-12-31]
+  const _fE = _runPasses(_mkMj(
+    { total_debt: [600, 500], cash_and_equivalents: [100, 50], net_debt: [] },
+    { total_debt:           _per(['2024-12-31', '2023-12-31']),
+      cash_and_equivalents: _per(['2024-01-31', '2023-12-31']) }));
+
+  REGRESSION_FIXTURES.push({
+    id: 'T-SECD2',
+    label: 'T-SECD2: Periodensperren überleben beide Ableitungspässe (kein Index-Fallback)',
+    mj: {
+      schema_version: '4.0',
+      meta: { ticker: 'SECD2', company: 'Period Lock Test', country: 'US', currency: 'USD',
+              as_of_date: '2024-12-31', source_primary: 'SEC_EDGAR', cik: '0000778',
+              sub_classification: 'standard_nonfin' },
+      fundamentals: _makeBaseFundamentals(),
+      valuation: _makeBaseValuation(),
+      market: { price: 45.00, market_cap: 45000, price_currency: 'USD' },
+      quality_inputs: { piotroski: {} }
+    },
+    assertions: [
+      { path: '__lock_fcf', expected: 0, op: 'eq',
+        label: 'CFO/CapEx ohne gemeinsame Periode: FCF bleibt nach beiden Pässen fehlend',
+        _value: (_fA.fcf || []).filter(v => v != null).length },
+      { path: '__lock_fcf_marked', expected: true, op: 'eq',
+        label: 'FCF ist als periodengesperrt und unavailable markiert',
+        _value: !!(_fA._v4_meta.fcf && _fA._v4_meta.fcf.periodLocked === true &&
+                   _fA._v4_meta.fcf.source_type === 'unavailable') },
+      { path: '__lock_nd', expected: 0, op: 'eq',
+        label: 'Schulden/Cash ohne gemeinsame Periode: net_debt bleibt fehlend',
+        _value: (_fB.net_debt || []).filter(v => v != null).length },
+      { path: '__lock_nd_marked', expected: true, op: 'eq',
+        label: 'net_debt ist als periodengesperrt markiert',
+        _value: !!(_fB._v4_meta.net_debt && _fB._v4_meta.net_debt.periodLocked === true) },
+      { path: '__lock_partial', expected: '600,null,560', op: 'eq',
+        label: 'Teilweise passende Reihen behalten ihre null-Slots',
+        _value: _join(_fC.fcf) },
+      { path: '__lock_legacy_fcf', expected: '600,580', op: 'eq',
+        label: 'Manueller Import ohne Periodenmetadaten: Index-Pfad unverändert',
+        _value: _join(_fD.fcf) },
+      { path: '__lock_legacy_nd', expected: '400,400', op: 'eq',
+        label: 'Manueller Import ohne Periodenmetadaten: net_debt weiterhin index-basiert',
+        _value: _join(_fD.net_debt) },
+      { path: '__lock_incompatible', expected: 'null,450', op: 'eq',
+        label: 'Unvereinbares Periodenende: net_debt [null, 450] statt verschobenem [450]',
+        _value: _join(_fE.net_debt) },
     ]
   });
 })();

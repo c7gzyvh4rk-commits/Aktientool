@@ -197,15 +197,41 @@ test('Abweichendes Geschäftsjahresende (Juni-FY) wird korrekt zusammengeführt'
   assert.deepEqual(r.meta.periods, ['2024-06-30', '2023-06-30']);
 });
 
-test('Gleiches Kalenderjahr, aber weit auseinanderliegende Periodenenden → Slot verworfen', () => {
+// ERWARTUNG GEÄNDERT (V1.0.38, fachlich begründet): Vorher wurde bei
+// unvereinbaren Periodenenden der ganze Slot verworfen (`values: []`). Genau
+// das war Fehler 1 — im lead-Modus rücken dadurch ältere Werte an eine
+// vordere Position. Erwartet wird jetzt der Slot-Erhalt mit `null`.
+test('Gleiches Kalenderjahr, aber weit auseinanderliegende Periodenenden → null mit erhaltener Position', () => {
   // EBIT endet 2024-12-31, D&A endet 2024-01-31 (Rumpf-/anderes Geschäftsjahr)
   const f = facts({
     OperatingIncomeLoss: [flow(2024, 1200)],
     DepreciationDepletionAndAmortization: [flow(2024, 300, { endMonth: 1, endDay: 31 })]
   });
   const r = A._deriveEbitdaFromExtracted(buildExtracted(f, ['ebit', 'da']));
-  assert.deepEqual(r.values, []);   // kein Slot → nichts ableitbar
+  assert.deepEqual(r.values, [null]);                       // Slot bleibt, Wert nicht ermittelbar
+  assert.deepEqual(r.meta.periods, ['2024-12-31']);         // Periodenzuordnung unverändert
   assert.ok((r.meta.derivationWarnings || []).some(w => /weicht \d+ Tage/.test(w)));
+  assert.ok(r.meta.incompatiblePeriods.some(p => p.startsWith('2024-12-31')));
+});
+
+// ── Pflichtfall aus dem Auftrag: Nettoschulden dürfen nicht nach vorn rücken ──
+test('Fehler 1 Gegenbeispiel: unvereinbares Cash-Periodenende schiebt kein Jahr nach vorn', () => {
+  const debt = { values: [600, 500], meta: { periods: ['2024-12-31', '2023-12-31'], isFlowConcept: false, unit: 'USD' } };
+  const cash = { values: [100, 50],  meta: { periods: ['2024-01-31', '2023-12-31'], isFlowConcept: false, unit: 'USD' } };
+  const r = A._joinPeriodKeyed(
+    [{ name: 'debt', values: debt.values, meta: debt.meta },
+     { name: 'cash', values: cash.values, meta: cash.meta }],
+    (v) => (v.debt != null && v.cash != null) ? v.debt - v.cash : null,
+    { label: 'Net Debt' }
+  );
+  // Handrechnung: FY2024 unvereinbar (335 Tage Abstand) → null;
+  //               FY2023 = 500 − 50 = 450
+  assert.deepEqual(r.values, [null, 450]);
+  assert.deepEqual(r.meta.periods, ['2024-12-31', '2023-12-31']);
+  // Das alte Verhalten [450] mit FY2023 an Index 0 ist ausgeschlossen:
+  assert.notEqual(r.values[0], 450);
+  assert.equal(r.meta.periods[0], '2024-12-31');
+  assert.ok(/2024-12-31/.test(r.meta.incompatiblePeriods.join(' ')));
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -321,7 +347,12 @@ test('Goodwill-Summe: fehlendes Komponentenjahr verschiebt die Reihen nicht', ()
 // ═════════════════════════════════════════════════════════════════════════════
 // 7. Tangible Book Value
 // ═════════════════════════════════════════════════════════════════════════════
-test('TBV = Equity − (Goodwill+Intangibles), fehlende Abzugsgröße ergibt null statt Equity', () => {
+// ERWARTUNG GEÄNDERT (V1.0.38, fachlich begründet): Vorher ergab eine
+// Teilsumme (nur Goodwill, Intangibles ex Goodwill nicht berichtet) einen
+// regulären TBV von 9000 bzw. 7500. Genau das war Fehler 2 — der Abzug ist
+// dann stillschweigend zu klein und der TBV zu hoch. Ohne vollständige
+// Abzugsgröße ist TBV nicht berechenbar.
+test('TBV: unvollständige Abzugsgröße ergibt null (weder Equity noch Teilsummen-TBV)', () => {
   const f = facts({
     StockholdersEquity: [stock(2024, 12000), stock(2023, 11000), stock(2022, 10000)],
     Goodwill:           [stock(2024, 3000),  stock(2022, 2500)]
@@ -330,11 +361,44 @@ test('TBV = Equity − (Goodwill+Intangibles), fehlende Abzugsgröße ergibt nul
                                'goodwill_and_intangibles_combined']);
   e.goodwill_and_intangibles = A._deriveGoodwillIntangibles(e);
   const r = A._deriveTangibleBookValue(e);
-  // Handrechnung: FY2024 = 12000−3000 = 9000 · FY2023 = kein Goodwill → null
-  //               FY2022 = 10000−2500 = 7500
-  assert.deepEqual(r.values, [9000, null, 7500]);
+  // Intangibles ex Goodwill sind in keiner Periode berichtet → jede Periode
+  // ist nur eine Teilsumme → kein TBV.
+  assert.deepEqual(r.values, [null, null, null]);
   assert.deepEqual(r.meta.periods, ['2024-12-31', '2023-12-31', '2022-12-31']);
+  assert.notEqual(r.values[0], 9000, 'Teilsumme darf keinen regulären TBV speisen');
   assert.notEqual(r.values[1], 11000, 'fehlender Goodwill darf nicht als 0 durchgehen');
+  // Teilsumme bleibt nachrichtlich erhalten (union-Modus: nur die beiden
+  // Perioden mit Goodwill-Meldung, FY2023 hat gar keine Komponente)
+  assert.deepEqual(e.goodwill_and_intangibles.values, [3000, 2500]);
+  assert.deepEqual(e.goodwill_and_intangibles.meta.periods, ['2024-12-31', '2022-12-31']);
+  assert.match(r.meta.unavailableNote, /nicht berechenbar/);
+});
+
+// ── Pflichtfälle aus dem Auftrag (Eigenkapital 12.000) ───────────────────────
+test('Fehler 2 Gegenbeispiele: TBV nur bei vollständiger Abzugsgröße', () => {
+  const eq = [stock(2024, 12000)];
+  const tbvOf = (extra) => {
+    const e = buildExtracted(facts(Object.assign({ StockholdersEquity: eq }, extra)),
+      ['total_equity', 'goodwill', 'intangibles_ex_goodwill', 'goodwill_and_intangibles_combined']);
+    e.goodwill_and_intangibles = A._deriveGoodwillIntangibles(e);
+    return { tbv: A._deriveTangibleBookValue(e).values, gwi: e.goodwill_and_intangibles.values };
+  };
+  // a) Goodwill 3000, sonstige immaterielle Werte unbekannt → TBV null
+  assert.deepEqual(tbvOf({ Goodwill: [stock(2024, 3000)] }).tbv, [null]);
+  // b) Goodwill 3000, sonstige immaterielle Werte ausdrücklich 0 → 12000−3000 = 9000
+  assert.deepEqual(tbvOf({ Goodwill: [stock(2024, 3000)],
+                           IntangibleAssetsNetExcludingGoodwill: [stock(2024, 0)] }).tbv, [9000]);
+  // c) Goodwill 3000, sonstige immaterielle Werte 2000 → 12000−5000 = 7000
+  assert.deepEqual(tbvOf({ Goodwill: [stock(2024, 3000)],
+                           IntangibleAssetsNetExcludingGoodwill: [stock(2024, 2000)] }).tbv, [7000]);
+  // d) vollständiges kombiniertes Tag 5000 → 12000−5000 = 7000, keine Doppelzählung
+  const comb = tbvOf({ IntangibleAssetsNetIncludingGoodwill: [stock(2024, 5000)],
+                       Goodwill: [stock(2024, 3000)],
+                       IntangibleAssetsNetExcludingGoodwill: [stock(2024, 2000)] });
+  assert.deepEqual(comb.gwi, [5000]);
+  assert.deepEqual(comb.tbv, [7000]);
+  // e) spiegelbildlich: Goodwill unbekannt, Intangibles 2000 → TBV null
+  assert.deepEqual(tbvOf({ IntangibleAssetsNetExcludingGoodwill: [stock(2024, 2000)] }).tbv, [null]);
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

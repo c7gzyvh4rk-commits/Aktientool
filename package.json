@@ -4,6 +4,8 @@
   "private": true,
   "description": "Testinfrastruktur für das US-Aktienbewertungstool (einzelne HTML-Datei). Kein Build, keine Laufzeit-Abhängigkeiten.",
   "scripts": {
-    "test": "node test/run-calc-tests.js"
+    "test": "node test/run-all.js",
+    "test:calc": "node test/run-calc-tests.js",
+    "test:sec": "node --test tests/*.test.mjs"
   }
 }

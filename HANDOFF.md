@@ -1,5 +1,121 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Update (Chat 6): Drei Periodenfehler behoben, gemeinsamer Testaufruf (V1.0.38)
+
+**Basis:** `fba35e4` auf `claude/eloquent-ritchie-qroglk-rebased` (enthält den
+geprüften Chat-4-Commit `1f60ca5`; keine zusätzlichen Commits vorhanden).
+Neuer Arbeitsbranch: `claude/sec-period-integrity-fixes`.
+
+### 1. Periodenpositionen bleiben erhalten (`_joinPeriodKeyed`)
+**Befund am Code:** Bei unvereinbaren Periodenenden wurde der gesamte Slot per
+`continue` verworfen (`skippedPeriods`). Im Modus `lead` rückten dadurch
+ältere Werte an eine vordere Position — genau die Verschiebung, die der
+period-keyed Join verhindern soll.
+**Korrektur:** Im Modus `lead` behält jede Periode der Leitserie ihre Position;
+ein unzulässiger Vergleich ergibt `null` mit unveränderter Periodenzuordnung
+und nachvollziehbarem Grund (`meta.incompatiblePeriods`). In `union`/
+`intersect` (dort ist die Position ohnehin nicht positionstreu) bleibt das
+bisherige Überspringen.
+**Pflichtfall:** Schulden `[600, 500]` @ `[2024-12-31, 2023-12-31]`, Cash
+`[100, 50]` @ `[2024-01-31, 2023-12-31]` → `[null, 450]` mit Perioden
+`[2024-12-31, 2023-12-31]`; das frühere `[450]` mit FY2023 an Index 0 ist
+durch eine eigene Assertion ausgeschlossen.
+
+### 2. Teilsummen speisen keinen TBV mehr
+**Befund am Code:** `_deriveGoodwillIntangibles()` lieferte bei fehlender
+Komponente eine markierte Teilsumme; `_deriveTangibleBookValue()` zog sie
+regulär ab und verlor die Kennzeichnung — der Abzug war stillschweigend zu
+klein, der TBV zu hoch.
+**Korrektur:** `_deriveGoodwillIntangibles()` schreibt je Periode
+`componentCompleteness` (vollständig nur bei komplettem kombiniertem Tag oder
+beiden Einzelkomponenten; eine ausdrücklich berichtete 0 zählt als vorhanden).
+`_deriveTangibleBookValue()` liefert für unvollständige Perioden `null` und
+nennt den Grund in `meta.unavailablePeriods` / `meta.unavailableNote`; die
+FMAP-Schleife übernimmt ihn in `_v4_meta.tangible_book_value.notes`. Die
+Teilsumme bleibt in `goodwill_and_intangibles` nachrichtlich erhalten.
+**Pflichtfälle (Eigenkapital 12.000), alle grün:** Goodwill 3.000 + unbekannte
+Intangibles → `null`; Goodwill 3.000 + ausdrücklich 0 → 9.000; Goodwill 3.000
++ 2.000 → 7.000; vollständiges kombiniertes Tag 5.000 → 7.000 ohne
+Doppelzählung; spiegelbildlich (Goodwill unbekannt, Intangibles 2.000) →
+`null`.
+
+### 3. Periodensperren lassen sich nicht mehr umgehen
+**Befund am Code:** `applyDerivedFieldsV4()` (D-01 FCF, D-02 Net Debt) baute
+leere oder komplett aus `null` bestehende Reihen erneut über Array-Indizes
+auf; der Net-Debt-Rebuild in `_applyDebtComponentRebuild()` hatte zusätzlich
+einen Index-Fallback nach gescheitertem Perioden-Join. Beide Pfade laufen auch
+beim SEC-Import und hoben die Sperre im zweiten Ableitungspass wieder auf.
+**Korrektur:** Neue Helfer `_seriesHasPeriodContext()`,
+`_derivePairPeriodAware()` und `_markPeriodLocked()`. Sobald Periodenkontext
+vorliegt (Periodenmetadaten, dokumentierte period-keyed Ableitung oder
+gesetzte Sperre `periodLocked`), wird ausschließlich period-keyed verknüpft;
+scheitert das — auch wenn der Join formal gelingt, aber keine Periode ein
+Gegenstück hat —, bleibt der Wert fehlend und wird als
+`source_type: 'unavailable'` mit `periodLocked: true` und Begründung
+markiert. Der Index-Fallback im Net-Debt-Rebuild entfällt. **Ohne jeden
+Periodenkontext (manueller Import) bleibt der bisherige Index-Pfad
+unverändert.**
+
+### 4. Gemeinsamer Testaufruf und CI
+Neuer, abhängigkeitsfreier Sammel-Runner `test/run-all.js`: startet beide
+Suiten nacheinander per `child_process.spawnSync` (kein `&&`), sodass die
+SEC-Suite auch bei rotem Rechen-Runner läuft, und endet mit Exit-Code 1,
+sobald mindestens eine Suite rot ist. Ein Fehlschlag wird nirgends
+unterdrückt; `T-BRL1` bleibt sichtbar und wird im Abschlussblock ausdrücklich
+benannt. Fehlt `tests/*.test.mjs`, gilt das als Fehlschlag statt als stiller
+Erfolg. `package.json`: `test` → `node test/run-all.js`, zusätzlich
+`test:calc` und `test:sec`. CI führt `node test/run-all.js` aus. Die
+Verzeichnisse `test/` und `tests/` bleiben unverändert bestehen.
+
+### Geänderte Erwartungen (nur wo sie das korrigierte Fehlverhalten verlangten)
+1. `tests/…`: „weit auseinanderliegende Periodenenden → Slot verworfen"
+   erwartete `values: []`. Das war Fehler 1; erwartet wird jetzt `[null]` mit
+   erhaltener Periodenzuordnung.
+2. `tests/…`: TBV-Test erwartete `[9000, null, 7500]` aus Teilsummen. Das war
+   Fehler 2; erwartet wird jetzt `[null, null, null]`, die Teilsumme bleibt
+   nachrichtlich. Die ursprüngliche Aussage („fehlender Goodwill darf nicht
+   als 0 durchgehen") wird weiterhin geprüft.
+3. In-App-Fixture `T-SECD1`: `__secd_tbv` von `9000,null` auf `null,null` —
+   gleiche Begründung wie 2.
+Keine weitere Erwartung wurde angefasst.
+
+### Tatsächlich ausgeführte Tests
+* `node test/run-all.js` (neuer gemeinsamer Aufruf, Exit-Code 1 wegen T-BRL1):
+  * `node test/run-calc-tests.js` → **826 bestanden · 1 fehlgeschlagen ·
+    0 Fehler/Exceptions** (Ausgangsstand 813; +13 durch die neuen
+    Gegenbeispiele in `T-SECD1` und das neue Fixture `T-SECD2`).
+  * `node --test tests/*.test.mjs` → **23/23 grün** (vorher 21).
+* Gegenprobe zum Sammel-Runner: mit einer absichtlich roten Zusatzdatei in
+  `tests/` meldet er beide Suiten rot und endet mit 1; die Datei wurde wieder
+  entfernt.
+* `T-SECD2` prüft die tatsächlichen aufeinanderfolgenden Aufrufwege
+  (`applyDerivedFieldsV4` zweimal, inkl. `_applyDebtComponentRebuild`):
+  CFO/CapEx ohne gemeinsame Periode → FCF bleibt fehlend und gesperrt;
+  Schulden/Cash ohne gemeinsame Periode → Net Debt bleibt fehlend und
+  gesperrt; teilweise passende Reihen behalten ihre `null`-Slots
+  (`600, null, 560`); manueller Import ohne Periodenmetadaten liefert
+  weiterhin `600, 580` bzw. `400, 400` über den Index-Pfad; unvereinbares
+  Periodenende ergibt `null, 450` statt eines verschobenen `450`.
+* DCF-, Working-Capital- und Nettoschuldentests unverändert grün
+  (`_testValuationCore` 111, `_testDcfEquityBridge` 46,
+  `_testDcfWorkingCapital` 84); `dcfCore` und die Sperre `net_debt_unknown`
+  unangetastet.
+* Integrationslauf des SEC-Importpfads (synthetische Facts, echter Browser):
+  EBITDA `[null, 1380, 1250]`, GW&I `[5000, 4800, 4600]`, TBV
+  `[7000, 6200, 5400]`, FCF `[700, 620, 540]`, Net Debt `[2500, 2400, null]`,
+  kein `PERIOD_MISMATCH`.
+
+### Offene Einschränkungen
+* `T-BRL1` bleibt rot (Altfehler seit Chat 2, unverändert nicht in Arbeit).
+  Damit endet auch der gemeinsame Testaufruf und die CI rot.
+* Die EBIT-Rekonstruktion wurde auftragsgemäß nicht angefasst; sie kann ohne
+  Zinsertrag-Tag weiterhin überschätzen (markiert, nicht unterdrückt).
+* Kein Live-Abruf gegen SEC EDGAR (nur synthetische Facts).
+* Weiterer, nicht behobener Befund: `applyDerivedFieldsV4` leitet auch
+  `eps_diluted`, `book_value` und `dps` index-basiert ab. Diese Pfade waren
+  nicht Teil des Auftrags und wurden nicht angefasst; sie haben dieselbe
+  Struktur wie die hier gesperrten und sollten separat geprüft werden.
+
 ## Update (Versionskorrektur): Chat-5-Arbeit auf die geprüfte Chat-4-Basis gesetzt
 
 **Befund.** Der Chat-5-Commit `fba495c` auf `claude/eloquent-ritchie-qroglk`
