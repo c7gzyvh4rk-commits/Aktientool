@@ -2945,6 +2945,12 @@ function switchTab(name) {
   if (name === 'journal') renderSnapshots();
 }
 
+// ÜBERHOLT (V1.0.36): einfacher FCF-je-Aktie-DCF ohne Working Capital,
+// ohne Nettoschuldenbrücke und ohne Aktienprojektion. Wird von keinem
+// Bewertungs- oder Diagnosepfad mehr aufgerufen — Haupt-DCF, DCF Mid-Cycle,
+// Reverse DCF, Sensitivitätsmatrix und Monte Carlo laufen über
+// coreValuationDetail(). NICHT für neue Pfade verwenden: das Ergebnis ist
+// nicht definitionskonsistent zu den übrigen Modellwerten.
 function dcfCore(fcf, g1, tg, wacc, fade) {
   if (wacc <= tg) return { pv: 0, pvTv: 0, total: 0 };
   let pv = 0, cf = fcf;
@@ -3603,6 +3609,23 @@ function checkPerShareSanity(synthesis, masterJson) {
 // kurzfristigen Finanzschulden bestehen (fehlende Werte sind nicht 0).
 const OWC_MIN_YEARS = 3;   // Median über ≥ 3 Jahre dämpft Bilanzstichtagseffekte
 
+// Vereinfachung des Working-Capital-Modells, ausdrücklich gekennzeichnet.
+// Der Anfangsbestand wird NICHT aus der Bilanz übernommen, sondern bereits mit
+// der Prognosequote angesetzt (OWC₀ = Quote × Umsatz₀). Damit entsteht in Jahr 1
+// kein einmaliger Aufholeffekt — es wird aber auch KEINE Anpassung vom
+// tatsächlichen Ist-Bestand auf die Zielquote modelliert. Weicht der Ist-Bestand
+// von der Quote ab, fehlt dieser einmalige Mittelzu- oder -abfluss im Cashflow.
+const OWC_STOCK_SIMPLIFICATION_NOTE =
+  'Working-Capital-Vereinfachung: Der Anfangsbestand wird bereits mit der Prognosequote ' +
+  'angesetzt (OWC₀ = Quote × Umsatz₀). Eine Anpassung vom tatsächlichen Ist-Bestand auf ' +
+  'die Zielquote wird NICHT modelliert; ein daraus resultierender einmaliger Mittelzu- ' +
+  'oder -abfluss fehlt im Cashflow.';
+
+// Ohne manuelle Eingabe und ohne ausreichende Historie rechnet der Forecast
+// vorläufig mit 0. Dieser Wert ist vom Modell gesetzt — er ist ausdrücklich
+// KEINE Nutzerannahme und kein gemessener Nullbedarf.
+const OWC_PROVISIONAL_LABEL = 'Vorläufige Modellannahme: 0; Nutzereingabe erforderlich';
+
 // Historische OWC-Reihe. Nur zeitlich zusammenhängende, vollständige Jahre ab
 // Index 0 (aktuellstes Geschäftsjahr) — die Reihe bricht beim ersten
 // unvollständigen Jahr ab, damit die Quote zum aktuellen Umsatzniveau passt
@@ -3673,10 +3696,11 @@ function _computeOwcHistory(f) {
 // Priorität:
 //   1. manueller Override  valuation.assumptions.owc_pct_of_revenue (in % vom Umsatz)
 //   2. historischer Median (nur bei ≥ OWC_MIN_YEARS lückenlosen Jahren)
-//   3. keine belastbare Grundlage → Nutzerannahme erforderlich
-// Im Fall 3 wird im Forecast vorläufig 0 verwendet, aber ausdrücklich als
-// ANNAHME gekennzeichnet (measured=false, assumptionRequired=true). Ein
-// angenommener Nullbedarf erscheint nirgends als gemessener Wert.
+//   3. keine belastbare Grundlage → vorläufige Modellannahme 0, Nutzereingabe nötig
+// Im Fall 3 wird im Forecast vorläufig 0 verwendet und ausdrücklich als
+// VOM MODELL GESETZTER Platzhalter gekennzeichnet (measured=false,
+// assumptionRequired=true, setBy='model_provisional_default'). Dieser Wert wird
+// weder als gemessener Nullbedarf noch als Nutzerannahme ausgegeben.
 function _resolveOwcForForecast(mj) {
   const f   = (mj && mj.fundamentals) || {};
   const val = (mj && mj.valuation)    || {};
@@ -3707,7 +3731,7 @@ function _resolveOwcForForecast(mj) {
       source: 'manual_override',
       sourceLabel: `manuelle Annahme owc_pct_of_revenue = ${pct.toFixed(2)}% des Umsatzes`,
       available: true, measured: false, assumptionRequired: false,
-      overridePct: pct
+      setBy: 'user', overridePct: pct
     }, base);
   }
   if (histRatio != null) {
@@ -3716,13 +3740,15 @@ function _resolveOwcForForecast(mj) {
       source: 'historical_median',
       sourceLabel: `historischer Median ${(histRatio * 100).toFixed(2)}% des Umsatzes über ${hist.years.length} lückenlose Jahre`,
       available: true, measured: true, assumptionRequired: false,
-      overridePct: null
+      setBy: 'measured_history', overridePct: null
     }, base);
   }
   return Object.assign({
     ratio: 0,
     source: 'assumption_required',
-    sourceLabel: 'nicht messbar — Nutzerannahme erforderlich',
+    sourceLabel: 'nicht messbar — ' + OWC_PROVISIONAL_LABEL,
+    provisionalLabel: OWC_PROVISIONAL_LABEL,
+    setBy: 'model_provisional_default',
     available: false, measured: false, assumptionRequired: true,
     overridePct: null
   }, base);
@@ -3741,7 +3767,7 @@ function _owcAssumptionHint(mj) {
     return `leer = historischer Median ${(i.historicalRatio * 100).toFixed(2)}% aus ${i.yearsAvailable} lückenlosen Jahren`;
   }
   return `⚠ nicht messbar (${i.missing.slice(0, 3).join(', ') || 'Bilanzdaten fehlen'}) — ` +
-         `ohne Eingabe rechnet der DCF mit 0% ΔWC; das ist eine ANNAHME, kein gemessener Wert`;
+         `${OWC_PROVISIONAL_LABEL}. Vom Modell gesetzt, keine Nutzerannahme und kein gemessener Wert.`;
 }
 
 function buildForecastInputs(mj) {
@@ -4017,6 +4043,389 @@ function forecastDcfCore(fi, g1, tg, wacc, fade, opMarginOverridePct) {
     _cashflowDefinition: 'FCFF = EBIT × (1 − t) + D&A − CapEx − ΔOWC',
     _discountRateBasis: 'WACC'
   };
+}
+
+// ════════════════════════════════════════════════════════════════
+// GEMEINSAMER BEWERTUNGSKERN
+// Haupt-DCF · DCF Mid-Cycle · Reverse DCF · Sensitivitätsmatrix
+// ════════════════════════════════════════════════════════════════
+// Alle vier Pfade sollen exakt dieselbe Bewertungsfunktion verwenden.
+// Vorher rechneten sie mit unterschiedlichen Cashflow-Definitionen
+// (FCFF aus EBIT vs. CFO − CapEx vs. Mid-Cycle-FCF), unterschiedlichen
+// Nettoschuldenquellen (Brücke vs. net_debt[0] mit stillem 0-Fallback)
+// und teils ohne Working Capital — dieselbe Eingabe konnte je nach
+// Anzeige verschiedene Werte liefern.
+//
+// Der Kern besteht aus genau zwei Funktionen:
+//   buildCoreValuationContext(mj, opts) → unveränderliche Inputs
+//   coreValuationDetail(ctx, g1, tg, wacc, opMarginPct) → Bewertung
+// Deterministisch: gleiche Eingabe ⇒ bitgleiche Ausgabe, keine Zufalls-
+// oder Zeitabhängigkeit.
+const DCF_CORE_MODEL_VERSION = 'dcf-core/1.1';
+const DCF_CORE_DEFINITION_LABEL =
+  'FCFF = EBIT × (1 − t) + D&A − CapEx − ΔWC(operativ), mit WACC diskontiert, ' +
+  'Gordon-Terminalwert, abzüglich Nettoschulden (Stichtag) je Aktie';
+
+// Reverse DCF: zulässiger Suchbereich und dokumentierte Toleranz.
+//  gLoPct/gHiPct  Suchbereich für das Stage-1-Umsatzwachstum (% p.a.).
+//                 Außerhalb gilt eine DCF-Ableitung als nicht aussagekräftig.
+//  gridStepPct    Rasterweite für die Vorzeichenprüfung. Feiner als jede
+//                 plausible Krümmung des Wertverlaufs, aber grob genug für
+//                 121 Auswertungen — der Kern ist nicht monoton in g1
+//                 (negative FCFF-Marge oder hohe WC-Quote kehren das
+//                 Vorzeichen der Ableitung um), deshalb wird der gesamte
+//                 Bereich abgetastet statt blind halbiert.
+//  tolerancePp    Abbruchtoleranz der Intervallhalbierung in Prozentpunkten
+//                 des gesuchten Wachstums (0,0001 pp).
+const REVERSE_DCF_SEARCH = Object.freeze({
+  gLoPct: -20,
+  gHiPct: 40,
+  gridStepPct: 0.5,
+  tolerancePp: 1e-4,
+  maxIter: 100
+});
+
+// Annahmen, die der Reverse DCF NICHT löst, sondern konstant hält.
+const REVERSE_DCF_HELD_CONSTANT = Object.freeze([
+  'terminal_growth', 'wacc', 'op_margin_pct', 'tax_rate', 'da_ratio',
+  'capex_intensity', 'owc_pct_of_revenue', 'fade', 'shares_growth_pa', 'net_debt'
+]);
+
+// Benennt die Felder, die für den gemeinsamen Kern fehlen. Fehlende Werte
+// werden NICHT als 0 interpretiert — der Pfad wird stattdessen ausgeschlossen.
+function _coreMissingForecastInputs(f) {
+  f = f || {};
+  const missing = [];
+  const rev = f.revenue, ebit = f.ebit, capex = f.capex, sd = f.shares_diluted;
+  if (!Array.isArray(rev) || !(rev[0] > 0)) missing.push('revenue[0]');
+  if (!Array.isArray(ebit) || ebit[0] == null) missing.push('ebit[0]');
+  let capexOk = false;
+  if (Array.isArray(capex) && Array.isArray(rev)) {
+    const n = Math.min(capex.length, rev.length, 10);
+    for (let i = 0; i < n; i++) if (capex[i] != null && rev[i] > 0) { capexOk = true; break; }
+  }
+  if (!capexOk) missing.push('capex[i] (mind. 1 Jahr mit revenue > 0)');
+  if (!Array.isArray(sd) || !(sd[0] > 0)) missing.push('shares_diluted[0]');
+  return missing;
+}
+
+// Unveränderlicher Eingabekontext des Bewertungskerns. Alles, was NICHT
+// variiert wird (Cashflow-Struktur, Working Capital, Nettoschulden,
+// Aktienbasis, Fade), wird hier einmal aufgelöst — damit Haupt-DCF,
+// Reverse DCF und Sensitivitätsmatrix nachweislich dieselben Inputs nutzen.
+// opts.opMarginOverridePct erzwingt eine Betriebsmarge (Mid-Cycle-Median);
+// sie überschreibt die Szenario-Marge, alles andere bleibt identisch.
+function buildCoreValuationContext(mj, opts) {
+  opts = opts || {};
+  const f   = (mj && mj.fundamentals) || {};
+  const val = (mj && mj.valuation)    || {};
+  const fi  = buildForecastInputs(mj);
+  if (!fi || !(fi.shares0 > 0)) {
+    return {
+      ok: false,
+      modelVersion: DCF_CORE_MODEL_VERSION,
+      missing: _coreMissingForecastInputs(f),
+      reason: 'Forecast-Inputs für den gemeinsamen Bewertungskern unvollständig'
+    };
+  }
+  const fade = val.fade
+    ? { enabled: !!val.fade.enabled, fromYear: val.fade.from_year }
+    : { enabled: false };
+  const netDebt = _resolveNetDebtForDcfBridge(f);
+  const netDebtPerShare = netDebt.available ? (netDebt.netDebtM / fi.shares0) : null;
+  const ovr = (opts.opMarginOverridePct != null && isFinite(opts.opMarginOverridePct))
+    ? Number(opts.opMarginOverridePct) : null;
+  return {
+    ok: true,
+    modelVersion: DCF_CORE_MODEL_VERSION,
+    definitionLabel: DCF_CORE_DEFINITION_LABEL,
+    fi,
+    fade,
+    netDebt,
+    netDebtPerShare,
+    shares0: fi.shares0,
+    owc: fi._owc || null,
+    marginOverridePct: ovr,
+    marginBasis: ovr != null ? (opts.marginBasis || 'override') : 'scenario',
+    missing: []
+  };
+}
+
+// Einzige Bewertungsfunktion. Liefert operativen Wert je Aktie, die
+// Nettoschuldenbrücke und den Eigenkapitalwert je Aktie.
+// Rückgabe null = in dieser Parametrierung nicht bewertbar (kein 0-Ersatz).
+function coreValuationDetail(ctx, g1Pct, tgPct, waccPct, opMarginPct) {
+  if (!ctx || !ctx.ok) return null;
+  if (g1Pct == null || tgPct == null || waccPct == null) return null;
+  if (!isFinite(g1Pct) || !isFinite(tgPct) || !isFinite(waccPct)) return null;
+  // WACC ≤ Terminalwachstum: Gordon-Term divergiert — kein Ergebnis, kein Ersatzwert.
+  if (waccPct <= tgPct) return null;
+  const marginPct = (ctx.marginOverridePct != null)
+    ? ctx.marginOverridePct
+    : ((opMarginPct != null && isFinite(opMarginPct)) ? opMarginPct : null);
+  const r = forecastDcfCore(ctx.fi, g1Pct, tgPct, waccPct, ctx.fade, marginPct);
+  if (!r || !(r.total > 0)) return null;
+  const eq = (ctx.netDebtPerShare != null) ? (r.total - ctx.netDebtPerShare) : r.total;
+  return {
+    raw: r,
+    operatingValuePerShare: r.total,
+    netDebtPerShare: ctx.netDebtPerShare,
+    netDebtApplied: ctx.netDebtPerShare != null,
+    equityValuePerShare: eq,
+    opMarginPctUsed: marginPct
+  };
+}
+
+function coreEquityValuePerShare(ctx, g1Pct, tgPct, waccPct, opMarginPct) {
+  const d = coreValuationDetail(ctx, g1Pct, tgPct, waccPct, opMarginPct);
+  return d ? d.equityValuePerShare : null;
+}
+
+// ── Reverse DCF auf dem gemeinsamen Kern ────────────────────────────
+// Gelöst wird AUSSCHLIESSLICH das Stage-1-Umsatzwachstum (growth_stage1).
+// Alle übrigen Annahmen bleiben unverändert auf den Werten des Haupt-DCF
+// (siehe REVERSE_DCF_HELD_CONSTANT) — das ist eine bewusste Einschränkung
+// und wird im Ergebnis ausgewiesen.
+//
+// Vorgehen: f(g) = Eigenkapitalwert je Aktie(g) − Zielkurs wird über dem
+// zulässigen Suchbereich abgetastet. Nullstellen entstehen als exakte
+// Rastertreffer oder aus echten Vorzeichenwechseln benachbarter,
+// auswertbarer Rasterpunkte. Genau eine Nullstelle ⇒ Ergebnis; keine oder
+// mehrere ⇒ erklärter Status statt einer scheinbar präzisen Zahl.
+function solveReverseDcfGrowth(mj, opts) {
+  opts = opts || {};
+  const S    = REVERSE_DCF_SEARCH;
+  const val  = (mj && mj.valuation) || {};
+  const mkt  = (mj && mj.market)    || {};
+  const meta = (mj && mj.meta)      || {};
+
+  function res(status, reason, extra) {
+    return Object.assign({
+      status,
+      ok: status === 'ok',
+      reason: reason || null,
+      impliedGrowthPct: null,
+      solvedParameter: 'growth_stage1',
+      solvedParameterLabel: 'Stage-1-Umsatzwachstum (% p.a.)',
+      solvesOnlyRevenueGrowth: true,
+      heldConstant: REVERSE_DCF_HELD_CONSTANT.slice(),
+      heldConstantNote: 'Reverse DCF löst ausschließlich das Umsatzwachstum; ' +
+        'Marge, WACC, Terminalwachstum, Steuerquote, CapEx-, D&A- und ' +
+        'Working-Capital-Quote, Fade, Aktienprojektion und Nettoschulden bleiben unverändert.',
+      searchRangePct: [S.gLoPct, S.gHiPct],
+      gridStepPct: S.gridStepPct,
+      tolerancePp: S.tolerancePp,
+      rootsFound: 0,
+      rootCandidatesPct: [],
+      modelVersion: DCF_CORE_MODEL_VERSION,
+      valuationBasis: 'core_equity_value_per_share',
+      valuationBasisLabel: DCF_CORE_DEFINITION_LABEL,
+      targetPricePerShare: null,
+      netDebtApplied: null,
+      opMarginPctUsed: null,
+      wacc: null,
+      terminalGrowth: null
+    }, extra || {});
+  }
+
+  if (!mj) return res('inputs_missing', 'Kein Master-JSON');
+  if (meta.sub_classification === 'financial') {
+    return res('not_applicable',
+      'Financials: FCFF-basierter DCF und damit auch der Reverse DCF sind nicht definiert');
+  }
+
+  const ctx = buildCoreValuationContext(mj, opts);
+  if (!ctx.ok) {
+    return res('inputs_missing',
+      'Reverse DCF nutzt denselben Bewertungskern wie der Haupt-DCF; dessen Inputs fehlen (' +
+      (ctx.missing.join(', ') || 'unbekannt') + ')',
+      { coreMissing: ctx.missing });
+  }
+
+  const price = (opts.targetPricePerShare != null) ? opts.targetPricePerShare : (mkt.price != null ? mkt.price : null);
+  const wacc  = (val.wacc_derived     != null) ? val.wacc_derived     : null;
+  const tg    = (val.growth_terminal  != null) ? val.growth_terminal  : null;
+  const opMarginPct = (opts.opMarginPct != null) ? opts.opMarginPct : null;
+
+  const missing = [];
+  if (price == null || !isFinite(price) || price <= 0) missing.push('market.price > 0');
+  if (wacc  == null || !isFinite(wacc))  missing.push('valuation.wacc_derived');
+  if (tg    == null || !isFinite(tg))    missing.push('valuation.growth_terminal');
+  if (missing.length) {
+    return res('inputs_missing', 'Fehlende Eingaben: ' + missing.join(', '),
+      { targetPricePerShare: price, wacc, terminalGrowth: tg });
+  }
+  if (wacc <= tg) {
+    return res('wacc_le_terminal_growth',
+      `WACC (${wacc.toFixed(2)}%) ≤ Terminalwachstum (${tg.toFixed(2)}%) — der Gordon-Terminalwert ` +
+      'divergiert; es gibt keinen endlichen Wert, den ein Wachstum erklären könnte.',
+      { targetPricePerShare: price, wacc, terminalGrowth: tg });
+  }
+
+  const common = {
+    targetPricePerShare: price,
+    wacc, terminalGrowth: tg,
+    netDebtApplied: ctx.netDebtPerShare != null,
+    netDebtPerShare: ctx.netDebtPerShare,
+    netDebtSource: ctx.netDebt.source || null,
+    opMarginPctUsed: (ctx.marginOverridePct != null) ? ctx.marginOverridePct : opMarginPct,
+    marginBasis: ctx.marginBasis
+  };
+
+  // ── Raster über den zulässigen Suchbereich ────────────────────────
+  const gs = [], fs = [];
+  const steps = Math.round((S.gHiPct - S.gLoPct) / S.gridStepPct);
+  let evaluable = 0;
+  for (let i = 0; i <= steps; i++) {
+    const g = S.gLoPct + i * S.gridStepPct;
+    const v = coreEquityValuePerShare(ctx, g, tg, wacc, opMarginPct);
+    gs.push(g);
+    fs.push(v == null ? null : (v - price));
+    if (v != null) evaluable++;
+  }
+  if (evaluable === 0) {
+    return res('not_evaluable',
+      'Der Bewertungskern liefert im gesamten Suchbereich keinen positiven operativen Wert — ' +
+      'ein implizites Wachstum ist damit nicht ableitbar.', common);
+  }
+
+  // ── Nullstellen einsammeln ────────────────────────────────────────
+  const roots = [];
+  const pushRoot = (g) => {
+    for (const r0 of roots) if (Math.abs(r0 - g) <= 1e-6) return;
+    roots.push(g);
+  };
+  for (let i = 0; i < fs.length; i++) {
+    if (fs[i] === 0) pushRoot(gs[i]);
+  }
+  for (let i = 0; i < fs.length - 1; i++) {
+    const a = fs[i], b = fs[i + 1];
+    if (a == null || b == null) continue;
+    if (!(a < 0 && b > 0) && !(a > 0 && b < 0)) continue;
+    // Intervallhalbierung im gesicherten Vorzeichenwechsel.
+    let lo = gs[i], hi = gs[i + 1], flo = a;
+    let iter = 0;
+    while (hi - lo > S.tolerancePp && iter < S.maxIter) {
+      const mid = (lo + hi) / 2;
+      const vm = coreEquityValuePerShare(ctx, mid, tg, wacc, opMarginPct);
+      if (vm == null) break;              // Lücke im Intervall: kein belastbarer Wert
+      const fm = vm - price;
+      if (fm === 0) { lo = hi = mid; break; }
+      if ((flo < 0) === (fm < 0)) { lo = mid; flo = fm; } else { hi = mid; }
+      iter++;
+    }
+    pushRoot((lo + hi) / 2);
+  }
+
+  const rootInfo = { rootsFound: roots.length, rootCandidatesPct: roots.slice() };
+
+  if (roots.length === 0) {
+    const first = fs.find(x => x != null);
+    const last  = fs.slice().reverse().find(x => x != null);
+    let why;
+    if (first != null && first > 0) {
+      why = `Schon beim unteren Rand des Suchbereichs (${S.gLoPct}% Umsatzwachstum) liegt der ` +
+            `Modellwert über dem Kurs — der Markt preist ein Wachstum unter ${S.gLoPct}% ein. ` +
+            'Das liegt außerhalb des als aussagekräftig definierten Bereichs.';
+    } else if (last != null && last < 0) {
+      why = `Selbst beim oberen Rand des Suchbereichs (${S.gHiPct}% Umsatzwachstum) bleibt der ` +
+            `Modellwert unter dem Kurs — der Markt preist mehr als ${S.gHiPct}% ein. ` +
+            'Eine DCF-Ableitung ist dann nicht mehr aussagekräftig.';
+    } else {
+      why = `Im Suchbereich ${S.gLoPct}% bis ${S.gHiPct}% wechselt der Modellwert das Vorzeichen ` +
+            'gegenüber dem Kurs nicht — es existiert keine Lösung.';
+    }
+    return res('no_solution_in_range', why, Object.assign({}, common, rootInfo));
+  }
+  if (roots.length > 1) {
+    return res('multiple_solutions',
+      `Der Wertverlauf ist über dem Suchbereich nicht eindeutig: ${roots.length} Wachstumsraten ` +
+      `(${roots.map(r0 => r0.toFixed(2) + '%').join(', ')}) erklären denselben Kurs. ` +
+      'Eine einzelne Zahl wäre irreführend — typische Ursache ist eine negative FCFF-Marge oder ' +
+      'eine hohe Working-Capital-Quote, bei der zusätzliches Wachstum Wert vernichtet.',
+      Object.assign({}, common, rootInfo));
+  }
+
+  const g = roots[0];
+  const detail = coreValuationDetail(ctx, g, tg, wacc, opMarginPct);
+  return res('ok', null, Object.assign({}, common, rootInfo, {
+    impliedGrowthPct: g,
+    checkValuePerShare: detail ? detail.equityValuePerShare : null,
+    residualPerShare: detail ? (detail.equityValuePerShare - price) : null
+  }));
+}
+
+// ── Sensitivitätsmatrix auf dem gemeinsamen Kern ────────────────────
+// Variiert AUSSCHLIESSLICH die ausgewiesenen Parameter WACC und Stage-1-
+// Wachstum. Terminalwachstum, Marge, Steuerquote, CapEx-, D&A- und
+// WC-Quote, Fade, Aktienprojektion und Nettoschulden bleiben in jeder
+// Zelle identisch mit dem Haupt-DCF; die zentrale Zelle ist deshalb
+// definitionsgemäß der Base-Wert des Haupt-DCF.
+function computeSensitivityMatrix(mj, v) {
+  const val = (mj && mj.valuation) || {};
+  const baseWacc = val.wacc_derived;
+  const baseG1   = val.growth_stage1;
+  const tg       = val.growth_terminal;
+  const router   = (v && v.router) || null;
+  const out = {
+    available: false, reason: null, mode: null,
+    waccStepsPct: [], g1StepsPct: [], cells: [], baseValue: null,
+    baseWaccPct: baseWacc, baseG1Pct: baseG1, terminalGrowthPct: tg,
+    variedParameters: ['wacc', 'growth_stage1'],
+    modelVersion: DCF_CORE_MODEL_VERSION,
+    netDebt: null, netDebtPerShare: null, owc: null, opMarginPctUsed: null
+  };
+  if (baseWacc == null || baseG1 == null || tg == null) {
+    out.reason = 'Basis-Inputs fehlen (wacc_derived, growth_stage1, growth_terminal)';
+    return out;
+  }
+  const hasDcf = router && Array.isArray(router.activeModels)
+    && router.activeModels.some(m => m === 'dcf' || m === 'dcf_midcycle');
+  if (!hasDcf) {
+    out.reason = 'kein DCF-Pfad aktiv für sub_classification "' +
+      ((router && router.subClassification) || '') + '"';
+    return out;
+  }
+  const isMidCycle = router.activeModels.includes('dcf_midcycle')
+    && !router.activeModels.includes('dcf');
+  let ctxOpts = {};
+  let mc = null;
+  if (isMidCycle) {
+    mc = computeMidCycleFcf(mj);
+    if (mc.status !== 'ok') {
+      out.reason = 'Mid-Cycle-Marge nicht ableitbar: ' + mc.reason;
+      return out;
+    }
+    ctxOpts = { opMarginOverridePct: mc.opMarginMed, marginBasis: 'midcycle_median' };
+  }
+  const ctx = buildCoreValuationContext(mj, ctxOpts);
+  if (!ctx.ok) {
+    // Kein Rückfall auf eine abweichende Cashflow-Definition: eine Matrix aus
+    // CFO − CapEx wäre nicht mit dem Haupt-DCF vergleichbar und würde als
+    // "Fair Value" eine Konsistenz vortäuschen, die nicht besteht.
+    out.reason = 'Der gemeinsame Bewertungskern ist nicht verfügbar (fehlend: ' +
+      (ctx.missing.join(', ') || 'unbekannt') + '). Eine Matrix aus einer anderen ' +
+      'Cashflow-Definition wird bewusst NICHT gezeigt — sie wäre nicht mit dem Haupt-DCF vergleichbar.';
+    return out;
+  }
+  // Marge exakt wie im Haupt-DCF (Base-Szenario), damit nur WACC und g1 variieren.
+  const baseScenario = (v && v.scenarios && v.scenarios.base) || null;
+  const opMarginPct = baseScenario ? baseScenario.op_margin_pct : null;
+
+  out.mode = isMidCycle ? 'dcf_midcycle' : 'dcf';
+  out.available = true;
+  out.netDebt = ctx.netDebt;
+  out.netDebtPerShare = ctx.netDebtPerShare;
+  out.owc = ctx.owc;
+  out.opMarginPctUsed = (ctx.marginOverridePct != null) ? ctx.marginOverridePct : opMarginPct;
+  out.midCycle = mc;
+  out.waccStepsPct = [-2, -1, 0, 1, 2].map(d => baseWacc + d);
+  out.g1StepsPct   = [-3, -1.5, 0, 1.5, 3].map(d => baseG1 + d);
+  out.cells = out.waccStepsPct.map(w =>
+    out.g1StepsPct.map(g1 => coreEquityValuePerShare(ctx, g1, tg, w, opMarginPct))
+  );
+  out.baseValue = coreEquityValuePerShare(ctx, baseG1, tg, baseWacc, opMarginPct);
+  return out;
 }
 
 // V1.0.30-RIM-Fade: Spread-Fade-Konstanten
@@ -9787,10 +10196,19 @@ function modelDcf(mj, scenarios, fcfStartOverride, fcfStartMeta) {
     ? { enabled: mj.valuation.fade.enabled, fromYear: mj.valuation.fade.from_year }
     : { enabled: false };
 
-  // ── Forecast-Pfad: wenn kein Override UND Inputs verfügbar ──
-  const fi = (fcfStartOverride == null) ? buildForecastInputs(mj) : null;
+  // ── Gemeinsamer Bewertungskern ─────────────────────────────────────
+  // Haupt-DCF, DCF Mid-Cycle, Reverse DCF und Sensitivitätsmatrix nutzen
+  // denselben Kontext (Cashflow-Struktur, Working Capital, Nettoschulden,
+  // Aktienbasis, Fade). fcfStartMeta.opMarginOverridePct erzwingt die
+  // Mid-Cycle-Marge; alle übrigen Inputs bleiben identisch.
+  const _coreOpts = (fcfStartMeta && fcfStartMeta.opMarginOverridePct != null)
+    ? { opMarginOverridePct: fcfStartMeta.opMarginOverridePct,
+        marginBasis: fcfStartMeta.marginBasis || 'override' }
+    : {};
+  const ctx = (fcfStartOverride == null) ? buildCoreValuationContext(mj, _coreOpts) : null;
+  const fi  = (ctx && ctx.ok) ? ctx.fi : null;
 
-  if (fi && fi.shares0 > 0) {
+  if (ctx && ctx.ok) {
     // ── Eigenkapitalbrücke ─────────────────────────────────────────
     // forecastDcfCore liefert OPERATIVE Cashflows vor Finanzierung, mit WACC
     // diskontiert → operativer Unternehmenswert (Enterprise Value).
@@ -9800,23 +10218,34 @@ function modelDcf(mj, scenarios, fcfStartOverride, fcfStartMeta) {
     // deshalb durch die HEUTIGE Aktienzahl (shares0) geteilt — bewusst getrennt
     // von der jährlichen Verwässerungsprojektion, die ausschließlich die
     // Aufteilung künftiger operativer Cashflows betrifft (kein Double Counting).
-    const netDebtInfo = _resolveNetDebtForDcfBridge(f);
-    const shares0 = fi.shares0;
-    const netDebtPerShare = netDebtInfo.available ? (netDebtInfo.netDebtM / shares0) : null;
+    const netDebtInfo = ctx.netDebt;
+    const shares0 = ctx.shares0;
+    const netDebtPerShare = ctx.netDebtPerShare;
 
-    const calc = (sc) => {
-      const r = forecastDcfCore(fi, sc.growth_stage1, sc.terminal_growth, sc.wacc, fade, sc.op_margin_pct);
-      // Gate unverändert: bezieht sich auf die Gültigkeit des operativen
-      // Forecasts (z.B. WACC ≤ terminal growth ⇒ total = 0), NICHT auf das
-      // Vorzeichen des Eigenkapitalwerts.
-      if (!r || !(r.total > 0)) return null;
-      return netDebtPerShare != null ? (r.total - netDebtPerShare) : r.total;
-    };
+    // Einzige Bewertungsfunktion — identisch für Reverse DCF und Sensitivitätsmatrix.
+    // Das Gate auf einen positiven operativen Wert steckt in coreValuationDetail
+    // (z.B. WACC ≤ Terminalwachstum ⇒ kein Ergebnis); es bezieht sich NICHT auf
+    // das Vorzeichen des Eigenkapitalwerts.
+    const calc = (sc) => coreEquityValuePerShare(
+      ctx, sc.growth_stage1, sc.terminal_growth, sc.wacc, sc.op_margin_pct);
     const cons = calc(scenarios.conservative);
     const baseV = calc(scenarios.base);
     const opt = calc(scenarios.optimistic);
-    const warnings = ['Forecast-DCF (FCFF): EBIT × (1−t) + D&A − CapEx − ΔWC(operativ) · per-share Wert (firm-level Cashflows mit WACC diskontiert, jährliche Shares-Projektion als Diagnose)'];
-    const rBase = forecastDcfCore(fi, scenarios.base.growth_stage1, scenarios.base.terminal_growth, scenarios.base.wacc, fade, scenarios.base.op_margin_pct);
+    const _isMidCycleCore = ctx.marginOverridePct != null;
+    const warnings = [
+      `Bewertungskern ${DCF_CORE_MODEL_VERSION} — identisch für Haupt-DCF, Reverse DCF und ` +
+      `Sensitivitätsmatrix. Definition: ${DCF_CORE_DEFINITION_LABEL}` +
+      (_isMidCycleCore
+        ? ` · Betriebsmarge auf den Mid-Cycle-Median ${ctx.marginOverridePct.toFixed(2)}% normalisiert (einzige Abweichung vom Haupt-DCF)`
+        : '')
+    ];
+    const _baseDetail = coreValuationDetail(
+      ctx, scenarios.base.growth_stage1, scenarios.base.terminal_growth,
+      scenarios.base.wacc, scenarios.base.op_margin_pct);
+    const rBase = _baseDetail ? _baseDetail.raw
+      : forecastDcfCore(fi, scenarios.base.growth_stage1, scenarios.base.terminal_growth,
+                        scenarios.base.wacc, ctx.fade,
+                        ctx.marginOverridePct != null ? ctx.marginOverridePct : scenarios.base.op_margin_pct);
     if (rBase._tvSharePct > 0.70) warnings.push(`TV-Anteil ${(rBase._tvSharePct * 100).toFixed(0)}% — hoch`);
 
     // ── Wertbrücke explizit ausweisen (Base-Szenario) ──────────────
@@ -9875,11 +10304,14 @@ function modelDcf(mj, scenarios, fcfStartOverride, fcfStartMeta) {
       warnings.push(
         `⚠ Operatives Working Capital NICHT ermittelbar (fehlend: ${(owcInfo.missing || []).slice(0, 4).join(', ') || 'Bilanzdaten'}; ` +
         `${owcInfo.yearsAvailable || 0} von ${owcInfo.minYears || OWC_MIN_YEARS} lückenlosen Jahren) — der DCF rechnet mit ΔWC = 0. ` +
-        `Das ist eine NUTZERANNAHME (owc_pct_of_revenue), KEIN gemessener Nullbedarf. ` +
+        `${OWC_PROVISIONAL_LABEL}. Der Wert wurde vom Modell gesetzt, nicht vom Nutzer angenommen, ` +
+        `und ist KEIN gemessener Nullbedarf. ` +
         `Bei wachsenden, working-capital-intensiven Geschäftsmodellen ist der Fair Value dadurch zu hoch.`
       );
     }
 
+    // Vereinfachung ausdrücklich kennzeichnen (gilt in ALLEN Quellen-Zweigen).
+    warnings.push(`⚠ ${OWC_STOCK_SIMPLIFICATION_NOTE}`);
     warnings.push(
       `Aktienbasis Wertbrücke: shares_diluted[0] = ${shares0.toFixed(1)}M ` +
       `(Ø verwässerte Aktien der Periode) — Ersatzbasis für die aktuelle ausstehende ` +
@@ -9998,6 +10430,30 @@ function modelDcf(mj, scenarios, fcfStartOverride, fcfStartMeta) {
       _owcMissingFields: owcInfo.missing || [],
       _owcDefinition: '(current_assets − cash) − (current_liabilities − short_term_debt); short_term_debt = total_debt − long_term_debt',
       _owcExcludesCashAndDebt: true,
+      // Vereinfachung: Anfangsbestand = Prognosequote × Umsatz₀, KEINE Anpassung
+      // vom tatsächlichen Ist-Bestand auf die Zielquote.
+      _owcOpeningStockBasis: 'forecast_ratio_times_revenue0',
+      _owcOpeningStockSimplification: OWC_STOCK_SIMPLIFICATION_NOTE,
+      _owcStockAdjustmentModelled: false,
+      _owcActualOpeningStockM: (owcInfo.historyYears && owcInfo.historyYears[0])
+        ? owcInfo.historyYears[0].owc : null,
+      // Automatisch gesetzter Platzhalter ist KEINE Nutzerannahme.
+      _owcIsProvisionalModelDefault: owcInfo.source === 'assumption_required',
+      _owcProvisionalLabel: owcInfo.source === 'assumption_required' ? OWC_PROVISIONAL_LABEL : null,
+      _owcSetBy: owcInfo.source === 'manual_override' ? 'user'
+        : (owcInfo.source === 'historical_median' ? 'measured_history' : 'model_provisional_default'),
+      // ── Modellversion und Kernannahmen (konsistent über alle Pfade) ──
+      _modelVersion: DCF_CORE_MODEL_VERSION,
+      _coreDefinitionLabel: DCF_CORE_DEFINITION_LABEL,
+      _coreOpMarginPctUsed: (ctx.marginOverridePct != null)
+        ? ctx.marginOverridePct : scenarios.base.op_margin_pct,
+      _coreMarginBasis: ctx.marginBasis,
+      _coreFadeEnabled: !!(ctx.fade && ctx.fade.enabled),
+      _coreFadeFromYear: (ctx.fade && ctx.fade.enabled) ? ctx.fade.fromYear : null,
+      _coreTaxRatePct: fi.taxRate,
+      _coreCapexIntensityPct: fi.capexIntensity * 100,
+      _coreDaRatioPct: fi.daRatio * 100,
+      _coreSharesGrowthPa: fi.sharesGrowthPa || 0,
       _dOwcYear1Base: (rBase && rBase._dOwcYear1 != null) ? rBase._dOwcYear1 : null,
       _dOwcTerminalBase: (rBase && rBase._dOwcTerminal != null) ? rBase._dOwcTerminal : null,
       _dOwcSumBase: (rBase && rBase._dOwcSum != null) ? rBase._dOwcSum : null,
@@ -10009,73 +10465,97 @@ function modelDcf(mj, scenarios, fcfStartOverride, fcfStartMeta) {
     };
   }
 
-  // ── Legacy-Fallback ──
-  const fcfAbs = (fcfStartOverride != null) ? fcfStartOverride
-    : (f.fcf && f.fcf[0] != null ? f.fcf[0] : null);
-  if (fcfAbs == null) return { applicable: false, reason: 'FCF-Startwert und Forecast-Inputs fehlen', modelName: 'DCF' };
-  const fcfPerShare = fcfAbs / shares;
-  const calc = (sc) => {
-    const r = dcfCore(fcfPerShare, sc.growth_stage1, sc.terminal_growth, sc.wacc, fade);
-    return (r && r.total > 0) ? r.total : null;
-  };
-  const cons = calc(scenarios.conservative);
-  const baseV = calc(scenarios.base);
-  const opt = calc(scenarios.optimistic);
-  const warnings = [];
-  const rBase = dcfCore(fcfPerShare, scenarios.base.growth_stage1, scenarios.base.terminal_growth, scenarios.base.wacc, fade);
-  if (rBase && rBase.total > 0 && rBase.pvTv / rBase.total > 0.70)
-    warnings.push(`TV-Anteil ${(rBase.pvTv / rBase.total * 100).toFixed(0)}% — hoch`);
-
-  // ── Cashflow-Definition dieses Pfades ausdrücklich benennen ──────────
-  // Der Legacy-Pfad diskontiert NICHT denselben Cashflow wie der Forecast-Pfad.
-  // Ohne Kennzeichnung würden unterschiedlich definierte Cashflows still mit
-  // demselben Diskontsatz (WACC) und ohne/mit Wertbrücke verrechnet.
+  // ── Nicht an den gemeinsamen Bewertungskern anschließbar ⇒ Ausschluss ──
+  // Bis V1.0.36 rechnete dieser Pfad mit dcfCore auf einer ANDEREN
+  // Cashflow-Definition (CFO − CapEx = nachfinanziert, bzw. ein externer
+  // Startwert unbekannter Definition), diskontiert mit WACC und ohne
+  // Nettoschuldenbrücke und ohne ΔWC. Das Ergebnis wurde als „DCF" gewichtet
+  // und stand damit gleichberechtigt neben dem FCFF-Forecast — zwei
+  // verschiedene Größen unter einem Namen.
+  //
+  // Eine Anbindung an den Kern ist mit den vorhandenen Daten NICHT möglich:
+  // der Kern braucht einen Umsatzpfad (revenue, ebit, capex je Jahr), um
+  // NOPAT, D&A, CapEx und ΔWC fortzuschreiben. Ein einzelner FCF-Startwert
+  // enthält diese Struktur nicht und lässt sich nicht in sie zerlegen.
+  // Deshalb wird der Pfad ausgeschlossen statt weiter gerechnet und beworben;
+  // ein Warnhinweis neben einer weiterhin gewichteten Zahl wäre nicht genug.
   const _cfMeta = _classifyLegacyDcfCashflow(fcfStartOverride, fcfStartMeta);
-  warnings.push(
-    `⚠ Cashflow-Definition: ${_cfMeta.label} — NICHT der FCFF des Forecast-Pfades ` +
-    `(EBIT×(1−t)+D&A−CapEx−ΔWC). Diskontierung mit WACC, ${_cfMeta.bridgeNote}`
-  );
-  if (!_cfMeta.consistent) warnings.push(`⚠ ${_cfMeta.inconsistencyNote}`);
-  if (_cfMeta.unlevered) {
-    warnings.push(
-      '⚠ Operatives Working Capital: in diesem Pfad NICHT modelliert — die ΔWC-Bindung ' +
-      'des Wachstums fehlt im Cashflow. Kein gemessener Nullbedarf, sondern eine Lücke ' +
-      'der Cashflow-Definition dieses Pfades.'
-    );
-  }
+  const _coreMissing = (ctx && !ctx.ok) ? (ctx.missing || []) : _coreMissingForecastInputs(f);
+  const _exclusionReason =
+    `DCF ausgeschlossen — abweichende Cashflow-Definition: dieser Pfad rechnet mit ` +
+    `${_cfMeta.label} und ist damit nicht ` +
+    `definitionskonsistent zum gemeinsamen Bewertungskern (${DCF_CORE_DEFINITION_LABEL}). ` +
+    `Der Kern ist hier nicht anwendbar, weil ein Umsatzpfad fehlt` +
+    (_coreMissing.length ? ` (fehlend: ${_coreMissing.join(', ')})` : '') + `. ` +
+    `Ein DCF auf abweichender Cashflow-Definition geht deshalb weder in die Bewertung ` +
+    `noch in die Synthese ein — er würde dort mit dem FCFF-Wert vermischt.`;
 
   return {
-    applicable: cons != null && baseV != null && opt != null,
-    conservative: cons, base: baseV, optimistic: opt,
-    warnings, modelName: 'DCF',
+    applicable: false,
+    reason: _exclusionReason,
+    conservative: null, base: null, optimistic: null,
+    warnings: [
+      `⚠ ${_exclusionReason}`,
+      `⚠ ${_cfMeta.inconsistencyNote}`,
+      '⚠ Operatives Working Capital: in diesem Pfad NICHT modelliert — die ΔWC-Bindung des ' +
+      'Wachstums fehlt in der Cashflow-Definition. Kein gemessener Nullbedarf, sondern eine ' +
+      'Lücke dieses Pfades; auch deshalb geht er nicht in die Bewertung ein.',
+      'Abhilfe: revenue, ebit und capex (mind. 1 Jahr mit revenue > 0) sowie shares_diluted[0] ' +
+      'ergänzen — dann rechnet der DCF über denselben Kern wie Reverse DCF und Sensitivitätsmatrix.'
+    ],
+    modelName: 'DCF',
     _forecastBased: false,
+    _excludedFromValuation: true,
+    _excludedFromSynthesis: true,
+    _exclusionReason,
+    _exclusionCode: 'cashflow_definition_not_core_compatible',
+    _coreMissingInputs: _coreMissing,
+    _modelVersion: DCF_CORE_MODEL_VERSION,
     _cashflowDefinition: _cfMeta.key,
     _cashflowDefinitionLabel: _cfMeta.label,
     _cashflowIsUnlevered: _cfMeta.unlevered,
     _discountRateBasis: 'wacc',
     _netDebtBridgeApplied: false,
-    _cashflowDefinitionConsistent: _cfMeta.consistent,
-    _cashflowDefinitionInconsistencyNote: _cfMeta.consistent ? null : _cfMeta.inconsistencyNote,
+    _cashflowDefinitionConsistent: false,
+    _cashflowDefinitionInconsistencyNote: _cfMeta.inconsistencyNote,
     // Working Capital ist in diesem Pfad nicht modellierbar (kein Umsatzpfad).
     _owcRatio: null,
     _owcSource: 'not_modelled_in_this_path',
     _owcMeasured: false,
     _owcAvailable: false,
-    _owcAssumptionRequired: _cfMeta.unlevered,
+    _owcAssumptionRequired: false,
     _sbcDeductedFromFcff: false,
     _sbcAndDilutionDoubleCounted: false
   };
 }
 
+// DCF Mid-Cycle: normalisierte Betriebsmarge (Median über bis zu 10 Jahre)
+// auf demselben Bewertungskern wie der Haupt-DCF. Bis V1.0.36 lief dieser
+// Pfad über dcfCore mit einem einzelnen Mid-Cycle-FCF-Startwert — ohne ΔWC,
+// ohne Nettoschuldenbrücke und ohne Aktienprojektion; der ausgewiesene Wert
+// je Aktie war damit kein Eigenkapitalwert. Jetzt variiert gegenüber dem
+// Haupt-DCF ausschließlich die Betriebsmarge; alles andere ist identisch.
 function modelDcfMidcycle(mj, scenarios) {
   const mc = computeMidCycleFcf(mj);
   if (mc.status !== 'ok') {
     return { applicable: false, reason: 'Mid-cycle FCF: ' + mc.reason, modelName: 'DCF (Mid-Cycle)' };
   }
-  const result = modelDcf(mj, scenarios, mc.value, { definition: 'unlevered_midcycle' });
+  const result = modelDcf(mj, scenarios, null, {
+    definition: 'unlevered_midcycle',
+    opMarginOverridePct: mc.opMarginMed,
+    marginBasis: 'midcycle_median'
+  });
   result.modelName = 'DCF (Mid-Cycle)';
   result.warnings = result.warnings || [];
-  result.warnings.unshift(`Mid-cycle FCF = ${mc.value.toFixed(0)} (op-margin median ${mc.opMarginMed.toFixed(1)}%, capex/rev median ${mc.capexIntMed.toFixed(1)}%)`);
+  result._midCycleOpMarginPct = mc.opMarginMed;
+  result._midCycleCapexIntensityPct = mc.capexIntMed;
+  result._midCycleReferenceFcfM = mc.value;
+  result.warnings.unshift(
+    `Mid-Cycle: Betriebsmarge auf den Median ${mc.opMarginMed.toFixed(1)}% normalisiert ` +
+    `(CapEx/Umsatz-Median ${mc.capexIntMed.toFixed(1)}%, Referenz-FCF ${mc.value.toFixed(0)}M). ` +
+    `Gerechnet wird auf dem gemeinsamen Bewertungskern — gleiche Cashflow-Definition, ` +
+    `gleiches Working Capital, gleiche Nettoschuldenbrücke wie im Haupt-DCF.`
+  );
   if (mc.warning) result.warnings.push(mc.warning);
   return result;
 }
@@ -10716,30 +11196,17 @@ function calculateImpliedGrowth(params) {
 
 // Thin wrapper: behält die bisherige Signatur (mj → number|null)
 // damit bestehende Aufrufe in renderMarket() etc. weiter funktionieren.
+// Headline-Reverse-DCF. Läuft seit V1.0.36 über denselben Bewertungskern wie
+// Haupt-DCF und Sensitivitätsmatrix und löst ausschließlich das Stage-1-
+// UMSATZWACHSTUM. Vorher rechnete diese Funktion über calculateImpliedGrowth
+// auf f.fcf[0] (CFO − CapEx, nachfinanziert), mit net_debt[0] und stillem
+// 0-Fallback, ohne ΔWC, ohne Fade und ohne Aktienprojektion — dieselbe Eingabe
+// konnte damit ein Wachstum ausweisen, das der Haupt-DCF nie erzeugen würde.
+// Rückgabe null = kein eindeutiges Ergebnis; den erklärten Status liefert
+// solveReverseDcfGrowth (siehe computeReverseDcfFull → coreReverseDcf).
 function computeReverseDcf(mj) {
   if (!mj) return null;
-  const f = mj.fundamentals || {};
-  const v = mj.valuation || {};
-  const meta = mj.meta || {};
-  const market = mj.market || {};
-
-  // Financial-Gating: für Financials liefert FCF-basiertes Reverse DCF
-  // keine sinnvolle Aussage (Bilanz-getriebenes Geschäft, FCF-Konzept
-  // nicht sauber definiert). Als "not applicable" behandeln.
-  if (meta.sub_classification === 'financial') return null;
-
-  const sharesM  = (f.shares_diluted && f.shares_diluted[0]) || null;
-  const fcf0M    = (f.fcf && f.fcf[0] != null) ? f.fcf[0] : null;
-  const netDebtM = (f.net_debt && f.net_debt[0] != null) ? f.net_debt[0] : 0;
-  const price    = (market.price != null) ? market.price : null;
-  const waccPct  = v.wacc_derived;
-  const tgPct    = v.growth_terminal;
-
-  const r = calculateImpliedGrowth({
-    price, sharesM, netDebtM, fcf0M,
-    waccPct, terminalGrowthPct: tgPct,
-    years: 10, marginOfSafety: 0
-  });
+  const r = solveReverseDcfGrowth(mj);
   return r.ok ? r.impliedGrowthPct : null;
 }
 
@@ -12630,18 +13097,23 @@ function runMonteCarloDcf(mj, vResult) {
   const fade   = val.fade ? { enabled: val.fade.enabled, fromYear: val.fade.from_year } : { enabled: false };
   const price  = (mj.market && mj.market.price) || null;
 
-  const fi     = buildForecastInputs(mj);
-  const fcfArr = f.fcf || [];
-  const shares = (f.shares_diluted && f.shares_diluted[0]) || null;
-  const fcf0ps = (fcfArr[0] != null && shares) ? fcfArr[0] / shares : null;
-  const useForecast = fi && fi.shares0 > 0;
-  // Gleiche Eigenkapitalbrücke wie modelDcf: die Simulationswerte werden mit dem
-  // Aktienkurs verglichen (probAbovePrice), müssen also Eigenkapitalwerte sein.
-  const _mcNetDebt = useForecast ? _resolveNetDebtForDcfBridge(f) : null;
-  const _mcNetDebtPerShare = (_mcNetDebt && _mcNetDebt.available)
-    ? (_mcNetDebt.netDebtM / fi.shares0) : null;
+  // Gemeinsamer Bewertungskern — dieselbe Cashflow-Definition, dasselbe Working
+  // Capital und dieselbe Eigenkapitalbrücke wie im Haupt-DCF. Die Simulationswerte
+  // werden über probAbovePrice mit dem Kurs verglichen, müssen also Eigenkapital-
+  // werte je Aktie sein.
+  const ctx = buildCoreValuationContext(mj, {});
+  const fi  = ctx.ok ? ctx.fi : null;
+  const useForecast = ctx.ok;
 
-  if (!useForecast && fcf0ps == null) return null;
+  // Kein Rückfall auf die abweichende Cashflow-Definition (CFO − CapEx ohne
+  // Wertbrücke und ohne ΔWC): die Simulationswerte werden über probAbovePrice
+  // mit dem Kurs verglichen und müssen dieselbe Größe sein wie der Haupt-DCF.
+  if (!useForecast) {
+    return { _blocked: true, _reason:
+      'Monte Carlo ausgeschlossen — der gemeinsame Bewertungskern ist nicht anwendbar (fehlend: ' +
+      (_coreMissingForecastInputs(f).join(', ') || 'unbekannt') + '). Eine Simulation auf einer ' +
+      'anderen Cashflow-Definition wäre nicht mit dem Haupt-DCF vergleichbar.' };
+  }
 
   const RUNS = 2000;
   const out  = [];
@@ -12651,24 +13123,17 @@ function runMonteCarloDcf(mj, vResult) {
     const waccSim = Math.max(wacc + _boxMuller() * sigmaG * 0.25, tgBase + 0.5);
     const tgSim   = Math.min(tgBase + _boxMuller() * 0.4, waccSim - 0.5);
 
-    let fv;
-    if (useForecast) {
-      const mShock = _boxMuller() * (sigmaM / 100);
-      const r = forecastDcfCore(fi, g1sim, tgSim, waccSim, fade, null);
-      if (!r || r.total <= 0) continue;
-      const revPerShare = fi.revenue0 / fi.shares0;
-      const marginImpact = mShock * revPerShare * (1 - fi.taxRate / 100) * 3.5;
-      fv = r.total + marginImpact;
-      if (_mcNetDebtPerShare != null) fv -= _mcNetDebtPerShare;
-      // Ein negativer Eigenkapitalwert ist ein gültiges Ergebnis und wird nicht
-      // stillschweigend aus der Verteilung entfernt (sonst optimistischer Bias).
-      if (isFinite(fv)) out.push(fv);
-      continue;
-    }
-    const r = dcfCore(fcf0ps, g1sim, tgSim, waccSim, fade);
-    if (!r || r.total <= 0) continue;
-    fv = r.total;
-    if (fv > 0 && isFinite(fv)) out.push(fv);
+    const mShock = _boxMuller() * (sigmaM / 100);
+    const d = coreValuationDetail(ctx, g1sim, tgSim, waccSim, null);
+    if (!d) continue;
+    const revPerShare = fi.revenue0 / fi.shares0;
+    const marginImpact = mShock * revPerShare * (1 - fi.taxRate / 100) * 3.5;
+    // Der Margenschock wirkt auf den operativen Wert; die Nettoschuldenbrücke
+    // steckt bereits in equityValuePerShare.
+    const fv = d.equityValuePerShare + marginImpact;
+    // Ein negativer Eigenkapitalwert ist ein gültiges Ergebnis und wird nicht
+    // stillschweigend aus der Verteilung entfernt (sonst optimistischer Bias).
+    if (isFinite(fv)) out.push(fv);
   }
 
   if (out.length < 100) return null;
@@ -12951,71 +13416,34 @@ function buildReverseDcfDiagnosticBlock(mj, v, baseRateWarnings) {
     </div>`;
 }
 
+// Reine Darstellung. Die Zahlen kommen ausschließlich aus
+// computeSensitivityMatrix() und damit aus dem gemeinsamen Bewertungskern —
+// die zentrale Zelle ist deshalb definitionsgemäß der Base-Wert des Haupt-DCF.
 function buildSensitivityMatrix(mj, v) {
   if (!mj || !v || v.error) return '';
-  const val = mj.valuation || {};
-  const baseWacc = val.wacc_derived;
-  const baseG1   = val.growth_stage1;
-  const tg       = val.growth_terminal;
-  if (baseWacc == null || baseG1 == null || tg == null) return '';
-  const router = v.router;
-  const hasDcf = router && router.activeModels.some(m => m === 'dcf' || m === 'dcf_midcycle');
-  if (!hasDcf) {
+  const m = computeSensitivityMatrix(mj, v);
+  if (!m.available) {
     return `<div class="diagnostic" style="margin-top:10px">
       <div class="dl">WACC / g1 Sensitivitätsmatrix</div>
-      <div style="font-size:.6rem;color:var(--muted)">Nicht verfügbar — kein DCF-Pfad aktiv für sub_classification "${escapeHtml(router ? router.subClassification : '')}".</div>
+      <div style="font-size:.6rem;color:var(--muted)">Nicht verfügbar — ${escapeHtml(m.reason || 'unbekannt')}</div>
     </div>`;
   }
-  const f      = mj.fundamentals || {};
-  const fade   = val.fade ? { enabled: val.fade.enabled, fromYear: val.fade.from_year } : { enabled: false };
-  const fi     = buildForecastInputs(mj);
-  const shares = (f.shares_diluted && f.shares_diluted[0]) || null;
-  const fcf0   = f.fcf && f.fcf[0];
-  // Mid-Cycle: aktiv wenn dcf_midcycle aktiv und dcf nicht aktiv
-  const isMidCycle = router.activeModels.includes('dcf_midcycle') && !router.activeModels.includes('dcf');
-  const mcFcf      = isMidCycle ? computeMidCycleFcf(mj) : null;
-  const mcFcfVal   = (mcFcf && mcFcf.status === 'ok') ? mcFcf.value : null;
-  // Gleiche Eigenkapitalbrücke wie im Forecast-DCF (modelDcf): die Matrix zeigt
-  // Fair Values je Aktie, also NACH Nettoschuldenabzug — sonst wiche jede Zelle
-  // um exakt netDebt/Aktie vom Hauptmodell ab.
-  const _sensNetDebt = _resolveNetDebtForDcfBridge(f);
-  const _sensNetDebtPerShare = (_sensNetDebt.available && fi && fi.shares0 > 0)
-    ? (_sensNetDebt.netDebtM / fi.shares0) : null;
-  function calcFV(wacc, g1) {
-    if (wacc <= tg) return null;
-    if (isMidCycle && mcFcfVal != null && shares) {
-      const r = dcfCore(mcFcfVal / shares, g1, tg, wacc, fade);
-      return (r && r.total > 0) ? r.total : null;
-    }
-    if (fi && fi.shares0 > 0) {
-      const r = forecastDcfCore(fi, g1, tg, wacc, fade, null);
-      if (!r || !(r.total > 0)) return null;
-      return _sensNetDebtPerShare != null ? (r.total - _sensNetDebtPerShare) : r.total;
-    }
-    if (fcf0 != null && shares) {
-      const r = dcfCore(fcf0 / shares, g1, tg, wacc, fade);
-      return (r && r.total > 0) ? r.total : null;
-    }
-    return null;
-  }
-  const waccSteps = [-2, -1, 0, 1, 2].map(d => baseWacc + d);
-  const g1Steps   = [-3, -1.5, 0, 1.5, 3].map(d => baseG1 + d);
-  const baseVal   = calcFV(baseWacc, baseG1);
-  const price     = mj.market && mj.market.price;
+  const price = mj.market && mj.market.price;
+  const baseVal = m.baseValue;
   let tbl = `<table style="border-collapse:collapse;font-size:0.72rem;font-family:var(--font-mono);width:100%">`;
   tbl += `<tr><td class="txt-caption" style="padding:3px 6px;color:var(--muted);border-bottom:1px solid var(--border)">WACC \\ g1</td>`;
-  g1Steps.forEach(g => {
-    const isBase = Math.abs(g - baseG1) < 0.01;
+  m.g1StepsPct.forEach(g => {
+    const isBase = Math.abs(g - m.baseG1Pct) < 0.01;
     tbl += `<td style="padding:3px 6px;text-align:center;color:${isBase ? 'var(--accent)' : 'var(--muted)'};border-bottom:1px solid var(--border)">${g >= 0 ? '+' : ''}${g.toFixed(1)}%${isBase ? '*' : ''}</td>`;
   });
   tbl += '</tr>';
-  waccSteps.forEach(wacc => {
-    const isBaseRow = Math.abs(wacc - baseWacc) < 0.01;
+  m.waccStepsPct.forEach((wacc, wi) => {
+    const isBaseRow = Math.abs(wacc - m.baseWaccPct) < 0.01;
     tbl += '<tr>';
     tbl += `<td style="padding:3px 6px;color:${isBaseRow ? 'var(--accent)' : 'var(--muted)'};border-right:1px solid var(--border)">${wacc.toFixed(1)}%${isBaseRow ? '*' : ''}</td>`;
-    g1Steps.forEach(g1 => {
-      const isBaseCell = isBaseRow && Math.abs(g1 - baseG1) < 0.01;
-      const fv = calcFV(wacc, g1);
+    m.g1StepsPct.forEach((g1, gi) => {
+      const isBaseCell = isBaseRow && Math.abs(g1 - m.baseG1Pct) < 0.01;
+      const fv = m.cells[wi][gi];
       let bg = 'transparent', col = 'var(--text)';
       if (fv != null && baseVal != null && baseVal > 0) {
         const dev = (fv - baseVal) / baseVal;
@@ -13032,25 +13460,25 @@ function buildSensitivityMatrix(mj, v) {
     tbl += '</tr>';
   });
   tbl += '</table>';
-  const modeNote = isMidCycle ? 'DCF Mid-Cycle' : 'DCF';
+  const modeNote = m.mode === 'dcf_midcycle' ? 'DCF Mid-Cycle' : 'DCF';
   const priceNote = price != null ? ` · Kurs ${price.toFixed(2)} (rot = unter Kurs)` : '';
-  const bridgeNote = (isMidCycle || !(fi && fi.shares0 > 0)) ? ''
-    : (_sensNetDebtPerShare != null
-        ? ` · Eigenkapitalwert nach Abzug Nettoschulden ${_sensNetDebt.netDebtM.toFixed(0)}M (${_sensNetDebtPerShare.toFixed(2)}/Aktie, Quelle: ${_sensNetDebt.source})`
-        : ` · ⚠ ohne Nettoschuldenabzug (${_sensNetDebt.missing.join(', ')} fehlt) — operativer Wert je Aktie`);
-  // Cashflow-Definition der Matrix ausdrücklich benennen: sie folgt exakt dem
-  // Forecast-DCF (inkl. ΔWC), damit Zellen und Hauptmodell dieselbe Größe zeigen.
-  const _sensOwc = (isMidCycle || !(fi && fi.shares0 > 0)) ? null : (fi._owc || null);
-  const owcNote = _sensOwc == null
-    ? (isMidCycle
-        ? ' · Cashflow: Mid-Cycle-FCF (NOPAT + D&A − CapEx, ohne ΔWC) — andere Definition als der Forecast-DCF'
-        : ' · Cashflow: CFO − CapEx (nachfinanziert) — andere Definition als der Forecast-DCF')
-    : (_sensOwc.available
-        ? ` · Cashflow: FCFF inkl. ΔWC bei ${(_sensOwc.ratio * 100).toFixed(2)}% WC/Umsatz (${_sensOwc.source === 'manual_override' ? 'manuell gesetzt' : 'historischer Median'})`
-        : ' · ⚠ Cashflow: FCFF mit ΔWC = 0 — angenommen, nicht gemessen (owc_pct_of_revenue setzen)');
+  const bridgeNote = (m.netDebtPerShare != null)
+    ? ` · Eigenkapitalwert nach Abzug Nettoschulden ${m.netDebt.netDebtM.toFixed(0)}M (${m.netDebtPerShare.toFixed(2)}/Aktie, Quelle: ${m.netDebt.source})`
+    : ` · ⚠ ohne Nettoschuldenabzug (${(m.netDebt.missing || []).join(', ')} fehlt) — operativer Wert je Aktie`;
+  const owcNote = (m.owc && m.owc.available)
+    ? ` · Cashflow: FCFF inkl. ΔWC bei ${(m.owc.ratio * 100).toFixed(2)}% WC/Umsatz (${m.owc.source === 'manual_override' ? 'manuell gesetzt' : 'historischer Median'})`
+    : ` · ⚠ Cashflow: FCFF mit ΔWC = 0 — ${OWC_PROVISIONAL_LABEL} (vom Modell gesetzt, nicht gemessen)`;
+  const midNote = (m.mode === 'dcf_midcycle' && m.opMarginPctUsed != null)
+    ? ` · Betriebsmarge normalisiert auf den Mid-Cycle-Median ${m.opMarginPctUsed.toFixed(1)}%`
+    : '';
+  // Alle nicht variierten Inputs sind in jeder Zelle identisch mit dem Haupt-DCF.
+  const constNote = ` · variiert werden ausschließlich WACC und Stage-1-Wachstum; ` +
+    `Terminalwachstum ${m.terminalGrowthPct.toFixed(2)}%, Betriebsmarge ` +
+    `${m.opMarginPctUsed != null ? m.opMarginPctUsed.toFixed(2) + '%' : 'n/a'}, Steuer-, CapEx-, D&A- und ` +
+    `WC-Quote, Fade, Aktienprojektion und Nettoschulden bleiben in jeder Zelle unverändert`;
   return `<div class="diagnostic" style="margin-top:10px;overflow-x:auto">
     <div class="dl">WACC / g1 Sensitivitätsmatrix — Fair Value (${modeNote}${priceNote})</div>
-    <div class="txt-caption" style="margin-bottom:6px">* = Basiswert · Spalten: Stage-1-Wachstum · Zeilen: WACC${escapeHtml(bridgeNote)}${escapeHtml(owcNote)}</div>
+    <div class="txt-caption" style="margin-bottom:6px">* = Basiswert (identisch mit dem Haupt-DCF, Bewertungskern ${escapeHtml(m.modelVersion)}) · Spalten: Stage-1-Wachstum · Zeilen: WACC${escapeHtml(bridgeNote)}${escapeHtml(owcNote)}${escapeHtml(midNote)}${escapeHtml(constNote)}</div>
     ${tbl}
   </div>`;
 }
@@ -14463,22 +14891,29 @@ function buildReverseDcfOverviewCard(mj) {
 
   const rdcf = computeReverseDcfFull(mj);
 
-  // Nicht anwendbar oder nicht berechenbar
-  if (!rdcf || !rdcf.applicable) {
-    const reason = (rdcf && rdcf.reason) || 'nicht berechenbar';
+  // Maßgeblich ist der Reverse DCF auf dem gemeinsamen Bewertungskern.
+  // Ohne eindeutige Lösung wird der erklärte Status gezeigt — NICHT ersatzweise
+  // die FCF-basierte Diagnosezahl, die eine andere Größe misst.
+  const _core = rdcf && rdcf.coreReverseDcf;
+  if (!_core || !_core.ok) {
+    const reason = (_core && _core.reason)
+      || (rdcf && rdcf.reason)
+      || 'nicht berechenbar';
+    const statusLabel = {
+      not_applicable:        'nicht anwendbar',
+      inputs_missing:        'Eingaben fehlen',
+      wacc_le_terminal_growth: 'WACC ≤ Terminalwachstum',
+      no_solution_in_range:  'keine Lösung im zulässigen Suchbereich',
+      multiple_solutions:    'mehrdeutig — mehrere Lösungen',
+      not_evaluable:         'nicht bewertbar'
+    }[(_core && _core.status) || ''] || 'nicht berechenbar';
     return `<div class="ov-rdcf-card ov-rdcf-na">
       <div class="ov-rdcf-title">Reverse DCF <span class="ov-rdcf-diag-tag">nur Diagnose</span></div>
-      <div class="ov-rdcf-na-text">nicht berechenbar · ${escapeHtml(reason)}</div>
+      <div class="ov-rdcf-na-text">${escapeHtml(statusLabel)} · ${escapeHtml(reason)}</div>
     </div>`;
   }
 
-  const g = rdcf.reverseDcfReported;
-  if (g == null) {
-    return `<div class="ov-rdcf-card ov-rdcf-na">
-      <div class="ov-rdcf-title">Reverse DCF <span class="ov-rdcf-diag-tag">nur Diagnose</span></div>
-      <div class="ov-rdcf-na-text">nicht berechenbar</div>
-    </div>`;
-  }
+  const g = _core.impliedGrowthPct;
 
   // Historische Revenue-CAGR: 5J aus computeGrowthProfile, 10J ergänzend via _cagr
   const gp     = computeGrowthProfile(mj);
@@ -14894,11 +15329,14 @@ function renderOverview() {
     // 7. Reverse DCF impliziert sehr hohes Wachstum
     if (_kippenItems.length < 3) {
       const _rdcf = (typeof computeReverseDcfFull !== 'undefined') ? computeReverseDcfFull(mj) : null;
-      if (_rdcf && _rdcf.applicable && _rdcf.reverseDcfReported != null) {
+      // Kernkonsistenter Wert (Stage-1-Umsatzwachstum), nicht die FCF-Diagnosezahl.
+      if (_rdcf && _rdcf.coreReverseDcf && _rdcf.coreReverseDcf.ok
+          && _rdcf.coreReverseDcf.impliedGrowthPct != null) {
+        const _rdcfG = _rdcf.coreReverseDcf.impliedGrowthPct;
         const _gp2 = (typeof computeGrowthProfile !== 'undefined') ? computeGrowthProfile(mj) : null;
         const _bench2 = _gp2 ? _gp2.revCagr5y : null;
-        if (_bench2 != null && _rdcf.reverseDcfReported > _bench2 + 6)
-          _addK('📈', 'Reverse-DCF-Annahme sehr hoch', `Markt preist ${_rdcf.reverseDcfReported.toFixed(1)}% Stage-1-Wachstum — weit über historischer CAGR (${_bench2.toFixed(1)}%).`);
+        if (_bench2 != null && _rdcfG > _bench2 + 6)
+          _addK('📈', 'Reverse-DCF-Annahme sehr hoch', `Markt preist ${_rdcfG.toFixed(1)}% Stage-1-Umsatzwachstum — weit über historischer CAGR (${_bench2.toFixed(1)}%).`);
       }
     }
 
@@ -27562,6 +28000,556 @@ function _testDcfEquityBridge() {
 //   Barwert der WC-Bindung (181,8182M / 100M Aktien).
 // ════════════════════════════════════════════════════════════════
 
+
+// ════════════════════════════════════════════════════════════════
+// TEST: GEMEINSAMER BEWERTUNGSKERN
+// Haupt-DCF · DCF Mid-Cycle · Reverse DCF · Sensitivitätsmatrix
+// ════════════════════════════════════════════════════════════════
+// Referenzfall (identisch zu Chat 2 und Chat 3):
+//   Umsatz₀ 1.000M · EBIT-Marge 20 % · Steuer 25 % · D&A 5 % · CapEx 5 %
+//   ⇒ FCFF vor ΔWC = 15 % vom Umsatz · 100M Aktien
+// Bei g1 = tg = 0 und WACC 10 % ⇒ 150M p.a. ⇒ EV 1.500M ⇒ 15,00 USD/Aktie.
+//
+// Dokumentierte numerische Toleranzen:
+//   CORE_TOL_VALUE   = 1e-9   USD/Aktie — Vergleich zweier Rechenwege auf
+//                             denselben Doubles (Werte in der Größenordnung
+//                             10..100; 1e-9 liegt deutlich über dem
+//                             Rundungsrauschen ~1e-14 und weit unter jeder
+//                             fachlich relevanten Differenz).
+//   CORE_TOL_GROWTH  = 1e-4   Prozentpunkte — entspricht exakt der
+//                             Abbruchtoleranz REVERSE_DCF_SEARCH.tolerancePp
+//                             der Intervallhalbierung.
+function _testValuationCore() {
+  const results = [];
+  let _currentSuite = '';
+  function suite(name) { _currentSuite = name; }
+  function check(label, condition, extra) {
+    results.push({ suite: _currentSuite, label, pass: !!condition,
+      extra: extra != null ? String(extra) : undefined });
+  }
+  const CORE_TOL_VALUE  = 1e-9;
+  const CORE_TOL_GROWTH = 1e-4;
+  function approx(actual, expected, tol) {
+    return actual != null && isFinite(actual)
+      && Math.abs(actual - expected) <= (tol != null ? tol : CORE_TOL_VALUE);
+  }
+
+  // ── Referenz-Master-JSON ────────────────────────────────────────
+  function mkMj(o) {
+    o = o || {};
+    const mj = {
+      meta: { ticker: 'CORETEST', sub_classification: 'standard_nonfin' },
+      fundamentals: Object.assign({
+        revenue:        [1000, 1000, 1000, 1000],
+        ebit:           [200, 200, 200, 200],
+        ebitda:         [250, 250, 250, 250],   // D&A = 50 = 5 % vom Umsatz
+        capex:          [50, 50, 50, 50],       // 5 % vom Umsatz
+        shares_diluted: [100, 100, 100, 100],
+        net_debt:       [o.netDebt != null ? o.netDebt : 0]
+      }, o.fund || {}),
+      valuation: {
+        wacc_components: { tax_rate: 25 },
+        fade: { enabled: false },
+        assumptions: {},
+        growth_stage1:    o.g1   != null ? o.g1   : 8,
+        growth_terminal:  o.tg   != null ? o.tg   : 2,
+        wacc_derived:     o.wacc != null ? o.wacc : 10
+      },
+      market: { price: o.price != null ? o.price : null }
+    };
+    if (o.owcPct != null) {
+      mj.valuation.assumptions.owc_pct_of_revenue = { value: o.owcPct, source_type: 'manual', notes: null };
+    }
+    return mj;
+  }
+  // Szenarien mit identischen Werten in allen drei Ausprägungen: so ist
+  // base == conservative == optimistic und der Vergleich mit Matrix und
+  // Reverse DCF bleibt eindeutig.
+  const scOf = (g1, tg, wacc, marginPct) => {
+    const S = { growth_stage1: g1, terminal_growth: tg, wacc,
+                coe: wacc + 1, op_margin_pct: marginPct != null ? marginPct : 20 };
+    return { conservative: S, base: S, optimistic: S };
+  };
+  const vOf = (mj, models) => ({
+    error: null,
+    router: { activeModels: models || ['dcf'], subClassification: 'standard_nonfin', diagnosticModels: [] },
+    scenarios: scOf(mj.valuation.growth_stage1, mj.valuation.growth_terminal, mj.valuation.wacc_derived)
+  });
+
+  // Unabhängig nachgerechneter Referenzwert: reine Schleife über die
+  // Definition, ohne forecastDcfCore aufzurufen.
+  //   FCFF_t   = 0,15 × Umsatz_t          (WC-Quote 0)
+  //   Umsatz_t = 1.000 × (1+g)^t
+  //   TV       = FCFF_10 × (1+tg) / (WACC − tg)
+  function expectedPerShare(g1Pct, tgPct, waccPct, netDebtM) {
+    const g = g1Pct / 100, tg = tgPct / 100, w = waccPct / 100;
+    let rev = 1000, pv = 0, lastFcf = 0;
+    for (let t = 1; t <= 10; t++) {
+      rev *= (1 + g);
+      const nopat = rev * 0.20 * 0.75;      // EBIT-Marge 20 %, Steuer 25 %
+      const fcf = nopat + rev * 0.05 - rev * 0.05;   // + D&A − CapEx
+      pv += fcf / Math.pow(1 + w, t);
+      lastFcf = fcf;
+    }
+    const pvTv = (lastFcf * (1 + tg) / (w - tg)) / Math.pow(1 + w, 10);
+    return (pv + pvTv) / 100 - (netDebtM || 0) / 100;
+  }
+
+  // ── C-1: Ein Kern für alle drei Pfade ───────────────────────────
+  suite('C-1 Gemeinsamer Kern');
+  {
+    const mj = mkMj({ owcPct: 0, g1: 8, tg: 2, wacc: 10 });
+    const m  = modelDcf(mj, scOf(8, 2, 10));
+    const expected = expectedPerShare(8, 2, 10, 0);
+    check('C-1a: Haupt-DCF entspricht der unabhängig nachgerechneten Definition',
+      approx(m.base, expected), 'erhalten: ' + m.base + ' erwartet: ' + expected);
+
+    const ctx = buildCoreValuationContext(mj, {});
+    check('C-1b: Kernkontext verfügbar', ctx.ok === true, 'reason: ' + ctx.reason);
+    check('C-1c: coreEquityValuePerShare liefert denselben Wert wie modelDcf',
+      approx(coreEquityValuePerShare(ctx, 8, 2, 10, 20), m.base),
+      'erhalten: ' + coreEquityValuePerShare(ctx, 8, 2, 10, 20));
+
+    const mtx = computeSensitivityMatrix(mj, vOf(mj));
+    check('C-1d: Matrix nutzt denselben Kern (Modellversion identisch)',
+      mtx.modelVersion === m._modelVersion && m._modelVersion === DCF_CORE_MODEL_VERSION,
+      'matrix: ' + mtx.modelVersion + ' modell: ' + m._modelVersion);
+
+    const rd = solveReverseDcfGrowth(Object.assign(mkMj({ owcPct: 0, price: m.base })));
+    check('C-1e: Reverse DCF nutzt denselben Kern (Bewertungsbasis ausgewiesen)',
+      rd.valuationBasis === 'core_equity_value_per_share' && rd.modelVersion === DCF_CORE_MODEL_VERSION,
+      'basis: ' + rd.valuationBasis);
+  }
+
+  // ── C-2: Roundtrip ohne Nettoschulden ───────────────────────────
+  suite('C-2 Roundtrip DCF → Kurs → Reverse DCF');
+  {
+    // g1 = 8 liegt exakt auf dem Suchraster (0,5-Schritte).
+    const mj = mkMj({ owcPct: 0, g1: 8, tg: 2, wacc: 10, netDebt: 0 });
+    const fv = modelDcf(mj, scOf(8, 2, 10)).base;
+    const rd = solveReverseDcfGrowth(mkMj({ owcPct: 0, g1: 8, tg: 2, wacc: 10, netDebt: 0, price: fv }));
+    check('C-2a: Status ok', rd.status === 'ok', 'status: ' + rd.status + ' ' + rd.reason);
+    check('C-2b: Wachstum wird exakt zurückgewonnen (8 %)',
+      approx(rd.impliedGrowthPct, 8, CORE_TOL_GROWTH), 'erhalten: ' + rd.impliedGrowthPct);
+    check('C-2c: genau eine Lösung erkannt', rd.rootsFound === 1, 'erhalten: ' + rd.rootsFound);
+    check('C-2d: Gegenprobe — Wert bei gelöstem g entspricht dem Kurs',
+      approx(rd.checkValuePerShare, fv, 1e-6), 'erhalten: ' + rd.checkValuePerShare + ' Kurs: ' + fv);
+
+    // g1 = 7,3 liegt NICHT auf dem Raster ⇒ echte Intervallhalbierung.
+    const fv2 = modelDcf(mkMj({ owcPct: 0, g1: 7.3, tg: 2, wacc: 10 }), scOf(7.3, 2, 10)).base;
+    const rd2 = solveReverseDcfGrowth(mkMj({ owcPct: 0, g1: 7.3, tg: 2, wacc: 10, price: fv2 }));
+    check('C-2e: Zwischenwert 7,3 % wird innerhalb der Toleranz zurückgewonnen',
+      rd2.status === 'ok' && approx(rd2.impliedGrowthPct, 7.3, CORE_TOL_GROWTH),
+      'erhalten: ' + rd2.impliedGrowthPct);
+    check('C-2f: dokumentierte Toleranz wird ausgewiesen',
+      rd2.tolerancePp === REVERSE_DCF_SEARCH.tolerancePp && rd2.tolerancePp === 1e-4,
+      'erhalten: ' + rd2.tolerancePp);
+  }
+
+  // ── C-3: Roundtrip mit Nettoschulden und Nettoliquidität ────────
+  suite('C-3 Roundtrip mit Nettoschulden / Nettoliquidität');
+  {
+    // Nettoschulden 500M / 100M Aktien = 5,00 je Aktie.
+    const mjD = mkMj({ owcPct: 0, g1: 8, tg: 2, wacc: 10, netDebt: 500 });
+    const fvD = modelDcf(mjD, scOf(8, 2, 10)).base;
+    const opV = expectedPerShare(8, 2, 10, 0);
+    check('C-3a: Nettoschulden 500M senken den Wert um exakt 5,00',
+      approx(fvD, opV - 5), 'erhalten: ' + fvD + ' erwartet: ' + (opV - 5));
+    const rdD = solveReverseDcfGrowth(mkMj({ owcPct: 0, g1: 8, tg: 2, wacc: 10, netDebt: 500, price: fvD }));
+    check('C-3b: Roundtrip mit Nettoschulden gewinnt 8 % zurück',
+      rdD.status === 'ok' && approx(rdD.impliedGrowthPct, 8, CORE_TOL_GROWTH),
+      'erhalten: ' + rdD.impliedGrowthPct + ' status: ' + rdD.status);
+    check('C-3c: Reverse DCF wendet dieselbe Nettoschuldenbrücke an',
+      rdD.netDebtApplied === true && approx(rdD.netDebtPerShare, 5),
+      'erhalten: ' + rdD.netDebtPerShare);
+
+    // Nettoliquidität 200M ⇒ +2,00 je Aktie.
+    const mjC = mkMj({ owcPct: 0, g1: 8, tg: 2, wacc: 10, netDebt: -200 });
+    const fvC = modelDcf(mjC, scOf(8, 2, 10)).base;
+    check('C-3d: Nettoliquidität 200M erhöht den Wert um exakt 2,00',
+      approx(fvC, opV + 2), 'erhalten: ' + fvC + ' erwartet: ' + (opV + 2));
+    const rdC = solveReverseDcfGrowth(mkMj({ owcPct: 0, g1: 8, tg: 2, wacc: 10, netDebt: -200, price: fvC }));
+    check('C-3e: Roundtrip mit Nettoliquidität gewinnt 8 % zurück',
+      rdC.status === 'ok' && approx(rdC.impliedGrowthPct, 8, CORE_TOL_GROWTH),
+      'erhalten: ' + rdC.impliedGrowthPct + ' status: ' + rdC.status);
+    check('C-3f: Nettoschulden und Nettoliquidität unterscheiden sich um exakt 7,00',
+      approx(fvC - fvD, 7), 'erhalten: ' + (fvC - fvD));
+
+    // Roundtrip mit ΔWC ≠ 0: der Reverse DCF muss dieselbe WC-Quote nutzen.
+    const mjW = mkMj({ owcPct: 20, g1: 8, tg: 2, wacc: 10, netDebt: 500 });
+    const fvW = modelDcf(mjW, scOf(8, 2, 10)).base;
+    const rdW = solveReverseDcfGrowth(mkMj({ owcPct: 20, g1: 8, tg: 2, wacc: 10, netDebt: 500, price: fvW }));
+    check('C-3g: Roundtrip mit ΔWC (20 % WC/Umsatz) gewinnt 8 % zurück',
+      rdW.status === 'ok' && approx(rdW.impliedGrowthPct, 8, CORE_TOL_GROWTH),
+      'erhalten: ' + rdW.impliedGrowthPct + ' status: ' + rdW.status);
+    check('C-3h: ΔWC senkt den Wert gegenüber WC = 0 (Wachstum bindet Kapital)',
+      fvW < fvD - 1e-6, 'mit ΔWC: ' + fvW + ' ohne: ' + fvD);
+
+    // Fallende Wertkurve (hohe WC-Quote): die Nullstellensuche darf keine
+    // steigende Monotonie voraussetzen.
+    const mjF = mkMj({ owcPct: 500, g1: -5, tg: 2, wacc: 10 });
+    const fvF = modelDcf(mjF, scOf(-5, 2, 10)).base;
+    const rdF = solveReverseDcfGrowth(mkMj({ owcPct: 500, g1: -5, tg: 2, wacc: 10, price: fvF }));
+    check('C-3i: auch bei fallender Wertkurve wird g korrekt gelöst',
+      rdF.status === 'ok' && approx(rdF.impliedGrowthPct, -5, CORE_TOL_GROWTH),
+      'erhalten: ' + rdF.impliedGrowthPct + ' status: ' + rdF.status);
+  }
+
+  // ── C-4: Sensitivitätsmatrix ────────────────────────────────────
+  suite('C-4 Sensitivitätsmatrix');
+  {
+    const mj = mkMj({ owcPct: 20, g1: 8, tg: 2, wacc: 10, netDebt: 500 });
+    const m   = modelDcf(mj, scOf(8, 2, 10));
+    const mtx = computeSensitivityMatrix(mj, vOf(mj));
+    check('C-4a: Matrix verfügbar', mtx.available === true, 'reason: ' + mtx.reason);
+    // Zentrale Zelle: Zeile 3 (WACC + 0), Spalte 3 (g1 + 0).
+    check('C-4b: zentrale Zelle entspricht exakt dem Haupt-DCF',
+      approx(mtx.cells[2][2], m.base), 'Zelle: ' + mtx.cells[2][2] + ' DCF: ' + m.base);
+    check('C-4c: baseValue entspricht der zentralen Zelle',
+      approx(mtx.baseValue, mtx.cells[2][2]), 'erhalten: ' + mtx.baseValue);
+    check('C-4d: Rasterpunkte liegen auf den ausgewiesenen Schritten',
+      approx(mtx.waccStepsPct[2], 10, 1e-12) && approx(mtx.g1StepsPct[2], 8, 1e-12),
+      'wacc: ' + mtx.waccStepsPct.join(',') + ' g1: ' + mtx.g1StepsPct.join(','));
+    check('C-4e: nur WACC und g1 werden variiert',
+      mtx.variedParameters.length === 2
+      && mtx.variedParameters.indexOf('wacc') >= 0
+      && mtx.variedParameters.indexOf('growth_stage1') >= 0,
+      'erhalten: ' + mtx.variedParameters.join(','));
+    check('C-4f: Terminalwachstum in jeder Zelle unverändert',
+      mtx.terminalGrowthPct === 2, 'erhalten: ' + mtx.terminalGrowthPct);
+    check('C-4g: dieselbe Nettoschuldenbrücke wie im Haupt-DCF',
+      approx(mtx.netDebtPerShare, 5) && approx(mtx.netDebtPerShare, m._netDebtPerShare),
+      'matrix: ' + mtx.netDebtPerShare + ' modell: ' + m._netDebtPerShare);
+    check('C-4h: dieselbe WC-Quote wie im Haupt-DCF',
+      mtx.owc && Math.abs(mtx.owc.ratio - m._owcRatio) < 1e-12,
+      'matrix: ' + (mtx.owc && mtx.owc.ratio) + ' modell: ' + m._owcRatio);
+    // Nachbarzellen: höherer WACC senkt, höheres g1 hebt den Wert.
+    check('C-4i: höherer WACC senkt den Wert, höheres g1 hebt ihn',
+      mtx.cells[3][2] < mtx.cells[2][2] && mtx.cells[2][3] > mtx.cells[2][2],
+      'wacc+1: ' + mtx.cells[3][2] + ' g1+1.5: ' + mtx.cells[2][3]);
+    // Jede Zelle ist exakt der Kernwert bei diesen beiden Parametern.
+    const ctx = buildCoreValuationContext(mj, {});
+    let allMatch = true;
+    for (let i = 0; i < mtx.waccStepsPct.length; i++) {
+      for (let j = 0; j < mtx.g1StepsPct.length; j++) {
+        const ref = coreEquityValuePerShare(ctx, mtx.g1StepsPct[j], 2, mtx.waccStepsPct[i], 20);
+        const cell = mtx.cells[i][j];
+        if (!(ref == null && cell == null) && !approx(cell, ref)) allMatch = false;
+      }
+    }
+    check('C-4j: alle 25 Zellen stammen aus derselben Bewertungsfunktion', allMatch, '');
+  }
+
+  // ── C-5: WACC ≤ Terminalwachstum ────────────────────────────────
+  suite('C-5 WACC ≤ Terminalwachstum');
+  {
+    const ctx = buildCoreValuationContext(mkMj({ owcPct: 0 }), {});
+    check('C-5a: Kern liefert bei WACC = tg kein Ergebnis (kein 0-Ersatzwert)',
+      coreValuationDetail(ctx, 8, 3, 3, 20) === null, 'erhalten: ' + coreValuationDetail(ctx, 8, 3, 3, 20));
+    check('C-5b: Kern liefert bei WACC < tg kein Ergebnis',
+      coreEquityValuePerShare(ctx, 8, 5, 3, 20) === null, 'erhalten: ' + coreEquityValuePerShare(ctx, 8, 5, 3, 20));
+
+    const rd = solveReverseDcfGrowth(mkMj({ owcPct: 0, tg: 3, wacc: 3, price: 20 }));
+    check('C-5c: Reverse DCF fängt WACC = tg mit erklärtem Status ab',
+      rd.status === 'wacc_le_terminal_growth' && rd.impliedGrowthPct === null,
+      'status: ' + rd.status + ' g: ' + rd.impliedGrowthPct);
+    check('C-5d: Begründung nennt den divergierenden Terminalwert',
+      /divergiert/.test(rd.reason || ''), 'reason: ' + rd.reason);
+    const rd2 = solveReverseDcfGrowth(mkMj({ owcPct: 0, tg: 5, wacc: 3, price: 20 }));
+    check('C-5e: auch WACC < tg wird abgefangen',
+      rd2.status === 'wacc_le_terminal_growth' && rd2.impliedGrowthPct === null,
+      'status: ' + rd2.status);
+
+    const mjM = mkMj({ owcPct: 0, tg: 3, wacc: 3 });
+    const mM = modelDcf(mjM, scOf(8, 3, 3));
+    check('C-5f: Haupt-DCF ist bei WACC = tg nicht anwendbar',
+      mM.applicable === false && mM.base == null, 'base: ' + mM.base);
+    const mtx = computeSensitivityMatrix(mjM, vOf(mjM));
+    // WACC-Schritte 1,2,3,4,5 bei tg = 3: die ersten drei sind ≤ tg ⇒ null.
+    check('C-5g: Matrixzellen mit WACC ≤ tg bleiben leer statt geraten',
+      mtx.cells[0][2] === null && mtx.cells[1][2] === null && mtx.cells[2][2] === null
+      && mtx.cells[4][2] != null,
+      'Zellen: ' + mtx.cells.map(r => r[2]).join(','));
+  }
+
+  // ── C-6: Nicht lösbare Fälle ────────────────────────────────────
+  suite('C-6 Nicht lösbare Fälle liefern keinen Grenzwert');
+  {
+    const S = REVERSE_DCF_SEARCH;
+    // Kurs weit über jedem im Suchbereich erreichbaren Wert.
+    const rdHi = solveReverseDcfGrowth(mkMj({ owcPct: 0, tg: 2, wacc: 10, price: 1e7 }));
+    check('C-6a: unerreichbar hoher Kurs ⇒ no_solution_in_range',
+      rdHi.status === 'no_solution_in_range', 'status: ' + rdHi.status);
+    check('C-6b: KEIN geratener Grenzwert als Ergebnis',
+      rdHi.impliedGrowthPct === null && rdHi.ok === false,
+      'erhalten: ' + rdHi.impliedGrowthPct);
+    check('C-6c: Begründung nennt die obere Bereichsgrenze',
+      new RegExp(String(S.gHiPct) + '%').test(rdHi.reason || ''), 'reason: ' + rdHi.reason);
+    check('C-6d: computeReverseDcf gibt in diesem Fall null zurück, nicht 40',
+      computeReverseDcf(mkMj({ owcPct: 0, tg: 2, wacc: 10, price: 1e7 })) === null,
+      'erhalten: ' + computeReverseDcf(mkMj({ owcPct: 0, tg: 2, wacc: 10, price: 1e7 })));
+
+    // Kurs weit unter jedem erreichbaren Wert.
+    const rdLo = solveReverseDcfGrowth(mkMj({ owcPct: 0, tg: 2, wacc: 10, price: 1e-6 }));
+    check('C-6e: unerreichbar niedriger Kurs ⇒ no_solution_in_range',
+      rdLo.status === 'no_solution_in_range' && rdLo.impliedGrowthPct === null,
+      'status: ' + rdLo.status);
+    check('C-6f: Begründung nennt die untere Bereichsgrenze',
+      new RegExp(String(S.gLoPct) + '%').test(rdLo.reason || ''), 'reason: ' + rdLo.reason);
+
+    check('C-6g: Suchbereich wird ausdrücklich ausgewiesen',
+      rdHi.searchRangePct[0] === S.gLoPct && rdHi.searchRangePct[1] === S.gHiPct
+      && S.gLoPct === -20 && S.gHiPct === 40,
+      'erhalten: ' + rdHi.searchRangePct.join('..'));
+
+    // Kurs fehlt / ungeeignete Eingaben.
+    check('C-6h: fehlender Kurs ⇒ inputs_missing statt Zahl',
+      solveReverseDcfGrowth(mkMj({ owcPct: 0 })).status === 'inputs_missing',
+      'status: ' + solveReverseDcfGrowth(mkMj({ owcPct: 0 })).status);
+    const rdNeg = solveReverseDcfGrowth(mkMj({ owcPct: 0, price: -5 }));
+    check('C-6i: negativer Kurs ⇒ inputs_missing statt Zahl',
+      rdNeg.status === 'inputs_missing' && rdNeg.impliedGrowthPct === null,
+      'status: ' + rdNeg.status);
+    // Kern nicht anwendbar (kein Umsatzpfad).
+    const mjNo = mkMj({ owcPct: 0, price: 20, fund: { ebit: [] } });
+    const rdNo = solveReverseDcfGrowth(mjNo);
+    check('C-6j: ohne Umsatzpfad ⇒ inputs_missing mit benannten Feldern',
+      rdNo.status === 'inputs_missing' && Array.isArray(rdNo.coreMissing) && rdNo.coreMissing.length > 0,
+      'missing: ' + JSON.stringify(rdNo.coreMissing));
+    // Financials sind ausdrücklich nicht anwendbar.
+    const mjFin = mkMj({ owcPct: 0, price: 20 });
+    mjFin.meta.sub_classification = 'financial';
+    check('C-6k: Financials ⇒ not_applicable',
+      solveReverseDcfGrowth(mjFin).status === 'not_applicable',
+      'status: ' + solveReverseDcfGrowth(mjFin).status);
+  }
+
+  // ── C-7: Reverse DCF löst ausschließlich das Umsatzwachstum ─────
+  suite('C-7 Nur Umsatzwachstum wird gelöst');
+  {
+    const mj = mkMj({ owcPct: 0, g1: 8, tg: 2, wacc: 10, price: 20 });
+    const rd = solveReverseDcfGrowth(mj);
+    check('C-7a: gelöster Parameter ist growth_stage1',
+      rd.solvedParameter === 'growth_stage1' && rd.solvesOnlyRevenueGrowth === true,
+      'erhalten: ' + rd.solvedParameter);
+    check('C-7b: Einschränkung wird ausgewiesen',
+      Array.isArray(rd.heldConstant) && rd.heldConstant.indexOf('wacc') >= 0
+      && rd.heldConstant.indexOf('terminal_growth') >= 0
+      && rd.heldConstant.indexOf('op_margin_pct') >= 0
+      && rd.heldConstant.indexOf('owc_pct_of_revenue') >= 0
+      && /ausschließlich das Umsatzwachstum/.test(rd.heldConstantNote || ''),
+      'erhalten: ' + rd.heldConstant.join(','));
+    // Der Startwert growth_stage1 des JSON darf das Ergebnis nicht beeinflussen.
+    const a = solveReverseDcfGrowth(mkMj({ owcPct: 0, g1: 2,  tg: 2, wacc: 10, price: 20 }));
+    const b = solveReverseDcfGrowth(mkMj({ owcPct: 0, g1: 25, tg: 2, wacc: 10, price: 20 }));
+    check('C-7c: Ergebnis ist unabhängig vom hinterlegten growth_stage1',
+      a.status === 'ok' && b.status === 'ok' && approx(a.impliedGrowthPct, b.impliedGrowthPct, 1e-9),
+      'a: ' + a.impliedGrowthPct + ' b: ' + b.impliedGrowthPct);
+    // Deterministisch: zwei Läufe, bitgleiches Ergebnis.
+    check('C-7d: deterministisch (zwei Läufe, identisches Ergebnis)',
+      solveReverseDcfGrowth(mj).impliedGrowthPct === solveReverseDcfGrowth(mj).impliedGrowthPct,
+      'erhalten: ' + rd.impliedGrowthPct);
+    // Ein anderer WACC muss ein anderes Wachstum ergeben (Annahme wirkt).
+    const c = solveReverseDcfGrowth(mkMj({ owcPct: 0, tg: 2, wacc: 12, price: 20 }));
+    check('C-7e: höherer WACC verlangt höheres implizites Wachstum',
+      c.status === 'ok' && a.status === 'ok' && c.impliedGrowthPct > a.impliedGrowthPct,
+      'wacc10: ' + a.impliedGrowthPct + ' wacc12: ' + c.impliedGrowthPct);
+  }
+
+  // ── C-8: Mid-Cycle am gemeinsamen Kern ──────────────────────────
+  suite('C-8 DCF Mid-Cycle am Kern');
+  {
+    // 6 Jahre; EBIT-Margen 30/10/30/15/25/20 % ⇒ Median 22,5 %.
+    // D&A konstant 50 (= 5 % vom Umsatz), CapEx 50 (= 5 %).
+    const ebit   = [300, 100, 300, 150, 250, 200];
+    const ebitda = ebit.map(e => e + 50);
+    const mj = mkMj({ owcPct: 20, g1: 8, tg: 2, wacc: 10, netDebt: 500, fund: {
+      revenue:        [1000, 1000, 1000, 1000, 1000, 1000],
+      ebit, ebitda,
+      capex:          [50, 50, 50, 50, 50, 50],
+      shares_diluted: [100, 100, 100, 100, 100, 100],
+      net_debt:       [500]
+    }});
+    const mc = computeMidCycleFcf(mj);
+    check('C-8a: Mid-Cycle-Marge = Median 22,5 %',
+      mc.status === 'ok' && approx(mc.opMarginMed, 22.5, 1e-9), 'erhalten: ' + mc.opMarginMed);
+
+    const rMc = modelDcfMidcycle(mj, scOf(8, 2, 10));
+    const ctxMc = buildCoreValuationContext(mj, { opMarginOverridePct: 22.5 });
+    check('C-8b: Mid-Cycle rechnet auf dem gemeinsamen Kern',
+      approx(rMc.base, coreEquityValuePerShare(ctxMc, 8, 2, 10, null)),
+      'erhalten: ' + rMc.base + ' Kern: ' + coreEquityValuePerShare(ctxMc, 8, 2, 10, null));
+    check('C-8c: Mid-Cycle ist jetzt definitionskonsistent',
+      rMc._cashflowDefinitionConsistent === true
+      && rMc._cashflowDefinition === 'fcff_ebit_after_tax_plus_da_minus_capex_minus_dwc',
+      'erhalten: ' + rMc._cashflowDefinition + ' / ' + rMc._cashflowDefinitionConsistent);
+    check('C-8d: Mid-Cycle wendet die Nettoschuldenbrücke an',
+      rMc._netDebtBridgeApplied === true && approx(rMc._netDebtPerShare, 5),
+      'erhalten: ' + rMc._netDebtPerShare);
+    check('C-8e: Mid-Cycle modelliert ΔWC (20 % WC/Umsatz)',
+      approx(rMc._owcRatio, 0.20, 1e-12) && rMc._dOwcYear1Base != null && rMc._dOwcYear1Base !== 0,
+      'ratio: ' + rMc._owcRatio + ' ΔWC1: ' + rMc._dOwcYear1Base);
+    check('C-8f: nur die Betriebsmarge weicht vom Haupt-DCF ab',
+      approx(rMc._coreOpMarginPctUsed, 22.5, 1e-9) && rMc._coreMarginBasis === 'midcycle_median',
+      'erhalten: ' + rMc._coreOpMarginPctUsed + ' / ' + rMc._coreMarginBasis);
+    // Gegenprobe: normalisierte Marge < Ist-Marge ⇒ niedrigerer Wert.
+    const rStd = modelDcf(mj, scOf(8, 2, 10, 30));
+    check('C-8g: niedrigere normalisierte Marge ergibt einen niedrigeren Wert',
+      rMc.base < rStd.base - 1e-9, 'midcycle: ' + rMc.base + ' standard: ' + rStd.base);
+    check('C-8h: Modellversion wird auch im Mid-Cycle ausgewiesen',
+      rMc._modelVersion === DCF_CORE_MODEL_VERSION, 'erhalten: ' + rMc._modelVersion);
+  }
+
+  // ── C-9: Nicht kernfähige Pfade sind ausgeschlossen ─────────────
+  suite('C-9 Ausschluss statt Warnhinweis');
+  {
+    // Kein ebit ⇒ Kern nicht anwendbar; f.fcf wäre der alte Legacy-Pfad.
+    const mjLeg = mkMj({ owcPct: 0, g1: 8, tg: 2, wacc: 10,
+      fund: { ebit: [], fcf: [150, 150, 150, 150] } });
+    const rLeg = modelDcf(mjLeg, scOf(8, 2, 10));
+    check('C-9a: Legacy-Pfad ist NICHT anwendbar (kein Ersatzwert)',
+      rLeg.applicable === false && rLeg.base == null
+      && rLeg.conservative == null && rLeg.optimistic == null,
+      'base: ' + rLeg.base);
+    check('C-9b: Ausschluss ist maschinenlesbar markiert',
+      rLeg._excludedFromSynthesis === true && rLeg._excludedFromValuation === true
+      && rLeg._exclusionCode === 'cashflow_definition_not_core_compatible',
+      'code: ' + rLeg._exclusionCode);
+    check('C-9c: Begründung nennt Definition und fehlende Felder',
+      /nicht definitionskonsistent/.test(rLeg.reason || '')
+      && Array.isArray(rLeg._coreMissingInputs) && rLeg._coreMissingInputs.length > 0,
+      'reason: ' + (rLeg.reason || '').slice(0, 200));
+    check('C-9d: externer FCF-Startwert unbekannter Definition wird ebenfalls ausgeschlossen',
+      modelDcf(mjLeg, scOf(8, 2, 10), 150).applicable === false,
+      'erhalten: ' + modelDcf(mjLeg, scOf(8, 2, 10), 150).applicable);
+
+    // Synthese: der ausgeschlossene Pfad darf kein Gewicht bekommen.
+    const rimStub = { applicable: true, base: 12, conservative: 10, optimistic: 14,
+                      modelName: 'RIM', warnings: [] };
+    const vr = {
+      error: null,
+      router: { activeModels: ['dcf', 'rim'], subClassification: 'standard_nonfin',
+                diagnosticModels: [], ddmMode: null },
+      scenarios: scOf(8, 2, 10),
+      modelResults: { dcf: rLeg, rim: rimStub }
+    };
+    let syn = null, synErr = null;
+    try { syn = runFairValueSynthesizer(mjLeg, vr, null, SYNTHESIS_CONFIG); }
+    catch (e) { synErr = String(e); }
+    check('C-9e: Synthese läuft ohne Ausnahme', synErr === null, 'err: ' + synErr);
+    if (syn) {
+      const uw = syn._usedWeights || {};
+      check('C-9f: ausgeschlossener DCF erhält in der Synthese kein Gewicht',
+        (uw.dcf || 0) === 0, 'gewichte: ' + JSON.stringify(uw));
+      check('C-9g: Synthese stützt sich nur auf das verbleibende Modell',
+        syn.range == null || Math.abs((syn.range.base != null ? syn.range.base : 12) - 12) < 1e-9,
+        'range.base: ' + (syn.range && syn.range.base));
+    }
+
+    // Monte Carlo: kein Rückfall auf die abweichende Definition.
+    const mc = runMonteCarloDcf(mjLeg, { error: null, scenarios: scOf(8, 2, 10),
+      router: { activeModels: ['dcf'], subClassification: 'standard_nonfin' } });
+    check('C-9h: Monte Carlo fällt nicht auf CFO − CapEx zurück',
+      mc && mc._blocked === true && /ausgeschlossen/.test(mc._reason || ''),
+      'erhalten: ' + JSON.stringify(mc));
+
+    // Sensitivitätsmatrix: keine Matrix aus abweichender Definition.
+    const mtx = computeSensitivityMatrix(mjLeg, vOf(mjLeg));
+    check('C-9i: Matrix zeigt keine Zellen aus abweichender Cashflow-Definition',
+      mtx.available === false && /nicht mit dem Haupt-DCF vergleichbar/.test(mtx.reason || ''),
+      'reason: ' + (mtx.reason || '').slice(0, 200));
+  }
+
+  // ── C-10: Modellversion und Annahmen konsistent ausgewiesen ─────
+  suite('C-10 Modellversion und Annahmen');
+  {
+    const mj = mkMj({ owcPct: 20, g1: 8, tg: 2, wacc: 10, netDebt: 500, price: 25 });
+    const m   = modelDcf(mj, scOf(8, 2, 10));
+    const mtx = computeSensitivityMatrix(mj, vOf(mj));
+    const rd  = solveReverseDcfGrowth(mj);
+    check('C-10a: alle drei Pfade weisen dieselbe Modellversion aus',
+      m._modelVersion === DCF_CORE_MODEL_VERSION
+      && mtx.modelVersion === DCF_CORE_MODEL_VERSION
+      && rd.modelVersion === DCF_CORE_MODEL_VERSION,
+      m._modelVersion + ' / ' + mtx.modelVersion + ' / ' + rd.modelVersion);
+    check('C-10b: Kernannahmen sind maschinenlesbar am Modell',
+      m._coreTaxRatePct === 25 && approx(m._coreCapexIntensityPct, 5, 1e-9)
+      && approx(m._coreDaRatioPct, 5, 1e-9) && m._coreFadeEnabled === false,
+      'tax: ' + m._coreTaxRatePct + ' capex: ' + m._coreCapexIntensityPct + ' da: ' + m._coreDaRatioPct);
+    check('C-10c: Definition wird einheitlich benannt',
+      m._coreDefinitionLabel === DCF_CORE_DEFINITION_LABEL
+      && rd.valuationBasisLabel === DCF_CORE_DEFINITION_LABEL,
+      'erhalten: ' + m._coreDefinitionLabel);
+    check('C-10d: Modellkarte nennt Kern und Definition',
+      m.warnings.some(w => w.indexOf(DCF_CORE_MODEL_VERSION) >= 0 && /Definition:/.test(w)),
+      'warnings[0]: ' + (m.warnings[0] || '').slice(0, 160));
+    check('C-10e: Working-Capital-Vereinfachung ist ausgewiesen',
+      m._owcStockAdjustmentModelled === false
+      && m._owcOpeningStockBasis === 'forecast_ratio_times_revenue0'
+      && m.warnings.some(w => /Anfangsbestand wird bereits mit der Prognosequote/.test(w)),
+      'basis: ' + m._owcOpeningStockBasis);
+    check('C-10f: manuell gesetzte Quote gilt als Nutzereingabe, nicht als Modellannahme',
+      m._owcSetBy === 'user' && m._owcIsProvisionalModelDefault === false,
+      'setBy: ' + m._owcSetBy);
+    const mNo = modelDcf(mkMj({ g1: 8, tg: 2, wacc: 10 }), scOf(8, 2, 10));
+    check('C-10g: automatisch gesetzte 0 heißt „Vorläufige Modellannahme", nicht Nutzerannahme',
+      mNo._owcSetBy === 'model_provisional_default'
+      && mNo._owcProvisionalLabel === 'Vorläufige Modellannahme: 0; Nutzereingabe erforderlich'
+      && !mNo.warnings.some(w => /NUTZERANNAHME/.test(w)),
+      'setBy: ' + mNo._owcSetBy + ' label: ' + mNo._owcProvisionalLabel);
+  }
+
+  // ── C-11: Headline-Reverse-DCF geht wirklich über den Kern ──────
+  // Absicherung gegen einen alten Nebenpfad: computeReverseDcf() rechnete
+  // früher über calculateImpliedGrowth auf f.fcf[0]. Das Fixture enthält
+  // BEIDES — einen vollständigen Umsatzpfad und ein abweichendes f.fcf —,
+  // sodass beide Rechenwege ein unterschiedliches Ergebnis liefern.
+  suite('C-11 Headline-Reverse-DCF ohne Nebenpfad');
+  {
+    const mj = mkMj({ owcPct: 0, g1: 8, tg: 2, wacc: 10, netDebt: 500, price: 30,
+      fund: { fcf: [400, 380, 360, 340] } });   // FCFF-Basis wäre 150 — bewusst abweichend
+    const core = solveReverseDcfGrowth(mj);
+    check('C-11a: Kernlösung vorhanden', core.status === 'ok', 'status: ' + core.status);
+    check('C-11b: computeReverseDcf liefert exakt die Kernlösung',
+      computeReverseDcf(mj) === core.impliedGrowthPct,
+      'headline: ' + computeReverseDcf(mj) + ' kern: ' + core.impliedGrowthPct);
+
+    // Der alte FCF-Pfad muss ein ANDERES Ergebnis liefern — sonst wäre der
+    // Test blind gegenüber einem Rückfall auf ihn.
+    const legacy = calculateImpliedGrowth({
+      price: 30, sharesM: 100, netDebtM: 500, fcf0M: 400,
+      waccPct: 10, terminalGrowthPct: 2, years: 10, marginOfSafety: 0
+    });
+    check('C-11c: der alte FCF-Pfad käme auf ein anderes Wachstum',
+      legacy.ok === true && Math.abs(legacy.impliedGrowthPct - core.impliedGrowthPct) > 1.0,
+      'legacy: ' + legacy.impliedGrowthPct + ' kern: ' + core.impliedGrowthPct);
+    check('C-11d: die Headline übernimmt NICHT den FCF-basierten Wert',
+      Math.abs(computeReverseDcf(mj) - legacy.impliedGrowthPct) > 1.0,
+      'headline: ' + computeReverseDcf(mj) + ' legacy: ' + legacy.impliedGrowthPct);
+
+    const full = computeReverseDcfFull(mj);
+    check('C-11e: computeReverseDcfFull führt die Kernlösung',
+      full.coreReverseDcf && full.coreReverseDcf.ok === true
+      && full.coreImpliedGrowthPct === core.impliedGrowthPct,
+      'erhalten: ' + full.coreImpliedGrowthPct);
+    check('C-11f: die FCF-Basis ist ausdrücklich als Diagnose gekennzeichnet',
+      full.fcfBasisDiagnosticOnly === true && full.fcfBasisConsistentWithCore === false
+      && /nicht definitionskonsistent zum Haupt-DCF/.test(full.fcfBasisNote || ''),
+      'flags: ' + full.fcfBasisDiagnosticOnly + '/' + full.fcfBasisConsistentWithCore);
+    check('C-11g: reverseDcfReported bleibt die FCF-Diagnosezahl (nicht die Headline)',
+      full.reverseDcfReported != null
+      && Math.abs(full.reverseDcfReported - full.coreImpliedGrowthPct) > 1.0,
+      'reported: ' + full.reverseDcfReported + ' core: ' + full.coreImpliedGrowthPct);
+
+    // Ohne Kernlösung darf die Headline NICHT auf die FCF-Zahl ausweichen.
+    const mjNoCore = mkMj({ owcPct: 0, price: 30, fund: { ebit: [], fcf: [400, 380, 360, 340] } });
+    check('C-11h: ohne Kernlösung gibt die Headline null zurück, nicht die FCF-Zahl',
+      computeReverseDcf(mjNoCore) === null, 'erhalten: ' + computeReverseDcf(mjNoCore));
+  }
+
+  return results;
+}
+
 function _testDcfWorkingCapital() {
   const results = [];
   let _currentSuite = '';
@@ -27815,9 +28803,29 @@ function _testDcfWorkingCapital() {
       r._owcMeasured === false && r._owcAvailable === false, 'erhalten: ' + r._owcMeasured + '/' + r._owcAvailable);
     check('W-7c: Nutzerannahme ausdrücklich gefordert',
       r._owcAssumptionRequired === true, 'erhalten: ' + r._owcAssumptionRequired);
-    check('W-7d: rechnerisch 0, aber mit Warnung gekennzeichnet',
-      r._owcRatio === 0 && r.warnings.some(w => /NICHT ermittelbar/.test(w) && /NUTZERANNAHME/.test(w)),
+    // Wortlaut-Änderung V1.0.36 (Abnahmekriterium Chat 4): Der automatisch
+    // gesetzte Wert 0 wurde bis dahin als „NUTZERANNAHME" bezeichnet. Er wird
+    // aber vom Modell gesetzt, nicht vom Nutzer — die Kennzeichnung lautet
+    // jetzt „Vorläufige Modellannahme: 0; Nutzereingabe erforderlich".
+    // Prüfabsicht unverändert: rechnerisch 0, aber ausdrücklich als nicht
+    // gemessener Platzhalter gekennzeichnet.
+    check('W-7d: rechnerisch 0, als vorläufige Modellannahme gekennzeichnet',
+      r._owcRatio === 0
+      && r.warnings.some(w => /NICHT ermittelbar/.test(w)
+                              && /Vorläufige Modellannahme: 0; Nutzereingabe erforderlich/.test(w)),
       'warnings: ' + r.warnings.join(' | ').slice(0, 400));
+    check('W-7d2: vorläufiger Wert wird nicht als Nutzerannahme ausgegeben',
+      r._owcIsProvisionalModelDefault === true
+      && r._owcSetBy === 'model_provisional_default'
+      && !r.warnings.some(w => /NUTZERANNAHME/.test(w))
+      && !r.warnings.some(w => /Working Capital/.test(w) && /manuelle Annahme/.test(w)),
+      'setBy: ' + r._owcSetBy);
+    check('W-7d3: Working-Capital-Vereinfachung des Anfangsbestands ist ausgewiesen',
+      r._owcOpeningStockBasis === 'forecast_ratio_times_revenue0'
+      && r._owcStockAdjustmentModelled === false
+      && r.warnings.some(w => /Anfangsbestand wird bereits mit der Prognosequote/.test(w)
+                              && /NICHT modelliert/.test(w)),
+      'basis: ' + r._owcOpeningStockBasis);
     check('W-7e: fehlende Felder werden benannt',
       Array.isArray(r._owcMissingFields) && r._owcMissingFields.length > 0,
       'erhalten: ' + JSON.stringify(r._owcMissingFields));
@@ -27901,8 +28909,16 @@ function _testDcfWorkingCapital() {
       rLeg._cashflowDefinitionConsistent === false
       && /Eigenkapitalkosten/.test(rLeg._cashflowDefinitionInconsistencyNote || ''),
       'erhalten: ' + rLeg._cashflowDefinitionConsistent + ' / ' + rLeg._cashflowDefinitionInconsistencyNote);
-    check('W-9e: Warnung nennt die abweichende Cashflow-Definition',
-      rLeg.warnings.some(w => /Cashflow-Definition/.test(w) && /NICHT der FCFF/.test(w)),
+    // Verhaltensänderung V1.0.36 (fachlich begründet, Abnahmekriterium Chat 4):
+    // Der Legacy-Pfad wurde bis dahin mit Warnhinweis WEITERGERECHNET und als
+    // „DCF" gewichtet. Ein Warnhinweis neben einer weiterhin gewichteten Zahl
+    // reicht nicht — ein nicht definitionskonsistenter Cashflow darf nicht in
+    // Bewertung und Synthese eingehen. Die Erwartung prüft deshalb jetzt den
+    // Ausschluss; die ursprüngliche Prüfabsicht (abweichende Definition muss
+    // ausdrücklich benannt sein) bleibt als erste Bedingung erhalten.
+    check('W-9e: Warnung benennt die abweichende Cashflow-Definition und den Ausschluss',
+      rLeg.warnings.some(w => /Cashflow-Definition/.test(w) && /nicht definitionskonsistent/.test(w))
+      && rLeg.warnings.some(w => /ausgeschlossen/.test(w)),
       'warnings: ' + rLeg.warnings.join(' | ').slice(0, 400));
     check('W-9f: Legacy-Pfad behauptet kein modelliertes Working Capital',
       rLeg._owcMeasured === false && rLeg._owcSource === 'not_modelled_in_this_path',
@@ -27984,8 +29000,14 @@ function _testDcfWorkingCapital() {
     check('W-11b: Matrix nennt die verwendete WC-Quote',
       /FCFF inkl\. ΔWC bei 20\.00% WC\/Umsatz/.test(htmlWc), 'erhalten: ' + htmlWc.slice(0, 900));
     const htmlNoData = buildSensitivityMatrix(mkMatrixMj({}, 10), mkV());
-    check('W-11c: ohne WC-Datenbasis kennzeichnet die Matrix die 0-Annahme',
-      /ΔWC = 0 — angenommen, nicht gemessen/.test(htmlNoData), 'erhalten: ' + htmlNoData.slice(0, 900));
+    // Wortlaut-Änderung V1.0.36 (Abnahmekriterium Chat 4): „angenommen, nicht
+    // gemessen" suggerierte eine Nutzerannahme. Der Wert wird vom Modell gesetzt.
+    // Prüfabsicht unverändert: die 0 muss als nicht gemessener Platzhalter
+    // erkennbar sein und zur Nutzereingabe auffordern.
+    check('W-11c: ohne WC-Datenbasis kennzeichnet die Matrix die vorläufige 0',
+      /ΔWC = 0 — Vorläufige Modellannahme: 0; Nutzereingabe erforderlich/.test(htmlNoData)
+      && /nicht gemessen/.test(htmlNoData),
+      'erhalten: ' + htmlNoData.slice(0, 900));
 
     // Monte Carlo: deterministischer Vergleich ist wegen der Zufallsziehung
     // nicht möglich; geprüft wird, dass die WC-Quote überhaupt durchschlägt.
@@ -29581,6 +30603,15 @@ function computeReverseDcfFull(mj) {
   // Reported basis (Rückwärtskompatibilität: impliedGrowthPct bleibt = reported)
   const reverseDcfReported = baseResult.ok ? baseResult.impliedGrowthPct : null;
 
+  // ── Maßgeblicher Reverse DCF: gemeinsamer Bewertungskern ────────────
+  // reverseDcfReported/reverseDcfOwner bilden weiterhin das SBC-Diagnosepaar
+  // auf der REPORTED-FCF-Basis (CFO − CapEx). Beide Zahlen sind untereinander
+  // vergleichbar, aber NICHT mit dem Haupt-DCF: andere Cashflow-Definition,
+  // kein ΔWC, keine Nettoschuldenbrücke, kein Fade. Der maßgebliche Reverse DCF
+  // ist coreReverseDcf — er löst das Stage-1-Umsatzwachstum auf demselben Kern
+  // wie Haupt-DCF und Sensitivitätsmatrix.
+  const coreReverseDcf = solveReverseDcfGrowth(mj);
+
   // ── PATCH 3: Klassifikation implied growth ───────────────────
   function _classifyImpliedGrowth(impliedGrowth, cagr3y, cagr5y) {
     if (impliedGrowth == null) return null;
@@ -29605,9 +30636,22 @@ function computeReverseDcfFull(mj) {
     scenarioResults,
     historicalBenchmark,
     inputs: { price, sharesM, netDebtM, fcf0M, waccPct, tgPct },
-    // PATCH 3: neue Felder
+    // ── Maßgeblich: Reverse DCF auf dem gemeinsamen Bewertungskern ──
+    coreReverseDcf,
+    coreImpliedGrowthPct: coreReverseDcf.ok ? coreReverseDcf.impliedGrowthPct : null,
+    coreStatus: coreReverseDcf.status,
+    coreStatusReason: coreReverseDcf.reason,
+    modelVersion: DCF_CORE_MODEL_VERSION,
+    // ── SBC-Diagnosepaar auf REPORTED-FCF-Basis (nicht kernkonsistent) ──
     reverseDcfReported,
     reverseDcfOwner,
+    fcfBasisDiagnosticOnly: true,
+    fcfBasisNote: 'reverseDcfReported/reverseDcfOwner lösen das Wachstum des REPORTED FCF ' +
+      '(CFO − CapEx) und dienen ausschließlich dem SBC-Vergleich beider Größen. Sie sind ' +
+      'nicht definitionskonsistent zum Haupt-DCF (kein ΔWC, keine Nettoschuldenbrücke, kein ' +
+      'Fade) und dürfen nicht als dessen implizites Wachstum gelesen werden — dafür ist ' +
+      'coreReverseDcf zuständig.',
+    fcfBasisConsistentWithCore: false,
     sbcAdjustedFcm: sbcAdjustedFcf,               // Mio., diagnostisch
     sbc0: _ownerDiag.status === 'ok' ? _ownerDiag.sbc_m : null,   // aus computeSbcFcfDiagnostics
     ownerFcfWarnings,
@@ -31379,6 +32423,7 @@ function renderGrowth() {
 
     html += `<div class="mc-block">
       <div class="mc-dl">Market-Implied Growth — 10J Stage-1 (WACC ${na(rdcf.inputs.waccPct, '%')}, TG ${na(rdcf.inputs.tgPct, '%')})</div>
+      <div class="txt-caption" style="margin-bottom:6px;color:var(--muted)">⚠ SBC-Vergleich auf REPORTED-FCF-Basis (CFO − CapEx) — beide Zahlen sind untereinander vergleichbar, aber NICHT mit dem Haupt-DCF: ohne ΔWC, ohne Nettoschuldenbrücke, ohne Fade. Der kernkonsistente Reverse DCF (${escapeHtml(rdcf.modelVersion || '')}) steht in der Reverse-DCF-Karte der Übersicht: ${rdcf.coreReverseDcf && rdcf.coreReverseDcf.ok ? escapeHtml(rdcf.coreReverseDcf.impliedGrowthPct.toFixed(1)) + '% Stage-1-Umsatzwachstum' : escapeHtml((rdcf.coreReverseDcf && rdcf.coreReverseDcf.status) || 'nicht verfügbar')}.</div>
       <div class="mc-hero">
         <div>
           <div class="mc-stat">Reported FCF Basis</div>

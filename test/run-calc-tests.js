@@ -54,6 +54,7 @@ const PURE_TEST_FUNCTIONS = [
   '_testSectorClassificationPatch',
   '_testDcfEquityBridge',
   '_testDcfWorkingCapital',
+  '_testValuationCore',
 ];
 
 // Test-Helper, die echte DOM-Formularfelder anlegen/auslesen

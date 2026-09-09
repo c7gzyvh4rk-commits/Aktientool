@@ -1,5 +1,175 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Update (Chat 4 Abschluss): Ein gemeinsamer Bewertungskern
+
+**Auftrag:** Haupt-DCF, Reverse DCF und Sensitivitätsmatrix sollen dieselbe
+Bewertungsfunktion verwenden.
+
+### Befund am Code (vor der Änderung)
+Drei Pfade, drei Definitionen — dieselbe Eingabe lieferte je nach Anzeige
+verschiedene Werte:
+| Pfad | Cashflow | Nettoschulden | ΔWC | Fade | Aktien |
+|---|---|---|---|---|---|
+| Haupt-DCF (`forecastDcfCore`) | FCFF aus EBIT | Brücke (3-stufige Priorität) | ja | ja | Projektion |
+| Reverse DCF (`calculateImpliedGrowth`) | `f.fcf[0]` = CFO − CapEx | `net_debt[0]`, sonst **still 0** | nein | nein | `shares_diluted[0]` |
+| Matrix, Zweig 2/3 (`dcfCore`) | Mid-Cycle-FCF bzw. `f.fcf[0]` | keine | nein | ja | konstant |
+| DCF Mid-Cycle | Mid-Cycle-FCF via `dcfCore` | keine | nein | ja | konstant |
+| Monte Carlo, Fallback | `f.fcf[0]` | keine | nein | ja | konstant |
+
+Der Reverse DCF löste zudem das Wachstum des **FCF**, wurde aber als
+„Stage-1-Wachstum" beschriftet — im Haupt-DCF ist g1 das **Umsatzwachstum**.
+
+### Änderungen (Produktdatei)
+1. **Kern (neu):** `DCF_CORE_MODEL_VERSION = 'dcf-core/1.1'`,
+   `buildCoreValuationContext(mj, opts)` (löst Cashflow-Struktur, Working
+   Capital, Nettoschulden, Aktienbasis, Fade einmalig auf) und
+   `coreValuationDetail(ctx, g1, tg, wacc, opMarginPct)` → operativer Wert,
+   Brücke, Eigenkapitalwert je Aktie. `null` = nicht bewertbar, nie 0 als Ersatz.
+2. **Alle Pfade angeschlossen:** `modelDcf`, `modelDcfMidcycle`,
+   `computeSensitivityMatrix` (neu, Zahlen von der Darstellung getrennt),
+   `solveReverseDcfGrowth` (neu) und `runMonteCarloDcf`. **`dcfCore` hat jetzt
+   null Aufrufer** und ist als überholt gekennzeichnet.
+3. **Mid-Cycle korrigiert statt ausgeschlossen:** läuft über den Kern mit
+   `opMarginOverridePct` = Median-Betriebsmarge. Einzige Abweichung vom
+   Haupt-DCF ist die normalisierte Marge; ΔWC, Nettoschuldenbrücke und
+   Aktienprojektion gelten jetzt auch hier.
+4. **Legacy-Pfad ausgeschlossen:** ohne Umsatzpfad (revenue/ebit/capex) ist der
+   Kern nicht anwendbar und `CFO − CapEx` nicht in ihn zerlegbar. `modelDcf`
+   liefert `applicable:false` mit `_excludedFromSynthesis`, `_exclusionCode` und
+   benannten fehlenden Feldern — der Wert geht damit weder in Bewertung noch in
+   Synthese ein. Ebenso Matrix und Monte Carlo (erklärter Status statt Zahl).
+5. **Reverse DCF:** löst **ausschließlich** `growth_stage1` (Umsatz); alles
+   andere konstant und über `heldConstant`/`heldConstantNote` ausgewiesen.
+   Suchbereich −20 % … +40 %, Raster 0,5 pp, Toleranz 1e-4 pp. Nullstellen
+   werden **gezählt**: 0 → `no_solution_in_range`, ≥2 → `multiple_solutions`,
+   sonst Intervallhalbierung. Weitere Status: `wacc_le_terminal_growth`,
+   `inputs_missing`, `not_evaluable`, `not_applicable` (Financials). Nie ein
+   geratener Grenzwert. `computeReverseDcf` und die Übersichtskarte nutzen den
+   Kern; bei fehlender Lösung wird der Status gezeigt, **nicht** ersatzweise die
+   FCF-Zahl. `reverseDcfReported`/`reverseDcfOwner` bleiben als SBC-Diagnosepaar
+   auf REPORTED-FCF-Basis erhalten, jetzt mit
+   `fcfBasisDiagnosticOnly`/`fcfBasisConsistentWithCore:false` gekennzeichnet.
+6. **Matrix:** variiert nur WACC und g1; Terminalwachstum, Marge, Steuer-,
+   CapEx-, D&A- und WC-Quote, Fade, Aktienprojektion und Nettoschulden sind in
+   jeder Zelle identisch mit dem Haupt-DCF und werden im Fußtext genannt.
+7. **Working Capital gekennzeichnet:** `OWC_STOCK_SIMPLIFICATION_NOTE` — der
+   Anfangsbestand wird bereits mit der Prognosequote angesetzt (OWC₀ = Quote ×
+   Umsatz₀), eine Anpassung vom Ist-Bestand auf die Zielquote wird **nicht**
+   modelliert (`_owcOpeningStockBasis`, `_owcStockAdjustmentModelled:false`,
+   `_owcActualOpeningStockM`). Der automatisch gesetzte Wert heißt jetzt
+   **„Vorläufige Modellannahme: 0; Nutzereingabe erforderlich"**
+   (`_owcSetBy:'model_provisional_default'`) — nicht mehr „NUTZERANNAHME".
+8. **Modellversion und Annahmen** konsistent an Modell, Matrix und Reverse DCF
+   (`_modelVersion`, `_coreDefinitionLabel`, `_coreTaxRatePct`,
+   `_coreCapexIntensityPct`, `_coreDaRatioPct`, `_coreFadeEnabled`, …).
+
+### Pflicht-Tests
+Neu: **`_testValuationCore()` — 85 Assertions**, im Runner als Pflichtfunktion
+registriert. Dokumentierte Toleranzen: `1e-9` USD/Aktie für Wertvergleiche,
+`1e-4` pp für Wachstum (= `REVERSE_DCF_SEARCH.tolerancePp`).
+
+| Pflichtfall | Ergebnis |
+|---|---|
+| Roundtrip DCF → Kurs → Reverse DCF (g = 8 %, Rasterpunkt) | 8,0000 % ✅ |
+| Roundtrip mit Zwischenwert g = 7,3 % (echte Halbierung) | 7,3000 % ✅ |
+| Roundtrip mit Nettoschulden 500M (−5,00/Aktie) | 8 % zurückgewonnen ✅ |
+| Roundtrip mit Nettoliquidität 200M (+2,00/Aktie) | 8 % zurückgewonnen ✅ |
+| Roundtrip mit ΔWC 20 % und fallender Wertkurve (WC 500 %) | ✅ |
+| Zentrale Matrixzelle = Haupt-DCF base | exakt, alle 25 Zellen aus dem Kern ✅ |
+| WACC ≤ tg (Kern, Reverse DCF, Modell, Matrix) | abgefangen, kein 0-Ersatz ✅ |
+| Nicht lösbar (Kurs 1e7 / 1e-6) | `no_solution_in_range`, `null` — kein Grenzwert ✅ |
+| Referenzfall Chat 2 (ND 0/500/−200 → 15,00/10,00/17,00) | unverändert ✅ |
+
+### Tatsächlich ausgeführte Tests
+Befehl: `node test/run-calc-tests.js` (= `npm test`)
+
+| Lauf | Ergebnis |
+|---|---|
+| Ausgangsstand (`claude/dcf-working-capital`, aef1b34) | 688 bestanden · 1 (T-BRL1) · 0 Fehler · Exit 1 |
+| Nach der Änderung | **775 bestanden · 1 (T-BRL1) · 0 Fehler · Exit 1** |
+| Fixture-Ebene beide Läufe | 374 Assertions bestanden, 1 fehlgeschlagen, 0 Pipeline-Fehler |
+| Stabilität | 5 Läufe, identisches Ergebnis (Monte Carlo unauffällig) |
+
+**Negativprüfung (temporäre, nicht committete Kopien im Scratch-Verzeichnis):**
+| Mutation | Ergebnis |
+|---|---|
+| `computeReverseDcf` zurück auf den alten FCF-Pfad | 4 rot (C-11b/d/h) |
+| Nettoschuldenbrücke im Kern entfernt | 18 rot (C-3a/d/f u.a.) |
+| Suchbereichsgrenze als Ergebnis geraten | 5 rot (C-6a/b/d/e) |
+| Matrix variiert zusätzlich tg (+0,1 pp) | 7 rot (C-4b/c/j) |
+| Mid-Cycle zurück auf `dcfCore` | 12 rot (C-8b–f) |
+| WACC ≤ tg nicht abgefangen | 5 rot (C-5a/b/f/g) |
+| Reverse DCF ignoriert die WC-Quote | 3 rot (C-3g/i) |
+
+**Geänderte Testerwartungen (fachlich begründet, im Code dokumentiert):**
+- `W-9e`: Legacy-Pfad wird ausgeschlossen statt mit Warnhinweis weitergerechnet
+  (Abnahmekriterium: „Ein Warnhinweis allein reicht nicht"). Die ursprüngliche
+  Prüfabsicht — abweichende Definition muss benannt sein — bleibt erste Bedingung.
+- `W-7d`, `W-11c`: Wortlaut „NUTZERANNAHME" / „angenommen, nicht gemessen" →
+  „Vorläufige Modellannahme: 0; Nutzereingabe erforderlich". Prüfabsicht
+  unverändert. `W-7d2/d3` neu ergänzt.
+- Alle übrigen Referenztests aus Chat 2 (`_testDcfEquityBridge`, 44) und Chat 3
+  (`_testDcfWorkingCapital`, jetzt 84) unverändert grün.
+
+### Wirkung an Daten
+**130 Fixtures, Wertvergleich vorher/nachher** (115 ausgewertet, 15 durch
+Scope/Migration blockiert):
+- **Haupt-DCF: 0 Wertänderungen** (T-QCE3 nur `undefined` → `null` bei
+  weiterhin `applicable:false`).
+- **DCF-Anwendbarkeit: 0 Änderungen** — kein Fixture verliert seinen DCF durch
+  den Legacy-Ausschluss.
+- **Mid-Cycle: 4 Änderungen.** T-MOS-COMPOSE2/3: 6,8367 → 4,2506 (Nettoschulden
+  3.000M / 1.000M Aktien = **3,00/Aktie**, jetzt korrekt abgezogen; der
+  operative Wert steigt zugleich um 0,4139 durch die einheitliche D&A-Quote
+  statt des eingefrorenen TTM-Betrags). T-05/T-DIV1: 6,8367 → 6,8506
+  (Brücke 0,40 minus derselbe D&A-Effekt).
+- **Fair Value / Buy Price: je 4** — genau die Mid-Cycle-Fixtures.
+  **Position/Verdict: 0 Änderungen.**
+- **Reverse DCF: 96 Änderungen** — erwartet, andere Größe (Umsatz- statt
+  FCF-Wachstum, Brücke statt `net_debt[0]`-Fallback).
+
+**Synthetischer Realfall** (Umsatz 12.000M, +9 %/y, EBIT 22 %, WC 8,94 %,
+Nettoschulden 8.000M / 500M Aktien = 16,00/Aktie, Kurs 95):
+Haupt-DCF **88,9162 unverändert**; Reverse DCF 7,74 % → **9,75 %**
+(1 Nullstelle; Gegenprobe: Wert bei gelöstem g = 94,999784 vs. Kurs 95).
+
+### Offene Einschränkungen
+- **`multiple_solutions` ist eine Absicherung ohne erreichbaren Fall.** Ein
+  Raster-Scan über WC-Quoten 0–300 % und tg 0/2/3/5 % fand keine nicht-monotone
+  Wertkurve: das Gate `r.total > 0` schneidet den Bereich ab, in dem der Wert
+  wieder steigen könnte. Der Zweig ist implementiert und durch Inspektion
+  belegt, aber nicht durch einen Live-Fall getestet.
+- **Reverse DCF löst nur `growth_stage1`** (auftragsgemäß). Marge, WACC oder
+  Terminalwachstum zu lösen wäre ein eigener Auftrag.
+- **`reverseDcfReported`/`reverseDcfOwner`** bleiben auf REPORTED-FCF-Basis:
+  Der SBC-Vergleich verlangt zwei FCF-Größen; im FCFF-Kern steckt SBC bereits im
+  EBIT, ein „Owner"-Abschlag wäre dort nicht definierbar. Beide sind als
+  Diagnose gekennzeichnet und speisen weder Headline noch Synthese.
+- **Mid-Cycle normalisiert nur die Marge**, nicht CapEx/D&A separat: die
+  CapEx-Quote ist im Kern ohnehin derselbe 10-Jahres-Median wie in
+  `computeMidCycleFcf`; D&A folgt jetzt der Kern-Definition (Median-Quote) statt
+  des TTM-Betrags. Das ist die Ursache des +0,4139-Effekts oben.
+- `dcfCore` bleibt als toter, gekennzeichneter Code stehen (nicht entfernt, um
+  den Diff klein zu halten).
+- WC-Vereinfachung des Anfangsbestands unverändert (jetzt ausgewiesen);
+  `short_term_debt` weiterhin ohne eigenes Schemafeld.
+- Zwei DOM-Formulartests bleiben außerhalb eines Browsers ungetestet.
+- CI-Lauf-Status auf GitHub in dieser Sitzung nicht abgerufen. Ein roter
+  Actions-Lauf wegen T-BRL1 ist zu erwarten und kein neuer Defekt.
+- Kein Merge, kein Deployment.
+
+### Ausgangsstand für Chat 5
+- **Branch:** `claude/eager-bardeen-l53hvv` (basiert auf
+  `claude/dcf-working-capital`, Commit aef1b34 — nicht auf `main`).
+- **Startbefehl:** `npm test` bzw. `node test/run-calc-tests.js`
+- **Erwarteter Ausgangszustand:** Exit-Code 1, **775 bestanden**, 1 bekannter
+  Fehlschlag (T-BRL1), 0 Fehler/Exceptions.
+- Optional weiterhin offen: T-BRL1-Fixture fachlich neu kalibrieren
+  (DCF/RIM-Divergenz < 3x); `short_term_debt` als eigenes Schemafeld;
+  Reverse DCF für weitere Parameter; Playwright für die zwei DOM-Formulartests.
+
+---
+
 ## Update (Chat 3 Abschluss): Operatives Working Capital im Haupt-DCF
 
 **Auftrag:** Den Haupt-DCF um operatives Working Capital ergänzen und die
