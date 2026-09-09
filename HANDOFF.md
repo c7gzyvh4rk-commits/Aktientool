@@ -1,5 +1,164 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Update (Chat 8): Weniger Scheinpräzision in Synthese und Monte Carlo (V1.0.40)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
+`claude/dcf-bridge-period-lock`, Ausgangscommit `ef9fce2` (Spitze der Kette aus
+Chat 1–7; `main` steht noch auf `b023dc8` und enthält keinen dieser Schritte).
+Tool-Datei: `us-aktienbewertungstool-v1036-sector-classification-patch.html`
+— einzige HTML-Datei im Repository und Ziel von `test/run-calc-tests.js`
+(`DEFAULT_TARGET`). Arbeitsbranch: `claude/us-stock-tool-precision-og5azo`.
+Testbefehl: `npm test` (= `node test/run-all.js`).
+
+### Änderungen (Produktdatei)
+
+**1. Modelle einzeln, Abweichungen erklärt.** Neue Anzeigefunktion
+`_modelComparisonNote()` ergänzt jede Modellkachel um (a) die sichtbaren
+Inputs des Base-Szenarios (g1, WACC bzw. CoE, g∞, Op-Marge — dieselben Werte,
+die das Modell liest), (b) Rolle und effektives Synthese-Gewicht bzw. den
+Ausschlussgrund, (c) die bezifferte Abweichung gegenüber dem Synthese-Basiswert
+(ab 25 % als „wesentliche Abweichung" markiert) und (d) die Modelleignung
+(`MODEL_SUITABILITY_NOTES`). Rein anzeigend, keine Rückwirkung auf Rechenwege.
+
+**2. Synthese ausdrücklich als Heuristik.** `runFairValueSynthesizer()` liefert
+neu `synthesisMethod` mit Kennzeichnung (`kind: 'heuristic'`), Formel
+`Base = Σ(Gewicht_i × Base_i) / Σ(Gewicht_i)`, Aggregator, Gewichten samt
+Einzelbeiträgen, Ausschlüssen mit Begründung, Kappungen mit Wirkung und sechs
+nummerierten Rechenschritten. Die Range-Box zeigt das als aufklappbaren
+„Rechenweg der heuristischen Synthese" und trägt den Titelzusatz
+„heuristische Synthese".
+
+**3. EPV ist keine Wertuntergrenze mehr.** Der frühere Floor hob `rangeCons`
+auf `max(rangeCons, EPV-cons)` und `rangeBase` um bis zu +30 % an und speiste
+zusätzlich ein EPV-Paar (Gewicht 0,05) in die P25/P75-Entscheidungsrange —
+beides ohne sichtbaren Rechenschritt. Entfernt. `epvFloorApplied` ist dauerhaft
+`false`, `SYNTHESIS_CONFIG.epv.floor_role` ist `'diagnostic'`. EPV bleibt
+vollständig sichtbar: als eigenes Modell mit eigenen Szenarien, als neues
+`epvComparison` (cons/base/opt, Eignung je Sektorpfad, Hinweis auf die
+entfallene Anhebung) und als benannter Ausschluss im Rechenweg.
+
+**4. Sicherheitsabschlag getrennt vom Modellwert.** Neues `safetyDiscount`
+(`kind: 'chosen_rule_based'`, `isModelOutput: false`) weist Modellwert (Base und
+Conservative), Abschlagskomponenten, Kompositionsregel, Obergrenze und die
+Formeln getrennt aus. Die Einstiegszonen-Box zeigt jetzt „Modellwert (Base) ·
+gewählter Sicherheitsabschlag · Einstiegspreis" nebeneinander plus die Rechnung
+`Modellwert × (1 − Abschlag) = Einstiegspreis` und den Hinweis, dass der
+Abschlag eine gewählte Regelgröße und kein Modellergebnis ist. Ein manuelles
+Eingabefeld für den Abschlag existierte nicht und wurde nicht ergänzt (keine
+neue Funktion) — getrennt ausgewiesen wird der bestehende Regelabschlag.
+
+**Änderung gegenüber der bisherigen Einstiegszone** (gemessen am Testfall
+S-1, DCF 16/20/24, RIM 24/30/36, EPV 40/50/60, Abschlag 25 %):
+Conservative 40 → **18,40**, Base 29,90 → **23,00**, Einstiegspreis
+22,425 → **17,25**, tiefer Prüfpreis 30,00 → **13,80**. Die Einstiegszone
+liegt also dort tiefer, wo sie vorher durch den EPV automatisch angehoben war;
+ohne EPV-Modell ändert sich nichts. Die Formel selbst ist unverändert
+(`Base × (1 − MoS)`), nur ihre Darstellung ist aufgetrennt.
+
+**5. Monte Carlo eingeklappt und als Simulation benannt.** Eigene Karte
+`buildMcDiagCard()` mit `class="card collapsed"`, Titel „Monte-Carlo-Simulation
+(eingeklappt)" und Zusatz „Simulation unter angenommenen Verteilungen". Das
+Faktor-Overlay hat jetzt eine eigene Karte (vorher teilten sich beide eine
+aufgeklappte). Die Kennzahl „P(FV > Kurs)" heißt jetzt „Anteil Läufe > Kurs";
+darunter steht ausdrücklich, dass dieser Anteil eine Eigenschaft der gesetzten
+Verteilungsannahmen und **keine empirisch belegte Wahrscheinlichkeit** einer
+Unterbewertung ist. Feld `probAbovePrice` bleibt aus Kompatibilitätsgründen
+erhalten, ergänzt um `shareRunsAbovePrice`, `runsAbovePrice` und
+`_shareAbovePriceIsNotEmpiricalProbability`.
+
+**6. Monte Carlo reproduzierbar und vollständig gezählt.** `Math.random()`
+ersetzt durch `_mulberry32` mit gespeichertem Startwert (`MC_CONFIG.seed =
+20260101`, per `opts.seed` überschreibbar); Box-Muller zieht jetzt aus diesem
+Generator (`_normalDrawFrom`). Der Startwert und der Generator stehen im
+Ergebnis und in der Anzeige. Alle Verteilungsparameter liegen in `MC_CONFIG`
+und werden als `distributions` ausgewiesen (Form, μ, σ, σ-Herkunft,
+Abschneidungen, Wirkung des Margenschocks, Hinweis auf nicht modellierte
+Korrelationen). Getrennte Zählung: `runsRequested`, `runsValid`,
+`runsNegative`, `runsInvalid` = `runsInvalidCore` (kein Kernergebnis, z.B.
+WACC ≤ g∞) + `runsNonFinite`. Negative Eigenkapitalwerte bleiben in der
+Verteilung und werden nur gezählt. Zu wenige gültige Läufe liefern kein
+stilles `null` mehr, sondern ein `_blocked`-Ergebnis mit der Zählung als
+Begründung.
+
+**7. Urteile getrennt.** Neues `judgements` mit drei Feldern und eigener
+Quelle je Dimension (`quality` aus der Quality-Engine, `data` aus der
+Data-Quality-Engine, `valuation` aus der Fair-Value-Synthese) und
+`merged: false`. Kein zusammengefasster Gesamtscore.
+
+### Pflicht-Tests (neu, `_testSynthesisPrecision`, 73 Assertions)
+
+Registriert in `test/run-calc-tests.js` (`PURE_TEST_FUNCTIONS`). Synthetische
+Daten, unabhängig nachgerechnete Erwartungswerte:
+* **S-1 (12)** EPV ohne Untergrenzenwirkung: identische Range, Einstiegszone,
+  tiefer Prüfpreis und Entscheidungsrange mit und ohne EPV-Modell; Vorbedingung
+  prüft ausdrücklich, dass der frühere Floor hier gegriffen hätte.
+* **S-2 (7)** Rechenweg: Gewichtssumme 1, Σ(Gewicht × Base) reproduziert
+  `range.base` exakt, sechs beschriftete Schritte, Kappungen benannt.
+* **S-3 (9)** Abschlag getrennt: `entryPrice = Base × (1 − Abschlag)`,
+  Grundabschlag 25 % (caution_quality), Komposition `1 − Π(1 − Komponente)`
+  unabhängig nachgerechnet, Anzeige trennt Modellwert und Abschlag.
+* **S-4 (6)** Urteile getrennt: besseres Qualitätsurteil senkt nur den
+  Abschlag (25 % → 15 %) und lässt den Modellwert unverändert.
+* **S-5 (6)** Determinismus: gleiche Eingaben und gleicher Startwert ⇒
+  identische Ergebnisse; anderer Startwert ⇒ andere, ebenfalls reproduzierbare
+  Ziehung.
+* **S-6 (7)** Zählung: gültig + ungültig = angefordert; bei 40 USD/Aktie
+  Nettoschulden gegen ~30 USD/Aktie operativen Wert bleiben alle 2000 Läufe
+  gültig und über 75 % negativ — nichts fällt still heraus.
+* **S-7 (6)** Verteilungsparameter: σ(WACC) = 0,25 × σ(g) = 0,5pp,
+  σ(g∞) = 0,40pp gesetzt, Abschneidungen und fehlende Korrelation benannt.
+* **S-8 (8)** Anzeige: Karte eingeklappt, kein „P(FV > Kurs)", Startwert,
+  Laufzählung und Hinweistext sichtbar.
+* **S-9 (7)** Modellvergleich: sichtbare Inputs, Rolle, bezifferte Abweichung,
+  Eignung; RIM nennt CoE statt WACC; EPV ist „nicht gewichtet" mit Begründung.
+* **S-10 (5)** Rechenweg in der Range-Box sichtbar, kein „EPV Floor aktiv".
+
+**Gegenprobe gegen den Vorher-Stand.** Mit wiederhergestelltem EPV-Floor und
+`Math.random()` fallen **9** der neuen Assertions (S-1b/c/d/e/f/h, S-2c,
+S-5b/f) — unter anderem hob der Floor dort Conservative von 18,40 auf 40,00
+und Base von 23,00 auf 29,90, und der offengelegte Rechenweg ergab 23,00
+statt der angezeigten 29,90.
+
+### Tatsächlich ausgeführte Tests
+
+`npm test` (= `node test/run-all.js`):
+* `node test/run-calc-tests.js` → **927 bestanden · 1 fehlgeschlagen ·
+  0 Fehler/Exceptions** (Ausgangsstand 854; +73 durch `_testSynthesisPrecision`).
+  Fixtures unverändert 425 bestanden / 1 fehlgeschlagen.
+* `node --test tests/*.test.mjs` → **23/23**.
+
+Der bekannte Altfehler `T-BRL1` bleibt unbearbeitet, sichtbar und rot; damit
+endet `npm test` und die CI weiterhin rot. **Keine bestehende Testerwartung
+wurde geändert.**
+
+### Offene Einschränkungen / bewusst nicht bearbeitet
+
+* `T-BRL1` weiterhin rot (Altfehler aus Chat 2).
+* Kein manuelles Eingabefeld für den Sicherheitsabschlag ergänzt — der
+  bestehende Regelabschlag wird nur getrennt ausgewiesen. Eine echte
+  Nutzereingabe wäre eine neue Funktion und lag außerhalb des Auftrags.
+* Die Simulation zieht ihre vier Größen weiterhin unabhängig; Korrelationen
+  sind nicht modelliert. Das ist jetzt ausdrücklich benannt, nicht behoben.
+* `MC_CONFIG.seed` ist ein fester Programmwert, kein pro Titel gespeicherter
+  Startwert; Wiederholbarkeit ist damit gegeben, eine Startwert-Verwaltung je
+  Snapshot nicht.
+* Die neue Testfunktion läuft nur im Node-Runner, nicht im Browser-Test-Tab —
+  wie schon `_testValuationCore`, `_testDcfEquityBridge` und
+  `_testDcfWorkingCapital`.
+* Unverändert offen aus Chat 6/7: index-basierte Ableitung von `eps_diluted`,
+  `book_value` und `dps` in `applyDerivedFieldsV4`; String/Zahl-Vergleich im
+  Mehrheitsjahr-Fallback von `validatePeriodAlignment()`.
+* `ENGINE_VERSION` / `DISPLAY_VERSION` / `REGRESSION_TEST_VERSION` wurden wie
+  in den Vorgängerschritten nicht angehoben (durch Tests festgeschrieben);
+  die Änderung ist im Code als V1.0.40 kommentiert.
+
+### Ausgangsstand für den nächsten Schritt
+
+Übergabebranch: `claude/us-stock-tool-precision-og5azo`
+(Basis `ef9fce2` auf `claude/dcf-bridge-period-lock`).
+Tool-Datei: `us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Testbefehl: `npm test`. Ergebniscommit siehe Abschlussmeldung des Chats.
+
 ## Update (Chat 7): Nettoschulden-Periodensperre in der DCF-Wertbrücke (V1.0.39)
 
 **Basis:** `749f142` auf `claude/sec-period-integrity-fixes` (keine neueren

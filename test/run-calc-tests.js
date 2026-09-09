@@ -55,6 +55,7 @@ const PURE_TEST_FUNCTIONS = [
   '_testDcfEquityBridge',
   '_testDcfWorkingCapital',
   '_testValuationCore',
+  '_testSynthesisPrecision',
 ];
 
 // Test-Helper, die echte DOM-Formularfelder anlegen/auslesen

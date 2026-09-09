@@ -2895,8 +2895,10 @@ const SYNTHESIS_CONFIG = {
     min_available_scores: 2
   },
   epv: {
-    floor_role: 'floor',
-    floor_weight: 0.15,
+    // V1.0.40: 'diagnostic' statt 'floor' — EPV ist keine Wertuntergrenze des
+    // Standardergebnisses mehr, sondern nur noch separat sichtbarer Vergleich.
+    floor_role: 'diagnostic',
+    floor_weight: 0,
     maintenance_capex_field: 'maintenance_capex'
   },
   sector_weights: {
@@ -12673,26 +12675,36 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
   let rangeOpt   = _weightedMean(optP);
   const _anchorAggregator = _anchorActive ? 'weighted_mean_anchor_all_scenarios' : 'weighted_mean';
 
-  // EPV Floor-Constraint: EPV darf conservative/base nicht nach unten ziehen
-  // → wenn EPV > rangeBase/rangeCons, wird rangeCons auf max(rangeCons, epvCons) angehoben
-  // → EPV wirkt als Untergrenze, aber nie als Upward-Pull über rangeBase hinaus
-  let epvFloorApplied = false;
-  let epvFloorNote = null;
-  if (epvModel && epvCfg.floor_role === 'floor') {
-    const epvCons = epvModel.conservative;
-    const epvBase = epvModel.base;
-    if (epvCons != null && rangeCons != null && epvCons > rangeCons) {
-      rangeCons = epvCons;
-      epvFloorApplied = true;
-    }
-    if (epvBase != null && rangeBase != null && epvBase > rangeBase) {
-      rangeBase = Math.min(epvBase, rangeBase * 1.30); // cap: EPV darf base max +30% anheben
-      epvFloorApplied = true;
-    }
-    if (epvFloorApplied) {
-      epvFloorNote = `EPV Floor aktiv (${epvModel.modelName}): conservative/base nach oben korrigiert`;
-    }
-  }
+  // ── V1.0.40: KEINE EPV-Wertuntergrenze mehr im Standardergebnis ─────────
+  // Vorher hob ein höherer EPV rangeCons an und rangeBase um bis zu +30 %.
+  // Das war eine automatisch angehobene Bewertung ohne sichtbaren Rechenschritt:
+  // der EPV ist selbst ein Modellwert unter eigenen Annahmen (NOPAT/WACC, kein
+  // Wachstum, Nettoschulden aus Index 0) und keine gesicherte Untergrenze.
+  // EPV bleibt vollständig sichtbar — als eigenes Modell mit eigenen Szenarien
+  // und als ausdrücklicher Vergleich gegen die Synthese.
+  const epvFloorApplied = false;   // dauerhaft false: der Floor wirkt nicht mehr
+  const epvFloorNote    = null;
+  // Vergleichsangabe unabhängig von der früheren Klassen-Eignung: EPV bleibt
+  // in jeder Klasse sichtbar, die Eignung wird nur benannt.
+  const _epvAnyModel = allModels.find(m => m._isEpvFloor && m.applicable
+    && m.base != null && m.conservative != null && m.optimistic != null) || null;
+  const epvComparison = _epvAnyModel ? {
+    modelName:        _epvAnyModel.modelName || 'EPV (Floor)',
+    conservative:     _epvAnyModel.conservative,
+    base:             _epvAnyModel.base,
+    optimistic:       _epvAnyModel.optimistic,
+    role:             'diagnostic_only',
+    eligibleForClass: epvFloorEligible,
+    subClassification: subClass,
+    inSynthesisWeighting: false,
+    // Rein nachrichtlich: wie der frühere Floor gewirkt HÄTTE.
+    wouldHaveRaisedConservative: (_epvAnyModel.conservative != null && rangeCons != null)
+      ? _epvAnyModel.conservative > rangeCons : false,
+    wouldHaveRaisedBase: (_epvAnyModel.base != null && rangeBase != null)
+      ? _epvAnyModel.base > rangeBase : false,
+    note: 'EPV wirkt nicht als Wertuntergrenze. Conservative und Base der Synthese '
+        + 'werden durch den EPV weder angehoben noch gekappt.'
+  } : null;
 
   // EPV zählt nicht als Kernmodell — rein diagnostischer Floor
   // V1.0.13: DDM im diagnostic-Modus ebenfalls nicht als Core zählen
@@ -13196,6 +13208,160 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
   const _finalSynthesisModels = modelWeightDiag.map(d => d.model);
   const _includedModelsAll = _gateModels.map(g => g.key);
 
+  // ══════════════════════════════════════════════════════════════════════
+  // V1.0.40: HEURISTISCHE SYNTHESE — Rechenweg vollständig offenlegen
+  // ══════════════════════════════════════════════════════════════════════
+  // Die Zusammenführung mehrerer Modellwerte zu EINER Zahl ist eine Heuristik,
+  // kein Schätzverfahren. Gewichte, Ausschlüsse, Kappungen und der
+  // Sicherheitsabschlag werden deshalb einzeln und nachrechenbar ausgewiesen.
+  const _keyOfModel = (m) => Object.keys(valuationResult.modelResults)
+    .find(k => valuationResult.modelResults[k] === m) || null;
+
+  // (a) Ausschlüsse: welches Modell warum NICHT gewichtet wurde
+  const _synthesisExclusions = [];
+  Object.entries(valuationResult.modelResults || {}).forEach(([k, m]) => {
+    if (!m) return;
+    if (modelWeightDiag.some(d => d.model === k)) return;   // gewichtet → kein Ausschluss
+    let reason;
+    if (!m.applicable) {
+      reason = m.reason || 'nicht anwendbar';
+    } else if (m._isEpvFloor) {
+      reason = 'EPV: nur diagnostischer Vergleich — keine Gewichtung und (seit V1.0.40) keine Wertuntergrenze';
+    } else if (m._outlierExcluded) {
+      const rt = m._diagnosticHighDivergenceRatio != null
+        ? m._diagnosticHighDivergenceRatio.toFixed(2) + '× über dem Median'
+        : (m._diagnosticLowDivergenceRatio != null
+            ? (m._diagnosticLowDivergenceRatio * 100).toFixed(0) + '% des Medians' : 'Ausreißer');
+      reason = 'Ausreißer gegenüber den übrigen Modellen (' + rt + ') — aus der Gewichtung entfernt, bleibt sichtbar';
+    } else if (k === 'ddm' && (valuationResult.router || {}).ddmMode === 'diagnostic') {
+      reason = 'DDM im Sektorpfad ' + subClass + ' nur diagnostisch — nicht in der Kerngewichtung';
+    } else if (m.base == null || m.conservative == null || m.optimistic == null) {
+      reason = 'unvollständige Szenarien (conservative/base/optimistic)';
+    } else {
+      reason = 'nicht in der Kerngewichtung dieses Sektorpfads';
+    }
+    _synthesisExclusions.push({ model: k, modelName: m.modelName || k, reason,
+                                base: m.base != null ? m.base : null });
+  });
+
+  // (b) Kappungen: was wurde begrenzt, warum, mit welcher Wirkung
+  const _synthesisCaps = [];
+  if (_rimCapWeight !== null) {
+    _synthesisCaps.push({ name: 'RIM-Gewichtskappung',
+      reason: _rimCapReason || 'RIM weicht stark vom Median der übrigen Modelle ab',
+      effect: 'RIM-Rohgewicht auf ' + (_rimCapWeight * 100).toFixed(0) + '% begrenzt'
+              + (_rimBullCaseOnly ? '; RIM-Szenarien nicht in der P25/P75-Entscheidungsrange' : '') });
+  }
+  if (_mosComposed > mc.cap + 1e-12) {
+    _synthesisCaps.push({ name: 'Sicherheitsabschlag-Kappung',
+      reason: 'zusammengesetzter Abschlag ' + (_mosComposed * 100).toFixed(1) + '% über der Obergrenze',
+      effect: 'Abschlag auf ' + (mc.cap * 100).toFixed(0) + '% begrenzt' });
+  }
+  if (_capReason) {
+    _synthesisCaps.push({ name: 'Positions-Kappung',
+      reason: _capReason,
+      effect: 'Positionsurteil von "' + (_rawPosBeforeCap || '–') + '" auf "' + position + '" begrenzt' });
+  }
+  _synthesisCaps.push({ name: 'EPV-Wertuntergrenze', reason: 'seit V1.0.40 entfernt',
+    effect: 'keine Anhebung von conservative/base durch den EPV (früher: cons = max(cons, EPV-cons), base bis +30%)' });
+
+  // (c) Rechenschritte des Basiswerts — Σ(Gewicht × Base) / Σ(Gewicht)
+  const _weightSum = modelWeightDiag.reduce((a, d) => a + d.weight, 0);
+  const _synthesisSteps = [];
+  _synthesisSteps.push({
+    step: 1, label: 'Modelle mit vollständigen Szenarien',
+    detail: modelWeightDiag.length + ' von ' + Object.keys(valuationResult.modelResults || {}).length
+            + ' Modellen gewichtet; ' + _synthesisExclusions.length + ' nicht gewichtet (siehe Ausschlüsse)'
+  });
+  _synthesisSteps.push({
+    step: 2, label: 'Gewichte (Sektorpfad ' + subClass + (_anchorActive ? ', Dividenden-Anker aktiv' : '') + ')',
+    detail: modelWeightDiag.map(d => d.model + ' ' + (d.effectiveWeight * 100).toFixed(1) + '%').join(' · ') || '–'
+  });
+  _synthesisSteps.push({
+    step: 3, label: 'Basiswert = Σ(Gewicht × Base) / Σ(Gewicht)',
+    detail: modelWeightDiag.map(d => (d.effectiveWeight * 100).toFixed(1) + '% × ' + d.base.toFixed(2)).join(' + ')
+            + ' = ' + (rangeBase != null ? rangeBase.toFixed(2) : '–'),
+    aggregator: _anchorAggregator
+  });
+  _synthesisSteps.push({
+    step: 4, label: 'Conservative / Optimistic analog aus denselben Gewichten',
+    detail: 'cons = ' + (rangeCons != null ? rangeCons.toFixed(2) : '–')
+            + ' · opt = ' + (rangeOpt != null ? rangeOpt.toFixed(2) : '–')
+  });
+  _synthesisSteps.push({
+    step: 5, label: 'Sicherheitsabschlag (gewählt, kein Modellergebnis)',
+    detail: 'zusammengesetzt 1 − Π(1 − Komponente) = ' + (_mosComposed * 100).toFixed(1) + '%'
+            + (_mosComposed > mc.cap + 1e-12 ? ', gekappt auf ' + (mc.cap * 100).toFixed(0) + '%' : '')
+            + ' ⇒ ' + (mosTotalFinal * 100).toFixed(1) + '%'
+  });
+  _synthesisSteps.push({
+    step: 6, label: 'Einstiegspreis = Modellwert(Base) × (1 − Sicherheitsabschlag)',
+    detail: buyPriceAdj != null
+      ? rangeBase.toFixed(2) + ' × (1 − ' + (mosTotalFinal * 100).toFixed(1) + '%) = ' + buyPriceAdj.toFixed(2)
+      : 'kein Einstiegspreis: ' + (blockReason || 'gesperrt')
+  });
+
+  // (d) Sicherheitsabschlag GETRENNT vom Modellwert ausweisen
+  const _safetyDiscount = {
+    kind: 'chosen_rule_based',
+    label: 'Gewählter Sicherheitsabschlag — Regelwerk, kein Modellergebnis',
+    isModelOutput: false,
+    total: mosTotalFinal,
+    composedBeforeCap: _mosComposed,
+    cap: mc.cap,
+    capActive: _mosComposed > mc.cap + 1e-12,
+    compositionRule: 'MoS_total = 1 − Π(1 − Komponente_i), anschließend Obergrenze',
+    components: {
+      base: mosBase, qualityAddon: mosDataQualityAddon, baseRateAddon: mosBaseRateAddon,
+      heuristicAddon: mosHeuristicAddon, divergenceAddon: _mosDivergenceAddon,
+      leverageAddon: mosLeverageAddon, sectorAddon: mosSectorAddon, buybackAddon: mosBuybackAddon
+    },
+    structural: mosStructural,
+    // Modellwert und Abschlag bleiben getrennt lesbar:
+    modelValueBase:         rangeBase,
+    modelValueConservative: rangeCons,
+    entryPrice:             buyPriceAdj,
+    deepValuePrice:         deepValuePrice,
+    starterZonePrice:       starterZonePrice,
+    formulaEntryPrice: 'Einstiegspreis = Modellwert(Base) × (1 − Sicherheitsabschlag)',
+    formulaDeepValue:  'Tiefer Prüfpreis = Modellwert(Conservative) × (1 − Sicherheitsabschlag)'
+  };
+
+  const _synthesisMethod = {
+    kind: 'heuristic',
+    label: 'Heuristische Synthese — regelbasierte Gewichtung mehrerer Modellwerte, '
+         + 'kein statistisches Schätzverfahren und keine Konsensschätzung',
+    aggregator: _anchorAggregator,
+    formulaBase: 'Base = Σ(Gewicht_i × Base_i) / Σ(Gewicht_i)',
+    weightSumRaw: _weightSum,
+    weights: modelWeightDiag.map(d => ({
+      model: d.model, weight: d.weight, effectiveWeight: d.effectiveWeight, base: d.base,
+      contribution: d.effectiveWeight * d.base
+    })),
+    exclusions: _synthesisExclusions,
+    caps: _synthesisCaps,
+    safetyDiscount: _safetyDiscount,
+    epvComparison,
+    steps: _synthesisSteps
+  };
+
+  // (e) Punkt 7: Qualitäts-, Daten- und Bewertungsurteil bleiben GETRENNT.
+  // Kein zusammengefasster Gesamtscore — jede Dimension nennt ihre eigene Quelle.
+  const _judgements = {
+    quality:   { source: 'Quality-Engine', verdict: verdict,
+                 note: 'Geschäftsqualität — unabhängig von Datenlage und Bewertung' },
+    data:      { source: 'Data-Quality-Engine',
+                 cap: dqResult ? (dqResult.cap || null) : null,
+                 grade: dqResult ? (dqResult.grade != null ? dqResult.grade : null) : null,
+                 capApplied: _dataQualityCapApplied,
+                 note: 'Datenabdeckung/-güte — unabhängig von Geschäftsqualität und Bewertung' },
+    valuation: { source: 'Fair-Value-Synthese', position: position,
+                 rawPositionBeforeCap: _rawPosBeforeCap, capReason: _capReason,
+                 blockReason: blockReason,
+                 note: 'Kurs gegen Modellwert und Sicherheitsabschlag — kein Qualitätsurteil' },
+    merged: false
+  };
+
   return {
     status: 'ok',
     activeModelsCount,
@@ -13225,6 +13391,12 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
     },
     buyPrice: buyPriceAdj, deepValuePrice, starterZonePrice, blockReason, currentPrice, upsideToBuy, upsideToBase, position,
     epvFloorApplied, epvFloorNote,
+    // V1.0.40: offengelegter Rechenweg, getrennter Sicherheitsabschlag,
+    // getrennte Urteile, EPV nur als Vergleich.
+    synthesisMethod: _synthesisMethod,
+    safetyDiscount:  _safetyDiscount,
+    judgements:      _judgements,
+    epvComparison,
     _configVersion: config.rule_version,
     _modelWeightDiag: modelWeightDiag,
     _epvRole: epvCfg.floor_role,
@@ -13289,7 +13461,7 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
     // Berechnet decisionRangeLow (P25) und decisionRangeHigh (P75) aus den
     // szenarialen Einzelwerten aller normalen (nicht bull_case_only) Modelle.
     // RIM-bull_case_only-Werte fließen explizit NICHT in diese Range ein.
-    // EPV/Floor nur als Untergrenze (conservative), nie als Szenarien-Treiber.
+    // EPV geht gar nicht ein (V1.0.40) — weder als Untergrenze noch als Treiber.
     ...(() => {
       // Aufbau decisionRangePairs: alle szenarialen Einzelwerte mit effektivem Gewicht
       // pro Modell (conservative/base/optimistic bekommen gleiche Gewichtung innerhalb
@@ -13333,11 +13505,9 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
         if (opt3  != null) _drPairs.push({ value: opt3, weight: effW });
       });
 
-      // EPV als konservative Untergrenze — nur wenn EPV-Floor aktiv war
-      if (epvFloorApplied && epvModel && epvModel.conservative != null) {
-        // Sehr kleines Gewicht: EPV nur als Pull nach unten, nicht als Range-Treiber
-        _drPairs.push({ value: epvModel.conservative, weight: 0.05 });
-      }
+      // V1.0.40: kein EPV-Paar mehr in der Entscheidungsrange. Es wurde früher
+      // nur dann eingespeist, wenn der EPV-Floor gegriffen hatte — und wirkte
+      // damit als weitere unsichtbare Anhebung. EPV bleibt separat sichtbar.
 
       if (_drPairs.length < 2) return {};
 
@@ -13377,17 +13547,54 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// MONTE-CARLO DCF DIAGNOSE (2000 Läufe, kein API, keine Libs)
+// MONTE-CARLO-SIMULATION DCF — Diagnose (kein API, keine Libs)
+// Simulation unter ANGENOMMENEN Verteilungen, kein empirisches Ergebnis.
 // ════════════════════════════════════════════════════════════════
 
-function _boxMuller() {
-  let u, v;
-  do { u = Math.random(); } while (u === 0);
-  do { v = Math.random(); } while (v === 0);
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+// ── V1.0.40: deterministische Zufallsziehung ─────────────────────────────
+// Vorher zog die Simulation aus Math.random(): identische Eingaben lieferten
+// bei jedem Aufruf andere Zahlen, die Anzeige war weder nachrechenbar noch
+// überprüfbar. Jetzt: mulberry32 mit GESPEICHERTEM Startwert. Gleiche Eingaben
+// und gleicher Startwert ergeben exakt gleiche Ergebnisse.
+//
+// Sämtliche Verteilungsparameter stehen hier — sie sind ANGENOMMEN (gesetzt),
+// nicht aus einer Stichprobe geschätzt. σ(g) und σ(Marge) stammen aus der
+// Firmenhistorie (buildScenarios), die VerteilungsFORM (Normal) ist Annahme.
+const MC_CONFIG = {
+  runs: 2000,
+  seed: 20260101,               // gespeicherter Zufallsstartwert
+  rng: 'mulberry32',
+  sigmaWaccFactor: 0.25,        // σ(WACC) = 0,25 × σ(Umsatzwachstum), in pp
+  sigmaTerminalPp: 0.40,        // σ(Terminalwachstum) in pp
+  waccFloorAboveTerminalPp: 0.50,
+  terminalCapBelowWaccPp: 0.50,
+  marginShockYears: 3.5,        // Barwert-Näherung des Margenschocks in Jahresumsätzen
+  minValidRuns: 100
+};
+
+function _mulberry32(seed) {
+  let a = (seed >>> 0);
+  return function () {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
-function runMonteCarloDcf(mj, vResult) {
+// Box-Muller auf einem ÜBERGEBENEN, deterministischen Generator.
+function _normalDrawFrom(rand) {
+  return function () {
+    let u, v;
+    do { u = rand(); } while (u <= 0);
+    do { v = rand(); } while (v <= 0);
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  };
+}
+
+// opts.seed / opts.runs überschreiben MC_CONFIG (für Tests und Wiederholläufe).
+function runMonteCarloDcf(mj, vResult, opts) {
   if (!mj || !vResult || vResult.error || !vResult.scenarios) return null;
   // Fix 5: Monte Carlo deaktivieren wenn Revenue-YoY-Anomalie oder σ absurd hoch
   if (vResult._revenueYoyAnomaly) { const _mcLabel = (vResult._revenueYoyAnomalyDebug && vResult._revenueYoyAnomalyDebug.anomalyLabel) || 'Revenue-Anomalie'; return { _blocked: true, _reason: _mcLabel + ' — Monte Carlo deaktiviert bis zur Datenprüfung' }; }
@@ -13434,37 +13641,102 @@ function runMonteCarloDcf(mj, vResult) {
       'anderen Cashflow-Definition wäre nicht mit dem Haupt-DCF vergleichbar.' };
   }
 
-  const RUNS = 2000;
-  const out  = [];
+  const seed = (opts && opts.seed != null) ? (opts.seed >>> 0) : MC_CONFIG.seed;
+  const RUNS = (opts && opts.runs != null) ? opts.runs : MC_CONFIG.runs;
+  const draw = _normalDrawFrom(_mulberry32(seed));
+
+  const sigmaWacc = sigmaG * MC_CONFIG.sigmaWaccFactor;
+  // Nachvollziehbare Verteilungsparameter — maschinenlesbar und in der Anzeige.
+  const distributions = {
+    growth_stage1: {
+      shape: 'normal', mean_pct: g1Base, sd_pp: sigmaG,
+      sd_source: 'σ der historischen Umsatz-YoY-Wachstumsraten (buildScenarios)'
+    },
+    wacc: {
+      shape: 'normal', mean_pct: wacc, sd_pp: sigmaWacc,
+      sd_source: 'gesetzt: ' + MC_CONFIG.sigmaWaccFactor + ' × σ(Umsatzwachstum)',
+      truncation: 'untere Schranke: Terminalwachstum + ' + MC_CONFIG.waccFloorAboveTerminalPp + ' pp'
+    },
+    growth_terminal: {
+      shape: 'normal', mean_pct: tgBase, sd_pp: MC_CONFIG.sigmaTerminalPp,
+      sd_source: 'gesetzter Festwert (nicht geschätzt)',
+      truncation: 'obere Schranke: WACC(Lauf) − ' + MC_CONFIG.terminalCapBelowWaccPp + ' pp'
+    },
+    op_margin_shock: {
+      shape: 'normal', mean_pp: 0, sd_pp: sigmaM,
+      sd_source: 'σ der historischen operativen Margen (buildScenarios)',
+      applied_as: 'Schock × Umsatz/Aktie × (1 − Steuersatz) × ' + MC_CONFIG.marginShockYears + ' Jahre'
+    },
+    independence: 'Alle vier Größen werden unabhängig gezogen — Korrelationen sind NICHT modelliert.'
+  };
+
+  const out = [];
+  // Getrennte Zählung: gültig / davon negativ / ungültig (mit Grund).
+  let runsInvalidCore = 0;   // Kern lieferte kein Ergebnis (z.B. WACC ≤ Terminalwachstum)
+  let runsNonFinite   = 0;   // Ergebnis nicht endlich (NaN/Infinity)
+  let runsNegative    = 0;   // gültiges, aber negatives Ergebnis
 
   for (let i = 0; i < RUNS; i++) {
-    const g1sim   = g1Base  + _boxMuller() * sigmaG;
-    const waccSim = Math.max(wacc + _boxMuller() * sigmaG * 0.25, tgBase + 0.5);
-    const tgSim   = Math.min(tgBase + _boxMuller() * 0.4, waccSim - 0.5);
+    const g1sim   = g1Base  + draw() * sigmaG;
+    const waccSim = Math.max(wacc + draw() * sigmaWacc, tgBase + MC_CONFIG.waccFloorAboveTerminalPp);
+    const tgSim   = Math.min(tgBase + draw() * MC_CONFIG.sigmaTerminalPp, waccSim - MC_CONFIG.terminalCapBelowWaccPp);
 
-    const mShock = _boxMuller() * (sigmaM / 100);
+    const mShock = draw() * (sigmaM / 100);
     const d = coreValuationDetail(ctx, g1sim, tgSim, waccSim, null);
-    if (!d) continue;
+    if (!d) { runsInvalidCore++; continue; }
     const revPerShare = fi.revenue0 / fi.shares0;
-    const marginImpact = mShock * revPerShare * (1 - fi.taxRate / 100) * 3.5;
+    const marginImpact = mShock * revPerShare * (1 - fi.taxRate / 100) * MC_CONFIG.marginShockYears;
     // Der Margenschock wirkt auf den operativen Wert; die Nettoschuldenbrücke
     // steckt bereits in equityValuePerShare.
     const fv = d.equityValuePerShare + marginImpact;
-    // Ein negativer Eigenkapitalwert ist ein gültiges Ergebnis und wird nicht
-    // stillschweigend aus der Verteilung entfernt (sonst optimistischer Bias).
-    if (isFinite(fv)) out.push(fv);
+    // Ein negativer Eigenkapitalwert ist ein gültiges wirtschaftliches Ergebnis
+    // und wird NICHT stillschweigend aus der Verteilung entfernt (sonst
+    // optimistischer Bias). Er wird gezählt und ausgewiesen.
+    if (!isFinite(fv)) { runsNonFinite++; continue; }
+    if (fv < 0) runsNegative++;
+    out.push(fv);
   }
 
-  if (out.length < 100) return null;
+  const runsInvalid = runsInvalidCore + runsNonFinite;
+
+  if (out.length < MC_CONFIG.minValidRuns) {
+    // Kein stilles null mehr: die Zählung ist das Ergebnis.
+    return { _blocked: true, _reason:
+      'Monte Carlo ausgeschlossen — nur ' + out.length + ' von ' + RUNS + ' Läufen lieferten ein ' +
+      'endliches Ergebnis (Mindestzahl ' + MC_CONFIG.minValidRuns + '). Ungültig: ' + runsInvalid +
+      ' (davon ' + runsInvalidCore + ' ohne Kernergebnis, z.B. WACC ≤ Terminalwachstum, und ' +
+      runsNonFinite + ' nicht endlich).',
+      seed, runsRequested: RUNS, runsValid: out.length, runsNegative,
+      runsInvalid, runsInvalidCore, runsNonFinite, distributions };
+  }
+
   out.sort((a, b) => a - b);
   const n = out.length;
+  const aboveCount = price != null ? out.filter(x => x > price).length : null;
 
   return {
     median:         out[Math.floor(n * 0.50)],
     p10:            out[Math.floor(n * 0.10)],
     p90:            out[Math.floor(n * 0.90)],
-    probAbovePrice: price != null ? out.filter(x => x > price).length / n : null,
+    // Anteil der SIMULIERTEN Läufe über dem Kurs — eine Eigenschaft der oben
+    // gesetzten Verteilungsannahmen, KEINE empirisch belegte Wahrscheinlichkeit
+    // einer Unterbewertung. Feldname aus Kompatibilitätsgründen erhalten.
+    probAbovePrice:       aboveCount != null ? aboveCount / n : null,
+    shareRunsAbovePrice:  aboveCount != null ? aboveCount / n : null,
+    runsAbovePrice:       aboveCount,
+    _shareAbovePriceIsNotEmpiricalProbability: true,
     runs:           n,
+    runsRequested:  RUNS,
+    runsValid:      n,
+    runsNegative,
+    runsInvalid,
+    runsInvalidCore,
+    runsNonFinite,
+    seed,
+    rng:            MC_CONFIG.rng,
+    deterministic:  true,
+    isSimulation:   true,
+    distributions,
     sigmaG,
     sigmaM,
     usedForecast:   useForecast
@@ -13520,29 +13792,82 @@ function computeFactorOverlay(mj, syn) {
 // RENDER-HELPERS — Diagnoseblöcke
 // ════════════════════════════════════════════════════════════════
 
+// V1.0.40: Die Anzeige benennt die Simulation als das, was sie ist —
+// Ziehungen aus GESETZTEN Verteilungen, keine Messung. Der Anteil der Läufe
+// über dem Kurs wird nicht mehr als „P(FV > Kurs)" ausgewiesen, weil das eine
+// empirisch belegte Unterbewertungswahrscheinlichkeit suggeriert.
 function buildMcDiagBlock(mj, vResult) {
   const mc = runMonteCarloDcf(mj, vResult);
   if (!mc) {
-    return `<div class="mc-block"><div class="mc-dl">Monte-Carlo DCF (2000 Läufe)</div><div style="font-size:.6rem;color:var(--muted)">Nicht berechenbar — FCF oder Forecast-Inputs fehlen.</div></div>`;
+    return `<div class="mc-block"><div class="mc-dl">Monte-Carlo-Simulation (${MC_CONFIG.runs} Läufe)</div><div style="font-size:.6rem;color:var(--muted)">Nicht berechenbar — FCF oder Forecast-Inputs fehlen.</div></div>`;
   }
-  // Fix 5: geblockte MC anzeigen
+  // Fix 5: geblockte MC anzeigen — inkl. Laufzählung, falls vorhanden
   if (mc._blocked) {
-    return `<div class="mc-block" style="border-left:3px solid var(--danger)"><div class="mc-dl" style="color:var(--danger)">⚠ Monte-Carlo DCF deaktiviert</div><div style="font-size:.6rem;color:var(--warn);padding:6px 0">${escapeHtml(mc._reason)}</div><div class="mc-note">Monte Carlo wird erst nach Datenkorrektur aktiv.</div></div>`;
+    const cnt = mc.runsRequested != null
+      ? `<div style="font-size:.58rem;color:var(--muted);font-family:var(--font-mono);padding-bottom:4px">Läufe angefordert ${mc.runsRequested} · gültig ${mc.runsValid} · davon negativ ${mc.runsNegative} · ungültig ${mc.runsInvalid} (ohne Kernergebnis ${mc.runsInvalidCore} · nicht endlich ${mc.runsNonFinite})</div>`
+      : '';
+    return `<div class="mc-block" style="border-left:3px solid var(--danger)"><div class="mc-dl" style="color:var(--danger)">⚠ Monte-Carlo-Simulation deaktiviert</div><div style="font-size:.6rem;color:var(--warn);padding:6px 0">${escapeHtml(mc._reason)}</div>${cnt}<div class="mc-note">Simulation wird erst nach Datenkorrektur aktiv.</div></div>`;
   }
-  const prob    = mc.probAbovePrice;
-  const probPct = prob != null ? (prob * 100).toFixed(1) + '%' : '–';
-  const pCls    = prob == null ? 'na' : prob >= 0.60 ? 'bullish' : prob >= 0.40 ? 'neutral' : 'bearish';
+  const shareAbove = mc.shareRunsAbovePrice;
+  const sharePct   = shareAbove != null ? (shareAbove * 100).toFixed(0) + '%' : '–';
+  const pCls       = shareAbove == null ? 'na' : shareAbove >= 0.60 ? 'bullish' : shareAbove >= 0.40 ? 'neutral' : 'bearish';
+  const d          = mc.distributions || {};
+  const dRow = (lbl, o, unitKey) => {
+    if (!o) return '';
+    const mean = o.mean_pct != null ? o.mean_pct.toFixed(2) + '%' : (o.mean_pp != null ? o.mean_pp.toFixed(2) + 'pp' : '–');
+    return `<div style="display:flex;justify-content:space-between;gap:10px">
+        <span>${escapeHtml(lbl)}</span>
+        <span style="font-family:var(--font-mono);color:var(--text)">Normal(μ=${mean}, σ=${o.sd_pp != null ? o.sd_pp.toFixed(2) : '–'}pp)</span>
+      </div>
+      <div style="padding-left:8px;color:var(--muted)">↳ σ-Herkunft: ${escapeHtml(o.sd_source || '–')}${o.truncation ? ' · Abschneidung: ' + escapeHtml(o.truncation) : ''}${o.applied_as ? ' · Wirkung: ' + escapeHtml(o.applied_as) : ''}</div>`;
+  };
   return `
     <div class="mc-block">
-      <div class="mc-dl">Monte-Carlo DCF · ${mc.runs} Läufe · σ(g)=${mc.sigmaG.toFixed(1)}pp · σ(margin)=${mc.sigmaM.toFixed(1)}pp · ${mc.usedForecast ? 'Forecast-DCF' : 'FCF/Share-DCF'}</div>
+      <div class="mc-dl">Monte-Carlo-Simulation unter angenommenen Verteilungen · ${mc.runsValid} gültige von ${mc.runsRequested} Läufen · ${mc.usedForecast ? 'Forecast-DCF' : 'FCF/Share-DCF'}</div>
+      <div style="font-size:.58rem;color:var(--muted);font-family:var(--font-mono);margin:2px 0 6px">Zufallsstartwert (gespeichert): <strong style="color:var(--text)">${mc.seed}</strong> · Generator: ${escapeHtml(mc.rng || '–')} — gleiche Eingaben und gleicher Startwert ergeben dasselbe Ergebnis.</div>
       <div class="mc-hero">
-        <div><div class="mc-stat">P(FV &gt; Kurs)</div><div class="mc-prob ${pCls}">${probPct}</div></div>
+        <div><div class="mc-stat">Anteil Läufe &gt; Kurs</div><div class="mc-prob ${pCls}">${sharePct}</div></div>
         <div><div class="mc-stat">Median</div><div class="mc-val">${mc.median.toFixed(2)}</div></div>
         <div><div class="mc-stat">10. Pzt.</div><div class="mc-val">${mc.p10.toFixed(2)}</div></div>
         <div><div class="mc-stat">90. Pzt.</div><div class="mc-val">${mc.p90.toFixed(2)}</div></div>
       </div>
-      <div class="mc-note">Nur Diagnostik · kein Einfluss auf Synthese, Fair Value oder Einstiegszone</div>
+      <div style="font-size:.58rem;color:var(--warn);margin-top:6px;border-left:2px solid var(--warn);padding-left:6px">
+        ⚠ Der Anteil der Läufe über dem Kurs ist eine Eigenschaft der unten genannten, <strong>gesetzten</strong> Verteilungsannahmen.
+        Er ist <strong>keine empirisch belegte Wahrscheinlichkeit</strong> dafür, dass die Aktie unterbewertet ist.
+      </div>
+      <div style="font-size:.58rem;color:var(--muted);font-family:var(--font-mono);margin-top:6px;border-top:1px dashed var(--border);padding-top:5px">
+        Läufe: gültig <strong style="color:var(--text)">${mc.runsValid}</strong> · davon negativ <strong style="color:${mc.runsNegative > 0 ? 'var(--warn)' : 'var(--text)'}">${mc.runsNegative}</strong> · ungültig <strong style="color:var(--text)">${mc.runsInvalid}</strong> (ohne Kernergebnis ${mc.runsInvalidCore} · nicht endlich ${mc.runsNonFinite})
+        <div style="color:var(--muted)">↳ Negative Eigenkapitalwerte bleiben in der Verteilung — sie werden nicht entfernt.</div>
+      </div>
+      <details style="margin-top:6px">
+        <summary style="font-size:.58rem;color:var(--muted);cursor:pointer">▸ Verteilungsannahmen (gesetzt, nicht gemessen)</summary>
+        <div style="font-size:.56rem;font-family:var(--font-mono);color:var(--muted);margin-top:4px;display:grid;gap:2px">
+          ${dRow('Wachstum Stufe 1', d.growth_stage1)}
+          ${dRow('WACC', d.wacc)}
+          ${dRow('Terminalwachstum', d.growth_terminal)}
+          ${dRow('Margenschock', d.op_margin_shock)}
+          <div style="color:var(--muted)">↳ ${escapeHtml(d.independence || '')}</div>
+        </div>
+      </details>
+      <div class="mc-note">Simulation · nur Diagnostik · kein Einfluss auf Synthese, Fair Value oder Einstiegszone</div>
     </div>`;
+}
+
+// V1.0.40: eigene, standardmäßig EINGEKLAPPTE Karte für die Simulation.
+// Vorher teilte sie sich eine aufgeklappte Karte mit dem Faktor-Overlay.
+function buildMcDiagCard(mj, vResult) {
+  return `
+    <div class="card collapsed">
+      <div class="card-title" onclick="toggleCard(this)">
+        Monte-Carlo-Simulation (eingeklappt)
+        <span class="tag muted" style="font-size:.48rem;margin-left:6px">Simulation unter angenommenen Verteilungen · nur Diagnostik</span>
+        <span class="chev"></span>
+      </div>
+      <div class="card-body">
+        ${buildMcDiagBlock(mj, vResult)}
+      </div>
+    </div>
+  `;
 }
 
 function buildFactorOverlayBlock(mj, syn) {
@@ -15960,7 +16285,7 @@ function buildBuyPriceBox(s) {
     ? `<div class="txt-diagnostic" style="margin-top:8px;padding-top:7px;border-top:1px dashed var(--border)">
         <span class="txt-caption" style="letter-spacing:.06em;text-transform:uppercase">Tiefer Prüfpreis (DVP)</span>
         <span style="font-family:var(--font-mono);color:var(--text);margin-left:6px">${dvp}</span>
-        <span class="txt-caption" style="margin-left:4px">= Cons-FV − MoS · tiefer Prüfpreis (ultra-konservativ)</span>
+        <span class="txt-caption" style="margin-left:4px">= Modellwert(Conservative) × (1 − gewählter Abschlag) · ultra-konservativ</span>
       </div>`
     : '';
   // ── V1.0.14: Block-Grund transparent machen ──────────────────────────────
@@ -16011,12 +16336,12 @@ function buildBuyPriceBox(s) {
             <span>
               <span class="txt-caption" style="letter-spacing:.06em;text-transform:uppercase">Hohe Research-Priorität</span>
               <span style="font-family:var(--font-mono);color:${inStrongBuy ? 'var(--accent,#4ade80)' : 'var(--text)'};margin-left:6px">${bpNum != null ? bpNum.toFixed(2) : '–'}</span>
-              <span class="txt-caption" style="margin-left:4px">= Base FV − mosTotalFinal · konservative Einstiegszone</span>
+              <span class="txt-caption" style="margin-left:4px">= Modellwert(Base) × (1 − gewählter Abschlag) · konservative Einstiegszone</span>
             </span>
             <span>
               <span class="txt-caption" style="letter-spacing:.06em;text-transform:uppercase">Starter Zone</span>
               <span style="font-family:var(--font-mono);color:${inStarterZone && !inStrongBuy ? 'var(--warn)' : 'var(--text)'};margin-left:6px">${szp}</span>
-              <span class="txt-caption" style="margin-left:4px">= Base FV − mosStructural · 25–33% Zielposition</span>
+              <span class="txt-caption" style="margin-left:4px">= Modellwert(Base) × (1 − struktureller Abschlag) · 25–33% Zielposition</span>
             </span>
           </div>
           <div style="margin-top:3px;color:${szColor}">${szStatus}</div>
@@ -16040,11 +16365,45 @@ function buildBuyPriceBox(s) {
     }
   }
 
+  // ── V1.0.40: Modellwert und gewählter Sicherheitsabschlag getrennt ──────
+  // Vorher stand nur der verrechnete Einstiegspreis groß da; Modellwert und
+  // Abschlag waren zu einer Zahl verschmolzen.
+  const _sd = s.safetyDiscount || null;
+  const _mvBase = _sd && _sd.modelValueBase != null ? _sd.modelValueBase
+                : (s.range && s.range.base != null ? s.range.base : null);
+  const _mvCons = _sd && _sd.modelValueConservative != null ? _sd.modelValueConservative
+                : (s.range && s.range.conservative != null ? s.range.conservative : null);
+  const separationLine = `
+      <div style="margin-top:8px;padding:7px 9px;background:var(--surface2);border:1px solid var(--border);border-radius:6px">
+        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:baseline">
+          <span>
+            <span class="txt-caption" style="letter-spacing:.06em;text-transform:uppercase;color:var(--muted)">Modellwert (Base)</span>
+            <span style="font-family:var(--font-mono);color:var(--text);margin-left:6px">${_mvBase != null ? _mvBase.toFixed(2) : '–'}</span>
+          </span>
+          <span>
+            <span class="txt-caption" style="letter-spacing:.06em;text-transform:uppercase;color:var(--warn)">Gewählter Sicherheitsabschlag</span>
+            <span style="font-family:var(--font-mono);color:var(--warn);margin-left:6px">${mosPct}%</span>
+          </span>
+          <span>
+            <span class="txt-caption" style="letter-spacing:.06em;text-transform:uppercase;color:var(--muted)">Einstiegspreis</span>
+            <span style="font-family:var(--font-mono);color:var(--text);margin-left:6px">${bp}</span>
+          </span>
+        </div>
+        <div class="txt-caption" style="color:var(--muted);margin-top:4px;font-family:var(--font-mono)">
+          ${_mvBase != null ? _mvBase.toFixed(2) : '–'} × (1 − ${mosPct}%) = ${bp}
+        </div>
+        <div class="txt-caption" style="color:var(--muted);margin-top:3px">
+          Der Sicherheitsabschlag ist eine <strong>gewählte Regelgröße</strong> (Qualitätsstufe + Zuschläge), <strong>kein Modellergebnis</strong>.
+          Er verändert den Modellwert nicht, sondern nur den Preis, ab dem geprüft wird.
+        </div>
+      </div>`;
+
   return `
     <div class="box">
       <div class="box-title">Konservative Einstiegszone <span class="pos-badge pos-${posClass}">${posClass}</span>${posClass === 'watchlist' ? '<span class="txt-caption" style="color:#c084fc;margin-left:8px">kein Buy-Signal</span>' : ''}</div>
       <div class="big-value ${bigClass}">${bp}</div>
-      <div class="big-meta">Kurs: <strong>${cp}</strong> · MoS: <strong>${mosPct}%</strong> · Upside vs. Buy: ${upsideBuy} · vs. Base: ${upsideBase}</div>
+      <div class="big-meta">Kurs: <strong>${cp}</strong> · Modellwert Base: <strong>${_mvBase != null ? _mvBase.toFixed(2) : '–'}</strong> · gewählter Abschlag: <strong>${mosPct}%</strong> · Upside vs. Buy: ${upsideBuy} · vs. Base: ${upsideBase}</div>
+      ${separationLine}
       ${capReasonLine}
       ${confidenceLine}
       ${positionSizeHint}
@@ -16052,6 +16411,64 @@ function buildBuyPriceBox(s) {
       ${dvpLine}
     </div>
   `;
+}
+
+// ── V1.0.40: Modellvergleich je Modell ──────────────────────────────────
+// Punkt 1 des Auftrags: die verwendbaren Modelle mit ihren Szenarien einzeln
+// zeigen und wesentliche Abweichungen über SICHTBARE Inputs und über die
+// Modelleignung erklären — statt sie in einer Zahl verschwinden zu lassen.
+// Rein anzeigend: keine Rückwirkung auf Synthese, Range oder Einstiegszone.
+const MODEL_SUITABILITY_NOTES = {
+  dcf:            'Barwert freier Firmen-Cashflows — reagiert am stärksten auf WACC und Terminalwachstum.',
+  dcf_midcycle:   'DCF auf normalisierter Mid-Cycle-Ertragslage — geeignet bei zyklischen Ergebnissen, unterschätzt strukturelles Wachstum.',
+  rim:            'Residualgewinn auf Buchwertbasis — abhängig von Buchwertqualität und Eigenkapitalkosten, empfindlich gegenüber dauerhaft hohen Spreads.',
+  rim_buyback:    'Residualgewinn mit Rückkaufanpassung — abhängig von Buchwertqualität und angenommener Ausschüttungspolitik.',
+  ddm:            'Dividendenbarwert — nur bei stabiler, materieller Dividende aussagekräftig; ignoriert einbehaltene Gewinne.',
+  p_tbv_gordon:   'Preis/Tangible-Book über Gordon-Beziehung — auf Finanzwerte zugeschnitten.',
+  excess_return:  'Überrendite auf Eigenkapital — auf Finanzwerte zugeschnitten.',
+  epv_floor:      'Ertragswert ohne Wachstum (NOPAT/WACC) — bewusst konservative Vergleichsgröße, KEINE Wertuntergrenze.'
+};
+
+function _modelComparisonNote(key, m, v, s) {
+  const scB = (v && v.scenarios && v.scenarios.base) || null;
+  const usesCoe = (key === 'rim' || key === 'rim_buyback' || key === 'ddm' ||
+                   key === 'p_tbv_gordon' || key === 'excess_return');
+  // Sichtbare Inputs des Base-Szenarios — dieselben Werte, die die Modelle lesen.
+  const inputs = [];
+  if (scB) {
+    if (scB.growth_stage1 != null)   inputs.push('g1 ' + scB.growth_stage1.toFixed(2) + '%');
+    if (usesCoe && scB.coe != null)  inputs.push('CoE ' + scB.coe.toFixed(2) + '%');
+    if (!usesCoe && scB.wacc != null) inputs.push('WACC ' + scB.wacc.toFixed(2) + '%');
+    if (scB.terminal_growth != null) inputs.push('g∞ ' + scB.terminal_growth.toFixed(2) + '%');
+    if (scB.op_margin_pct != null)   inputs.push('Op-Marge ' + scB.op_margin_pct.toFixed(2) + '%');
+  }
+
+  // Rolle und Gewicht in der Synthese
+  const wd = (s && Array.isArray(s._modelWeightDiag)) ? s._modelWeightDiag.find(d => d.model === key) : null;
+  const exc = (s && s.synthesisMethod && Array.isArray(s.synthesisMethod.exclusions))
+    ? s.synthesisMethod.exclusions.find(x => x.model === key) : null;
+  const roleTxt = wd
+    ? 'in der Synthese gewichtet mit <strong style="color:var(--text)">' + (wd.effectiveWeight * 100).toFixed(1) + '%</strong>'
+    : (exc ? 'nicht gewichtet — ' + escapeHtml(exc.reason) : 'nicht gewichtet');
+
+  // Abweichung gegenüber dem Synthese-Basiswert
+  const synBase = (s && s.range && s.range.base != null) ? s.range.base : null;
+  let devTxt = '';
+  if (synBase != null && synBase !== 0 && m.base != null) {
+    const dev = (m.base / synBase - 1) * 100;
+    const strong = Math.abs(dev) >= 25;
+    devTxt = '<span style="color:' + (strong ? 'var(--warn)' : 'var(--muted)') + '">Base ' +
+      (dev >= 0 ? '+' : '') + dev.toFixed(1) + '% ggü. Synthese-Base ' + synBase.toFixed(2) +
+      (strong ? ' — wesentliche Abweichung' : '') + '</span>';
+  }
+
+  const suit = MODEL_SUITABILITY_NOTES[key] || null;
+  return `<div style="margin-top:5px;padding:4px 7px;background:rgba(255,255,255,.02);border:1px dashed var(--border);border-radius:4px;font-size:.55rem;color:var(--muted)">
+      <div style="font-family:var(--font-mono)">Sichtbare Inputs (Base): ${inputs.length ? escapeHtml(inputs.join(' · ')) : '– keine Szenariodaten'}</div>
+      <div>Rolle: ${roleTxt}</div>
+      ${devTxt ? '<div>' + devTxt + '</div>' : ''}
+      ${suit ? '<div>Eignung: ' + escapeHtml(suit) + '</div>' : ''}
+    </div>`;
 }
 
 function buildRangeBoxFull(s) {
@@ -16127,7 +16544,7 @@ function buildRangeBoxFull(s) {
 
   return `
     <div class="box">
-      <div class="box-title">Fair Value Range <span class="box-tag ok">${s.activeModelsCount || 0} Core-Modelle aktiv${(() => { const dm = (state.router && state.router.diagnosticModels && state.router.diagnosticModels.length) || 0; return dm > 0 ? ` + ${dm} Diagnosemodell` + (dm > 1 ? 'e' : '') : ''; })()}</span></div>
+      <div class="box-title">Fair Value Range <span class="box-tag" style="background:rgba(255,170,0,.12);color:var(--warn);border:1px solid rgba(255,170,0,.35)">heuristische Synthese</span> <span class="box-tag ok">${s.activeModelsCount || 0} Core-Modelle aktiv${(() => { const dm = (state.router && state.router.diagnosticModels && state.router.diagnosticModels.length) || 0; return dm > 0 ? ` + ${dm} Diagnosemodell` + (dm > 1 ? 'e' : '') : ''; })()}</span></div>
 
       <!-- Valuation Confidence — getrennt von Business Quality & Data Coverage -->
       <div style="margin-bottom:10px;padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px">
@@ -16158,7 +16575,7 @@ function buildRangeBoxFull(s) {
               return `<span class="val-summary-delta ${up >= 0 ? 'up' : 'down'}">${up > 0 ? '+' : ''}${up.toFixed(1)}% vs. Kurs</span>`;
             })() : ''}
           </div>
-          <div class="val-summary-sub">Gewichteter Mittelwert aktiver Modelle (DCF ${_wDcf} · DDM ${_wDdm} · RIM ${_wRim})</div>
+          <div class="val-summary-sub">Heuristisch gewichteter Mittelwert aktiver Modelle (DCF ${_wDcf} · DDM ${_wDdm} · RIM ${_wRim}) — regelbasierte Zusammenführung, keine Konsensschätzung. Rechenweg unten.</div>
         </div>
         ${price != null ? `
         <div class="val-summary-card">
@@ -16273,7 +16690,47 @@ function buildRangeBoxFull(s) {
         ${mc2.buybackAddon > 0 || (mc2._buybackUpliftPct && mc2._buybackUpliftPct > 5) ? `<div class="ml txt-caption" style="color:var(--info);margin-top:4px;border-top:1px dashed var(--border);padding-top:4px"><span>ℹ Buyback-adjusted DCF ist Diagnose, kein Fair-Value-Anker. Buy Price basiert ausschließlich auf dem konservativen Hauptwert.</span></div>` : ''}
       </div>`;
       })() : ''}
-      ${s.epvFloorApplied && s.epvFloorNote ? `<div class="txt-diagnostic" style="color:var(--warn);margin-top:6px;border-top:1px dashed var(--border);padding-top:5px">⚡ ${escapeHtml(s.epvFloorNote)}</div>` : ''}
+      ${s.epvComparison ? (() => {
+        const e = s.epvComparison;
+        return `<div class="txt-diagnostic" style="margin-top:6px;border-top:1px dashed var(--border);padding-top:5px;color:var(--muted)">
+          <span class="txt-caption" style="letter-spacing:.06em;text-transform:uppercase;color:var(--info)">${escapeHtml(e.modelName)} — separat, keine Wertuntergrenze</span>
+          <div style="font-family:var(--font-mono)">cons ${e.conservative != null ? e.conservative.toFixed(2) : '–'} · base ${e.base != null ? e.base.toFixed(2) : '–'} · opt ${e.optimistic != null ? e.optimistic.toFixed(2) : '–'}</div>
+          <div>${escapeHtml(e.note)}${e.eligibleForClass ? '' : ' Für den Sektorpfad ' + escapeHtml(e.subClassification) + ' gilt der EPV zusätzlich als wenig geeignet.'}</div>
+          ${(e.wouldHaveRaisedConservative || e.wouldHaveRaisedBase) ? `<div style="color:var(--warn)">ℹ Der frühere EPV-Floor hätte hier ${e.wouldHaveRaisedBase ? 'den Basiswert' : 'den konservativen Wert'} angehoben — diese automatische Anhebung entfällt.</div>` : ''}
+        </div>`;
+      })() : ''}
+      ${s.synthesisMethod ? (() => {
+        const sm = s.synthesisMethod;
+        const sd2 = sm.safetyDiscount || {};
+        return `
+      <details style="margin-top:8px;border-top:1px dashed var(--border);padding-top:6px">
+        <summary style="font-size:.62rem;color:var(--info);cursor:pointer;letter-spacing:.04em">▸ Rechenweg der heuristischen Synthese (Gewichte · Ausschlüsse · Kappungen · Abschlag)</summary>
+        <div style="font-size:.58rem;color:var(--muted);margin-top:6px">
+          <div style="color:var(--warn);margin-bottom:5px">⚠ ${escapeHtml(sm.label)}</div>
+          <div style="font-family:var(--font-mono);color:var(--text);margin-bottom:6px">${escapeHtml(sm.formulaBase)} · Aggregator: ${escapeHtml(sm.aggregator || '–')}</div>
+          <div style="display:grid;gap:3px;margin-bottom:6px">
+            ${sm.steps.map(st => `<div><span style="color:var(--info)">Schritt ${st.step}</span> — ${escapeHtml(st.label)}<div style="padding-left:10px;font-family:var(--font-mono);color:var(--text)">${escapeHtml(st.detail)}</div></div>`).join('')}
+          </div>
+          <div style="margin-bottom:5px">
+            <span class="txt-caption" style="letter-spacing:.06em;text-transform:uppercase;color:var(--info)">Gewichte und Beiträge</span>
+            ${sm.weights.map(w => `<div style="display:flex;justify-content:space-between;font-family:var(--font-mono)"><span>${escapeHtml(w.model)}</span><span>${(w.effectiveWeight*100).toFixed(1)}% × ${w.base.toFixed(2)} = ${w.contribution.toFixed(2)}</span></div>`).join('') || '<div>–</div>'}
+          </div>
+          <div style="margin-bottom:5px">
+            <span class="txt-caption" style="letter-spacing:.06em;text-transform:uppercase;color:var(--info)">Ausschlüsse (${sm.exclusions.length})</span>
+            ${sm.exclusions.length ? sm.exclusions.map(x => `<div>· <strong style="color:var(--text)">${escapeHtml(x.modelName)}</strong>: ${escapeHtml(x.reason)}${x.base != null ? ' <span style="font-family:var(--font-mono)">(base ' + x.base.toFixed(2) + ')</span>' : ''}</div>`).join('') : '<div>keine</div>'}
+          </div>
+          <div style="margin-bottom:5px">
+            <span class="txt-caption" style="letter-spacing:.06em;text-transform:uppercase;color:var(--info)">Kappungen (${sm.caps.length})</span>
+            ${sm.caps.map(c => `<div>· <strong style="color:var(--text)">${escapeHtml(c.name)}</strong>: ${escapeHtml(c.reason)} ⇒ ${escapeHtml(c.effect)}</div>`).join('')}
+          </div>
+          <div>
+            <span class="txt-caption" style="letter-spacing:.06em;text-transform:uppercase;color:var(--warn)">Sicherheitsabschlag — getrennt vom Modellwert</span>
+            <div style="font-family:var(--font-mono);color:var(--text)">${escapeHtml(sd2.formulaEntryPrice || '')}</div>
+            <div style="font-family:var(--font-mono)">${escapeHtml(sd2.compositionRule || '')}${sd2.capActive ? ' · Obergrenze aktiv' : ''}</div>
+          </div>
+        </div>
+      </details>`;
+      })() : ''}
       ${s._divergenceRatio != null ? (() => {
         const dc = s._modelDivergenceRangeOnly ? 'var(--danger)' : s._modelDivergenceSevere ? 'var(--danger)' : s._modelDivergenceHigh ? 'var(--warn)' : 'var(--muted)';
         const dl = s._modelDivergenceRangeOnly ? '🔴 range only (>5×)' : s._modelDivergenceSevere ? '🔴 severe' : s._modelDivergenceHigh ? '🟡 high' : '✓ ok';
@@ -17028,7 +17485,7 @@ function renderValuation() {
     html += `<div class="card">${buildRangeBoxFull(s)}</div>`;
   }
 
-  html += `<div class="card"><div class="card-title" style="cursor:default">Modelle</div><div class="model-grid">`;
+  html += `<div class="card"><div class="card-title" style="cursor:default">Modelle — einzeln mit Szenarien, sichtbaren Inputs und Eignung<span class="tag muted" style="font-size:.48rem;margin-left:6px">Abweichungen erklärt, nicht geglättet</span></div><div class="model-grid">`;
   Object.entries(v.modelResults || {}).forEach(([key, m]) => {
     if (m.applicable) {
       // Fix 4: WACC-Heuristik-Badge wenn Kernkomponenten fehlen
@@ -17139,6 +17596,7 @@ function renderValuation() {
             <div class="vl">base</div><div class="vv">${m.base != null ? m.base.toFixed(2) : '–'}</div>
             <div class="vl">opt</div><div class="vv">${m.optimistic != null ? m.optimistic.toFixed(2) : '–'}</div>
           </div>
+          ${_modelComparisonNote(key, m, v, state.synthesis)}
           ${_ddmDebugBlock}
           ${_ddmDiagNote}
           ${_ddmLowDivNote}
@@ -17194,15 +17652,18 @@ function renderValuation() {
     </div>
   `;
 
+  // V1.0.40: Simulation und Faktor-Overlay getrennt; die Simulation startet
+  // eingeklappt, damit sie nicht wie ein Kernergebnis wirkt.
+  html += buildMcDiagCard(state.masterJson, v);
+
   html += `
     <div class="card">
       <div class="card-title" onclick="toggleCard(this)">
-        Diagnose: Monte-Carlo &amp; Faktor-Overlay
+        Diagnose: Faktor-Overlay
         <span class="tag muted" style="font-size:.48rem;margin-left:6px">nur Diagnostik</span>
         <span class="chev"></span>
       </div>
       <div class="card-body">
-        ${buildMcDiagBlock(state.masterJson, v)}
         ${buildFactorOverlayBlock(state.masterJson, state.synthesis)}
       </div>
     </div>
@@ -30093,6 +30554,389 @@ function _testValuationCore() {
       && rdNo.status !== rdZero.status,
       'fehlend: ' + mNo.applicable + '/' + rdNo.status
       + ' | bekannt 0: ' + mZero.applicable + '/' + rdZero.status);
+  }
+
+  return results;
+}
+
+// ════════════════════════════════════════════════════════════════
+// V1.0.40 — SCHEINPRÄZISION: Synthese, EPV, Monte Carlo
+// Reine Rechen-/Anzeigetests. Kein DOM, kein state-Schreiben,
+// keine Netzwerk-/localStorage-Zugriffe.
+// ════════════════════════════════════════════════════════════════
+function _testSynthesisPrecision() {
+  const results = [];
+  let _currentSuite = '';
+  function suite(name) { _currentSuite = name; }
+  function check(label, condition, extra) {
+    results.push({ suite: _currentSuite, label, pass: !!condition,
+      extra: extra != null ? String(extra) : undefined });
+  }
+  const approx = (a, b, tol) => a != null && isFinite(a) && Math.abs(a - b) <= (tol != null ? tol : 1e-9);
+
+  // ── Gemeinsame Bausteine ───────────────────────────────────────────────
+  const mkSynMj = () => ({
+    meta: { ticker: 'SYNPREC', sub_classification: 'standard_nonfin' },
+    fundamentals: { revenue: [1000, 1000, 1000, 1000], ebit: [200, 200, 200, 200],
+                    shares_diluted: [100, 100, 100, 100] },
+    valuation: { growth_stage1: 8, growth_terminal: 2, wacc_derived: 10,
+                 wacc_components: { tax_rate: 25 }, fade: { enabled: false }, assumptions: {} },
+    market: { price: 20 }
+  });
+  const scOf = (g1, tg, wacc) => {
+    const S = { growth_stage1: g1, terminal_growth: tg, wacc: wacc, coe: wacc + 1, op_margin_pct: 20 };
+    return { conservative: S, base: S, optimistic: S,
+             sigmaGrowth: 3, sigmaMargin: 1.5, yearsUsedGrowth: 3, yearsUsedMargin: 4 };
+  };
+  const stub = (name, cons, base, opt, extra) => Object.assign({
+    applicable: true, conservative: cons, base: base, optimistic: opt,
+    modelName: name, warnings: []
+  }, extra || {});
+  // Modellwerte bewusst so gewählt, dass der frühere EPV-Floor gegriffen HÄTTE:
+  // EPV-cons 40 > jeder Synthese-cons aus (16 | 24), EPV-base 50 > (20 | 30).
+  const mkVr = (withEpv) => {
+    const mr = { dcf: stub('DCF', 16, 20, 24), rim: stub('RIM', 24, 30, 36) };
+    if (withEpv) mr.epv_floor = stub('EPV (Floor)', 40, 50, 60, { _isEpvFloor: true });
+    return { error: null, scenarios: scOf(8, 2, 10),
+             router: { activeModels: ['dcf', 'rim'], subClassification: 'standard_nonfin',
+                       diagnosticModels: [], ddmMode: null },
+             modelResults: mr };
+  };
+  const runSyn = (withEpv, quality) => runFairValueSynthesizer(
+    mkSynMj(), mkVr(withEpv), quality || null, SYNTHESIS_CONFIG);
+
+  const synNoEpv = runSyn(false);
+  const synEpv   = runSyn(true);
+
+  // ── S-1: EPV ist keine Wertuntergrenze mehr ────────────────────────────
+  suite('S-1 EPV ohne Untergrenzenwirkung');
+  {
+    check('S-1a: beide Synthesen laufen',
+      !!(synNoEpv && synNoEpv.range && synEpv && synEpv.range),
+      'erhalten: ' + JSON.stringify([synNoEpv && synNoEpv.status, synEpv && synEpv.status]));
+    // Vorbedingung: der Testfall trifft wirklich den früher anhebenden Pfad.
+    check('S-1b: Vorbedingung — EPV läge über conservative UND base der Synthese',
+      synEpv.epvComparison && synEpv.epvComparison.wouldHaveRaisedConservative === true
+      && synEpv.epvComparison.wouldHaveRaisedBase === true,
+      'erhalten: ' + JSON.stringify(synEpv.epvComparison));
+    check('S-1c: conservative unverändert (kein EPV-Lift)',
+      approx(synEpv.range.conservative, synNoEpv.range.conservative),
+      'mit EPV: ' + synEpv.range.conservative + ' · ohne: ' + synNoEpv.range.conservative);
+    check('S-1d: base unverändert (kein +30%-Cap-Lift)',
+      approx(synEpv.range.base, synNoEpv.range.base),
+      'mit EPV: ' + synEpv.range.base + ' · ohne: ' + synNoEpv.range.base);
+    check('S-1e: Einstiegspreis unverändert',
+      approx(synEpv.buyPrice, synNoEpv.buyPrice),
+      'mit EPV: ' + synEpv.buyPrice + ' · ohne: ' + synNoEpv.buyPrice);
+    check('S-1f: tiefer Prüfpreis unverändert',
+      approx(synEpv.deepValuePrice, synNoEpv.deepValuePrice),
+      'mit EPV: ' + synEpv.deepValuePrice + ' · ohne: ' + synNoEpv.deepValuePrice);
+    check('S-1g: Entscheidungsrange unverändert (kein EPV-Paar mehr in P25/P75)',
+      approx(synEpv.decisionRangeLow, synNoEpv.decisionRangeLow)
+      && approx(synEpv.decisionRangeHigh, synNoEpv.decisionRangeHigh)
+      && synEpv.decisionRangeScenarioPairs === synNoEpv.decisionRangeScenarioPairs,
+      'mit EPV: ' + JSON.stringify([synEpv.decisionRangeLow, synEpv.decisionRangeHigh, synEpv.decisionRangeScenarioPairs])
+      + ' · ohne: ' + JSON.stringify([synNoEpv.decisionRangeLow, synNoEpv.decisionRangeHigh, synNoEpv.decisionRangeScenarioPairs]));
+    check('S-1h: epvFloorApplied bleibt false, kein Floor-Hinweis',
+      synEpv.epvFloorApplied === false && synEpv.epvFloorNote == null,
+      'erhalten: ' + synEpv.epvFloorApplied + ' / ' + synEpv.epvFloorNote);
+    check('S-1i: EPV bleibt separat sichtbar (eigene Szenarien im Vergleich)',
+      synEpv.epvComparison && synEpv.epvComparison.conservative === 40
+      && synEpv.epvComparison.base === 50 && synEpv.epvComparison.optimistic === 60
+      && synEpv.epvComparison.inSynthesisWeighting === false,
+      'erhalten: ' + JSON.stringify(synEpv.epvComparison));
+    check('S-1j: EPV erhält kein Synthese-Gewicht',
+      Array.isArray(synEpv._modelWeightDiag)
+      && !synEpv._modelWeightDiag.some(d => d.model === 'epv_floor'),
+      'gewichte: ' + JSON.stringify(synEpv._modelWeightDiag));
+    check('S-1k: EPV erscheint mit Begründung unter den Ausschlüssen',
+      !!(synEpv.synthesisMethod && synEpv.synthesisMethod.exclusions.some(
+        x => x.model === 'epv_floor' && /keine Wertuntergrenze/.test(x.reason))),
+      'ausschluesse: ' + JSON.stringify(synEpv.synthesisMethod && synEpv.synthesisMethod.exclusions));
+    check('S-1l: Konfiguration weist EPV als diagnostisch aus',
+      SYNTHESIS_CONFIG.epv.floor_role === 'diagnostic' && synEpv._epvRole === 'diagnostic',
+      'erhalten: ' + SYNTHESIS_CONFIG.epv.floor_role + ' / ' + synEpv._epvRole);
+  }
+
+  // ── S-2: Rechenweg der Synthese ist nachrechenbar ──────────────────────
+  suite('S-2 Rechenweg der Synthese');
+  {
+    const sm = synEpv.synthesisMethod;
+    check('S-2a: Synthese ausdrücklich als Heuristik gekennzeichnet',
+      !!sm && sm.kind === 'heuristic' && /[Hh]euristisch/.test(sm.label),
+      'erhalten: ' + JSON.stringify(sm && { kind: sm.kind, label: sm.label }));
+    const wsum = sm.weights.reduce((a, w) => a + w.effectiveWeight, 0);
+    check('S-2b: effektive Gewichte summieren auf 1',
+      approx(wsum, 1, 1e-9), 'summe: ' + wsum);
+    // Unabhängige Nachrechnung des angezeigten Basiswerts aus den offengelegten
+    // Gewichten: Σ(effektives Gewicht × Base) muss range.base ergeben.
+    const recomputed = sm.weights.reduce((a, w) => a + w.effectiveWeight * w.base, 0);
+    check('S-2c: Σ(Gewicht × Base) reproduziert range.base exakt',
+      approx(recomputed, synEpv.range.base, 1e-9),
+      'nachgerechnet: ' + recomputed + ' · angezeigt: ' + synEpv.range.base);
+    check('S-2d: Beiträge je Modell ausgewiesen und konsistent',
+      sm.weights.every(w => approx(w.contribution, w.effectiveWeight * w.base, 1e-12)),
+      'weights: ' + JSON.stringify(sm.weights));
+    check('S-2e: Rechenschritte 1–6 vorhanden und vollständig beschriftet',
+      Array.isArray(sm.steps) && sm.steps.length >= 6
+      && sm.steps.every(st => st.step != null && st.label && st.detail),
+      'steps: ' + JSON.stringify(sm.steps));
+    check('S-2f: Kappungen benannt — entfernte EPV-Untergrenze ausdrücklich',
+      sm.caps.some(c => /EPV-Wertuntergrenze/.test(c.name) && /entfernt/.test(c.reason)),
+      'caps: ' + JSON.stringify(sm.caps));
+    check('S-2g: Aggregator benannt',
+      typeof sm.aggregator === 'string' && sm.aggregator.length > 0,
+      'aggregator: ' + sm.aggregator);
+  }
+
+  // ── S-3: Sicherheitsabschlag getrennt vom Modellwert ───────────────────
+  suite('S-3 Sicherheitsabschlag getrennt');
+  {
+    const sd = synEpv.safetyDiscount;
+    check('S-3a: Abschlag ausdrücklich als gewählte Regelgröße, kein Modellergebnis',
+      !!sd && sd.isModelOutput === false && sd.kind === 'chosen_rule_based',
+      'erhalten: ' + JSON.stringify(sd && { kind: sd.kind, isModelOutput: sd.isModelOutput }));
+    check('S-3b: Modellwert wird unverändert getrennt ausgewiesen',
+      approx(sd.modelValueBase, synEpv.range.base)
+      && approx(sd.modelValueConservative, synEpv.range.conservative),
+      'erhalten: ' + sd.modelValueBase + ' / ' + sd.modelValueConservative);
+    check('S-3c: Einstiegspreis = Modellwert(Base) × (1 − Abschlag)',
+      approx(sd.entryPrice, sd.modelValueBase * (1 - sd.total), 1e-9)
+      && approx(sd.entryPrice, synEpv.buyPrice, 1e-12),
+      'erhalten: ' + sd.entryPrice + ' · erwartet: ' + (sd.modelValueBase * (1 - sd.total)));
+    check('S-3d: tiefer Prüfpreis = Modellwert(Conservative) × (1 − Abschlag)',
+      approx(sd.deepValuePrice, sd.modelValueConservative * (1 - sd.total), 1e-9),
+      'erhalten: ' + sd.deepValuePrice + ' · erwartet: ' + (sd.modelValueConservative * (1 - sd.total)));
+    // Ohne Quality-Ergebnis greift der defensive Grundabschlag caution_quality = 25 %.
+    check('S-3e: Grundabschlag entspricht dem Regelwerk (caution_quality = 25 %)',
+      approx(sd.components.base, SYNTHESIS_CONFIG.mos.caution_quality, 1e-12)
+      && approx(sd.components.base, 0.25, 1e-12),
+      'erhalten: ' + sd.components.base);
+    // Komposition unabhängig nachgerechnet: 1 − Π(1 − Komponente), dann Cap.
+    const comps = sd.components;
+    const prod = [comps.base, comps.heuristicAddon, comps.divergenceAddon, comps.buybackAddon,
+                  comps.qualityAddon, comps.baseRateAddon, comps.leverageAddon, comps.sectorAddon]
+                 .reduce((p, c) => p * (1 - c), 1);
+    const expTotal = Math.min(1 - prod, SYNTHESIS_CONFIG.mos.cap);
+    check('S-3f: Abschlag folgt der offengelegten Kompositionsregel',
+      approx(sd.total, expTotal, 1e-12) && approx(sd.composedBeforeCap, 1 - prod, 1e-12),
+      'erhalten: ' + sd.total + ' · nachgerechnet: ' + expTotal);
+    // Anzeige: Modellwert, Abschlag und Formel getrennt sichtbar.
+    const boxHtml = buildBuyPriceBox(synEpv);
+    check('S-3g: Anzeige nennt Modellwert und gewählten Abschlag getrennt',
+      /Modellwert \(Base\)/.test(boxHtml) && /Gewählter Sicherheitsabschlag/.test(boxHtml),
+      'html: ' + boxHtml.slice(0, 400));
+    check('S-3h: Anzeige zeigt die Rechnung Modellwert × (1 − Abschlag)',
+      new RegExp(sd.modelValueBase.toFixed(2).replace('.', '\\.') + ' × \\(1 − ').test(boxHtml),
+      'html enthaelt Formelzeile? ' + /× \(1 − /.test(boxHtml));
+    check('S-3i: Anzeige stellt klar, dass der Abschlag kein Modellergebnis ist',
+      /kein Modellergebnis/.test(boxHtml), 'html: ' + boxHtml.slice(0, 200));
+  }
+
+  // ── S-4: Qualitäts-, Daten- und Bewertungsurteil bleiben getrennt ──────
+  suite('S-4 getrennte Urteile');
+  {
+    const qHigh = { verdict: 'investable_high', hardStops: [], scores: {}, reasons: [] };
+    const synQ  = runFairValueSynthesizer(mkSynMj(), mkVr(true), qHigh, SYNTHESIS_CONFIG);
+    const j = synQ.judgements;
+    check('S-4a: drei Urteile mit eigener Quelle, nicht zusammengefasst',
+      !!j && j.merged === false && j.quality.source && j.data.source && j.valuation.source,
+      'erhalten: ' + JSON.stringify(j));
+    check('S-4b: Qualitätsurteil stammt aus der Quality-Engine',
+      j.quality.verdict === 'investable_high', 'erhalten: ' + j.quality.verdict);
+    check('S-4c: Bewertungsurteil ist die Position, nicht das Qualitätsurteil',
+      j.valuation.position === synQ.position && j.valuation.position !== j.quality.verdict,
+      'erhalten: ' + j.valuation.position + ' / ' + j.quality.verdict);
+    // Das Qualitätsurteil darf den MODELLWERT nicht verändern — nur den Abschlag.
+    check('S-4d: besseres Qualitätsurteil ändert den Modellwert nicht',
+      approx(synQ.range.base, synEpv.range.base) && approx(synQ.range.conservative, synEpv.range.conservative),
+      'investable: ' + synQ.range.base + ' · ohne Quality: ' + synEpv.range.base);
+    check('S-4e: besseres Qualitätsurteil senkt nur den gewählten Abschlag (25 % → 15 %)',
+      approx(synQ.safetyDiscount.components.base, 0.15, 1e-12)
+      && synQ.safetyDiscount.total < synEpv.safetyDiscount.total,
+      'erhalten: ' + synQ.safetyDiscount.components.base + ' / total ' + synQ.safetyDiscount.total);
+    check('S-4f: Datenurteil bleibt eigenes Feld (ohne DQ-Ergebnis: kein Cap)',
+      j.data.cap === null && j.data.capApplied === false,
+      'erhalten: ' + JSON.stringify(j.data));
+  }
+
+  // ── Monte-Carlo-Bausteine ──────────────────────────────────────────────
+  const mkMcMj = (netDebt) => ({
+    meta: { ticker: 'MCPREC', sub_classification: 'standard_nonfin' },
+    fundamentals: {
+      revenue:        [1000, 1000, 1000, 1000],
+      ebit:           [200, 200, 200, 200],
+      ebitda:         [250, 250, 250, 250],
+      capex:          [50, 50, 50, 50],
+      shares_diluted: [100, 100, 100, 100],
+      net_debt:       [netDebt]
+    },
+    valuation: {
+      growth_stage1: 10, growth_terminal: 0, wacc_derived: 10,
+      wacc_components: { tax_rate: 25 }, fade: { enabled: false },
+      assumptions: { owc_pct_of_revenue: { value: 0, source_type: 'manual', notes: null } }
+    },
+    market: { price: 20 }
+  });
+  const mcV = () => ({ error: null, scenarios: { sigmaGrowth: 2, sigmaMargin: 1.5 },
+                       router: { activeModels: ['dcf'], subClassification: 'standard_nonfin' } });
+
+  // ── S-5: gleicher Startwert ⇒ gleiches Ergebnis ────────────────────────
+  suite('S-5 Monte Carlo deterministisch');
+  {
+    const a = runMonteCarloDcf(mkMcMj(0), mcV());
+    const b = runMonteCarloDcf(mkMcMj(0), mcV());
+    check('S-5a: Simulation liefert ein Ergebnis',
+      !!(a && !a._blocked && a.median != null), 'erhalten: ' + JSON.stringify(a && a._reason));
+    const keys = ['median', 'p10', 'p90', 'probAbovePrice', 'shareRunsAbovePrice',
+                  'runsValid', 'runsNegative', 'runsInvalid', 'seed'];
+    check('S-5b: identische Eingaben und Startwert ⇒ identische Ergebnisse',
+      keys.every(k => a[k] === b[k]),
+      'abweichend: ' + JSON.stringify(keys.filter(k => a[k] !== b[k]).map(k => [k, a[k], b[k]])));
+    check('S-5c: verwendeter Startwert ist gespeichert und wird ausgewiesen',
+      a.seed === MC_CONFIG.seed && a.rng === 'mulberry32' && a.deterministic === true,
+      'erhalten: ' + a.seed + ' / ' + a.rng);
+    const c = runMonteCarloDcf(mkMcMj(0), mcV(), { seed: 987654321 });
+    check('S-5d: übergebener Startwert wird übernommen und ausgewiesen',
+      c && c.seed === 987654321, 'erhalten: ' + (c && c.seed));
+    check('S-5e: anderer Startwert ⇒ andere Ziehung (Simulation ist echt zufällig)',
+      c && c.median !== a.median, 'median gleich? ' + (c && c.median) + ' vs ' + a.median);
+    const d = runMonteCarloDcf(mkMcMj(0), mcV(), { seed: 987654321 });
+    check('S-5f: derselbe übergebene Startwert ist ebenfalls reproduzierbar',
+      d && d.median === c.median && d.p10 === c.p10 && d.p90 === c.p90,
+      'erhalten: ' + JSON.stringify([c.median, d.median]));
+  }
+
+  // ── S-6: getrennte Zählung, negative Ergebnisse bleiben drin ───────────
+  suite('S-6 Laufzählung und negative Ergebnisse');
+  {
+    const pos = runMonteCarloDcf(mkMcMj(0), mcV());
+    check('S-6a: gültig + ungültig = angeforderte Läufe',
+      pos.runsValid + pos.runsInvalid === pos.runsRequested && pos.runsRequested === MC_CONFIG.runs,
+      'erhalten: ' + JSON.stringify([pos.runsValid, pos.runsInvalid, pos.runsRequested]));
+    check('S-6b: ungültige Läufe sind nach Ursache getrennt gezählt',
+      pos.runsInvalid === pos.runsInvalidCore + pos.runsNonFinite,
+      'erhalten: ' + JSON.stringify([pos.runsInvalid, pos.runsInvalidCore, pos.runsNonFinite]));
+    check('S-6c: ohne Nettoschulden gibt es keine negativen Ergebnisse',
+      pos.runsNegative === 0, 'erhalten: ' + pos.runsNegative);
+
+    // Nettoschulden 4000 Mio auf 100 Mio Aktien = 40 USD/Aktie Abzug.
+    // Der operative Wert liegt bei ~30 USD/Aktie ⇒ jeder Lauf endet negativ.
+    const neg = runMonteCarloDcf(mkMcMj(4000), mcV());
+    check('S-6d: negative Eigenkapitalwerte werden gezählt',
+      neg.runsNegative > 0, 'erhalten: ' + neg.runsNegative);
+    // Kein Lauf wird verworfen: alle angeforderten Läufe sind gültig, obwohl der
+    // Erwartungswert (~30 − 40 = −10 USD/Aktie) klar negativ ist. Die negativen
+    // Läufe bleiben also in der Verteilung, statt still herauszufallen.
+    check('S-6e: negative Ergebnisse werden NICHT aus der Verteilung entfernt',
+      neg.runsValid === neg.runsRequested && neg.runsNegative > neg.runsValid * 0.75,
+      'erhalten: gültig ' + neg.runsValid + ' von ' + neg.runsRequested + ', negativ ' + neg.runsNegative);
+    check('S-6f: die Verteilung zeigt die negativen Werte (Median und P10 negativ)',
+      neg.median < 0 && neg.p10 < 0 && neg.p10 <= neg.median,
+      'erhalten: median ' + neg.median + ' p10 ' + neg.p10);
+    check('S-6g: Anteil der Läufe über dem Kurs ist dann 0',
+      neg.shareRunsAbovePrice === 0 && neg.runsAbovePrice === 0,
+      'erhalten: ' + neg.shareRunsAbovePrice);
+  }
+
+  // ── S-7: Verteilungsparameter offengelegt ──────────────────────────────
+  suite('S-7 Verteilungsparameter');
+  {
+    const r = runMonteCarloDcf(mkMcMj(0), mcV());
+    const d = r.distributions;
+    check('S-7a: Simulation als solche gekennzeichnet',
+      r.isSimulation === true && r._shareAbovePriceIsNotEmpiricalProbability === true,
+      'erhalten: ' + JSON.stringify([r.isSimulation, r._shareAbovePriceIsNotEmpiricalProbability]));
+    check('S-7b: Wachstum — Mittelwert und σ entsprechen den Eingaben',
+      d.growth_stage1.shape === 'normal' && d.growth_stage1.mean_pct === 10
+      && approx(d.growth_stage1.sd_pp, 2, 1e-12),
+      'erhalten: ' + JSON.stringify(d.growth_stage1));
+    check('S-7c: WACC — σ = 0,25 × σ(Wachstum) = 0,5pp, mit benannter Abschneidung',
+      approx(d.wacc.sd_pp, 0.5, 1e-12) && d.wacc.mean_pct === 10 && /Terminalwachstum/.test(d.wacc.truncation),
+      'erhalten: ' + JSON.stringify(d.wacc));
+    check('S-7d: Terminalwachstum — gesetzter σ-Festwert 0,40pp',
+      approx(d.growth_terminal.sd_pp, MC_CONFIG.sigmaTerminalPp, 1e-12)
+      && /gesetzt/.test(d.growth_terminal.sd_source),
+      'erhalten: ' + JSON.stringify(d.growth_terminal));
+    check('S-7e: Margenschock — σ aus der Margenhistorie, Wirkung benannt',
+      approx(d.op_margin_shock.sd_pp, 1.5, 1e-12) && /Jahre/.test(d.op_margin_shock.applied_as),
+      'erhalten: ' + JSON.stringify(d.op_margin_shock));
+    check('S-7f: fehlende Korrelationsmodellierung ausdrücklich benannt',
+      /nicht modelliert/i.test(d.independence || ''), 'erhalten: ' + d.independence);
+  }
+
+  // ── S-8: Anzeige der Simulation ────────────────────────────────────────
+  suite('S-8 Anzeige der Simulation');
+  {
+    const card = buildMcDiagCard(mkMcMj(0), mcV());
+    check('S-8a: Karte startet eingeklappt',
+      /class="card collapsed"/.test(card), 'html: ' + card.slice(0, 200));
+    check('S-8b: Karte benennt die Simulation und ihre Verteilungsannahmen',
+      /Monte-Carlo-Simulation/.test(card) && /angenommenen Verteilungen/.test(card),
+      'html: ' + card.slice(0, 400));
+    const block = buildMcDiagBlock(mkMcMj(0), mcV());
+    check('S-8c: keine Ausweisung als P(FV > Kurs)',
+      !/P\(FV/.test(block), 'html enthaelt P(FV: ' + /P\(FV/.test(block));
+    check('S-8d: stattdessen Anteil der Läufe über dem Kurs',
+      /Anteil Läufe &gt; Kurs/.test(block), 'html: ' + block.slice(0, 600));
+    check('S-8e: ausdrücklicher Hinweis, dass dies keine belegte Wahrscheinlichkeit ist',
+      /keine empirisch belegte Wahrscheinlichkeit/.test(block), 'html: ' + block.slice(0, 900));
+    check('S-8f: Zufallsstartwert sichtbar',
+      new RegExp('Zufallsstartwert').test(block) && block.indexOf(String(MC_CONFIG.seed)) >= 0,
+      'html: ' + block.slice(0, 700));
+    check('S-8g: getrennte Laufzählung sichtbar (gültig · negativ · ungültig)',
+      /gültig/.test(block) && /davon negativ/.test(block) && /ungültig/.test(block),
+      'html: ' + block.slice(0, 1200));
+    check('S-8h: Hinweis, dass negative Ergebnisse in der Verteilung bleiben',
+      /nicht entfernt/.test(block), 'html: ' + block.slice(0, 1500));
+  }
+
+  // ── S-9: Modelle einzeln mit Inputs, Rolle und Abweichung ──────────────
+  suite('S-9 Modellvergleich');
+  {
+    const vr = mkVr(true);
+    const noteDcf = _modelComparisonNote('dcf', vr.modelResults.dcf, vr, synEpv);
+    check('S-9a: sichtbare Inputs des Base-Szenarios genannt',
+      /Sichtbare Inputs \(Base\)/.test(noteDcf) && /g1 8\.00%/.test(noteDcf)
+      && /WACC 10\.00%/.test(noteDcf) && /g∞ 2\.00%/.test(noteDcf),
+      'html: ' + noteDcf);
+    check('S-9b: Rolle und Gewicht in der Synthese genannt',
+      /Rolle:/.test(noteDcf) && /in der Synthese gewichtet mit/.test(noteDcf),
+      'html: ' + noteDcf);
+    check('S-9c: Modelleignung genannt',
+      /Eignung:/.test(noteDcf) && /WACC und Terminalwachstum/.test(noteDcf), 'html: ' + noteDcf);
+    // RIM base 30 gegen Synthese-Base: Abweichung muss beziffert erscheinen.
+    const noteRim = _modelComparisonNote('rim', vr.modelResults.rim, vr, synEpv);
+    const expDevRim = (30 / synEpv.range.base - 1) * 100;
+    check('S-9d: Abweichung gegenüber der Synthese beziffert',
+      noteRim.indexOf((expDevRim >= 0 ? '+' : '') + expDevRim.toFixed(1) + '%') >= 0,
+      'erwartet: ' + expDevRim.toFixed(1) + '% · html: ' + noteRim);
+    check('S-9e: RIM nutzt die Eigenkapitalkosten als sichtbaren Input, nicht den WACC',
+      /CoE 11\.00%/.test(noteRim) && !/WACC/.test(noteRim), 'html: ' + noteRim);
+    const noteEpv = _modelComparisonNote('epv_floor', vr.modelResults.epv_floor, vr, synEpv);
+    check('S-9f: EPV wird als nicht gewichtet mit Begründung ausgewiesen',
+      /nicht gewichtet/.test(noteEpv) && /Wertuntergrenze/.test(noteEpv), 'html: ' + noteEpv);
+    check('S-9g: EPV-Eignungshinweis nennt die fehlende Untergrenzenwirkung',
+      /KEINE Wertuntergrenze/.test(noteEpv), 'html: ' + noteEpv);
+  }
+
+  // ── S-10: Rechenweg auch in der Anzeige der Range-Box ──────────────────
+  suite('S-10 Anzeige des Rechenwegs');
+  {
+    const html = buildRangeBoxFull(synEpv);
+    check('S-10a: Synthese in der Anzeige als heuristisch gekennzeichnet',
+      /heuristische Synthese/.test(html), 'html: ' + html.slice(0, 400));
+    check('S-10b: Rechenweg mit Gewichten, Ausschlüssen und Kappungen sichtbar',
+      /Rechenweg der heuristischen Synthese/.test(html) && /Gewichte und Beiträge/.test(html)
+      && /Ausschlüsse \(/.test(html) && /Kappungen \(/.test(html),
+      'html enthaelt Rechenweg? ' + /Rechenweg/.test(html));
+    check('S-10c: EPV separat ohne Untergrenzenwirkung ausgewiesen',
+      /keine Wertuntergrenze/.test(html), 'html enthaelt EPV-Hinweis? ' + /EPV/.test(html));
+    check('S-10d: kein „EPV Floor aktiv"-Hinweis mehr',
+      !/EPV Floor aktiv/.test(html), 'html: ' + html.slice(0, 300));
+    check('S-10e: Sicherheitsabschlag getrennt vom Modellwert erklärt',
+      /Sicherheitsabschlag — getrennt vom Modellwert/.test(html),
+      'html enthaelt Trennung? ' + /getrennt vom Modellwert/.test(html));
   }
 
   return results;
