@@ -3583,6 +3583,167 @@ function checkPerShareSanity(synthesis, masterJson) {
   return { blocked: false };
 }
 
+// ════════════════════════════════════════════════════════════════
+// OPERATIVES WORKING CAPITAL (OWC) — Prognoseparameter für den Haupt-DCF
+// ════════════════════════════════════════════════════════════════
+// Eindeutige Definition (bewusst OHNE Finanzierungspositionen):
+//
+//   OWC = (Umlaufvermögen − Zahlungsmittel)
+//       − (kurzfristige Verbindlichkeiten − kurzfristige Finanzschulden)
+//
+// Zahlungsmittel und verzinsliche Finanzierungsschulden gehören NICHT in das
+// operative Working Capital. Sie sind Bestandteil der Nettoschuldenbrücke
+// (operativer Unternehmenswert → Eigenkapitalwert) und würden sonst doppelt
+// erfasst: einmal als Cashflow-Bindung im Forecast und einmal im Abzug.
+//
+// Ein eigenes Feld `short_term_debt` existiert im Schema nicht; die
+// kurzfristigen Finanzschulden werden deshalb aus
+// `total_debt − long_term_debt` abgeleitet. Ist die Ableitung nicht möglich,
+// gilt das Jahr als unvollständig. Es wird NICHT unterstellt, dass keine
+// kurzfristigen Finanzschulden bestehen (fehlende Werte sind nicht 0).
+const OWC_MIN_YEARS = 3;   // Median über ≥ 3 Jahre dämpft Bilanzstichtagseffekte
+
+// Historische OWC-Reihe. Nur zeitlich zusammenhängende, vollständige Jahre ab
+// Index 0 (aktuellstes Geschäftsjahr) — die Reihe bricht beim ersten
+// unvollständigen Jahr ab, damit die Quote zum aktuellen Umsatzniveau passt
+// und keine Lücken überbrückt werden.
+function _computeOwcHistory(f) {
+  f = f || {};
+  const at = (a, i) => (Array.isArray(a) && a[i] != null && isFinite(a[i])) ? Number(a[i]) : null;
+  const years = [];
+  const missing = [];
+  const addMissing = (m) => { if (missing.indexOf(m) === -1) missing.push(m); };
+  const maxLen = Math.min(
+    (f.revenue || []).length,
+    (f.current_assets || []).length,
+    (f.current_liabilities || []).length,
+    10
+  );
+  if (maxLen === 0) {
+    if (!Array.isArray(f.current_assets) || f.current_assets.length === 0) addMissing('current_assets');
+    if (!Array.isArray(f.current_liabilities) || f.current_liabilities.length === 0) addMissing('current_liabilities');
+    if (!Array.isArray(f.revenue) || f.revenue.length === 0) addMissing('revenue');
+    return { years, missing };
+  }
+  for (let i = 0; i < maxLen; i++) {
+    const rev  = at(f.revenue, i);
+    const ca   = at(f.current_assets, i);
+    const cl   = at(f.current_liabilities, i);
+    const cae  = at(f.cash_and_equivalents, i);
+    const csh  = at(f.cash, i);
+    const cash = cae != null ? cae : csh;
+    const td   = at(f.total_debt, i);
+    const ltd  = at(f.long_term_debt, i);
+
+    const gaps = [];
+    if (rev == null || !(rev > 0)) gaps.push(`revenue[${i}]`);
+    if (ca == null)   gaps.push(`current_assets[${i}]`);
+    if (cl == null)   gaps.push(`current_liabilities[${i}]`);
+    if (cash == null) gaps.push(`cash_and_equivalents[${i}]/cash[${i}]`);
+
+    // Kurzfristige Finanzschulden aus total_debt − long_term_debt.
+    let std = null, stdSource = null;
+    if (td != null && ltd != null) {
+      const d = td - ltd;
+      if (d >= 0) { std = d; stdSource = 'total_debt − long_term_debt'; }
+      else gaps.push(`short_term_debt[${i}] (total_debt < long_term_debt — inkonsistent)`);
+    } else if (td != null && td === 0) {
+      // Keinerlei Finanzschulden ⇒ auch keine kurzfristigen. Das ist ein
+      // gemessener Wert, keine Annahme.
+      std = 0; stdSource = 'total_debt = 0 (keine Finanzschulden)';
+    } else {
+      gaps.push(td == null ? `total_debt[${i}]` : `long_term_debt[${i}]`);
+    }
+
+    if (gaps.length > 0) {
+      gaps.forEach(addMissing);
+      break;   // Abbruch — nur lückenlose, zeitlich passende Jahre verwenden
+    }
+    const owc = (ca - cash) - (cl - std);
+    years.push({
+      index: i, revenue: rev, currentAssets: ca, cash, currentLiabilities: cl,
+      shortTermDebt: std, shortTermDebtSource: stdSource,
+      owc, ratio: owc / rev
+    });
+  }
+  return { years, missing };
+}
+
+// Auflösung des Prognoseparameters "operatives Working Capital / Umsatz".
+// Priorität:
+//   1. manueller Override  valuation.assumptions.owc_pct_of_revenue (in % vom Umsatz)
+//   2. historischer Median (nur bei ≥ OWC_MIN_YEARS lückenlosen Jahren)
+//   3. keine belastbare Grundlage → Nutzerannahme erforderlich
+// Im Fall 3 wird im Forecast vorläufig 0 verwendet, aber ausdrücklich als
+// ANNAHME gekennzeichnet (measured=false, assumptionRequired=true). Ein
+// angenommener Nullbedarf erscheint nirgends als gemessener Wert.
+function _resolveOwcForForecast(mj) {
+  const f   = (mj && mj.fundamentals) || {};
+  const val = (mj && mj.valuation)    || {};
+  const ass = val.assumptions || {};
+  const hist = _computeOwcHistory(f);
+  const histRatios = hist.years.map(y => y.ratio);
+  const histRatio = histRatios.length >= OWC_MIN_YEARS ? _median(histRatios) : null;
+
+  // Manueller Override (V4-Objekt { value } oder V3-Skalar oder v3-flat)
+  let ovRaw = null;
+  const entry = ass.owc_pct_of_revenue;
+  if (entry != null && typeof entry === 'object') ovRaw = entry.value != null ? entry.value : null;
+  else if (entry != null) ovRaw = entry;
+  if (ovRaw == null && val.owc_pct_of_revenue != null) ovRaw = val.owc_pct_of_revenue;
+
+  const base = {
+    historicalRatio: histRatio,
+    historyYears: hist.years,
+    yearsAvailable: hist.years.length,
+    minYears: OWC_MIN_YEARS,
+    missing: hist.missing
+  };
+
+  if (ovRaw != null && isFinite(Number(ovRaw))) {
+    const pct = Number(ovRaw);
+    return Object.assign({
+      ratio: pct / 100,
+      source: 'manual_override',
+      sourceLabel: `manuelle Annahme owc_pct_of_revenue = ${pct.toFixed(2)}% des Umsatzes`,
+      available: true, measured: false, assumptionRequired: false,
+      overridePct: pct
+    }, base);
+  }
+  if (histRatio != null) {
+    return Object.assign({
+      ratio: histRatio,
+      source: 'historical_median',
+      sourceLabel: `historischer Median ${(histRatio * 100).toFixed(2)}% des Umsatzes über ${hist.years.length} lückenlose Jahre`,
+      available: true, measured: true, assumptionRequired: false,
+      overridePct: null
+    }, base);
+  }
+  return Object.assign({
+    ratio: 0,
+    source: 'assumption_required',
+    sourceLabel: 'nicht messbar — Nutzerannahme erforderlich',
+    available: false, measured: false, assumptionRequired: true,
+    overridePct: null
+  }, base);
+}
+
+// Hinweistext für das Assumptions-Formular: sagt ausdrücklich, ob die
+// aktuell verwendete Quote gemessen oder angenommen ist.
+function _owcAssumptionHint(mj) {
+  const i = _resolveOwcForForecast(mj);
+  if (i.source === 'manual_override') {
+    return `aktiv: ${i.overridePct.toFixed(2)}% (manuell) · ` + (i.historicalRatio != null
+      ? `historischer Median ${(i.historicalRatio * 100).toFixed(2)}%`
+      : 'kein historischer Vergleichswert ableitbar');
+  }
+  if (i.source === 'historical_median') {
+    return `leer = historischer Median ${(i.historicalRatio * 100).toFixed(2)}% aus ${i.yearsAvailable} lückenlosen Jahren`;
+  }
+  return `⚠ nicht messbar (${i.missing.slice(0, 3).join(', ') || 'Bilanzdaten fehlen'}) — ` +
+         `ohne Eingabe rechnet der DCF mit 0% ΔWC; das ist eine ANNAHME, kein gemessener Wert`;
+}
+
 function buildForecastInputs(mj) {
   const f = mj.fundamentals || {};
   const v = mj.valuation || {};
@@ -3609,6 +3770,10 @@ function buildForecastInputs(mj) {
   }
   const daRatio = daRatios.length >= 1 ? _median(daRatios) : 0;
   const taxRate = wc.tax_rate != null ? wc.tax_rate : 25;
+
+  // ── Operatives Working Capital / Umsatz (Prognoseparameter) ──
+  // Transparent und manuell überschreibbar; siehe _resolveOwcForForecast.
+  const owcInfo = _resolveOwcForForecast(mj);
 
   // ── Share-Count-Projektion ──────────────────────────────────
   // Ziel: konsistente jährliche Projektion über 10 Jahre.
@@ -3683,6 +3848,7 @@ function buildForecastInputs(mj) {
 
   return {
     revenue0, opMargin, capexIntensity, daRatio, taxRate,
+    owcRatio: owcInfo.ratio, _owc: owcInfo,
     sharesGrowthPa, shares0: sd[0] || null,
     _possibleStockSplit,
     _sharesGrowthRaw,
@@ -3702,12 +3868,29 @@ function forecastDcfCore(fi, g1, tg, wacc, fade, opMarginOverridePct) {
   const margin = opMarginOverridePct != null ? opMarginOverridePct / 100 : fi.opMargin;
   let revenue = fi.revenue0;
 
+  // ── Cashflow-Definition (eindeutig) ─────────────────────────
+  //   FCFF = EBIT × (1 − Steuerquote) + Abschreibungen − CapEx
+  //          − Veränderung des operativen Working Capital (ΔOWC)
+  // ΔOWC_t = owcRatio × (Umsatz_t − Umsatz_{t−1}); owcRatio = OWC/Umsatz
+  // (Prognoseparameter aus _resolveOwcForForecast, manuell überschreibbar).
+  // Der Bestand OWC_0 wird konsistent mit derselben Quote angesetzt
+  // (owcRatio × Umsatz_0), damit kein einmaliger Aufholeffekt aus der
+  // Differenz zwischen Ist-Bestand und Zielquote in Jahr 1 entsteht.
+  const owcRatio = (fi && isFinite(fi.owcRatio)) ? fi.owcRatio : 0;
+
   // ── Cashflows auf Unternehmensebene ─────────────────────────
   // Wir bauen zuerst die absoluten PV-Beiträge je Jahr (firm-level, ohne
-  // Shares-Division). Cashflow-Logik bleibt unverändert.
-  const fcfPerYearAbs = new Array(11).fill(0);   // index 1..10
-  const pvPerYearAbs  = new Array(11).fill(0);   // index 1..10
+  // Shares-Division).
+  const fcfPerYearAbs  = new Array(11).fill(0);   // index 1..10
+  const pvPerYearAbs   = new Array(11).fill(0);   // index 1..10
+  const dOwcPerYearAbs = new Array(11).fill(0);   // index 1..10
   let pvAbs = 0, lastFcf = 0;
+  // preWcFcf = FCFF vor ΔOWC. Wird separat mitgeführt, damit der
+  // Terminalwert exakt wie bisher aus der revenue-proportionalen Größe
+  // hochskaliert werden kann (bei owcRatio = 0 rechnerisch identisch zum
+  // bisherigen Stand) und ΔOWC im Terminaljahr mit tg statt g10 wächst.
+  let lastPreWcFcf = 0;
+  let owcTotalDelta = 0;
   for (let i = 1; i <= 10; i++) {
     let gi = g1;
     if (fade && fade.enabled && fade.fromYear >= 1 && fade.fromYear < 10 && i >= fade.fromYear) {
@@ -3715,18 +3898,37 @@ function forecastDcfCore(fi, g1, tg, wacc, fade, opMarginOverridePct) {
       const step = (g1 - tg) / fadeLen;
       gi = g1 - step * (i - fade.fromYear + 1);
     }
+    const prevRevenue = revenue;
     revenue *= (1 + gi / 100);
     const nopat = revenue * margin * (1 - fi.taxRate / 100);
     const da = revenue * fi.daRatio;
     const capex = revenue * fi.capexIntensity;
-    const fcf = nopat + da - capex;
+    const preWcFcf = nopat + da - capex;
+    // Wachstum bindet Working Capital (Mittelabfluss, positives ΔOWC);
+    // bei negativer Quote setzt Wachstum Mittel frei (negatives ΔOWC).
+    const dOwc = owcRatio * (revenue - prevRevenue);
+    const fcf = preWcFcf - dOwc;
+    dOwcPerYearAbs[i] = dOwc;
+    owcTotalDelta += dOwc;
     fcfPerYearAbs[i] = fcf;
     const pvi = fcf / Math.pow(1 + wacc / 100, i);
     pvPerYearAbs[i] = pvi;
     pvAbs += pvi;
     lastFcf = fcf;
+    lastPreWcFcf = preWcFcf;
   }
-  const tvAbs = (lastFcf * (1 + tg / 100)) / (wacc / 100 - tg / 100);
+  // ── Übergang ins Terminaljahr (konsistent) ──────────────────
+  // Im Terminaljahr wächst der Umsatz mit tg, nicht mehr mit g10. Der
+  // WC-Bedarf muss deshalb ebenfalls mit tg fortgeschrieben werden:
+  //   ΔOWC_T = owcRatio × Umsatz_10 × tg
+  // Ein bloßes Hochskalieren von FCFF_10 mit (1+tg) würde die
+  // WC-Bindung des letzten Prognosejahres (Wachstum g10) in die Ewigkeit
+  // fortschreiben und den Terminalwert bei g10 > tg systematisch zu
+  // niedrig (bzw. bei g10 < tg zu hoch) ansetzen.
+  const revenueYear10 = revenue;
+  const terminalDOwc = owcRatio * revenueYear10 * (tg / 100);
+  const terminalFcf = lastPreWcFcf * (1 + tg / 100) - terminalDOwc;
+  const tvAbs = terminalFcf / (wacc / 100 - tg / 100);
   const pvTvAbs = tvAbs / Math.pow(1 + wacc / 100, 10);
   const totalAbs = pvAbs + pvTvAbs;
 
@@ -3744,7 +3946,11 @@ function forecastDcfCore(fi, g1, tg, wacc, fade, opMarginOverridePct) {
       _buybackAdjustedTotal: 0,
       _shares0: null, _sharesYear10: null,
       _sharesGrowthPa: fi.sharesGrowthPa || 0,
-      _totalAbs: totalAbs, _pvAbs: pvAbs, _pvTvAbs: pvTvAbs
+      _totalAbs: totalAbs, _pvAbs: pvAbs, _pvTvAbs: pvTvAbs,
+      _owcRatio: owcRatio, _owcInfo: (fi && fi._owc) || null,
+      _dOwcYear1: dOwcPerYearAbs[1], _dOwcSum: owcTotalDelta,
+      _dOwcTerminal: terminalDOwc, _terminalFcf: terminalFcf,
+      _revenueYear10: revenueYear10
     };
   }
 
@@ -3798,7 +4004,18 @@ function forecastDcfCore(fi, g1, tg, wacc, fade, opMarginOverridePct) {
     // Firm-level Rohzahlen (zur Plausibilisierung)
     _totalAbs: totalAbs,
     _pvAbs: pvAbs,
-    _pvTvAbs: pvTvAbs
+    _pvTvAbs: pvTvAbs,
+    // ── Working-Capital-Diagnose ────────────────────────────
+    _owcRatio: owcRatio,
+    _owcInfo: (fi && fi._owc) || null,
+    _dOwcYear1: dOwcPerYearAbs[1],
+    _dOwcPerYearAbs: dOwcPerYearAbs,
+    _dOwcSum: owcTotalDelta,
+    _dOwcTerminal: terminalDOwc,
+    _terminalFcf: terminalFcf,
+    _revenueYear10: revenueYear10,
+    _cashflowDefinition: 'FCFF = EBIT × (1 − t) + D&A − CapEx − ΔOWC',
+    _discountRateBasis: 'WACC'
   };
 }
 
@@ -4035,7 +4252,11 @@ function createEmptyMasterJson() {
         rim_roe_target_pct:      { value: null, source_type: null, notes: null },
         rim_fade_years:          { value: 10,   source_type: 'manual', notes: null },
         midcycle_margin_pct:     { value: null, source_type: null, notes: null },
-        p_tbv_target_roe_pct:    { value: null, source_type: null, notes: null }
+        p_tbv_target_roe_pct:    { value: null, source_type: null, notes: null },
+        // Operatives Working Capital / Umsatz in % (Prognoseparameter des
+        // Haupt-DCF). null = kein Override; dann historischer Median, sonst
+        // ausgewiesene Nutzerannahme. Siehe _resolveOwcForForecast.
+        owc_pct_of_revenue:      { value: null, source_type: null, notes: null }
       },
       peer_multiples: {
         sector_median_pe:        { value: null, source_type: 'manual', notes: null },
@@ -4285,7 +4506,8 @@ function migrateV3toV4(obj) {
     'revenue_growth_y1_pct','revenue_growth_y2_5_pct','terminal_growth_pct',
     'target_op_margin_pct','fade_from_year','coe_override_pct',
     'ddm_growth_phase1_pct','ddm_growth_phase2_pct','ddm_years_phase1',
-    'rim_roe_target_pct','rim_fade_years','midcycle_margin_pct','p_tbv_target_roe_pct'
+    'rim_roe_target_pct','rim_fade_years','midcycle_margin_pct','p_tbv_target_roe_pct',
+    'owc_pct_of_revenue'
   ];
   // Mapping v3 flat keys → assumptions (v3-JSON: val.growth_stage1 → assumptions-Block)
   const V3_TO_ASS = {
@@ -9511,7 +9733,52 @@ function _resolveNetDebtForDcfBridge(f) {
   };
 }
 
-function modelDcf(mj, scenarios, fcfStartOverride) {
+// ── Cashflow-Definition des Legacy-/Override-Pfades bestimmen ─────────
+// Wichtig für die Konsistenz von Cashflow und Diskontsatz:
+//  · `f.fcf` = CFO − CapEx ist eine NACHFINANZIERTE Größe (CFO enthält
+//    gezahlte Zinsen) — also FCFE-nah. FCFE gehört mit den Eigenkapitalkosten
+//    diskontiert und OHNE Nettoschuldenabzug; hier wird jedoch mit WACC
+//    diskontiert. Das ist eine bekannte Inkonsistenz und wird ausgewiesen,
+//    statt sie stillschweigend hinzunehmen.
+//  · Mid-Cycle-FCF (NOPAT + D&A − CapEx) ist dagegen UNLEVERED, passt also
+//    zum WACC — ihm fehlt aber die Eigenkapitalbrücke (und ΔWC).
+function _classifyLegacyDcfCashflow(fcfStartOverride, fcfStartMeta) {
+  if (fcfStartOverride != null && fcfStartMeta && fcfStartMeta.definition === 'unlevered_midcycle') {
+    return {
+      key: 'unlevered_midcycle_fcff_pre_wc',
+      label: 'Mid-Cycle-FCF (NOPAT + D&A − CapEx, ohne ΔWC) — unlevered',
+      unlevered: true,
+      consistent: false,
+      bridgeNote: 'aber OHNE Nettoschuldenabzug.',
+      inconsistencyNote: 'Unlevered Cashflow + WACC ergibt einen Unternehmenswert; ' +
+        'ohne Nettoschuldenabzug ist der ausgewiesene Wert je Aktie daher KEIN Eigenkapitalwert ' +
+        'und bei verschuldeten Unternehmen zu hoch. Nicht mit dem Forecast-DCF-Wert vermischen.'
+    };
+  }
+  if (fcfStartOverride != null) {
+    return {
+      key: 'external_override_undefined',
+      label: 'externer FCF-Startwert (Definition nicht deklariert)',
+      unlevered: false,
+      consistent: false,
+      bridgeNote: 'ohne Nettoschuldenabzug.',
+      inconsistencyNote: 'Die Cashflow-Definition des Startwerts ist nicht deklariert — ' +
+        'ob WACC der passende Diskontsatz ist, lässt sich nicht prüfen.'
+    };
+  }
+  return {
+    key: 'levered_fcf_cfo_minus_capex',
+    label: 'FCF = CFO − CapEx (nachfinanziert, enthält gezahlte Zinsen)',
+    unlevered: false,
+    consistent: false,
+    bridgeNote: 'konsequenterweise ohne Nettoschuldenabzug (sonst Double Counting der Finanzierung).',
+    inconsistencyNote: 'CFO − CapEx ist ein nachfinanzierter (FCFE-naher) Cashflow und gehört ' +
+      'eigentlich mit den Eigenkapitalkosten diskontiert; hier wird WACC verwendet. ' +
+      'Der Wert ist deshalb nicht mit dem FCFF-basierten Forecast-DCF vergleichbar.'
+  };
+}
+
+function modelDcf(mj, scenarios, fcfStartOverride, fcfStartMeta) {
   const f = mj.fundamentals || {};
   const shares = (f.shares_diluted && f.shares_diluted[0]) || null;
   if (!shares || shares <= 0) return { applicable: false, reason: 'shares_diluted[0] fehlt', modelName: 'DCF' };
@@ -9548,7 +9815,7 @@ function modelDcf(mj, scenarios, fcfStartOverride) {
     const cons = calc(scenarios.conservative);
     const baseV = calc(scenarios.base);
     const opt = calc(scenarios.optimistic);
-    const warnings = ['Forecast-DCF: Rev × Marge × (1−t) + D&A − CapEx · per-share Wert (firm-level Cashflows, jährliche Shares-Projektion als Diagnose)'];
+    const warnings = ['Forecast-DCF (FCFF): EBIT × (1−t) + D&A − CapEx − ΔWC(operativ) · per-share Wert (firm-level Cashflows mit WACC diskontiert, jährliche Shares-Projektion als Diagnose)'];
     const rBase = forecastDcfCore(fi, scenarios.base.growth_stage1, scenarios.base.terminal_growth, scenarios.base.wacc, fade, scenarios.base.op_margin_pct);
     if (rBase._tvSharePct > 0.70) warnings.push(`TV-Anteil ${(rBase._tvSharePct * 100).toFixed(0)}% — hoch`);
 
@@ -9585,6 +9852,34 @@ function modelDcf(mj, scenarios, fcfStartOverride) {
         `Fehlende Schulden-/Liquiditätsdaten wurden NICHT als 0 angenommen.`
       );
     }
+    // ── Working-Capital-Ausweis ────────────────────────────────────
+    const owcInfo = fi._owc || { source: 'assumption_required', ratio: 0, measured: false, available: false, missing: [], minYears: OWC_MIN_YEARS, yearsAvailable: 0 };
+    const _dOwc1 = rBase && rBase._dOwcYear1 != null ? rBase._dOwcYear1 : null;
+    const _dOwcT = rBase && rBase._dOwcTerminal != null ? rBase._dOwcTerminal : null;
+    if (owcInfo.source === 'manual_override') {
+      warnings.push(
+        `Operatives Working Capital: ${owcInfo.sourceLabel} (manueller Prognoseparameter, nicht gemessen). ` +
+        `Definition: (Umlaufvermögen − Zahlungsmittel) − (kurzfristige Verbindlichkeiten − kurzfristige Finanzschulden); ` +
+        `Zahlungsmittel und verzinsliche Schulden bleiben ausgeschlossen (sie stehen in der Nettoschuldenbrücke). ` +
+        `ΔWC Jahr 1 = ${_dOwc1 != null ? _dOwc1.toFixed(1) + 'M' : '–'}, Terminaljahr = ${_dOwcT != null ? _dOwcT.toFixed(1) + 'M' : '–'} (mit tg fortgeschrieben)` +
+        (owcInfo.historicalRatio != null ? ` · historischer Median ${(owcInfo.historicalRatio * 100).toFixed(2)}%` : '')
+      );
+    } else if (owcInfo.source === 'historical_median') {
+      warnings.push(
+        `Operatives Working Capital: ${owcInfo.sourceLabel} — gemessen aus Bilanzdaten. ` +
+        `Definition: (Umlaufvermögen − Zahlungsmittel) − (kurzfristige Verbindlichkeiten − kurzfristige Finanzschulden). ` +
+        `ΔWC Jahr 1 = ${_dOwc1 != null ? _dOwc1.toFixed(1) + 'M' : '–'}, Terminaljahr = ${_dOwcT != null ? _dOwcT.toFixed(1) + 'M' : '–'} (mit tg fortgeschrieben)` +
+        (owcInfo.ratio < 0 ? ' · negative Quote: Wachstum setzt Working Capital frei' : '')
+      );
+    } else {
+      warnings.push(
+        `⚠ Operatives Working Capital NICHT ermittelbar (fehlend: ${(owcInfo.missing || []).slice(0, 4).join(', ') || 'Bilanzdaten'}; ` +
+        `${owcInfo.yearsAvailable || 0} von ${owcInfo.minYears || OWC_MIN_YEARS} lückenlosen Jahren) — der DCF rechnet mit ΔWC = 0. ` +
+        `Das ist eine NUTZERANNAHME (owc_pct_of_revenue), KEIN gemessener Nullbedarf. ` +
+        `Bei wachsenden, working-capital-intensiven Geschäftsmodellen ist der Fair Value dadurch zu hoch.`
+      );
+    }
+
     warnings.push(
       `Aktienbasis Wertbrücke: shares_diluted[0] = ${shares0.toFixed(1)}M ` +
       `(Ø verwässerte Aktien der Periode) — Ersatzbasis für die aktuelle ausstehende ` +
@@ -9597,6 +9892,22 @@ function modelDcf(mj, scenarios, fcfStartOverride) {
         'Aktienzahl abgezogen — keine doppelte Erfassung der Verwässerung.'
       );
     }
+    // ── SBC vs. Verwässerung: bewusst getrennte Größen ─────────────
+    // 1. Aufwandswirkung der aktienbasierten Vergütung steckt bereits im
+    //    GAAP-EBIT und damit in NOPAT — sie wird im FCFF NICHT nochmals
+    //    abgezogen.
+    // 2. Die Verwässerung wirkt ausschließlich über die Aktienprojektion
+    //    (sharesGrowthPa), also über den Nenner.
+    // Ein zusätzlicher pauschaler SBC-Abschlag auf den FCFF wäre ein
+    // doppelter Abzug derselben Größe und findet deshalb nicht statt; die
+    // SBC-adjustierte Rechnung (_computeOwnerFcfDcf) bleibt rein diagnostisch
+    // und geht weder in Fair Value noch in Buy Price ein.
+    warnings.push(
+      'SBC vs. Verwässerung getrennt: SBC-Aufwand ist im EBIT (und damit im FCFF) bereits ' +
+      'enthalten und wird nicht erneut abgezogen; die Verwässerung wirkt ausschließlich über ' +
+      'die Aktienprojektion im Nenner. Kein zusätzlicher pauschaler SBC-Abschlag — die ' +
+      'SBC-adjustierte Owner-FCF-Rechnung ist reine Diagnose.'
+    );
 
     // ── Share-Count-Diagnose ─────────────────────────────────────
     // Anfangsaktien, Jahr-10-Aktien, annualisierte Veränderung, Label, Warnings.
@@ -9666,7 +9977,35 @@ function modelDcf(mj, scenarios, fcfStartOverride) {
       _sharesUsedM: shares0,
       _sharesBasis: 'shares_diluted[0]',
       _sharesBasisIsSubstitute: true,
-      _sharesBasisNote: 'Ø verwässerte Aktien der Periode — Ersatzbasis für die aktuelle ausstehende Aktienzahl zum Stichtag'
+      _sharesBasisNote: 'Ø verwässerte Aktien der Periode — Ersatzbasis für die aktuelle ausstehende Aktienzahl zum Stichtag',
+      // ── Cashflow-Definition und Diskontierungsbasis, maschinenlesbar ──
+      _cashflowDefinition: 'fcff_ebit_after_tax_plus_da_minus_capex_minus_dwc',
+      _cashflowDefinitionLabel: 'FCFF = EBIT × (1 − t) + D&A − CapEx − ΔWC(operativ)',
+      _cashflowIsUnlevered: true,
+      _discountRateBasis: 'wacc',
+      _netDebtBridgeApplied: netDebtInfo.available,
+      _cashflowDefinitionConsistent: true,
+      // ── Operatives Working Capital, maschinenlesbar ─────────────────
+      _owcRatio: owcInfo.ratio,
+      _owcPctOfRevenue: owcInfo.ratio * 100,
+      _owcSource: owcInfo.source,
+      _owcMeasured: owcInfo.measured === true,
+      _owcAvailable: owcInfo.available === true,
+      _owcAssumptionRequired: owcInfo.assumptionRequired === true,
+      _owcHistoricalRatio: owcInfo.historicalRatio,
+      _owcYearsUsed: owcInfo.yearsAvailable || 0,
+      _owcMinYears: owcInfo.minYears || OWC_MIN_YEARS,
+      _owcMissingFields: owcInfo.missing || [],
+      _owcDefinition: '(current_assets − cash) − (current_liabilities − short_term_debt); short_term_debt = total_debt − long_term_debt',
+      _owcExcludesCashAndDebt: true,
+      _dOwcYear1Base: (rBase && rBase._dOwcYear1 != null) ? rBase._dOwcYear1 : null,
+      _dOwcTerminalBase: (rBase && rBase._dOwcTerminal != null) ? rBase._dOwcTerminal : null,
+      _dOwcSumBase: (rBase && rBase._dOwcSum != null) ? rBase._dOwcSum : null,
+      // ── SBC / Verwässerung: getrennt, kein doppelter Abschlag ────────
+      _sbcTreatment: 'im EBIT enthalten — kein zusätzlicher FCFF-Abzug',
+      _sbcDeductedFromFcff: false,
+      _dilutionTreatment: 'ausschließlich über Aktienprojektion (Nenner)',
+      _sbcAndDilutionDoubleCounted: false
     };
   }
 
@@ -9686,11 +10025,45 @@ function modelDcf(mj, scenarios, fcfStartOverride) {
   const rBase = dcfCore(fcfPerShare, scenarios.base.growth_stage1, scenarios.base.terminal_growth, scenarios.base.wacc, fade);
   if (rBase && rBase.total > 0 && rBase.pvTv / rBase.total > 0.70)
     warnings.push(`TV-Anteil ${(rBase.pvTv / rBase.total * 100).toFixed(0)}% — hoch`);
+
+  // ── Cashflow-Definition dieses Pfades ausdrücklich benennen ──────────
+  // Der Legacy-Pfad diskontiert NICHT denselben Cashflow wie der Forecast-Pfad.
+  // Ohne Kennzeichnung würden unterschiedlich definierte Cashflows still mit
+  // demselben Diskontsatz (WACC) und ohne/mit Wertbrücke verrechnet.
+  const _cfMeta = _classifyLegacyDcfCashflow(fcfStartOverride, fcfStartMeta);
+  warnings.push(
+    `⚠ Cashflow-Definition: ${_cfMeta.label} — NICHT der FCFF des Forecast-Pfades ` +
+    `(EBIT×(1−t)+D&A−CapEx−ΔWC). Diskontierung mit WACC, ${_cfMeta.bridgeNote}`
+  );
+  if (!_cfMeta.consistent) warnings.push(`⚠ ${_cfMeta.inconsistencyNote}`);
+  if (_cfMeta.unlevered) {
+    warnings.push(
+      '⚠ Operatives Working Capital: in diesem Pfad NICHT modelliert — die ΔWC-Bindung ' +
+      'des Wachstums fehlt im Cashflow. Kein gemessener Nullbedarf, sondern eine Lücke ' +
+      'der Cashflow-Definition dieses Pfades.'
+    );
+  }
+
   return {
     applicable: cons != null && baseV != null && opt != null,
     conservative: cons, base: baseV, optimistic: opt,
     warnings, modelName: 'DCF',
-    _forecastBased: false
+    _forecastBased: false,
+    _cashflowDefinition: _cfMeta.key,
+    _cashflowDefinitionLabel: _cfMeta.label,
+    _cashflowIsUnlevered: _cfMeta.unlevered,
+    _discountRateBasis: 'wacc',
+    _netDebtBridgeApplied: false,
+    _cashflowDefinitionConsistent: _cfMeta.consistent,
+    _cashflowDefinitionInconsistencyNote: _cfMeta.consistent ? null : _cfMeta.inconsistencyNote,
+    // Working Capital ist in diesem Pfad nicht modellierbar (kein Umsatzpfad).
+    _owcRatio: null,
+    _owcSource: 'not_modelled_in_this_path',
+    _owcMeasured: false,
+    _owcAvailable: false,
+    _owcAssumptionRequired: _cfMeta.unlevered,
+    _sbcDeductedFromFcff: false,
+    _sbcAndDilutionDoubleCounted: false
   };
 }
 
@@ -9699,7 +10072,7 @@ function modelDcfMidcycle(mj, scenarios) {
   if (mc.status !== 'ok') {
     return { applicable: false, reason: 'Mid-cycle FCF: ' + mc.reason, modelName: 'DCF (Mid-Cycle)' };
   }
-  const result = modelDcf(mj, scenarios, mc.value);
+  const result = modelDcf(mj, scenarios, mc.value, { definition: 'unlevered_midcycle' });
   result.modelName = 'DCF (Mid-Cycle)';
   result.warnings = result.warnings || [];
   result.warnings.unshift(`Mid-cycle FCF = ${mc.value.toFixed(0)} (op-margin median ${mc.opMarginMed.toFixed(1)}%, capex/rev median ${mc.capexIntMed.toFixed(1)}%)`);
@@ -12665,9 +13038,19 @@ function buildSensitivityMatrix(mj, v) {
     : (_sensNetDebtPerShare != null
         ? ` · Eigenkapitalwert nach Abzug Nettoschulden ${_sensNetDebt.netDebtM.toFixed(0)}M (${_sensNetDebtPerShare.toFixed(2)}/Aktie, Quelle: ${_sensNetDebt.source})`
         : ` · ⚠ ohne Nettoschuldenabzug (${_sensNetDebt.missing.join(', ')} fehlt) — operativer Wert je Aktie`);
+  // Cashflow-Definition der Matrix ausdrücklich benennen: sie folgt exakt dem
+  // Forecast-DCF (inkl. ΔWC), damit Zellen und Hauptmodell dieselbe Größe zeigen.
+  const _sensOwc = (isMidCycle || !(fi && fi.shares0 > 0)) ? null : (fi._owc || null);
+  const owcNote = _sensOwc == null
+    ? (isMidCycle
+        ? ' · Cashflow: Mid-Cycle-FCF (NOPAT + D&A − CapEx, ohne ΔWC) — andere Definition als der Forecast-DCF'
+        : ' · Cashflow: CFO − CapEx (nachfinanziert) — andere Definition als der Forecast-DCF')
+    : (_sensOwc.available
+        ? ` · Cashflow: FCFF inkl. ΔWC bei ${(_sensOwc.ratio * 100).toFixed(2)}% WC/Umsatz (${_sensOwc.source === 'manual_override' ? 'manuell gesetzt' : 'historischer Median'})`
+        : ' · ⚠ Cashflow: FCFF mit ΔWC = 0 — angenommen, nicht gemessen (owc_pct_of_revenue setzen)');
   return `<div class="diagnostic" style="margin-top:10px;overflow-x:auto">
     <div class="dl">WACC / g1 Sensitivitätsmatrix — Fair Value (${modeNote}${priceNote})</div>
-    <div class="txt-caption" style="margin-bottom:6px">* = Basiswert · Spalten: Stage-1-Wachstum · Zeilen: WACC${escapeHtml(bridgeNote)}</div>
+    <div class="txt-caption" style="margin-bottom:6px">* = Basiswert · Spalten: Stage-1-Wachstum · Zeilen: WACC${escapeHtml(bridgeNote)}${escapeHtml(owcNote)}</div>
     ${tbl}
   </div>`;
 }
@@ -13537,7 +13920,8 @@ function recalcFromAssumptions() {
     { id: 'as-price',     path: ['market','price'] },
     { id: 'as-fade-from', path: ['valuation','fade','from_year'] },
     { id: 'as-tom',       path: ['valuation','assumptions','target_op_margin_pct','value'] },
-    { id: 'as-mcm',       path: ['valuation','assumptions','midcycle_margin_pct','value'] }
+    { id: 'as-mcm',       path: ['valuation','assumptions','midcycle_margin_pct','value'] },
+    { id: 'as-owc',       path: ['valuation','assumptions','owc_pct_of_revenue','value'] }
   ];
   fields.forEach(f => {
     const el = g(f.id);
@@ -13575,7 +13959,7 @@ function recalcFromAssumptions() {
     }
   }
   // target_op_margin_pct / midcycle_margin_pct: direkt im assumptions-Objekt, source_type auf manual setzen wenn Wert vorhanden
-  for (const assK of ['target_op_margin_pct','midcycle_margin_pct']) {
+  for (const assK of ['target_op_margin_pct','midcycle_margin_pct','owc_pct_of_revenue']) {
     if (_ass[assK] && typeof _ass[assK] === 'object' && _ass[assK].value != null) {
       _ass[assK].source_type = 'manual';
     }
@@ -16397,6 +16781,12 @@ function renderAssumptions(keepValues) {
           <span class="sensitive-hint">Nur Cyclicals: Basis für dcf_midcycle; fehlt → Modell blockiert</span>
         </span>
         <input type="number" id="as-mcm" step="0.1" value="${getAssVal('midcycle_margin_pct',null)}">
+      </div>
+      <div class="assumption-row key-driver">
+        <span class="alabel">✎ Operatives Working Capital / Umsatz (%) <span class="key-driver-badge">▲ werttreibend</span> ${srcBadge(getAssumptionSource(mj,'owc_pct_of_revenue'))}${assNotes('owc_pct_of_revenue')}
+          <span class="sensitive-hint">${escapeHtml(_owcAssumptionHint(mj))}</span>
+        </span>
+        <input type="number" id="as-owc" step="0.1" value="${getAssVal('owc_pct_of_revenue',null)}">
       </div>
 
       <div class="ass-group-header"><span>◎ Ergänzend</span><span class="agh-line"></span></div>
@@ -26674,7 +27064,7 @@ function _testManualAssumptionOverride() {
   // Im umschließenden Scope deklariert, damit finally-Cleanup auch bei Throw zugreifen kann
   const _syntheticIds = ['as-g1','as-tg','as-wacc','as-coe','as-rf','as-erp','as-beta',
                          'as-tax','as-kd','as-wd','as-we','as-price','as-fade-from',
-                         'as-tom','as-mcm','as-fade-enabled'];
+                         'as-tom','as-mcm','as-owc','as-fade-enabled'];
 
   try {
     // ── A) Setup: Fixture als state.masterJson, full pipeline once
@@ -26728,6 +27118,7 @@ function _testManualAssumptionOverride() {
     _ensureInput('as-fade-from', mj.valuation.fade && mj.valuation.fade.from_year);
     _ensureInput('as-tom', null);
     _ensureInput('as-mcm', null);
+    _ensureInput('as-owc', null);
     // Checkbox-Stub für fade-enabled
     let _fadeEl = document.getElementById('as-fade-enabled');
     if (!_fadeEl) {
@@ -27141,6 +27532,478 @@ function _testDcfEquityBridge() {
     check('B-10c: ohne Schulden-/Liquiditätsdaten Basiszelle 15.0 + Kennzeichnung',
       />15\.0</.test(htmlNone) && /ohne Nettoschuldenabzug/.test(htmlNone),
       'erhalten: ' + htmlNone.slice(0, 600));
+  }
+
+  return results;
+}
+
+
+// ════════════════════════════════════════════════════════════════
+// OPERATIVES WORKING CAPITAL IM HAUPT-DCF — Regression Tests
+// Prüft die eindeutige Cashflow-Definition des Forecast-DCF:
+//   FCFF = EBIT × (1 − t) + D&A − CapEx − ΔWC(operativ)
+// Reine Rechenprüfung: kein DOM, kein state, kein localStorage.
+//
+// Referenzfall (unabhängig per Hand nachgerechnet):
+//   Umsatz0 1.000M, EBIT-Marge 20%, Steuer 25%, D&A 5% vom Umsatz,
+//   CapEx 5% vom Umsatz  ⇒  FCFF vor ΔWC = 15% vom Umsatz.
+//   g1 = 10%, WACC = 10%, 100M konstante Aktien, kein Fade.
+//   WC/Umsatz = 20%:
+//     Umsatz_t   = 1.000 × 1,1^t
+//     ΔWC_t      = 0,20 × (Umsatz_t − Umsatz_{t−1}) = 20 × 1,1^(t−1)
+//     FCFF_t     = 150×1,1^t − 20×1,1^(t−1) = 145 × 1,1^(t−1)
+//     PV(1..10)  = Σ 145×1,1^(t−1)/1,1^t = 10 × 145/1,1 = 1.318,1818M
+//   Terminal bei tg = 0 %:
+//     ΔWC_T = 0,20 × Umsatz_10 × 0 = 0
+//     FCFF_T = 150×1,1^10 = 389,0614M · TV = 3.890,6137M
+//     PV(TV) = 3.890,6137 / 1,1^10 = 1.500,0000M
+//   EV = 2.818,1818M ⇒ 28,1818 USD/Aktie (100M Aktien)
+//   Ohne ΔWC wären es 3.000M ⇒ 30,00 USD/Aktie; Differenz 1,8182 =
+//   Barwert der WC-Bindung (181,8182M / 100M Aktien).
+// ════════════════════════════════════════════════════════════════
+
+function _testDcfWorkingCapital() {
+  const results = [];
+  let _currentSuite = '';
+  function suite(name) { _currentSuite = name; }
+  function check(label, condition, extra) {
+    results.push({ suite: _currentSuite, label, pass: !!condition,
+      extra: extra != null ? String(extra) : undefined });
+  }
+  function approx(actual, expected, tol) {
+    return actual != null && isFinite(actual) && Math.abs(actual - expected) <= (tol != null ? tol : 1e-6);
+  }
+
+  // Minimal-mj für den Forecast-Pfad. owcPct: null = kein Override.
+  function mkMj(opts) {
+    opts = opts || {};
+    const mj = {
+      meta: { ticker: 'WCTEST', sub_classification: 'standard_nonfin' },
+      fundamentals: Object.assign({
+        revenue:        [1000, 1000, 1000, 1000],
+        ebit:           [200, 200, 200, 200],
+        ebitda:         [250, 250, 250, 250],   // D&A = 50 = 5% vom Umsatz
+        capex:          [50, 50, 50, 50],       // 5% vom Umsatz
+        shares_diluted: [100, 100, 100, 100]
+      }, opts.fund || {}),
+      valuation: {
+        wacc_components: { tax_rate: 25 },
+        fade: { enabled: false },
+        assumptions: {}
+      },
+      market: {}
+    };
+    if (opts.owcPct !== undefined && opts.owcPct !== null) {
+      mj.valuation.assumptions.owc_pct_of_revenue = { value: opts.owcPct, source_type: 'manual', notes: null };
+    }
+    return mj;
+  }
+  const sc = (g1, tg, wacc) => {
+    const S = { growth_stage1: g1, terminal_growth: tg, wacc: wacc, op_margin_pct: 20 };
+    return { conservative: S, base: S, optimistic: S };
+  };
+  // Direkter Kern-Aufruf, um die Jahresreihen prüfen zu können.
+  const core = (opts, g1, tg, wacc) => {
+    const fi = buildForecastInputs(mkMj(opts));
+    return { fi, r: forecastDcfCore(fi, g1, tg, wacc, { enabled: false }, 20) };
+  };
+
+  // Vollständige Bilanzdaten für die historische Ableitung.
+  // OWC = (current_assets − cash) − (current_liabilities − short_term_debt)
+  //     = (500 − 100) − (250 − 50) = 400 − 200 = 200  ⇒ 20 % vom Umsatz
+  // short_term_debt = total_debt − long_term_debt = 150 − 100 = 50
+  const BS_20PCT = {
+    current_assets:        [500, 500, 500, 500],
+    cash_and_equivalents:  [100, 100, 100, 100],
+    current_liabilities:   [250, 250, 250, 250],
+    total_debt:            [150, 150, 150, 150],
+    long_term_debt:        [100, 100, 100, 100]
+  };
+
+  // ── W-1: Definition — Zahlungsmittel und Finanzschulden ausgeschlossen ──
+  suite('W-1 OWC-Definition');
+  {
+    const h = _computeOwcHistory(Object.assign({ revenue: [1000, 1000, 1000, 1000] }, BS_20PCT));
+    check('W-1a: 4 lückenlose Jahre erkannt', h.years.length === 4, 'erhalten: ' + h.years.length);
+    check('W-1b: OWC = 200M (= (500−100) − (250−50))',
+      approx(h.years[0].owc, 200, 1e-9), 'erhalten: ' + h.years[0].owc);
+    check('W-1c: Quote = 20 % vom Umsatz',
+      approx(h.years[0].ratio, 0.20, 1e-12), 'erhalten: ' + h.years[0].ratio);
+    check('W-1d: kurzfristige Finanzschulden = total_debt − long_term_debt = 50',
+      h.years[0].shortTermDebt === 50, 'erhalten: ' + h.years[0].shortTermDebt);
+
+    // Zahlungsmittel sind KEIN Working Capital: +300 Cash bei +300 Umlaufvermögen
+    // darf das OWC nicht verändern.
+    const hCash = _computeOwcHistory(Object.assign({ revenue: [1000, 1000, 1000, 1000] }, BS_20PCT, {
+      current_assets:       [800, 800, 800, 800],
+      cash_and_equivalents: [400, 400, 400, 400]
+    }));
+    check('W-1e: höhere Zahlungsmittel ändern das OWC nicht (Cash ausgeschlossen)',
+      approx(hCash.years[0].owc, 200, 1e-9), 'erhalten: ' + hCash.years[0].owc);
+
+    // Verzinsliche kurzfristige Finanzschulden sind KEIN Working Capital:
+    // +200 kurzfristige Finanzschulden bei +200 kurzfristigen Verbindlichkeiten
+    // darf das OWC nicht verändern.
+    const hDebt = _computeOwcHistory(Object.assign({ revenue: [1000, 1000, 1000, 1000] }, BS_20PCT, {
+      current_liabilities: [450, 450, 450, 450],
+      total_debt:         [350, 350, 350, 350]     // ⇒ short_term_debt = 250
+    }));
+    check('W-1f: höhere kurzfristige Finanzschulden ändern das OWC nicht',
+      approx(hDebt.years[0].owc, 200, 1e-9), 'erhalten: ' + hDebt.years[0].owc);
+
+    // Ohne cash-Angabe: KEINE 0-Annahme, Jahr gilt als unvollständig.
+    const noCash = Object.assign({ revenue: [1000, 1000, 1000, 1000] }, BS_20PCT);
+    delete noCash.cash_and_equivalents;
+    const hNoCash = _computeOwcHistory(noCash);
+    check('W-1g: fehlende Liquiditätsangabe ⇒ kein Jahr verwendbar (kein 0-Ansatz)',
+      hNoCash.years.length === 0 && hNoCash.missing.some(m => /cash/.test(m)),
+      'erhalten: years=' + hNoCash.years.length + ' missing=' + hNoCash.missing.join('|'));
+
+    // Ohne long_term_debt bei vorhandener total_debt > 0: nicht aufteilbar.
+    const noLtd = Object.assign({ revenue: [1000, 1000, 1000, 1000] }, BS_20PCT);
+    delete noLtd.long_term_debt;
+    const hNoLtd = _computeOwcHistory(noLtd);
+    check('W-1h: ohne long_term_debt ist die kurzfristige Finanzschuld nicht abgrenzbar',
+      hNoLtd.years.length === 0 && hNoLtd.missing.some(m => /long_term_debt/.test(m)),
+      'erhalten: years=' + hNoLtd.years.length + ' missing=' + hNoLtd.missing.join('|'));
+
+    // total_debt = 0 ⇒ es gibt keine kurzfristigen Finanzschulden. Gemessen, nicht angenommen.
+    const hNoDebt = _computeOwcHistory(Object.assign({ revenue: [1000, 1000, 1000, 1000] }, BS_20PCT, {
+      total_debt: [0, 0, 0, 0], long_term_debt: [0, 0, 0, 0]
+    }));
+    check('W-1i: total_debt = 0 ⇒ short_term_debt = 0 (gemessen), OWC = (500−100)−(250−0) = 150',
+      hNoDebt.years.length === 4 && approx(hNoDebt.years[0].owc, 150, 1e-9)
+      && hNoDebt.years[0].shortTermDebt === 0,
+      'erhalten: ' + (hNoDebt.years[0] && hNoDebt.years[0].owc));
+
+    // Lücke in der Mitte: Reihe bricht ab, es werden keine Jahre übersprungen.
+    const hGap = _computeOwcHistory(Object.assign({ revenue: [1000, 1000, 1000, 1000] }, BS_20PCT, {
+      current_liabilities: [250, 250, null, 250]
+    }));
+    check('W-1j: Lücke in Jahr 2 ⇒ nur die 2 zeitlich passenden Jahre davor',
+      hGap.years.length === 2, 'erhalten: ' + hGap.years.length);
+  }
+
+  // ── W-2: PFLICHTFALL — Umsatz 1.000 → 1.100, WC/Umsatz 20 % ⇒ ΔWC = 20M ──
+  suite('W-2 Pflichtfall: zusätzliche WC-Bindung 20M');
+  {
+    const { r } = core({ owcPct: 20 }, 10, 0, 10);
+    check('W-2a: ΔWC Jahr 1 = 20,00M (0,20 × (1.100 − 1.000))',
+      approx(r._dOwcYear1, 20, 1e-9), 'erhalten: ' + r._dOwcYear1);
+    check('W-2b: ΔWC Jahr 2 = 22,00M (0,20 × (1.210 − 1.100))',
+      approx(r._dOwcPerYearAbs[2], 22, 1e-9), 'erhalten: ' + r._dOwcPerYearAbs[2]);
+    check('W-2c: verwendete Quote = 20 % vom Umsatz',
+      approx(r._owcRatio, 0.20, 1e-12), 'erhalten: ' + r._owcRatio);
+    check('W-2d: EV = 2.818,1818M (unabhängig nachgerechnet)',
+      approx(r._totalAbs, 2818.181818181818, 1e-6), 'erhalten: ' + r._totalAbs);
+    check('W-2e: Wert je Aktie = 28,1818 (100M Aktien)',
+      approx(r.total, 28.18181818181818, 1e-9), 'erhalten: ' + r.total);
+
+    // Gegenprobe ohne WC-Bindung: exakt 30,00 — die Differenz ist der
+    // Barwert der WC-Bindung von 181,8182M bzw. 1,8182 je Aktie.
+    const { r: r0 } = core({ owcPct: 0 }, 10, 0, 10);
+    check('W-2f: ohne WC-Bindung 30,00 je Aktie', approx(r0.total, 30, 1e-9), 'erhalten: ' + r0.total);
+    check('W-2g: Differenz = 1,8182 je Aktie (Barwert der WC-Bindung)',
+      approx(r0.total - r.total, 1.8181818181818181, 1e-9), 'erhalten: ' + (r0.total - r.total));
+    check('W-2h: WC senkt den Wert (Bindung ist Mittelabfluss)', r.total < r0.total,
+      'erhalten: ' + r.total + ' vs ' + r0.total);
+  }
+
+  // ── W-3: PFLICHTFALL — negative WC-Quote setzt bei Wachstum Geld frei ──
+  suite('W-3 Pflichtfall: negative WC-Quote setzt Geld frei');
+  {
+    const { r } = core({ owcPct: -20 }, 10, 0, 10);
+    check('W-3a: ΔWC Jahr 1 = −20,00M (Mittelzufluss)',
+      approx(r._dOwcYear1, -20, 1e-9), 'erhalten: ' + r._dOwcYear1);
+    check('W-3b: Summe ΔWC Jahre 1–10 negativ', r._dOwcSum < 0, 'erhalten: ' + r._dOwcSum);
+    const { r: r0 } = core({ owcPct: 0 }, 10, 0, 10);
+    check('W-3c: Wert je Aktie höher als ohne WC (31,8182 vs. 30,00)',
+      approx(r.total, 31.81818181818182, 1e-9) && r.total > r0.total, 'erhalten: ' + r.total);
+    check('W-3d: Vorzeichensymmetrie — Freisetzung = Bindung gespiegelt',
+      approx(r.total - r0.total, r0.total - core({ owcPct: 20 }, 10, 0, 10).r.total, 1e-9),
+      'erhalten: ' + (r.total - r0.total));
+    // Ohne Wachstum setzt auch eine negative Quote nichts frei.
+    const { r: rFlat } = core({ owcPct: -20 }, 0, 0, 10);
+    check('W-3e: ohne Wachstum setzt die negative Quote nichts frei (ΔWC = 0)',
+      approx(rFlat._dOwcYear1, 0, 1e-12) && approx(rFlat._dOwcSum, 0, 1e-12),
+      'erhalten: ' + rFlat._dOwcYear1 + '/' + rFlat._dOwcSum);
+  }
+
+  // ── W-4: PFLICHTFALL — Nullwachstum + konstante Quote ⇒ ΔWC = 0 ──
+  suite('W-4 Pflichtfall: Nullwachstum ⇒ ΔWC = 0');
+  {
+    const { r } = core({ owcPct: 20 }, 0, 0, 10);
+    let allZero = true;
+    for (let i = 1; i <= 10; i++) if (r._dOwcPerYearAbs[i] !== 0) allZero = false;
+    check('W-4a: ΔWC in allen 10 Prognosejahren exakt 0', allZero,
+      'erhalten: ' + r._dOwcPerYearAbs.slice(1).join(','));
+    check('W-4b: ΔWC im Terminaljahr exakt 0 (tg = 0)',
+      r._dOwcTerminal === 0, 'erhalten: ' + r._dOwcTerminal);
+    check('W-4c: Summe ΔWC exakt 0', r._dOwcSum === 0, 'erhalten: ' + r._dOwcSum);
+    // Identisch zum Fall ohne WC — die Quote allein bindet kein Geld.
+    const { r: r0 } = core({ owcPct: 0 }, 0, 0, 10);
+    check('W-4d: Wert identisch zum Fall ohne WC (15,00)',
+      approx(r.total, 15, 1e-9) && r.total === r0.total, 'erhalten: ' + r.total + ' vs ' + r0.total);
+  }
+
+  // ── W-5: PFLICHTFALL — Referenzfall Chat 2 bleibt bei WC = 0 korrekt ──
+  // Umsatz 1.000M, EBIT 200M, D&A 50M, CapEx 50M, Steuer 25 %, g1 = tg = 0 %,
+  // WACC 10 %, 100M Aktien ⇒ FCFF 150M p.a. ⇒ EV 1.500M ⇒ 15,00 operativ.
+  suite('W-5 Pflichtfall: Referenzfall der Nettoschuldenbrücke');
+  {
+    const SC = sc(0, 0, 10);
+    const mk = (nd) => modelDcf(mkMj({ owcPct: 0, fund: { net_debt: [nd] } }), SC);
+    const r0 = mk(0), r500 = mk(500), rNeg = mk(-200);
+    check('W-5a: Nettoschulden 0 ⇒ 15,00 je Aktie', approx(r0.base, 15, 1e-9), 'erhalten: ' + r0.base);
+    check('W-5b: Nettoschulden 500M ⇒ 10,00 je Aktie', approx(r500.base, 10, 1e-9), 'erhalten: ' + r500.base);
+    check('W-5c: Nettoliquidität 200M ⇒ 17,00 je Aktie', approx(rNeg.base, 17, 1e-9), 'erhalten: ' + rNeg.base);
+    check('W-5d: operativer Unternehmenswert weiterhin 1.500M',
+      approx(r500._operatingValueAbsBase, 1500, 1e-6), 'erhalten: ' + r500._operatingValueAbsBase);
+    check('W-5e: ΔWC ist bei ausdrücklich 0 gesetzter Quote exakt 0',
+      r0._dOwcYear1Base === 0 && r0._dOwcTerminalBase === 0,
+      'erhalten: ' + r0._dOwcYear1Base + '/' + r0._dOwcTerminalBase);
+    check('W-5f: ausdrücklich gesetzte 0 gilt als Annahme, nicht als Messwert',
+      r0._owcSource === 'manual_override' && r0._owcMeasured === false,
+      'erhalten: ' + r0._owcSource + '/' + r0._owcMeasured);
+    check('W-5g: Nettoschuldenbrücke unverändert genau EIN Abzug',
+      approx(r500._netDebtPerShare, 5, 1e-9) && approx(r500.base, 10, 1e-9),
+      'erhalten: ' + r500._netDebtPerShare + '/' + r500.base);
+  }
+
+  // ── W-6: Übergang ins Terminaljahr konsistent (ΔWC wächst mit tg) ──
+  suite('W-6 Terminaljahr');
+  {
+    const { r } = core({ owcPct: 20 }, 10, 3, 10);
+    const rev10 = 1000 * Math.pow(1.10, 10);
+    const preWc10 = rev10 * 0.15;
+    const expTermDOwc = 0.20 * rev10 * 0.03;
+    const expTermFcf = preWc10 * 1.03 - expTermDOwc;
+    check('W-6a: Umsatz Jahr 10 = 2.593,7425M', approx(r._revenueYear10, rev10, 1e-6),
+      'erhalten: ' + r._revenueYear10);
+    check('W-6b: ΔWC Terminaljahr = 0,20 × Umsatz_10 × tg = 15,5625M',
+      approx(r._dOwcTerminal, expTermDOwc, 1e-9), 'erhalten: ' + r._dOwcTerminal);
+    check('W-6c: Terminal-FCFF = 385,1708M', approx(r._terminalFcf, expTermFcf, 1e-9),
+      'erhalten: ' + r._terminalFcf);
+    check('W-6d: EV = 3.439,6104M (unabhängig nachgerechnet)',
+      approx(r._totalAbs, 3439.6103896103873, 1e-6), 'erhalten: ' + r._totalAbs);
+
+    // Abgrenzung zum naiven Ansatz "FCFF_10 × (1 + tg)": der schriebe die
+    // WC-Bindung des Wachstums g1 = 10 % in die Ewigkeit fort und ergäbe
+    // einen deutlich niedrigeren Terminalwert.
+    const naiveLastFcf = preWc10 - 0.20 * (rev10 - rev10 / 1.10);
+    const naiveTermFcf = naiveLastFcf * 1.03;
+    check('W-6e: NICHT das naive FCFF_10 × (1+tg) (WC-Bindung bei g1 statt tg)',
+      Math.abs(r._terminalFcf - naiveTermFcf) > 30,
+      'konsistent: ' + r._terminalFcf.toFixed(4) + ' vs naiv: ' + naiveTermFcf.toFixed(4));
+    check('W-6f: konsistenter Terminalwert liegt über dem naiven Ansatz',
+      r._terminalFcf > naiveTermFcf, 'erhalten: ' + r._terminalFcf + ' vs ' + naiveTermFcf);
+
+    // Bei WC-Quote 0 ist der Terminalwert unverändert zum bisherigen Stand.
+    const { r: r0 } = core({ owcPct: 0 }, 10, 3, 10);
+    const lastFcf0 = preWc10;
+    check('W-6g: ohne WC identisch zu FCFF_10 × (1+tg) (kein Verhaltensbruch)',
+      approx(r0._terminalFcf, lastFcf0 * 1.03, 1e-9), 'erhalten: ' + r0._terminalFcf);
+  }
+
+  // ── W-7: Fehlende Daten ⇒ ausgewiesene Nutzerannahme, kein Messwert ──
+  suite('W-7 Fehlende Daten = Annahme, nicht Messung');
+  {
+    const r = modelDcf(mkMj({}), sc(5, 2, 10));   // keine Bilanzdaten, kein Override
+    check('W-7a: Quelle = assumption_required',
+      r._owcSource === 'assumption_required', 'erhalten: ' + r._owcSource);
+    check('W-7b: NICHT als gemessen ausgewiesen',
+      r._owcMeasured === false && r._owcAvailable === false, 'erhalten: ' + r._owcMeasured + '/' + r._owcAvailable);
+    check('W-7c: Nutzerannahme ausdrücklich gefordert',
+      r._owcAssumptionRequired === true, 'erhalten: ' + r._owcAssumptionRequired);
+    check('W-7d: rechnerisch 0, aber mit Warnung gekennzeichnet',
+      r._owcRatio === 0 && r.warnings.some(w => /NICHT ermittelbar/.test(w) && /NUTZERANNAHME/.test(w)),
+      'warnings: ' + r.warnings.join(' | ').slice(0, 400));
+    check('W-7e: fehlende Felder werden benannt',
+      Array.isArray(r._owcMissingFields) && r._owcMissingFields.length > 0,
+      'erhalten: ' + JSON.stringify(r._owcMissingFields));
+    check('W-7f: kein gemessener Nullbedarf im Warnungstext behauptet',
+      !r.warnings.some(w => /gemessen/.test(w) && /Working Capital/.test(w) && !/KEIN gemessener/.test(w)),
+      'warnings: ' + r.warnings.filter(w => /Working Capital/.test(w)).join(' | '));
+    check('W-7g: Wert entspricht dem Stand ohne WC-Modellierung (15,00)',
+      approx(modelDcf(mkMj({}), sc(0, 0, 10)).base, 15, 1e-9),
+      'erhalten: ' + modelDcf(mkMj({}), sc(0, 0, 10)).base);
+  }
+
+  // ── W-8: Historischer Vorschlag und manueller Override ──
+  suite('W-8 Prognoseparameter: Ableitung und Override');
+  {
+    const rHist = modelDcf(mkMj({ fund: BS_20PCT }), sc(10, 0, 10));
+    check('W-8a: historischer Median wird abgeleitet (20 %)',
+      rHist._owcSource === 'historical_median' && approx(rHist._owcRatio, 0.20, 1e-12),
+      'erhalten: ' + rHist._owcSource + '/' + rHist._owcRatio);
+    check('W-8b: als gemessen ausgewiesen', rHist._owcMeasured === true && rHist._owcAvailable === true,
+      'erhalten: ' + rHist._owcMeasured);
+    check('W-8c: 4 Jahre verwendet', rHist._owcYearsUsed === 4, 'erhalten: ' + rHist._owcYearsUsed);
+    check('W-8d: operativer Wert = 28,1818 je Aktie (identisch zum Override 20 %)',
+      approx(rHist._operatingValuePerShareBase, 28.18181818181818, 1e-9),
+      'erhalten: ' + rHist._operatingValuePerShareBase);
+    // BS_20PCT enthält total_debt 150M und Liquidität 100M ⇒ Nettoschulden 50M
+    // = 0,50 je Aktie. Die Wertbrücke aus Chat 2 bleibt daneben unberührt.
+    check('W-8d2: Eigenkapitalwert = 27,6818 (28,1818 − 0,50 Nettoschulden/Aktie)',
+      approx(rHist.base, 27.68181818181818, 1e-9) && approx(rHist._netDebtPerShare, 0.5, 1e-12),
+      'erhalten: ' + rHist.base + ' / ' + rHist._netDebtPerShare);
+
+    // Zu wenige Jahre ⇒ kein historischer Vorschlag (kein Einzeljahr-Extrapolat).
+    const short2 = {};
+    for (const k of Object.keys(BS_20PCT)) short2[k] = BS_20PCT[k].slice(0, 2);
+    const rShort = modelDcf(mkMj({ fund: short2 }), sc(10, 0, 10));
+    check('W-8e: 2 Jahre < Mindestanzahl ⇒ kein Vorschlag, Annahme erforderlich',
+      rShort._owcSource === 'assumption_required' && rShort._owcYearsUsed === 2,
+      'erhalten: ' + rShort._owcSource + '/' + rShort._owcYearsUsed);
+
+    // Manueller Override schlägt den historischen Median.
+    const rOv = modelDcf(mkMj({ fund: BS_20PCT, owcPct: 5 }), sc(10, 0, 10));
+    check('W-8f: Override 5 % schlägt den historischen Median 20 %',
+      rOv._owcSource === 'manual_override' && approx(rOv._owcRatio, 0.05, 1e-12),
+      'erhalten: ' + rOv._owcSource + '/' + rOv._owcRatio);
+    check('W-8g: historischer Median bleibt als Vergleichswert erhalten',
+      approx(rOv._owcHistoricalRatio, 0.20, 1e-12), 'erhalten: ' + rOv._owcHistoricalRatio);
+    const rOv0 = modelDcf(mkMj({ fund: BS_20PCT, owcPct: 0 }), sc(10, 0, 10));
+    check('W-8h: Override 0 % ist zulässig und wirkt (nicht als "nicht gesetzt" gelesen)',
+      rOv0._owcSource === 'manual_override' && rOv0._owcRatio === 0
+      && approx(rOv0._operatingValuePerShareBase, 30, 1e-9),
+      'erhalten: ' + rOv0._owcSource + '/' + rOv0._operatingValuePerShareBase);
+    check('W-8i: Override wirkt monoton — höhere Quote ⇒ niedrigerer Wert',
+      modelDcf(mkMj({ owcPct: 30 }), sc(10, 0, 10)).base
+        < modelDcf(mkMj({ owcPct: 10 }), sc(10, 0, 10)).base,
+      'erhalten: ' + modelDcf(mkMj({ owcPct: 30 }), sc(10, 0, 10)).base + ' vs '
+        + modelDcf(mkMj({ owcPct: 10 }), sc(10, 0, 10)).base);
+    check('W-8j: Definition maschinenlesbar ausgewiesen, Cash/Debt ausgeschlossen',
+      /current_assets − cash/.test(rHist._owcDefinition) && rHist._owcExcludesCashAndDebt === true,
+      'erhalten: ' + rHist._owcDefinition);
+  }
+
+  // ── W-9: Cashflow-Definitionen werden nicht stillschweigend vermischt ──
+  suite('W-9 Cashflow-Definition vs. Diskontsatz');
+  {
+    const rFc = modelDcf(mkMj({ fund: { net_debt: [0] }, owcPct: 0 }), sc(0, 0, 10));
+    check('W-9a: Forecast-Pfad deklariert FCFF inkl. ΔWC',
+      rFc._cashflowDefinition === 'fcff_ebit_after_tax_plus_da_minus_capex_minus_dwc'
+      && rFc._cashflowIsUnlevered === true && rFc._discountRateBasis === 'wacc',
+      'erhalten: ' + rFc._cashflowDefinition);
+    check('W-9b: Forecast-Pfad ist definitionskonsistent (FCFF + WACC + Nettoschuldenbrücke)',
+      rFc._cashflowDefinitionConsistent === true && rFc._netDebtBridgeApplied === true,
+      'erhalten: ' + rFc._cashflowDefinitionConsistent + '/' + rFc._netDebtBridgeApplied);
+
+    // Legacy-Pfad: f.fcf = CFO − CapEx, nachfinanziert. Forecast-Inputs
+    // bewusst unbrauchbar machen (kein ebit), damit der Fallback greift.
+    const mjLegacy = mkMj({ fund: { ebit: [], fcf: [150, 150, 150, 150] } });
+    const rLeg = modelDcf(mjLegacy, sc(0, 0, 10));
+    check('W-9c: Legacy-Pfad wird als CFO − CapEx (nachfinanziert) deklariert',
+      rLeg._forecastBased === false && rLeg._cashflowDefinition === 'levered_fcf_cfo_minus_capex',
+      'erhalten: ' + rLeg._cashflowDefinition);
+    check('W-9d: Legacy-Pfad wird ausdrücklich als NICHT definitionskonsistent markiert',
+      rLeg._cashflowDefinitionConsistent === false
+      && /Eigenkapitalkosten/.test(rLeg._cashflowDefinitionInconsistencyNote || ''),
+      'erhalten: ' + rLeg._cashflowDefinitionConsistent + ' / ' + rLeg._cashflowDefinitionInconsistencyNote);
+    check('W-9e: Warnung nennt die abweichende Cashflow-Definition',
+      rLeg.warnings.some(w => /Cashflow-Definition/.test(w) && /NICHT der FCFF/.test(w)),
+      'warnings: ' + rLeg.warnings.join(' | ').slice(0, 400));
+    check('W-9f: Legacy-Pfad behauptet kein modelliertes Working Capital',
+      rLeg._owcMeasured === false && rLeg._owcSource === 'not_modelled_in_this_path',
+      'erhalten: ' + rLeg._owcSource);
+    check('W-9g: Legacy-Pfad nimmt konsequent keinen Nettoschuldenabzug vor',
+      rLeg._netDebtBridgeApplied === false, 'erhalten: ' + rLeg._netDebtBridgeApplied);
+
+    // Mid-Cycle-Override: unlevered, passt zum WACC, aber ohne Wertbrücke.
+    const rMc = modelDcf(mjLegacy, sc(0, 0, 10), 150, { definition: 'unlevered_midcycle' });
+    check('W-9h: Mid-Cycle-Startwert wird als unlevered ohne ΔWC deklariert',
+      rMc._cashflowDefinition === 'unlevered_midcycle_fcff_pre_wc' && rMc._cashflowIsUnlevered === true,
+      'erhalten: ' + rMc._cashflowDefinition);
+    check('W-9i: Mid-Cycle-Pfad weist die fehlende Eigenkapitalbrücke aus',
+      rMc._cashflowDefinitionConsistent === false
+      && /KEIN Eigenkapitalwert/.test(rMc._cashflowDefinitionInconsistencyNote || ''),
+      'erhalten: ' + rMc._cashflowDefinitionInconsistencyNote);
+    check('W-9j: Mid-Cycle-Pfad weist die fehlende WC-Modellierung aus',
+      rMc.warnings.some(w => /Working Capital/.test(w) && /NICHT modelliert/.test(w)),
+      'warnings: ' + rMc.warnings.join(' | ').slice(0, 400));
+    check('W-9k: undeklarierter externer Startwert wird nicht als FCFF ausgegeben',
+      modelDcf(mjLegacy, sc(0, 0, 10), 150)._cashflowDefinition === 'external_override_undefined',
+      'erhalten: ' + modelDcf(mjLegacy, sc(0, 0, 10), 150)._cashflowDefinition);
+  }
+
+  // ── W-10: SBC und Verwässerung getrennt, kein doppelter Abschlag ──
+  suite('W-10 SBC vs. Verwässerung');
+  {
+    const SC = sc(0, 0, 10);
+    const rNoSbc = modelDcf(mkMj({ owcPct: 0, fund: { net_debt: [0] } }), SC);
+    const rSbc = modelDcf(mkMj({ owcPct: 0, fund: { net_debt: [0], sbc: [40, 40, 40, 40] } }), SC);
+    check('W-10a: SBC-Angabe ändert den FCFF-Wert nicht (SBC steckt bereits im EBIT)',
+      rSbc.base === rNoSbc.base, 'erhalten: ' + rSbc.base + ' vs ' + rNoSbc.base);
+    check('W-10b: kein zusätzlicher SBC-Abzug im FCFF deklariert',
+      rSbc._sbcDeductedFromFcff === false && rSbc._sbcAndDilutionDoubleCounted === false,
+      'erhalten: ' + rSbc._sbcDeductedFromFcff);
+    check('W-10c: Trennung ist im Modell-Card sichtbar dokumentiert',
+      rSbc.warnings.some(w => /SBC vs\. Verwässerung getrennt/.test(w)),
+      'warnings: ' + rSbc.warnings.join(' | ').slice(0, 300));
+
+    // Verwässerung wirkt ausschließlich über den Nenner (Aktienprojektion):
+    // +4 %/y Aktien senken den Wert; zusätzliche SBC-Angabe senkt ihn NICHT nochmals.
+    const dil = { net_debt: [0], shares_diluted: [112.4864, 108.16, 104, 100] };  // +4 %/y
+    const rDil = modelDcf(mkMj({ owcPct: 0, fund: dil }), SC);
+    const rDilSbc = modelDcf(mkMj({ owcPct: 0, fund: Object.assign({ sbc: [40, 40, 40, 40] }, dil) }), SC);
+    check('W-10d: Verwässerung +4 %/y senkt den Wert je Aktie',
+      rDil.base < rNoSbc.base && rDil._forecastBased === true,
+      'erhalten: ' + rDil.base + ' vs ' + rNoSbc.base);
+    check('W-10e: SBC führt bei aktiver Verwässerung zu KEINEM zweiten Abschlag',
+      rDilSbc.base === rDil.base, 'erhalten: ' + rDilSbc.base + ' vs ' + rDil.base);
+    check('W-10f: Verwässerung wird als reiner Nenner-Effekt deklariert',
+      /Aktienprojektion/.test(rDil._dilutionTreatment || ''), 'erhalten: ' + rDil._dilutionTreatment);
+    // Owner-FCF-Rechnung (SBC-adjustiert) bleibt Diagnose ohne Einfluss.
+    check('W-10g: SBC-adjustierte Owner-FCF-Rechnung ist als Diagnose gekennzeichnet',
+      (function () {
+        const o = _computeOwnerFcfDcf(mkMj({ fund: { net_debt: [0], sbc: [40, 40, 40, 40], cfo: [200, 200, 200, 200], capex: [50, 50, 50, 50], fcf: [150, 150, 150, 150] } }));
+        return o.status !== 'ok' || /Diagnostisch/.test(o._note || '');
+      })(), 'Owner-FCF-DCF darf Fair Value/Buy Price nicht beeinflussen');
+  }
+
+  // ── W-11: Nachgelagerte Anzeigen nutzen dieselbe Cashflow-Definition ──
+  // Sensitivitätsmatrix und Monte Carlo speisen sich aus denselben
+  // Forecast-Inputs. Wichen sie beim ΔWC ab, zeigten sie systematisch andere
+  // Fair Values als das Hauptmodell.
+  suite('W-11 Matrix/Monte Carlo konsistent');
+  {
+    const mkV = () => ({ error: null, router: { activeModels: ['dcf'], subClassification: 'standard_nonfin' } });
+    const mkMatrixMj = (opts, g1) => {
+      const mj = mkMj(opts);
+      mj.valuation.growth_stage1 = g1;
+      mj.valuation.growth_terminal = 0;
+      mj.valuation.wacc_derived = 10;
+      mj.fundamentals.net_debt = [0];
+      return mj;
+    };
+    // Hauptmodell bei g1 = 10 %, WC 20 % ⇒ 28,2 (Matrix rundet auf 1 Stelle).
+    const htmlWc = buildSensitivityMatrix(mkMatrixMj({ owcPct: 20 }, 10), mkV());
+    check('W-11a: Matrix-Basiszelle zeigt den ΔWC-bereinigten Wert 28.2 (nicht 30.0)',
+      />28\.2</.test(htmlWc) && !/>30\.0</.test(htmlWc), 'erhalten: ' + htmlWc.slice(0, 500));
+    check('W-11b: Matrix nennt die verwendete WC-Quote',
+      /FCFF inkl\. ΔWC bei 20\.00% WC\/Umsatz/.test(htmlWc), 'erhalten: ' + htmlWc.slice(0, 900));
+    const htmlNoData = buildSensitivityMatrix(mkMatrixMj({}, 10), mkV());
+    check('W-11c: ohne WC-Datenbasis kennzeichnet die Matrix die 0-Annahme',
+      /ΔWC = 0 — angenommen, nicht gemessen/.test(htmlNoData), 'erhalten: ' + htmlNoData.slice(0, 900));
+
+    // Monte Carlo: deterministischer Vergleich ist wegen der Zufallsziehung
+    // nicht möglich; geprüft wird, dass die WC-Quote überhaupt durchschlägt.
+    const mcMj = (owcPct) => {
+      const mj = mkMatrixMj({ owcPct }, 10);
+      mj.market.price = 20;
+      return mj;
+    };
+    const mcV = () => ({ error: null, scenarios: { sigmaGrowth: 0.001, sigmaMargin: 0.001 },
+      router: { activeModels: ['dcf'], subClassification: 'standard_nonfin' } });
+    const mc20 = runMonteCarloDcf(mcMj(20), mcV());
+    const mc0  = runMonteCarloDcf(mcMj(0),  mcV());
+    check('W-11d: Monte Carlo liefert bei σ≈0 beide Läufe',
+      mc20 && mc20.median != null && mc0 && mc0.median != null,
+      'erhalten: ' + JSON.stringify([mc20 && mc20.median, mc0 && mc0.median]));
+    check('W-11e: Monte-Carlo-Median berücksichtigt die WC-Bindung (≈28,2 statt ≈30,0)',
+      mc20 && mc0 && mc20.median < mc0.median && Math.abs(mc20.median - 28.18) < 0.6,
+      'erhalten: ' + (mc20 && mc20.median) + ' vs ' + (mc0 && mc0.median));
   }
 
   return results;

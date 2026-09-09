@@ -53,6 +53,7 @@ const PURE_TEST_FUNCTIONS = [
   '_testGoldenCases',
   '_testSectorClassificationPatch',
   '_testDcfEquityBridge',
+  '_testDcfWorkingCapital',
 ];
 
 // Test-Helper, die echte DOM-Formularfelder anlegen/auslesen
