@@ -10311,22 +10311,99 @@ function computeMidCycleFcf(mj) {
 // als 0 behandelt — available=false, damit der Aufrufer das kennzeichnen kann.
 // Vorzeichen: netDebtM > 0 = Nettoschulden (Abzug), netDebtM < 0 =
 // Nettoliquidität (wird über denselben Abzug addiert).
+//
+// V1.0.39 — Periodensperre wird respektiert:
+// Die Datenaufbereitung verwirft Nettoschulden bei unvereinbaren
+// Berichtsperioden und markiert das mit _v4_meta.net_debt.periodLocked.
+// Diese Brücke ignorierte die Sperre und rechnete anschließend erneut
+// total_debt[0] − cash[0] — also genau den Jahresmix, den die Sperre
+// verhindern soll (Haupt-DCF und Reverse DCF akzeptierten ihn dadurch).
+// Jetzt gilt: aktive Sperre ⇒ nicht verfügbar; und sobald Schulden oder
+// Liquidität Periodenkontext haben, wird die Differenz ausschließlich über
+// die vorhandene Periodenlogik (_joinPeriodKeyed) gebildet — kein Ausweichen
+// auf Array-Indizes und keinen Cash-Alias. Bekannte Nettoschulden (auch
+// ausdrücklich 0) und der manuelle Import ohne Periodenmetadaten bleiben
+// unverändert nutzbar.
 function _resolveNetDebtForDcfBridge(f) {
   f = f || {};
+  const meta   = f._v4_meta || {};
+  const ndMeta = meta.net_debt || null;
   const nd0 = (Array.isArray(f.net_debt) && f.net_debt[0] != null) ? f.net_debt[0] : null;
   const td0 = (Array.isArray(f.total_debt) && f.total_debt[0] != null) ? f.total_debt[0] : null;
   const cae0 = (Array.isArray(f.cash_and_equivalents) && f.cash_and_equivalents[0] != null)
     ? f.cash_and_equivalents[0] : null;
   const cash0 = (Array.isArray(f.cash) && f.cash[0] != null) ? f.cash[0] : null;
   const cashUsed = cae0 != null ? cae0 : cash0;
+  const cashField = (Array.isArray(f.cash_and_equivalents) && f.cash_and_equivalents.length > 0)
+    ? 'cash_and_equivalents' : 'cash';
 
+  // 1) Bekannte Nettoschulden (einschließlich ausdrücklich gesetzter 0 und
+  //    eines expliziten Overrides) haben unverändert Vorrang.
   if (nd0 != null) {
     return {
       available: true, netDebtM: nd0, source: 'net_debt[0]',
       totalDebtM: td0, cashM: cashUsed, missing: []
     };
   }
+
+  const _unavailable = (missing, reason) => ({
+    available: false, netDebtM: null, source: null,
+    totalDebtM: td0, cashM: cashUsed, missing, periodLocked: true, reason
+  });
+
+  // 2) Aktive Periodensperre: die Aufbereitung hat die Nettoschulden bewusst
+  //    verworfen. Kein Neuberechnen über Indizes, kein Cash-Alias.
+  if (ndMeta && ndMeta.periodLocked === true) {
+    return _unavailable(['net_debt (Periodensperre aktiv)'],
+      (ndMeta.notes || 'Nettoschulden wegen unvereinbarer Berichtsperioden verworfen') +
+      ' Die DCF-Wertbrücke übernimmt diese Sperre und bildet keinen Ersatzwert aus Array-Indizes.');
+  }
+
+  // 3) Die Reihe existiert, aber der aktuelle Slot ist period-keyed leer:
+  //    dieser Slot ist unzulässig und darf nicht durch einen Fallback auf
+  //    total_debt[0] − cash[0] ersetzt werden.
+  if (Array.isArray(f.net_debt) && f.net_debt.length > 0 &&
+      (typeof _seriesHasPeriodContext === 'function') && _seriesHasPeriodContext(f, 'net_debt')) {
+    const _ndPer = (ndMeta && Array.isArray(ndMeta.periods) && ndMeta.periods[0]) ? ndMeta.periods[0] : 'aktuelle Periode';
+    return _unavailable(['net_debt[0] (Periode ' + _ndPer + ' nicht ermittelbar)'],
+      'Für die aktuelle Berichtsperiode (' + _ndPer + ') konnten keine Nettoschulden ' +
+      'periodengerecht gebildet werden; ein Ersatz aus Array-Indizes würde Geschäftsjahre vermischen.');
+  }
+
   if (td0 != null && cashUsed != null) {
+    // 4) Periodenkontext vorhanden ⇒ ausschließlich kompatible Perioden.
+    //    Es wird die bestehende Periodenlogik genutzt, keine neue Matching-Regel.
+    const _hasCtx = (typeof _seriesHasPeriodContext === 'function') &&
+      (_seriesHasPeriodContext(f, 'total_debt') || _seriesHasPeriodContext(f, cashField));
+    if (_hasCtx) {
+      const _join = (typeof _joinPeriodKeyed === 'function')
+        ? _joinPeriodKeyed(
+            [
+              { name: 'debt', values: f.total_debt, meta: meta['total_debt'] || {} },
+              { name: 'cash', values: f[cashField], meta: meta[cashField] || {} }
+            ],
+            (v) => (v.debt != null && v.cash != null) ? v.debt - v.cash : null,
+            { label: 'Net Debt = total_debt − cash (period-keyed)', requireSameUnit: false }
+          )
+        : { ok: false, meta: { unavailable_reason: 'Periodenlogik nicht verfügbar' } };
+      if (_join.ok && _join.values[0] != null) {
+        return {
+          available: true, netDebtM: _join.values[0],
+          source: 'total_debt − ' + cashField + ' (period-keyed)',
+          totalDebtM: td0, cashM: cashUsed, missing: [],
+          period: (_join.meta && Array.isArray(_join.meta.periods)) ? _join.meta.periods[0] : null
+        };
+      }
+      const _reason = (_join.meta && (_join.meta.unavailable_reason ||
+        (Array.isArray(_join.meta.incompatiblePeriods) && _join.meta.incompatiblePeriods.join('; ')) ||
+        (Array.isArray(_join.meta.incompletePeriods) && _join.meta.incompletePeriods.join('; ')))) ||
+        'keine gemeinsame Berichtsperiode von total_debt und ' + cashField;
+      return _unavailable(['net_debt (keine kompatible Periode)'],
+        'Schulden und Liquidität stammen aus unterschiedlichen Berichtsperioden (' + _reason +
+        '). Fehlende Perioden gelten NICHT als 0; eine Subtraktion über Array-Indizes würde ' +
+        'Geschäftsjahre vermischen.');
+    }
+    // 5) Kein Periodenkontext (manueller Import): bisheriger Pfad unverändert.
     return {
       available: true, netDebtM: td0 - cashUsed,
       source: 'total_debt[0] − ' + (cae0 != null ? 'cash_and_equivalents[0]' : 'cash[0]'),
@@ -27856,6 +27933,233 @@ const REGRESSION_FIXTURES = [
       { path: '__lock_incompatible', expected: 'null,450', op: 'eq',
         label: 'Unvereinbares Periodenende: net_debt [null, 450] statt verschobenem [450]',
         _value: _join(_fE.net_debt) },
+    ]
+  });
+})();
+
+// ── V1.0.39: Nettoschulden-Periodensperre in der DCF-Wertbrücke ─────────────
+// Die Aufbereitung verwirft Nettoschulden bei unvereinbaren Berichtsperioden
+// (_v4_meta.net_debt.periodLocked). _resolveNetDebtForDcfBridge() ignorierte
+// das und rechnete erneut total_debt[0] − cash[0]; Haupt-DCF und Reverse DCF
+// akzeptierten dadurch einen Jahresmix.
+// Geprüft wird der Weg NACH beiden tatsächlichen Ableitungspässen in zwei
+// Datenlagen:
+//   A  — exakt der gemeldete Fall (Schulden FY2024, Cash FY2021). Hier sperrt
+//        zusätzlich das Period-Alignment-Gate die gesamte Bewertung; Matrix
+//        und Monte Carlo sind deshalb in dieser Lage gar nicht erreichbar.
+//   A2 — Sperre aktiv, Alignment-Gate still (Cash ohne Perioden-Meta). Erst
+//        hier lassen sich Synthese, Matrix und Monte Carlo beobachten.
+(function _registerNetDebtLockTests() {
+  const _per = (arr) => ({ source_type: 'reported', source_reference: 'SEC EDGAR XBRL: test',
+                           confidence: 'high', periods: arr });
+
+  // 100 Mio Aktien; beide tatsächlichen Ableitungspässe wie in der Pipeline.
+  const _mk = (fundOverrides, metaOverrides, mutate) => {
+    const f = _makeBaseFundamentals(Object.assign({ shares_diluted: [100, 100, 100, 100, 100, 100, 100, 100] },
+                                                  fundOverrides || {}));
+    f._v4_meta = Object.assign({}, f._v4_meta, metaOverrides || {});
+    const mj = {
+      schema_version: '4.0',
+      meta: { ticker: 'NDLOCK', company: 'Net Debt Lock Test', country: 'US', currency: 'USD',
+              as_of_date: '2024-12-31', source_primary: 'SEC_EDGAR', cik: '0000779',
+              sub_classification: 'standard_nonfin' },
+      fundamentals: f,
+      valuation: _makeBaseValuation(),
+      market: { price: 45.00, market_cap: 4500, price_currency: 'USD' },
+      quality_inputs: { piotroski: {} }
+    };
+    if (mutate) mutate(mj);
+    applyDerivedFieldsV4(mj);
+    applyDerivedFieldsV4(mj);
+    return mj;
+  };
+
+  // ── A) Gemeldeter Fall: Schulden FY2024, Cash FY2021 ──────────────────────
+  const _mjA = _mk(
+    { total_debt: [600], cash_and_equivalents: [200], net_debt: [] },
+    { total_debt:           _per(['2024-12-31']),
+      cash_and_equivalents: _per(['2021-12-31']) });
+  const _fA      = _mjA.fundamentals;
+  const _lockedA = !!(_fA._v4_meta.net_debt && _fA._v4_meta.net_debt.periodLocked === true);
+  const _ndA     = _resolveNetDebtForDcfBridge(_fA);
+  const _ctxA    = buildCoreValuationContext(_mjA);
+  const _dcfA    = modelDcf(_mjA, buildScenarios(_mjA));
+  const _valA    = runValuationEngine(_mjA);
+  const _revA    = solveReverseDcfGrowth(_mjA) || {};
+
+  // ── A2) Sperre aktiv, Alignment-Gate still ────────────────────────────────
+  // Alle Kernfelder auf FY2024; nur cash_and_equivalents ohne Perioden-Meta.
+  // Der Perioden-Join scheitert daran, dass die Vereinbarkeit nicht prüfbar
+  // ist → Sperre; die übrige Bewertung läuft.
+  const _P = ['2024-12-31'];
+  const _metaAll = {};
+  for (const k of ['revenue','ebit','net_income','cfo','capex','eps_diluted',
+                   'shares_diluted','total_assets','total_debt']) _metaAll[k] = _per(_P);
+  const _mjA2 = _mk(
+    { total_debt: [600], cash_and_equivalents: [200], net_debt: [] },
+    _metaAll,
+    (mj) => { delete mj.fundamentals._v4_meta.cash_and_equivalents; });
+  const _fA2   = _mjA2.fundamentals;
+  const _ndA2  = _resolveNetDebtForDcfBridge(_fA2);
+  const _valA2 = runValuationEngine(_mjA2);
+  const _dcfA2 = (_valA2 && _valA2.modelResults) ? _valA2.modelResults.dcf : null;
+  const _synA2 = (!_valA2.error)
+    ? runFairValueSynthesizer(_mjA2, _valA2, runQualityEngine(_mjA2),
+        Object.assign({}, SYNTHESIS_CONFIG, { _dqResult: computeDataQualityScore(_mjA2) }))
+    : null;
+  const _dcfWeightedA2 = !!(_synA2 && Array.isArray(_synA2._modelWeightDiag) &&
+    _synA2._modelWeightDiag.some(d => d && d.model === 'dcf'));
+  const _matA2 = computeSensitivityMatrix(_mjA2, _valA2);
+  const _mcA2  = runMonteCarloDcf(_mjA2, _valA2);
+
+  // ── B) Cash-Alias: nur f.cash, Perioden unvereinbar ───────────────────────
+  const _mjB = _mk(
+    { total_debt: [600], cash_and_equivalents: [], net_debt: [] },
+    { total_debt: _per(['2024-12-31']), cash: _per(['2021-12-31']) },
+    (mj) => { mj.fundamentals.cash = [200]; });
+  const _ndB = _resolveNetDebtForDcfBridge(_mjB.fundamentals);
+
+  // ── C) Teilweise passende Reihe: net_debt[0] === null ─────────────────────
+  const _mjC = _mk(
+    { total_debt: [600, 500], cash_and_equivalents: [200, 50], net_debt: [] },
+    { total_debt:           _per(['2024-12-31', '2023-12-31']),
+      cash_and_equivalents: _per(['2024-01-31', '2023-12-31']) });
+  const _fC  = _mjC.fundamentals;
+  const _ndC = _resolveNetDebtForDcfBridge(_fC);
+
+  // ── D) Gegenprobe: kompatible Perioden → 600 − 200 = 400 Mio ──────────────
+  const _mjD = _mk(
+    { total_debt: [600], cash_and_equivalents: [200], net_debt: [] },
+    { total_debt:           _per(['2024-12-31']),
+      cash_and_equivalents: _per(['2024-12-31']) });
+  const _ndD  = _resolveNetDebtForDcfBridge(_mjD.fundamentals);
+  const _ctxD = buildCoreValuationContext(_mjD);
+  // Wertbrücke bei operativem Wert 1500 Mio / 100 Mio Aktien = 15 USD
+  const _eqD  = (_ctxD.ok && _ctxD.netDebtPerShare != null) ? (1500 / 100) - _ctxD.netDebtPerShare : null;
+
+  // ── E) Gegenprobe: ausdrücklich bekannte Nettoschulden 0 → 15 USD ─────────
+  const _mjE = _mk(
+    { total_debt: [600], cash_and_equivalents: [200], net_debt: [0] },
+    { total_debt:           _per(['2024-12-31']),
+      cash_and_equivalents: _per(['2021-12-31']),
+      net_debt:             _per(['2024-12-31']) });
+  const _ndE  = _resolveNetDebtForDcfBridge(_mjE.fundamentals);
+  const _ctxE = buildCoreValuationContext(_mjE);
+  const _eqE  = (_ctxE.ok && _ctxE.netDebtPerShare != null) ? (1500 / 100) - _ctxE.netDebtPerShare : null;
+
+  // ── F) Gegenprobe: manueller Import ohne Perioden-Meta ────────────────────
+  const _mjF = _mk({ total_debt: [600], cash_and_equivalents: [200], net_debt: [] }, null,
+    (mj) => { delete mj.fundamentals._v4_meta.total_debt;
+              delete mj.fundamentals._v4_meta.cash_and_equivalents; });
+  const _ndF = _resolveNetDebtForDcfBridge(_mjF.fundamentals);
+
+  REGRESSION_FIXTURES.push({
+    id: 'T-NDLOCK',
+    label: 'T-NDLOCK: DCF-Wertbrücke respektiert die Nettoschulden-Periodensperre',
+    mj: {
+      schema_version: '4.0',
+      meta: { ticker: 'NDLOCK', company: 'Net Debt Lock Test', country: 'US', currency: 'USD',
+              as_of_date: '2024-12-31', source_primary: 'SEC_EDGAR', cik: '0000779',
+              sub_classification: 'standard_nonfin' },
+      fundamentals: _makeBaseFundamentals(),
+      valuation: _makeBaseValuation(),
+      market: { price: 45.00, market_cap: 45000, price_currency: 'USD' },
+      quality_inputs: { piotroski: {} }
+    },
+    assertions: [
+      // ── Vorbedingung ──
+      { path: '__nd_locked', expected: true, op: 'eq',
+        label: 'Vorbedingung: net_debt fehlt und periodLocked=true nach beiden Ableitungspässen',
+        _value: _lockedA && (_fA.net_debt || []).filter(v => v != null).length === 0 },
+      // ── 1) Wertbrücke ──
+      { path: '__nd_bridge', expected: false, op: 'eq',
+        label: 'Wertbrücke meldet available=false statt netDebtM=400',
+        _value: _ndA.available },
+      { path: '__nd_bridge_val', expected: true, op: 'eq',
+        label: 'Wertbrücke liefert keinen Ersatzwert (netDebtM=null, kein 400)',
+        _value: _ndA.netDebtM === null },
+      { path: '__nd_bridge_reason', expected: true, op: 'eq',
+        label: 'Wertbrücke nennt die Periodensperre als Grund',
+        _value: /Periodensperre|Berichtsperiode/.test(String(_ndA.reason || '') + (_ndA.missing || []).join(',')) },
+      { path: '__nd_ctx', expected: true, op: 'eq',
+        label: 'Bewertungskern erhält netDebtPerShare=null',
+        _value: _ctxA.ok === true && _ctxA.netDebtPerShare === null },
+      // ── 2) Haupt-DCF ──
+      { path: '__nd_dcf', expected: false, op: 'eq',
+        label: 'Haupt-DCF nicht anwendbar (kein Eigenkapitalwert je Aktie)',
+        _value: _dcfA.applicable === true },
+      { path: '__nd_dcf_flag', expected: true, op: 'eq',
+        label: 'Haupt-DCF markiert _equityValueUnavailable und schließt sich aus der Synthese aus',
+        _value: _dcfA._equityValueUnavailable === true && _dcfA._excludedFromSynthesis === true },
+      { path: '__nd_dcf_base', expected: true, op: 'eq',
+        label: 'Haupt-DCF liefert keinen Basiswert (keine 11 USD/Aktie aus Jahresmix)',
+        _value: _dcfA.base == null },
+      { path: '__nd_dcf_op', expected: true, op: 'eq',
+        label: 'Operativer Wert je Aktie bleibt nachrichtlich erhalten',
+        _value: _dcfA._operatingValuePerShareBase != null },
+      // ── 3) Reverse DCF ──
+      { path: '__nd_rev', expected: 'net_debt_unknown', op: 'eq',
+        label: 'Reverse DCF meldet net_debt_unknown statt ok',
+        _value: _revA.status },
+      { path: '__nd_rev_ok', expected: false, op: 'eq',
+        label: 'Reverse DCF ist nicht ok',
+        _value: _revA.ok === true },
+      { path: '__nd_rev_simple', expected: true, op: 'eq',
+        label: 'computeReverseDcf liefert kein implizites Wachstum',
+        _value: computeReverseDcf(_mjA) == null },
+      // ── 4) In dieser Datenlage sperrt zusätzlich das Alignment-Gate ──
+      { path: '__nd_valblocked', expected: true, op: 'eq',
+        label: 'Gemeldete Datenlage: Bewertung ist zusätzlich durch PERIOD_MISMATCH gesperrt',
+        _value: !!(_valA && _valA.error && /PERIOD_MISMATCH/.test(String(_valA.error))) },
+      // ── 5) Isolierte Sperre (A2): Synthese, Matrix, Monte Carlo ──
+      { path: '__nd2_val_ok', expected: true, op: 'eq',
+        label: 'A2-Vorbedingung: Sperre aktiv, Bewertung sonst nicht blockiert',
+        _value: !!(_fA2._v4_meta.net_debt && _fA2._v4_meta.net_debt.periodLocked === true) && !_valA2.error },
+      { path: '__nd2_bridge', expected: false, op: 'eq',
+        label: 'A2: Wertbrücke bleibt nicht verfügbar',
+        _value: _ndA2.available },
+      { path: '__nd2_dcf', expected: false, op: 'eq',
+        label: 'A2: Haupt-DCF nicht anwendbar',
+        _value: !!(_dcfA2 && _dcfA2.applicable === true) },
+      { path: '__nd2_syn', expected: false, op: 'eq',
+        label: 'A2: Synthese gewichtet den DCF nicht',
+        _value: _dcfWeightedA2 },
+      { path: '__nd2_matrix', expected: true, op: 'eq',
+        label: 'A2: Matrix zeigt keine regulären Zellen, sondern equityValueUnavailable',
+        _value: _matA2.equityValueUnavailable === true },
+      { path: '__nd2_matrix_reason', expected: true, op: 'eq',
+        label: 'A2: Matrix nennt die Nettoschuldensperre als Grund',
+        _value: /Periodensperre/.test(String(_matA2.reason || '')) },
+      { path: '__nd2_mc', expected: true, op: 'eq',
+        label: 'A2: Monte Carlo blockiert statt Ergebnisse zu liefern',
+        _value: !!(_mcA2 && _mcA2._blocked === true) },
+      // ── 6) Cash-Alias ──
+      { path: '__nd_alias', expected: false, op: 'eq',
+        label: 'Cash-Alias (f.cash) umgeht die Sperre nicht',
+        _value: _ndB.available },
+      // ── 7) Teilweise passende Reihe mit net_debt[0] = null ──
+      { path: '__nd_partial_slot', expected: true, op: 'eq',
+        label: 'Vorbedingung: net_debt[0] ist null, Serie aber vorhanden',
+        _value: Array.isArray(_fC.net_debt) && _fC.net_debt.length > 0 && _fC.net_debt[0] == null },
+      { path: '__nd_partial', expected: false, op: 'eq',
+        label: 'Unzulässiger aktueller Slot wird nicht durch einen Fallback ersetzt',
+        _value: _ndC.available },
+      // ── 8) Gegenproben ──
+      { path: '__nd_ok_val', expected: 400, op: 'eq',
+        label: 'Kompatible Perioden: Nettoschulden 400 Mio',
+        _value: _ndD.available ? _ndD.netDebtM : null },
+      { path: '__nd_ok_ps', expected: 11, op: 'eq',
+        label: 'Kompatible Perioden: 1500 Mio operativ / 100 Mio Aktien − 4 = 11 USD/Aktie',
+        _value: _eqD },
+      { path: '__nd_zero_ps', expected: 15, op: 'eq',
+        label: 'Ausdrücklich bekannte Nettoschulden 0: 15 USD/Aktie',
+        _value: _eqE },
+      { path: '__nd_zero_src', expected: 'net_debt[0]', op: 'eq',
+        label: 'Ausdrücklich gesetzte 0 wird aus net_debt[0] übernommen',
+        _value: _ndE.source },
+      { path: '__nd_legacy', expected: 400, op: 'eq',
+        label: 'Manueller Import ohne Periodenmetadaten: unverändert 400 Mio',
+        _value: _ndF.available ? _ndF.netDebtM : null },
     ]
   });
 })();

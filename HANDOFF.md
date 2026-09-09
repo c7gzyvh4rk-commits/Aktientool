@@ -1,5 +1,80 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Update (Chat 7): Nettoschulden-Periodensperre in der DCF-Wertbrücke (V1.0.39)
+
+**Basis:** `749f142` auf `claude/sec-period-integrity-fixes` (keine neueren
+Commits vorhanden). Neuer Arbeitsbranch: `claude/dcf-bridge-period-lock`.
+
+**Befund am Code.** Die Aufbereitung verwirft Nettoschulden bei unvereinbaren
+Berichtsperioden und setzt `_v4_meta.net_debt.periodLocked = true` (Chat 6).
+`_resolveNetDebtForDcfBridge()` las jedoch nur Werte, nie die Meta, und
+rechnete anschließend erneut `total_debt[0] − cash_and_equivalents[0]` bzw.
+den Cash-Alias `cash[0]`. Über `buildCoreValuationContext()` gelangte dieser
+Jahresmix als `netDebtPerShare` in den gemeinsamen Bewertungskern; Haupt-DCF
+und Reverse DCF akzeptierten ihn (`available: true`, `netDebtM: 400`,
+Reverse DCF `ok`).
+
+**Korrektur (nur in `_resolveNetDebtForDcfBridge`).** Reihenfolge jetzt:
+1. Bekannte Nettoschulden aus `net_debt[0]` — einschließlich ausdrücklich
+   gesetzter 0 und eines expliziten Overrides — unverändert vorrangig.
+2. Aktive Periodensperre ⇒ `available: false` mit Begründung aus der
+   Sperr-Meta; kein Neuberechnen über Array-Indizes, kein Cash-Alias.
+3. Vorhandene `net_debt`-Reihe mit period-keyed leerem aktuellem Slot ⇒
+   ebenfalls nicht verfügbar; der unzulässige Slot wird nicht ersetzt.
+4. Haben Schulden oder Liquidität Periodenkontext, wird die Differenz
+   ausschließlich über die vorhandene Periodenlogik `_joinPeriodKeyed`
+   gebildet (keine neue Matching-Regel). Kein kompatibler aktueller Slot ⇒
+   nicht verfügbar mit Begründung.
+5. Ohne jeden Periodenkontext (manueller Import) bleibt der bisherige Pfad
+   `total_debt[0] − cash[0]` unverändert.
+
+Es wurden keine neuen Nichtverfügbarkeitsmechanismen eingeführt: die
+bestehende Kette (`ctx.netDebtPerShare == null`) trägt die Sperre
+unverändert nach Haupt-DCF, Synthese, Reverse DCF, Sensitivitätsmatrix und
+Monte Carlo; der operative Wert je Aktie bleibt überall nachrichtlich
+erhalten.
+
+**Tests (neu: Fixture `T-NDLOCK`, 28 Assertions).** Geprüft wird nach beiden
+tatsächlichen Ableitungspässen in zwei Datenlagen:
+* **A — gemeldeter Fall** (Schulden FY2024, Cash FY2021): Sperre steht;
+  Wertbrücke `available: false` ohne Ersatzwert; Kern erhält
+  `netDebtPerShare = null`; Haupt-DCF nicht anwendbar, `base == null`
+  (keine 11 USD/Aktie aus Jahresmix), operativer Wert erhalten;
+  Reverse DCF `net_debt_unknown` und nicht `ok`. In dieser Datenlage sperrt
+  zusätzlich das Period-Alignment-Gate die gesamte Bewertung
+  (`PERIOD_MISMATCH`) — Matrix und Monte Carlo sind hier gar nicht
+  erreichbar, was der Test ausdrücklich festhält.
+* **A2 — Sperre isoliert** (Cash ohne Perioden-Meta, Alignment-Gate still):
+  Wertbrücke bleibt nicht verfügbar, Haupt-DCF nicht anwendbar, Synthese
+  gewichtet den DCF nicht (`_modelWeightDiag` ohne `dcf`), Matrix meldet
+  `equityValueUnavailable` mit der Sperre als Grund, Monte Carlo `_blocked`.
+* Cash-Alias (`f.cash`) umgeht die Sperre nicht; teilweise passende Reihe mit
+  `net_debt[0] === null` wird nicht durch einen Fallback ersetzt.
+* Gegenproben: kompatible Perioden ⇒ 400 Mio Nettoschulden und
+  15 − 4 = 11 USD/Aktie; ausdrücklich bekannte Nettoschulden 0 ⇒ 15 USD/Aktie
+  aus `net_debt[0]`; manueller Import ohne Perioden-Meta ⇒ unverändert
+  400 Mio.
+* **Gegenprobe gegen den Vorher-Stand:** mit der alten Brückenfunktion fallen
+  18 der neuen Assertions (u.a. Reverse DCF `ok` statt `net_debt_unknown`);
+  die Gegenproben bleiben dabei grün, engen also nicht über.
+
+**Tatsächlich ausgeführte Tests.** `npm test`:
+`node test/run-calc-tests.js` → **854 bestanden · 1 fehlgeschlagen ·
+0 Fehler/Exceptions** (Ausgangsstand 826; +28 durch `T-NDLOCK`);
+`node --test tests/*.test.mjs` → **23/23**. Der bekannte Altfehler `T-BRL1`
+bleibt unbearbeitet, sichtbar und rot. Keine bestehende Testerwartung wurde
+geändert.
+
+**Offene Einschränkungen / weitere Befunde (nicht bearbeitet).**
+* `T-BRL1` weiterhin rot; damit endet `npm test` und die CI rot.
+* `validatePeriodAlignment()` vergleicht im Fallback „Mehrheitsjahr" einen
+  String (`Object.keys`) mit einer Zahl. Liegt für genau ein Kernfeld
+  `periods` vor, meldet das Gate deshalb einen Mismatch gegen sich selbst.
+  Nur beim Anchor-Fallback relevant, außerhalb dieses Auftrags — der Test
+  weicht dieser Konstellation aus, statt sie zu verdecken.
+* Unverändert offen aus Chat 6: `eps_diluted`, `book_value` und `dps` werden
+  in `applyDerivedFieldsV4` weiterhin index-basiert abgeleitet.
+
 ## Update (Chat 6): Drei Periodenfehler behoben, gemeinsamer Testaufruf (V1.0.38)
 
 **Basis:** `fba35e4` auf `claude/eloquent-ritchie-qroglk-rebased` (enthält den
