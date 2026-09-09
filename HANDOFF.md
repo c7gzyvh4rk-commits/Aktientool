@@ -1,5 +1,114 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Update (Versionskorrektur): Chat-5-Arbeit auf die geprüfte Chat-4-Basis gesetzt
+
+**Befund.** Der Chat-5-Commit `fba495c` auf `claude/eloquent-ritchie-qroglk`
+hatte als Elternteil `b023dc8` — den alten `main`-Upload, nicht den geprüften
+Chat-4-Abschluss `1f60ca5` auf `claude/eager-bardeen-l53hvv`.
+`git merge-base --is-ancestor 1f60ca5 fba495c` war negativ. Dem Branch fehlten
+damit sieben Commits: Testrunner (`9d909e6`), CI-Workflow (`ce3dae1`),
+Fehlererkennung des Runners (`7d0a0cc`), Nettoschuldenabzug im Forecast-DCF
+(`8c2f7f8`), operatives Working Capital (`aef1b34`), gemeinsamer
+Bewertungskern (`4a76e4c`) und die Nettoschulden-Sperre (`1f60ca5`).
+
+**Korrektur.** Neuer Arbeitsbranch `claude/eloquent-ritchie-qroglk-rebased`
+von `1f60ca5`; darauf ausschließlich die Änderungen aus `fba495c` per
+`git cherry-pick` übertragen (3-Wege-Merge gegen die gemeinsame Basis
+`b023dc8`). Die HTML-Datei wurde **nicht** durch die Version des falschen
+Branches ersetzt. Der ursprüngliche Branch bleibt unverändert stehen; kein
+Force-Push, kein Merge.
+
+**Konfliktauflösung.** Die Produktdatei ließ sich konfliktfrei
+zusammenführen; verifiziert per Diff-Vergleich: die Zeilenmenge von
+`b023dc8..fba495c` stimmt exakt mit der von `1f60ca5..HEAD` überein (keine
+fehlende, keine zusätzliche Zeile, keine zusätzliche Löschung) — Chat 1–4
+bleibt vollständig erhalten, Chat 5 kommt hinzu. Einziger echter Konflikt:
+`HANDOFF.md` (add/add). Aufgelöst durch Erhalt der vollständigen Chat-1-bis-4-
+Historie und Voranstellen dieses Chat-5-Eintrags.
+
+## Update (Chat 5 Abschluss): SEC-Tag- und Periodenkorrekturen (V1.0.37)
+
+**Auftrag:** Ausschließlich fachliche Tag- und Periodenprobleme in der
+bestehenden SEC-Datenaufbereitung. Keine Quartalsintegration.
+
+### Änderungen (Produktdatei)
+1. **EBIT-Tagkette bereinigt.** `SEC_TAG_MAP.ebit` enthält nur noch
+   `OperatingIncomeLoss`. Das Vorsteuerergebnis
+   (`IncomeLossFromContinuingOperationsBeforeIncomeTaxes…`) ist kein
+   EBIT-Ersatz und liegt als eigenes Feld `pretax_income` vor. Es wird nur
+   über eine sichtbare Rekonstruktion (`_deriveEbitFromPretax`:
+   `Pretax + |Zinsaufwand| − |Zinsertrag|`) zu EBIT gebrückt; ohne
+   vollständige Pflichtkomponenten bleibt EBIT **fehlend** statt still
+   ersetzt. Fehlender Zinsertrag ⇒ `confidence: medium` + Hinweistext.
+2. **Period-keyed Ableitungen** (`_joinPeriodKeyed`, `_applySecDerivations`):
+   EBITDA, Tangible Book Value, FCF, Net Debt und DPS (Strategie 2) werden
+   über die Berichtsperiode verknüpft statt über Array-Indizes. Modus `lead`
+   erhält die Positionstreue zur Leitserie (fehlender Gegenwert ⇒ `null`-Slot,
+   keine Verschiebung). Zeitraum- und Stichtagswerte werden nicht vermischt;
+   abweichende Periodenenden (> 45 Tage) im selben FY verwerfen den Slot.
+3. **Goodwill/Intangibles** ist keine Alternativkette mehr: kombiniertes Tag
+   `IntangibleAssetsNetIncludingGoodwill` **oder** period-keyed Summe aus
+   `Goodwill` + `IntangibleAssetsNetExcludingGoodwill`. Doppelzählung
+   ausgeschlossen und in der Meta dokumentiert (`doubleCountGuard`);
+   Teilsummen als `partialPeriods` markiert.
+4. **TBV:** fehlender Goodwill-Wert ergibt `null` statt „Equity − 0".
+5. **Metadaten erhalten:** `unit`, `starts` (Periodenbeginn), `accns`
+   (Filing-ID), `filed`, `periods`, `isFlowConcept`, `derivation` je Feld;
+   Herleitungen und Ausfälle zusätzlich in `meta._sec_fetch.derivations` und
+   in der Mapping-Diagnose sichtbar.
+
+### Tests (Chat 5)
+* Neue Node-Suite `tests/sec-derivations.test.mjs` (21 Tests) mit
+  `tests/extract-functions.mjs`: lädt die real ausgelieferten Funktionen aus
+  der HTML-Datei und prüft synthetische SEC-Facts (versetzte Jahre, fehlendes
+  Jahr, Juni-Geschäftsjahr, Vorsteuerergebnis ohne EBIT, kombinierte vs.
+  einzelne Intangible-Tags, Flow/Stock-Mischung, Metadatenerhalt).
+  Erwartungswerte unabhängig von Hand gerechnet.
+* In-App-Fixture `T-SECD1` (10 Assertions) in `REGRESSION_FIXTURES`;
+  `REGRESSION_TEST_VERSION` = `v1.0.37-sec-tag-period-fixes`.
+
+### Tatsächlich ausgeführte Tests (nach der Versionskorrektur)
+* `node test/run-calc-tests.js` → **813 bestanden · 1 fehlgeschlagen ·
+  0 Fehler/Exceptions**. Ausgangsstand Chat 4 waren 803 bestanden bei
+  identischem Fehlschlag; die zusätzlichen 10 Assertions sind `T-SECD1`.
+  Gegenprobe auf `1f60ca5` in separatem Worktree: 803 · 1 · 0.
+* `node --test tests/*.test.mjs` → **21/21 grün**.
+* Bekannter Altfehler `T-BRL1` („synthesis.buyPrice existiert") bleibt rot —
+  unverändert seit Chat 2, keine Erwartung angepasst.
+* Erhalt des gemeinsamen Bewertungskerns geprüft: `dcfCore` vorhanden,
+  Sperre `net_debt_unknown` unverändert, `_testValuationCore` (111),
+  `_testDcfEquityBridge` (46), `_testDcfWorkingCapital` (84) grün.
+
+### Offene Einschränkungen
+* Kein Live-Abruf gegen SEC EDGAR ausgeführt (nur synthetische Facts).
+* EBIT-Rekonstruktion ohne Zinsertrag-Tag kann EBIT überschätzen; markiert,
+  aber nicht unterdrückt.
+* `applyDerivedFieldsV4` (manueller JSON-Import ohne `periods`) rechnet
+  weiterhin index-basiert — dort liegt keine Periodenmeta vor.
+* Keine Quartalsintegration (auftragsgemäß).
+* Der alte Branch `claude/eloquent-ritchie-qroglk` (Commit `fba495c`) bleibt
+  mit falscher Basis bestehen und darf nicht mehr als Ausgangsstand dienen.
+
+### Dokumentierte, bewusst NICHT behobene Integrationsbefunde
+(außerhalb der Umfangsgrenze dieser Versionskorrektur — für einen Folgeschritt)
+* `package.json` (`npm test`) und `.github/workflows/tests.yml` starten nur
+  `node test/run-calc-tests.js`. Die Chat-5-Suite `tests/*.test.mjs` läuft
+  dadurch weder über `npm test` noch in CI und muss vorerst manuell mit
+  `node --test tests/*.test.mjs` ausgeführt werden.
+* Es existieren jetzt zwei Testverzeichnisse nebeneinander: `test/`
+  (Chat-1-Runner, DOM-freie Rechentests aus der HTML-Datei) und `tests/`
+  (Chat-5-Suite auf `node:test`). Die Namensnähe ist verwechslungsanfällig;
+  eine Zusammenführung wurde hier bewusst nicht vorgenommen.
+
+### Ausgangsstand für den nächsten Schritt
+Arbeitsstand ist `claude/eloquent-ritchie-qroglk-rebased` mit `1f60ca5` als
+Vorfahr. Alle SEC-Ableitungen laufen über `_applySecDerivations` /
+`_joinPeriodKeyed` direkt vor `_buildSecMasterJson`. Eine Quartalsintegration
+kann dort ansetzen: `_joinPeriodKeyed` unterscheidet bereits Zeitraum-/
+Stichtagswerte und führt `starts`/`durations` mit; für Quartale wäre der
+Jahres-Key (`YYYY` aus `end`) auf einen Perioden-Key (`start|end`) zu
+erweitern und der Contiguity-Filter in `_extractFyValues` anzupassen.
+
 ## Update (Chat 4 Nachtrag): Fehlende Nettoschulden ⇒ kein Eigenkapitalwert
 
 **Auftrag:** Ausschließlich die Behandlung fehlender Nettoschulden im
