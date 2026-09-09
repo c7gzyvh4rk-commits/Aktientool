@@ -5470,9 +5470,34 @@ function _applyDebtComponentRebuild(mj, anchorYearHint) {
   const _shouldRebuildNetDebt =
     totalDebtTouched || _ndEmpty || _ndIsAutoDerived;
   if (_shouldRebuildNetDebt && f.total_debt && f.total_debt.length > 0 && _cash.length > 0) {
-    const len2 = Math.min(f.total_debt.length, _cash.length);
-    f.net_debt = f.total_debt.slice(0, len2).map((d, i) =>
-      d != null && _cash[i] != null ? d - _cash[i] : null);
+    // V1.0.37: period-keyed, wenn beide Reihen Perioden-Meta haben. Nach einem
+    // Komponenten-Rebuild kann total_debt eine andere Jahresabdeckung haben als cash;
+    // ein Index-Join würde dann Schulden und Cash verschiedener FY verrechnen.
+    const _cashMeta = (f._v4_meta && (f._v4_meta['cash_and_equivalents'] || f._v4_meta['cash'])) || {};
+    const _ndJoin = (typeof _joinPeriodKeyed === 'function')
+      ? _joinPeriodKeyed(
+          [
+            { name: 'debt', values: f.total_debt, meta: (f._v4_meta && f._v4_meta['total_debt']) || {} },
+            { name: 'cash', values: _cash,        meta: _cashMeta }
+          ],
+          (v) => (v.debt != null && v.cash != null) ? v.debt - v.cash : null,
+          { label: 'Net Debt = total_debt − cash (period-keyed)' }
+        )
+      : { ok: false };
+    if (_ndJoin.ok) {
+      f.net_debt = _ndJoin.values;
+      f._v4_meta['net_debt'] = Object.assign({}, _ndJoin.meta, {
+        source_type: 'derived',
+        source_reference: 'total_debt - cash_and_equivalents (period-keyed)',
+        confidence: 'high',
+        notes: 'Rebuild nach total_debt-Änderung · Perioden period-keyed abgeglichen'
+      });
+    } else {
+      // Ohne Perioden-Meta (z.B. manueller Import) bleibt der Index-Pfad bestehen.
+      const len2 = Math.min(f.total_debt.length, _cash.length);
+      f.net_debt = f.total_debt.slice(0, len2).map((d, i) =>
+        d != null && _cash[i] != null ? d - _cash[i] : null);
+    }
   }
 }
 
@@ -17404,7 +17429,13 @@ function _sicToSector(sic) {
 // ── XBRL Tag-Fallback-Ketten ────────────────────────────────────
 const SEC_TAG_MAP = {
   revenue:['RevenueFromContractWithCustomerExcludingAssessedTax','RevenueFromContractWithCustomerIncludingAssessedTax','Revenues','SalesRevenueNet','SalesRevenueGoodsNet','RevenueNet','NetRevenues'],
-  ebit:['OperatingIncomeLoss','IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest'],
+  // V1.0.37: EBIT-Kette enthaelt nur noch fachlich gleichwertige Tags.
+  // IncomeLossFromContinuingOperationsBeforeIncomeTaxes… ist das VORSTEUERERGEBNIS
+  // (nach Zinsergebnis und nicht-operativen Posten) und damit KEIN EBIT-Ersatz.
+  // Es wird als eigenes Feld (pretax_income) extrahiert und nur ueber eine
+  // sichtbare Rekonstruktion (pretax + Zinsaufwand − Zinsertrag) zu EBIT gebrueckt.
+  ebit:['OperatingIncomeLoss'],
+  pretax_income:['IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest','IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments'],
   ebitda: null,
   net_income:['NetIncomeLoss','NetIncomeLossAvailableToCommonStockholdersBasic','ProfitLoss'],
   cfo:['NetCashProvidedByUsedInOperatingActivities','NetCashProvidedByUsedInOperatingActivitiesContinuingOperations'],
@@ -17415,7 +17446,15 @@ const SEC_TAG_MAP = {
   shares_basic:['WeightedAverageNumberOfSharesOutstandingBasic','CommonStockSharesOutstanding'],
   book_value:['StockholdersEquity','StockholdersEquityAttributableToParent'],
   tangible_book_value: null,
-  goodwill_and_intangibles:['GoodwillAndIntangibleAssetsNetExcludingGoodwill','IntangibleAssetsNetExcludingGoodwill','Goodwill'],
+  // V1.0.37: Goodwill/Intangibles nicht mehr als Alternativkette (first-match-wins).
+  // IntangibleAssetsNetIncludingGoodwill ist bereits die Summe; Goodwill und
+  // IntangibleAssetsNetExcludingGoodwill sind disjunkte Komponenten und muessen
+  // addiert werden. Beides zu mischen wuerde doppelt zaehlen bzw. unterschaetzen.
+  // Die Zusammenfuehrung passiert period-keyed in _deriveGoodwillIntangibles().
+  goodwill_and_intangibles: null,
+  goodwill_and_intangibles_combined:['IntangibleAssetsNetIncludingGoodwill'],
+  goodwill:['Goodwill'],
+  intangibles_ex_goodwill:['IntangibleAssetsNetExcludingGoodwill'],
   total_assets:['Assets'],
   total_equity:['StockholdersEquity','StockholdersEquityAttributableToParent'],
   total_liabilities:['Liabilities'],
@@ -17436,6 +17475,8 @@ const SEC_TAG_MAP = {
   cash_and_equivalents:['CashAndCashEquivalentsAtCarryingValue','CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents','Cash'],
   retained_earnings:['RetainedEarningsAccumulatedDeficit','RetainedEarnings'],
   interest_expense:['InterestExpense','InterestAndDebtExpense','FinancingInterestExpense'],
+  // V1.0.37: Nur Komponente der EBIT-Rekonstruktion, kein eigenes Reporting-Feld.
+  interest_income:['InvestmentIncomeInterest','InterestIncomeOther'],
   tax_expense:['IncomeTaxExpenseBenefit'],
   gross_profit:['GrossProfit'],
   sbc:['ShareBasedCompensation','AllocatedShareBasedCompensationExpense','EmployeeBenefitsAndShareBasedCompensation'],
@@ -17703,6 +17744,9 @@ function _extractFyValues(facts, tag, maxYears=10) {
       concept: tag,
       unit: unitKey,
       periods: sorted.map(e => e.end),
+      // V1.0.37: Start-Datum explizit mitführen — Zeitraumwerte (start+end) müssen
+      // von Stichtagswerten (nur end) unterscheidbar bleiben, auch nach Ableitungen.
+      starts: sorted.map(e => e.start || null),
       forms: sorted.map(e => e.form),
       accns: sorted.map(e => e.accn),
       frames: sorted.map(e => e.frame || null),
@@ -17837,6 +17881,454 @@ function _extractWithFallback(facts, tags, maxYears=10, options={}) {
   const newMeta = { ...bestNewer.r.meta };
   newMeta._tagSelectionNote = `Recency-Wahl: ${bestNewer.tag}@${_winP0} (${bestNewer.r.values.length}J) statt ${firstCand.tag}@${_firstP0} (${firstCand.r.values.length}J) — erster Tag mind. 1 FY zu alt`;
   return { ...bestNewer.r, meta: newMeta, usedTag: bestNewer.tag };
+}
+
+// ════════════════════════════════════════════════════════════════
+// V1.0.37 — PERIOD-KEYED ABLEITUNGEN AUS SEC-FACTS
+// ════════════════════════════════════════════════════════════════
+// Problem: Abgeleitete Größen (EBITDA, Tangible Book Value, Net Debt, …)
+// wurden über identische Array-Indizes gebildet. Fehlt in einer Reihe ein
+// Geschäftsjahr (z.B. D&A erst ab FY2022 getaggt), verschieben sich die
+// Reihen gegeneinander und es werden Werte verschiedener Perioden verrechnet.
+//
+// Lösung: Alle Ableitungen laufen über _joinPeriodKeyed(), das die Serien
+// anhand ihrer Berichtsperiode (meta.periods = end-Datum) zusammenführt und
+// dabei Zeitraumwerte (start+end) von Stichtagswerten (nur end) trennt.
+// Einheit, Start/Ende, Veröffentlichungsdatum (filed), Filing-ID (accn) und
+// Herkunft (usedTag/derivation) bleiben in der Ergebnis-Meta erhalten.
+// ────────────────────────────────────────────────────────────────
+
+// Fiskaljahr aus einer Periode ("2024-12-28" → 2024). Gleiche Konvention wie
+// _extractFyValues (Dedup pro Kalenderjahr des end-Datums).
+function _secPeriodYear(period) {
+  if (period == null) return null;
+  const m = String(period).match(/(\d{4})/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+// Abstand zweier Perioden-Enden in Tagen (null wenn nicht bestimmbar).
+function _secPeriodDaysApart(a, b) {
+  if (!a || !b) return null;
+  const ta = new Date(a).getTime(), tb = new Date(b).getTime();
+  if (isNaN(ta) || isNaN(tb)) return null;
+  return Math.abs(ta - tb) / 86400000;
+}
+
+// ── _joinPeriodKeyed ────────────────────────────────────────────
+// inputs: [{ name, values, meta, required }]  (required default true)
+// combine: (valsByName, ctx) => number|null   — ctx: { year, period, present }
+// options: {
+//   label:               string  — sichtbare Herleitung für die Meta
+//   mode:                'lead' (default) | 'intersect' | 'union'
+//     'lead':      ein Slot je Periode der Leitserie; fehlt die Gegenserie in
+//                  dieser Periode, wird der Slot null (kein Verrutschen, aber
+//                  auch keine Verschiebung gegenüber der Leitserie — wichtig,
+//                  weil nachgelagerte Kennzahlen z.B. ebitda[i] gegen ebit[i]
+//                  rechnen).
+//     'intersect': nur Perioden, die in allen Pflichtserien vorkommen.
+//     'union':     alle Perioden aller Serien (für Komponentensummen).
+//   maxEndDateSpreadDays: number  — default 45 (gleiches FY, aber anderes Ende)
+//   requireSameUnit:     bool     — default true
+// }
+// Rückgabe: { ok, values, meta, warnings, skippedPeriods }
+function _joinPeriodKeyed(inputs, combine, options) {
+  const opts          = options || {};
+  const mode          = (opts.mode === 'union' || opts.mode === 'intersect') ? opts.mode : 'lead';
+  const maxSpreadDays = opts.maxEndDateSpreadDays != null ? opts.maxEndDateSpreadDays : 45;
+  const requireSameUnit = opts.requireSameUnit !== false;
+  const label         = opts.label || 'derived';
+  const warnings      = [];
+  const skippedPeriods = [];    // Perioden, für die gar kein Slot entsteht
+  const incompletePeriods = []; // Slots, die mangels Gegenwert null bleiben
+
+  const _empty = (reason) => ({
+    ok: false, values: [], warnings: warnings.concat(reason ? [reason] : []),
+    skippedPeriods,
+    meta: {
+      derivation: label, unavailable_reason: reason || 'keine verwertbaren Perioden',
+      periods: null, starts: null, forms: null, accns: null, frames: null,
+      durations: null, filed: null, unit: null, isFlowConcept: null,
+      derivationWarnings: warnings.concat(reason ? [reason] : [])
+    }
+  });
+
+  const prepared = [];
+  for (const inp of (inputs || [])) {
+    const values  = Array.isArray(inp && inp.values) ? inp.values : [];
+    const meta    = (inp && inp.meta) || {};
+    const periods = Array.isArray(meta.periods) ? meta.periods : null;
+    const byYear  = new Map();
+    if (values.length > 0 && periods && periods.length > 0) {
+      for (let i = 0; i < values.length && i < periods.length; i++) {
+        const per = periods[i];
+        const yr  = _secPeriodYear(per);
+        if (yr == null) continue;
+        if (byYear.has(yr)) {
+          warnings.push(`${inp.name}: mehrere Einträge für FY${yr} — späterer (${per}) ignoriert`);
+          continue;
+        }
+        byYear.set(yr, { value: values[i], period: per, idx: i });
+      }
+    } else if (values.length > 0) {
+      warnings.push(`${inp.name}: keine periods-Meta — period-keyed Verknüpfung nicht möglich`);
+    }
+    prepared.push({
+      name: inp.name, required: inp.required !== false, meta, byYear,
+      isFlow: (meta.isFlowConcept === true) ? true : (meta.isFlowConcept === false ? false : null),
+      unit: meta.unit != null ? meta.unit : null
+    });
+  }
+
+  const withData = prepared.filter(p => p.byYear.size > 0);
+  if (withData.length === 0) return _empty('keine Komponente mit verwertbaren Perioden');
+
+  const missingRequired = prepared.filter(p => p.required && p.byYear.size === 0).map(p => p.name);
+  if (missingRequired.length > 0) {
+    return _empty(`Pflichtkomponente(n) fehlen oder ohne Perioden: ${missingRequired.join(', ')}`);
+  }
+
+  // Zeitraumwerte (Flow) und Stichtagswerte (Stock) dürfen nicht vermischt werden.
+  const flowFlags = withData.map(p => p.isFlow).filter(v => v !== null);
+  if (flowFlags.length > 1 && flowFlags.some(v => v !== flowFlags[0])) {
+    const detail = withData.map(p => `${p.name}=${p.isFlow === true ? 'Zeitraum' : (p.isFlow === false ? 'Stichtag' : '?')}`).join(', ');
+    return _empty(`Zeitraum- und Stichtagswerte gemischt (${detail}) — Ableitung verweigert`);
+  }
+
+  if (requireSameUnit) {
+    const units = withData.map(p => p.unit).filter(u => u != null);
+    if (units.length > 1 && units.some(u => u !== units[0])) {
+      return _empty(`uneinheitliche Einheiten (${units.join(' vs. ')}) — Ableitung verweigert`);
+    }
+  }
+
+  // Lead-Serie: erste Pflichtkomponente mit Daten, sonst erste Serie mit Daten.
+  const lead = prepared.find(p => p.required && p.byYear.size > 0) || withData[0];
+
+  // Kandidatenjahre
+  let years;
+  if (mode === 'union') {
+    const set = new Set();
+    for (const p of withData) for (const y of p.byYear.keys()) set.add(y);
+    years = Array.from(set);
+  } else if (mode === 'intersect') {
+    years = Array.from(lead.byYear.keys()).filter(y =>
+      prepared.every(p => !p.required || p.byYear.has(y)));
+    const dropped = Array.from(lead.byYear.keys()).filter(y => years.indexOf(y) < 0);
+    for (const y of dropped) {
+      const miss = prepared.filter(p => p.required && !p.byYear.has(y)).map(p => p.name);
+      warnings.push(`FY${y}: keine Entsprechung in ${miss.join(', ')} — Slot ausgelassen`);
+      skippedPeriods.push(String(y));
+    }
+  } else {
+    years = Array.from(lead.byYear.keys());
+  }
+  years.sort((a, b) => b - a);
+
+  const outValues = [], outPeriods = [], outStarts = [], outForms = [], outAccns = [],
+        outFrames = [], outDurations = [], outFiled = [], outComponents = [];
+
+  for (const year of years) {
+    const entries = {};
+    const present = [];
+    for (const p of prepared) {
+      const e = p.byYear.get(year);
+      if (e) { entries[p.name] = e; if (e.value != null) present.push(p.name); }
+    }
+    // Meta-Quelle für diesen Slot: bevorzugt die Leitserie; im union-Modus kann
+    // die Leitserie in dieser Periode fehlen — dann liefert die erste vorhandene
+    // Serie die Meta (und zwar mit IHREM Index, nicht mit dem der Leitserie).
+    let leadSource = null, leadEntry = null;
+    if (entries[lead.name]) { leadSource = lead; leadEntry = entries[lead.name]; }
+    else {
+      for (const p of prepared) { if (entries[p.name]) { leadSource = p; leadEntry = entries[p.name]; break; } }
+    }
+    if (!leadEntry) continue;
+
+    // Gleiches Fiskaljahr, aber weit auseinanderliegende Periodenenden →
+    // das sind unterschiedliche Berichtsperioden (z.B. Rumpfgeschäftsjahr).
+    let spreadOk = true;
+    for (const nm of Object.keys(entries)) {
+      const d = _secPeriodDaysApart(leadEntry.period, entries[nm].period);
+      if (d != null && d > maxSpreadDays) {
+        warnings.push(`FY${year}: ${nm}@${entries[nm].period} weicht ${Math.round(d)} Tage von ${leadSource.name}@${leadEntry.period} ab — Slot verworfen`);
+        spreadOk = false;
+      }
+    }
+    if (!spreadOk) { skippedPeriods.push(leadEntry.period); continue; }
+
+    const valsByName = {};
+    for (const nm of Object.keys(entries)) valsByName[nm] = entries[nm].value;
+    const value = combine(valsByName, { year, period: leadEntry.period, present, entries });
+    if (value == null) {
+      const miss = prepared.filter(p => p.required && (!entries[p.name] || entries[p.name].value == null)).map(p => p.name);
+      incompletePeriods.push(`${leadEntry.period}${miss.length > 0 ? ':' + miss.join('+') + ' fehlt' : ''}`);
+    }
+
+    outValues.push(value == null ? null : value);
+    outPeriods.push(leadEntry.period);
+    const lm = leadSource.meta;
+    const li = leadEntry.idx;
+    outStarts.push(Array.isArray(lm.starts) && lm.starts[li] != null ? lm.starts[li] : null);
+    outForms.push(Array.isArray(lm.forms) && lm.forms[li] != null ? lm.forms[li] : null);
+    outAccns.push(Array.isArray(lm.accns) && lm.accns[li] != null ? lm.accns[li] : null);
+    outFrames.push(Array.isArray(lm.frames) && lm.frames[li] != null ? lm.frames[li] : null);
+    outDurations.push(Array.isArray(lm.durations) && lm.durations[li] != null ? lm.durations[li] : null);
+    outFiled.push(Array.isArray(lm.filed) && lm.filed[li] != null ? lm.filed[li] : null);
+    const compPer = {};
+    for (const nm of Object.keys(entries)) compPer[nm] = entries[nm].period;
+    outComponents.push(compPer);
+  }
+
+  if (outValues.length === 0) return _empty('keine gemeinsame Berichtsperiode gefunden');
+
+  return {
+    ok: true,
+    values: outValues,
+    warnings,
+    skippedPeriods,
+    meta: {
+      derivation:      label,
+      periods:         outPeriods,
+      starts:          outStarts,
+      forms:           outForms,
+      accns:           outAccns,
+      frames:          outFrames,
+      durations:       outDurations,
+      filed:           outFiled,
+      unit:            lead.unit,
+      isFlowConcept:   lead.isFlow,
+      componentPeriods: outComponents,
+      derivationWarnings: warnings.length > 0 ? warnings : null,
+      skippedPeriods:  skippedPeriods.length > 0 ? skippedPeriods : null,
+      incompletePeriods: incompletePeriods.length > 0 ? incompletePeriods : null
+    },
+    incompletePeriods
+  };
+}
+
+// Einheitliche „nicht ableitbar"-Antwort im Format von _extractWithFallback.
+function _secUnavailable(label, joined) {
+  return {
+    values: [], usedTag: null, derived: true,
+    meta: Object.assign({}, joined && joined.meta, {
+      derivation: label,
+      _derivationUnavailable: (joined && joined.meta && joined.meta.unavailable_reason) || 'nicht ableitbar'
+    })
+  };
+}
+
+// ── EBITDA = EBIT + D&A (period-keyed) ──────────────────────────
+// Vorher: identische Array-Indizes → bei fehlendem Jahr in einer der beiden
+// Reihen wurden EBIT(FY_t) und D&A(FY_t-1) addiert.
+function _deriveEbitdaFromExtracted(extracted) {
+  const ex = extracted || {};
+  const label = 'EBITDA = EBIT + D&A (period-keyed)';
+  const joined = _joinPeriodKeyed(
+    [
+      { name: 'ebit', values: ex.ebit && ex.ebit.values, meta: ex.ebit && ex.ebit.meta },
+      { name: 'da',   values: ex.da   && ex.da.values,   meta: ex.da   && ex.da.meta }
+    ],
+    (v) => (v.ebit != null && v.da != null) ? v.ebit + v.da : null,
+    { label }
+  );
+  if (!joined.ok) return _secUnavailable(label, joined);
+  const _ebitTag = (ex.ebit && ex.ebit.usedTag) || 'ebit';
+  const _daTag   = (ex.da   && ex.da.usedTag)   || 'da';
+  return {
+    values: joined.values, derived: true,
+    usedTag: `${_ebitTag}+${_daTag}`,
+    meta: Object.assign({}, joined.meta, {
+      derivation: `${label}: ${_ebitTag} + ${_daTag}`
+    })
+  };
+}
+
+// ── Goodwill & Intangibles ──────────────────────────────────────
+// Doppelzählungsschutz: IntangibleAssetsNetIncludingGoodwill IST bereits die
+// Summe → dann werden die Einzeltags NICHT addiert. Nur wenn das kombinierte
+// Tag fehlt, werden die disjunkten Komponenten Goodwill und
+// IntangibleAssetsNetExcludingGoodwill period-keyed summiert.
+function _deriveGoodwillIntangibles(extracted) {
+  const ex   = extracted || {};
+  const comb = ex.goodwill_and_intangibles_combined;
+  const gw   = ex.goodwill;
+  const intg = ex.intangibles_ex_goodwill;
+  const hasComb = !!(comb && Array.isArray(comb.values) && comb.values.some(v => v != null));
+
+  if (hasComb) {
+    const ignored = [];
+    if (gw   && Array.isArray(gw.values)   && gw.values.some(v => v != null))   ignored.push(gw.usedTag   || 'Goodwill');
+    if (intg && Array.isArray(intg.values) && intg.values.some(v => v != null)) ignored.push(intg.usedTag || 'IntangibleAssetsNetExcludingGoodwill');
+    return {
+      values: comb.values, derived: false,
+      usedTag: comb.usedTag,
+      meta: Object.assign({}, comb.meta, {
+        derivation: `kombiniertes Tag ${comb.usedTag} (enthält Goodwill bereits)`,
+        componentsIgnored: ignored.length > 0 ? ignored : null,
+        doubleCountGuard: ignored.length > 0
+          ? `Einzeltags nicht addiert (Doppelzählung): ${ignored.join(', ')}`
+          : null
+      })
+    };
+  }
+
+  const label = 'Goodwill + Intangibles ex Goodwill (period-keyed Summe)';
+  const partialPeriods = [];
+  const joined = _joinPeriodKeyed(
+    [
+      { name: 'goodwill',    values: gw   && gw.values,   meta: gw   && gw.meta,   required: false },
+      { name: 'intangibles', values: intg && intg.values, meta: intg && intg.meta, required: false }
+    ],
+    (v, ctx) => {
+      const a = v.goodwill    != null ? v.goodwill    : null;
+      const b = v.intangibles != null ? v.intangibles : null;
+      if (a == null && b == null) return null;
+      // Fehlende Komponente wird NICHT als 0 behandelt, sondern als unvollständig
+      // markiert — der Wert bleibt nutzbar, ist aber sichtbar nur eine Teilsumme.
+      if (a == null || b == null) partialPeriods.push(`${ctx.period}:nur ${a != null ? 'goodwill' : 'intangibles'}`);
+      return (a != null ? a : 0) + (b != null ? b : 0);
+    },
+    { label, mode: 'union' }
+  );
+  if (!joined.ok) return _secUnavailable(label, joined);
+  const parts = [];
+  if (gw   && gw.usedTag)   parts.push(gw.usedTag);
+  if (intg && intg.usedTag) parts.push(intg.usedTag);
+  return {
+    values: joined.values, derived: true,
+    usedTag: parts.join('+') || 'goodwill+intangibles',
+    meta: Object.assign({}, joined.meta, {
+      derivation: `${label}: ${parts.join(' + ') || '—'}`,
+      partialPeriods: partialPeriods.length > 0 ? partialPeriods : null,
+      confidenceHint: partialPeriods.length > 0 ? 'medium' : 'high'
+    })
+  };
+}
+
+// ── Tangible Book Value = Equity − (Goodwill + Intangibles) ─────
+// Fehlender Goodwill-Wert wird nicht mehr stillschweigend als 0 behandelt
+// (das hätte TBV = Equity ergeben und den Abzug verschluckt).
+function _deriveTangibleBookValue(extracted) {
+  const ex = extracted || {};
+  const label = 'Tangible Book Value = total_equity − goodwill_and_intangibles (period-keyed)';
+  const joined = _joinPeriodKeyed(
+    [
+      { name: 'equity', values: ex.total_equity && ex.total_equity.values, meta: ex.total_equity && ex.total_equity.meta },
+      { name: 'gwi',    values: ex.goodwill_and_intangibles && ex.goodwill_and_intangibles.values,
+        meta: ex.goodwill_and_intangibles && ex.goodwill_and_intangibles.meta }
+    ],
+    (v) => (v.equity != null && v.gwi != null) ? v.equity - v.gwi : null,
+    { label }
+  );
+  if (!joined.ok) return _secUnavailable(label, joined);
+  const _gwiTag = (ex.goodwill_and_intangibles && ex.goodwill_and_intangibles.usedTag) || 'goodwill_and_intangibles';
+  return {
+    values: joined.values, derived: true,
+    usedTag: `total_equity-(${_gwiTag})`,
+    meta: Object.assign({}, joined.meta, {
+      derivation: `${label}: ${(ex.total_equity && ex.total_equity.usedTag) || 'total_equity'} − (${_gwiTag})`
+    })
+  };
+}
+
+// ── EBIT-Rekonstruktion aus dem Vorsteuerergebnis ───────────────
+// Vorsteuerergebnis ist KEIN EBIT. Eine Brücke ist nur mit vollständigen
+// Komponenten und sichtbarer Herleitung zulässig:
+//   EBIT ≈ Pretax + Zinsaufwand − Zinsertrag
+// Fehlt der Zinsertrag als Tag, bleibt die Ableitung möglich, wird aber als
+// unvollständig (confidence medium) markiert — sie kann EBIT überschätzen.
+function _deriveEbitFromPretax(extracted) {
+  const ex = extracted || {};
+  const label = 'EBIT-Rekonstruktion = Vorsteuerergebnis + Zinsaufwand − Zinsertrag';
+  const incompletePeriods = [];
+  const joined = _joinPeriodKeyed(
+    [
+      { name: 'pretax',   values: ex.pretax_income    && ex.pretax_income.values,    meta: ex.pretax_income    && ex.pretax_income.meta },
+      { name: 'intExp',   values: ex.interest_expense && ex.interest_expense.values, meta: ex.interest_expense && ex.interest_expense.meta },
+      { name: 'intInc',   values: ex.interest_income  && ex.interest_income.values,  meta: ex.interest_income  && ex.interest_income.meta, required: false }
+    ],
+    (v, ctx) => {
+      if (v.pretax == null || v.intExp == null) return null;
+      if (v.intInc == null) incompletePeriods.push(ctx.period);
+      const intInc = v.intInc != null ? Math.abs(v.intInc) : 0;
+      return v.pretax + Math.abs(v.intExp) - intInc;
+    },
+    { label }
+  );
+  if (!joined.ok) return _secUnavailable(label, joined);
+  const _pxTag = (ex.pretax_income && ex.pretax_income.usedTag) || 'pretax_income';
+  const _ieTag = (ex.interest_expense && ex.interest_expense.usedTag) || 'interest_expense';
+  const _iiTag = (ex.interest_income && ex.interest_income.usedTag) || null;
+  return {
+    values: joined.values, derived: true,
+    usedTag: `${_pxTag}+${_ieTag}${_iiTag ? '-' + _iiTag : ''}`,
+    meta: Object.assign({}, joined.meta, {
+      derivation: `${label}: ${_pxTag} + |${_ieTag}|${_iiTag ? ' − |' + _iiTag + '|' : ' (kein Zinsertrag-Tag)'}`,
+      incompletePeriods: incompletePeriods.length > 0 ? incompletePeriods : null,
+      confidenceHint: incompletePeriods.length > 0 ? 'medium' : 'high',
+      reconstructionNote: incompletePeriods.length > 0
+        ? 'Zinsertrag nicht getaggt — EBIT kann überschätzt sein'
+        : null
+    })
+  };
+}
+
+// ── _applySecDerivations ────────────────────────────────────────
+// Zentraler, testbarer Ableitungspfad über das extracted-Objekt.
+// Reihenfolge ist fachlich bedingt:
+//   1. EBIT-Rekonstruktion (nur wenn OperatingIncomeLoss fehlt)
+//   2. goodwill_and_intangibles (kombiniertes Tag XOR Komponentensumme)
+//   3. EBITDA (braucht finales EBIT)
+//   4. Tangible Book Value (braucht finales goodwill_and_intangibles)
+// Gibt die sichtbaren Herleitungen/Ausfälle als Array zurück
+// (landet in mj.meta._sec_fetch.derivations).
+function _applySecDerivations(extracted) {
+  const ex = extracted || {};
+  const notes = [];
+  const _note = (field, obj) => {
+    if (!obj) return;
+    if (obj.values && obj.values.length > 0) {
+      notes.push({ field, status: 'derived', usedTag: obj.usedTag || null,
+        derivation: (obj.meta && obj.meta.derivation) || null,
+        warnings: (obj.meta && obj.meta.derivationWarnings) || null });
+    } else {
+      notes.push({ field, status: 'unavailable',
+        derivation: (obj.meta && obj.meta.derivation) || null,
+        reason: (obj.meta && (obj.meta._derivationUnavailable || obj.meta.unavailable_reason)) || 'nicht ableitbar' });
+    }
+  };
+
+  // 1. EBIT: nur rekonstruieren wenn kein echtes Operating-Income vorliegt.
+  const _ebitEmpty = !ex.ebit || !Array.isArray(ex.ebit.values) ||
+                     ex.ebit.values.length === 0 || ex.ebit.values[0] == null;
+  if (_ebitEmpty) {
+    const rec = _deriveEbitFromPretax(ex);
+    if (rec.values.length > 0 && rec.values[0] != null) {
+      const _prevWarn = ex.ebit && ex.ebit.meta && ex.ebit.meta._tagSelectionWarning;
+      rec.meta = Object.assign({}, rec.meta,
+        _prevWarn ? { _tagSelectionNote: `EBIT rekonstruiert, weil kein direkter Tag: ${_prevWarn}` } : {});
+      ex.ebit = rec;
+      _note('ebit', rec);
+    } else {
+      // Keine saubere Ableitung möglich → ebit bleibt fehlend (nicht 0, nicht Pretax).
+      ex.ebit = ex.ebit || { values: [], meta: null, usedTag: null };
+      _note('ebit', rec);
+    }
+  }
+
+  // 2. Goodwill & Intangibles (Doppelzählungsschutz)
+  ex.goodwill_and_intangibles = _deriveGoodwillIntangibles(ex);
+  _note('goodwill_and_intangibles', ex.goodwill_and_intangibles);
+
+  // 3. EBITDA
+  ex.ebitda = _deriveEbitdaFromExtracted(ex);
+  _note('ebitda', ex.ebitda);
+
+  // 4. Tangible Book Value
+  ex.tangible_book_value = _deriveTangibleBookValue(ex);
+  _note('tangible_book_value', ex.tangible_book_value);
+
+  return notes;
 }
 
 // ── Ticker-Map ─────────────────────────────────────────────────
@@ -18109,7 +18601,7 @@ function _applyClassificationProvenance(mj, sic, sicMapping) {
 }
 
 function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
-    exchange, sicMapping, extracted, yahooData, secFacts }) {
+    exchange, sicMapping, extracted, yahooData, secFacts, derivationNotes }) {
   const mj = createEmptyMasterJson();
   mj.meta.ticker = ticker;
   mj.meta.company_name = companyName;
@@ -18174,13 +18666,29 @@ function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
     if (mk === 'dividends_paid') vals = vals.map(v => v != null ? Math.abs(v) : null);
     if (mk === 'dps_direct') vals = vals.map(v => v != null ? Math.abs(v) : null);
     f[mk] = vals;
-    const isDerived = !!(ex.usedTag && ex.usedTag.includes('+'));
+    // V1.0.37: derived kommt jetzt aus dem Flag der Ableitungsfunktionen, nicht mehr
+    // aus einem '+' im Tagnamen (das griff z.B. bei tangible_book_value nie).
     const exMeta = ex.meta || {};
+    const isDerived = ex.derived === true || !!(ex.usedTag && ex.usedTag.includes('+'));
+    const _derivationTxt = exMeta.derivation || null;
     f._v4_meta[mk] = {
       source_type: isDerived ? 'derived' : 'reported',
-      source_reference: `SEC EDGAR XBRL: ${ex.usedTag || 'derived'}`,
-      confidence: 'high',
-      notes: `FY-only (10-K) · ${vals.length} Jahre · CIK ${cik}`,
+      source_reference: isDerived
+        ? `SEC EDGAR XBRL (abgeleitet): ${_derivationTxt || ex.usedTag || 'derived'}`
+        : `SEC EDGAR XBRL: ${ex.usedTag || 'derived'}`,
+      confidence: exMeta.confidenceHint || 'high',
+      notes: `FY-only (10-K) · ${vals.length} Jahre · CIK ${cik}`
+        + (_derivationTxt ? ` · Herleitung: ${_derivationTxt}` : '')
+        + (exMeta.doubleCountGuard ? ` · ${exMeta.doubleCountGuard}` : '')
+        + (exMeta.reconstructionNote ? ` · ${exMeta.reconstructionNote}` : ''),
+      // V1.0.37: Einheit, Start-Datum und Filing-ID bleiben erhalten
+      unit:      exMeta.unit      || null,
+      starts:    exMeta.starts    || null,
+      accns:     exMeta.accns     || null,
+      isFlowConcept: exMeta.isFlowConcept != null ? exMeta.isFlowConcept : null,
+      derivation: _derivationTxt,
+      derivationWarnings: exMeta.derivationWarnings || null,
+      componentPeriods:   exMeta.componentPeriods   || null,
       // V11.9.11: Metadaten je Wert für Debug-Ausgaben (z.B. Revenue-YoY-Anomalie)
       periods:   exMeta.periods   || null,
       forms:     exMeta.forms     || null,
@@ -18595,64 +19103,33 @@ function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
     if (!(Array.isArray(f.dps) && f.dps[0] > 0) &&
         extracted.dividends_paid && extracted.dividends_paid.values.length > 0 &&
         f.shares_diluted && f.shares_diluted[0] > 0) {
-      const divArr  = extracted.dividends_paid.values;
-      const shrArr  = f.shares_diluted;
-      const dpsArr  = [];
-      const len = Math.min(divArr.length, shrArr.length);
-      for (let i = 0; i < len; i++) {
-        if (divArr[i] != null && shrArr[i] != null && shrArr[i] > 0) {
-          // dividends_paid ist in Mio USD (aus FMAP), shares in Mio → USD/share
-          dpsArr.push(parseFloat((Math.abs(divArr[i]) / shrArr[i]).toFixed(4)));
-        } else {
-          dpsArr.push(null);
-        }
-      }
+      // V1.0.37: period-keyed statt Index — Dividenden (Zeitraum) und Aktienzahl
+      // (gewichteter Jahresdurchschnitt) dürfen nicht aus verschiedenen FY stammen.
+      const _dpsJoin = _joinPeriodKeyed(
+        [
+          { name: 'div', values: extracted.dividends_paid.values, meta: (extracted.dividends_paid.meta) || {} },
+          { name: 'shr', values: f.shares_diluted, meta: (f._v4_meta && f._v4_meta['shares_diluted']) || {} }
+        ],
+        (v) => (v.div != null && v.shr != null && v.shr > 0)
+          ? parseFloat((Math.abs(v.div) / v.shr).toFixed(4)) : null,
+        { label: 'DPS = |dividends_paid| / shares_diluted (period-keyed)', requireSameUnit: false }
+      );
+      const dpsArr = _dpsJoin.ok ? _dpsJoin.values : [];
       if (dpsArr[0] > 0) {
         f.dps = dpsArr;
-        // V1.0.7 (txrh-hotfix): periods aus dividends_paid übernehmen (Period-Alignment-Gate)
-        const _dpMeta = extracted.dividends_paid.meta || {};
-        f._v4_meta['dps'] = {
+        f._v4_meta['dps'] = Object.assign({}, _dpsJoin.meta, {
           source_type: 'derived',
-          source_reference: `${extracted.dividends_paid.usedTag || 'dividends_paid'} / shares_diluted`,
+          source_reference: `${extracted.dividends_paid.usedTag || 'dividends_paid'} / shares_diluted (period-keyed)`,
           confidence: 'medium',
-          notes: `DPS abgeleitet: |dividends_paid_mio| / shares_mio · ${dpsArr.length} Jahre`,
-          periods:   Array.isArray(_dpMeta.periods)   ? _dpMeta.periods.slice(0, len)   : null,
-          forms:     Array.isArray(_dpMeta.forms)     ? _dpMeta.forms.slice(0, len)     : null,
-          frames:    Array.isArray(_dpMeta.frames)    ? _dpMeta.frames.slice(0, len)    : null,
-          durations: Array.isArray(_dpMeta.durations) ? _dpMeta.durations.slice(0, len) : null
-        };
+          notes: `DPS abgeleitet: |dividends_paid_mio| / shares_mio · ${dpsArr.length} Jahre`
+        });
       }
     }
   }
 
-  // EBITDA: ebit + D&A
-  if (extracted.ebit && extracted.ebit.values.length > 0 &&
-      extracted.da && extracted.da.values.length > 0) {
-    const len = Math.min(extracted.ebit.values.length, extracted.da.values.length);
-    f.ebitda = extracted.ebit.values.slice(0,len).map((v,i) =>
-      v != null && extracted.da.values[i] != null ? v + extracted.da.values[i] : null);
-    f._v4_meta['ebitda'] = { source_type:'derived', source_reference:'EBIT + D&A (SEC)', confidence:'high', notes:'Abgeleitet' };
-  }
-
-  // Tangible Book Value: total_equity - goodwill_intangibles
-  if (extracted.total_equity && extracted.total_equity.values.length > 0 &&
-      extracted.goodwill_and_intangibles && extracted.goodwill_and_intangibles.values.length > 0) {
-    const len = Math.min(extracted.total_equity.values.length, extracted.goodwill_and_intangibles.values.length);
-    f.tangible_book_value = extracted.total_equity.values.slice(0,len).map((v,i) => {
-      const gi = extracted.goodwill_and_intangibles.values[i];
-      return v != null && gi != null ? v - gi : (v != null ? v : null);
-    });
-    // V1.0.7 (txrh-hotfix): periods aus total_equity übernehmen (Period-Alignment-Gate)
-    const _teMeta = extracted.total_equity.meta || {};
-    f._v4_meta['tangible_book_value'] = {
-      source_type:'derived', source_reference:'equity - goodwill_intangibles (SEC)',
-      confidence:'high', notes:'Abgeleitet',
-      periods:   Array.isArray(_teMeta.periods)   ? _teMeta.periods.slice(0, len)   : null,
-      forms:     Array.isArray(_teMeta.forms)     ? _teMeta.forms.slice(0, len)     : null,
-      frames:    Array.isArray(_teMeta.frames)    ? _teMeta.frames.slice(0, len)    : null,
-      durations: Array.isArray(_teMeta.durations) ? _teMeta.durations.slice(0, len) : null
-    };
-  }
+  // V1.0.37: EBITDA und Tangible Book Value werden nicht mehr hier über
+  // Array-Indizes gebildet, sondern period-keyed in _applySecDerivations()
+  // (vor dem Builder). Die FMAP-Schleife oben übernimmt Werte und Meta.
 
   // FCF und Net Debt
   // V1.0.2 (C2): Period-Alignment vor Subtraktion. Ohne diesen Check kann
@@ -18660,58 +19137,58 @@ function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
   // wenn eine der beiden Reihen eine Lücke hat und _takeLatestContiguousFiscalYears
   // unterschiedlich gegriffen hat. Bei Mismatch wird der Slot defensiv auf null
   // gesetzt; kein Hard Block.
+  // V1.0.37: period-keyed statt Index-Vergleich. Vorher wurden bei einer Lücke
+  // in cfo oder capex passende Jahre gar nicht mehr gefunden (Slot → null),
+  // weil beide Reihen ab der Lücke gegeneinander verschoben waren.
   if (f.cfo.length > 0 && f.capex.length > 0) {
-    const cfoMeta   = (f._v4_meta && f._v4_meta['cfo'])   || {};
-    const capexMeta = (f._v4_meta && f._v4_meta['capex']) || {};
-    const cfoPer    = Array.isArray(cfoMeta.periods)   ? cfoMeta.periods   : [];
-    const capexPer  = Array.isArray(capexMeta.periods) ? capexMeta.periods : [];
-
-    const len = Math.min(f.cfo.length, f.capex.length);
-    const _periodMismatches = [];   // human readable diagnose
-    const _alignedPeriods   = [];   // welche Perioden tatsächlich genutzt wurden
-    const fcfArr = new Array(len).fill(null);
-
-    for (let i = 0; i < len; i++) {
-      const pCfo   = cfoPer[i]   || null;
-      const pCapex = capexPer[i] || null;
-
-      // Wenn beide Perioden bekannt sind: Fiscal-Year-Vergleich (YYYY-Prefix)
-      if (pCfo && pCapex) {
-        const yCfo   = String(pCfo).substring(0, 4);
-        const yCapex = String(pCapex).substring(0, 4);
-        if (yCfo !== yCapex) {
-          _periodMismatches.push(`fcf[${i}]: cfo=${pCfo} vs capex=${pCapex}`);
-          _alignedPeriods.push(null);
-          continue;   // kein FCF für diesen Slot
-        }
-      }
-      // Periode unbekannt auf einer oder beiden Seiten → wir trauen dem Index
-      // (Verhalten wie vor V1.0.2), aber markieren das in _alignedPeriods.
-      if (f.cfo[i] != null && f.capex[i] != null) {
-        fcfArr[i] = f.cfo[i] - f.capex[i];
-        _alignedPeriods.push(pCfo || pCapex || null);
-      } else {
-        _alignedPeriods.push(pCfo || pCapex || null);
-      }
+    const _fcfJoin = _joinPeriodKeyed(
+      [
+        { name: 'cfo',   values: f.cfo,   meta: (f._v4_meta && f._v4_meta['cfo'])   || {} },
+        { name: 'capex', values: f.capex, meta: (f._v4_meta && f._v4_meta['capex']) || {} }
+      ],
+      (v) => (v.cfo != null && v.capex != null) ? v.cfo - v.capex : null,
+      { label: 'FCF = CFO − Capex (period-keyed)' }
+    );
+    if (_fcfJoin.ok) {
+      const _gaps = (_fcfJoin.meta.incompletePeriods || []).concat(_fcfJoin.skippedPeriods || []);
+      f.fcf = _fcfJoin.values;
+      f._v4_meta['fcf'] = Object.assign({}, _fcfJoin.meta, {
+        source_type:      'derived',
+        source_reference: 'cfo - capex (period-keyed)',
+        confidence:       _gaps.length > 0 ? 'medium' : 'high',
+        notes:            _gaps.length > 0
+          ? `Period-keyed: ${_gaps.length} Periode(n) ohne Gegenstück → Slot null — ${_gaps.slice(0,3).join('; ')}`
+          : 'Automatisch abgeleitet · Perioden cfo/capex period-keyed abgeglichen',
+        periodMismatches: _gaps.length > 0 ? _gaps : null
+      });
+    } else {
+      // Ohne verwertbare Perioden wird FCF nicht geraten, sondern als fehlend markiert.
+      f.fcf = [];
+      f._v4_meta['fcf'] = {
+        source_type: 'unavailable', source_reference: 'cfo - capex',
+        confidence: 'none', periods: null,
+        notes: `FCF nicht ableitbar: ${(_fcfJoin.meta && _fcfJoin.meta.unavailable_reason) || 'keine gemeinsamen Perioden'}`
+      };
     }
-
-    f.fcf = fcfArr;
-    const _hasMismatch = _periodMismatches.length > 0;
-    f._v4_meta['fcf'] = {
-      source_type:      'derived',
-      source_reference: _hasMismatch ? 'cfo - capex (period-aligned, gaps detected)'
-                                     : 'cfo - capex (period-aligned)',
-      confidence:       _hasMismatch ? 'medium' : 'high',
-      notes:            _hasMismatch
-        ? `Period-Mismatch erkannt: ${_periodMismatches.length} Slot(s) auf null gesetzt — ${_periodMismatches.slice(0, 3).join('; ')}${_periodMismatches.length > 3 ? ` (+${_periodMismatches.length - 3} weitere)` : ''}`
-        : 'Automatisch abgeleitet · Perioden cfo/capex abgeglichen',
-      periods:           _alignedPeriods,
-      periodMismatches:  _hasMismatch ? _periodMismatches : null
-    };
   }
   if (f.total_debt.length > 0 && f.cash_and_equivalents.length > 0) {
-    const len = Math.min(f.total_debt.length, f.cash_and_equivalents.length);
-    f.net_debt = f.total_debt.slice(0,len).map((d,i) => d!=null && f.cash_and_equivalents[i]!=null ? d - f.cash_and_equivalents[i] : null);
+    const _ndJoin = _joinPeriodKeyed(
+      [
+        { name: 'debt', values: f.total_debt,            meta: (f._v4_meta && f._v4_meta['total_debt'])            || {} },
+        { name: 'cash', values: f.cash_and_equivalents,  meta: (f._v4_meta && f._v4_meta['cash_and_equivalents'])  || {} }
+      ],
+      (v) => (v.debt != null && v.cash != null) ? v.debt - v.cash : null,
+      { label: 'Net Debt = total_debt − cash (period-keyed)' }
+    );
+    if (_ndJoin.ok) {
+      f.net_debt = _ndJoin.values;
+      f._v4_meta['net_debt'] = Object.assign({}, _ndJoin.meta, {
+        source_type: 'derived',
+        source_reference: 'total_debt - cash_and_equivalents (period-keyed)',
+        confidence: 'high',
+        notes: 'Automatisch abgeleitet · Perioden period-keyed abgeglichen'
+      });
+    }
   }
 
   // V1.0.9 (period-keyed): Component-based total_debt reconstruction
@@ -18942,6 +19419,9 @@ function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
     _missing_debt_current: _existingMissingDebtCurrent || undefined,
     missing_current_fields: (typeof _missingCurrentFields !== 'undefined' && _missingCurrentFields.length > 0)
       ? _missingCurrentFields : undefined,
+    // V1.0.37: sichtbare Herleitungen bzw. Gründe für nicht ableitbare Felder
+    derivations: (Array.isArray(derivationNotes) && derivationNotes.length > 0)
+      ? derivationNotes : undefined,
   };
   // _debt_warnings restaurieren (wurden vor dem _sec_fetch-Reset gesetzt)
   if (_existingDebtWarnings && _existingDebtWarnings.length > 0) {
@@ -19174,16 +19654,23 @@ function _renderSecDiag(report, masterJson) {
     const ex = extracted[k];
     const years = ex?.values?.length || 0;
     const tag = ex?.usedTag || '—';
-    const isDerived = tag && tag.includes('+');
+    // V1.0.37: derived kommt aus dem Flag der Ableitungsfunktionen; die Herleitung
+    // (inkl. Doppelzählungsschutz / unvollständiger Rekonstruktion) wird sichtbar gemacht.
+    const isDerived = (ex && ex.derived === true) || !!(tag && tag.includes('+'));
     const selWarn = ex?.meta?._tagSelectionWarning || null;
     const selNote = ex?.meta?._tagSelectionNote || null;
     const staleCands = ex?.meta?._staleCandidates || null;
+    const derivTxt = [ex?.meta?.derivation, ex?.meta?.doubleCountGuard, ex?.meta?.reconstructionNote,
+                      ex?.meta?._derivationUnavailable ? 'nicht ableitbar: ' + ex.meta._derivationUnavailable : null]
+                     .filter(Boolean).join(' · ') || null;
     let statusColor = 'var(--accent2)', statusText = years + 'J';
     if (years === 0) { statusColor = cat==='critical'?'var(--danger)':'var(--warn)'; statusText = selWarn ? 'stale-ign.' : 'fehlt'; }
     else if (years < 5) { statusColor = 'var(--warn)'; }
-    const extraNote = selWarn
+    const derivNote = derivTxt
+      ? `<div class="txt-caption" style="color:var(--muted);padding-top:1px">↳ ${escapeHtml(derivTxt)}</div>` : '';
+    const extraNote = (selWarn
       ? `<div class="txt-caption" style="color:var(--warn);padding-top:1px">⚠ ${escapeHtml(selWarn)}</div>`
-      : (selNote ? `<div class="txt-caption" style="color:var(--info);padding-top:1px">ℹ ${escapeHtml(selNote)}</div>` : '');
+      : (selNote ? `<div class="txt-caption" style="color:var(--info);padding-top:1px">ℹ ${escapeHtml(selNote)}</div>` : '')) + derivNote;
     return `<div class="row" style="flex-direction:column;align-items:stretch">
       <div style="display:grid;grid-template-columns:160px 40px 1fr;gap:0">
         <span class="lbl" style="color:${cat==='critical'?'var(--text)':'var(--muted)'}">
@@ -19409,6 +19896,8 @@ async function secFetchAll() {
       'current_assets','current_liabilities',
       'cfo','capex','ebit','interest_expense','tax_expense',
       'gross_profit',
+      // V1.0.37: Komponenten der EBIT-Rekonstruktion — stale darf kein EBIT erzeugen
+      'pretax_income',
       // Period-Gate-Felder bzw. modellkritische Spezialfelder: nicht stale importieren.
       // Beispiel AVGO: StockholdersEquity/BookValue nur bis 2019 verfügbar -> darf DCF/DDM nicht global sperren.
       'book_value','tangible_book_value',
@@ -19427,27 +19916,15 @@ async function secFetchAll() {
       }
     }
 
+    // V1.0.37: Alle abgeleiteten Serien period-keyed erzeugen (siehe _applySecDerivations)
+    const _derivationNotes = _applySecDerivations(extracted);
+
     // Felder mit stale-ignorierten Kandidaten in _sec_fetch.missing_current_fields dokumentieren
     const _missingCurrentFields = [];
     for (const [field, ex] of Object.entries(extracted)) {
       if (ex && ex.meta && ex.meta._tagSelectionWarning) {
         _missingCurrentFields.push({ field, warning: ex.meta._tagSelectionWarning });
       }
-    }
-    // EBITDA: ebit + D&A
-    if (extracted.ebit.values.length>0 && extracted.da.values.length>0) {
-      const len = Math.min(extracted.ebit.values.length, extracted.da.values.length);
-      extracted.ebitda = { values: extracted.ebit.values.slice(0,len).map((v,i) =>
-        v!=null&&extracted.da.values[i]!=null ? v+extracted.da.values[i] : null),
-        usedTag:'ebit+D&A', derived:true };
-    }
-    // Tangible Book Value
-    if (extracted.total_equity.values.length>0 && extracted.goodwill_and_intangibles.values.length>0) {
-      const len = Math.min(extracted.total_equity.values.length, extracted.goodwill_and_intangibles.values.length);
-      extracted.tangible_book_value = { values: extracted.total_equity.values.slice(0,len).map((v,i) => {
-        const gi = extracted.goodwill_and_intangibles.values[i];
-        return v!=null&&gi!=null ? v-gi : (v!=null?v:null);
-      }), usedTag:'total_equity-goodwill_intangibles', derived:true };
     }
     if (!_isCurrent()) return;
 
@@ -19484,7 +19961,7 @@ async function secFetchAll() {
     if (!_isCurrent()) return;
 
     _secStatus('Baue Master-JSON…','info');
-    const masterJson = _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd, exchange, sicMapping, extracted, yahooData, secFacts: facts });
+    const masterJson = _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd, exchange, sicMapping, extracted, yahooData, secFacts: facts, derivationNotes: _derivationNotes });
 
     // Finaler Guard vor allen State-Writes
     if (!_isCurrent()) return;
@@ -19839,7 +20316,7 @@ function updateTickerBadge() {
 
 // ════════════════════════════════════════════════════════════════
 // REGRESSIONSTESTS — Debug-only (?debug=1)
-const REGRESSION_TEST_VERSION = 'v1.0.31-p6p7-confidence-golden';
+const REGRESSION_TEST_VERSION = 'v1.0.37-sec-tag-period-fixes';
 // Keine Seiteneffekte: State wird gespeichert und danach vollständig
 // wiederhergestellt. Keine Writes auf localStorage / Snapshots.
 // ════════════════════════════════════════════════════════════════
@@ -25825,6 +26302,139 @@ const REGRESSION_FIXTURES = [
 
 })();
 
+
+// ── V1.0.37: SEC-Ableitungen (Tag-Korrektheit, period-keyed Joins) ──────────
+// Synthetische SEC-Facts, Erwartungswerte unabhängig von Hand gerechnet.
+// Ausführlichere Varianten derselben Fälle liegen in tests/sec-derivations.test.mjs.
+(function _registerSecDerivationTests() {
+  const M = 1e6;
+  const _flow = (year, valM, endMonth, endDay) => ({
+    start: `${endMonth ? year - 1 : year}-${endMonth ? String(endMonth + 1).padStart(2,'0') : '01'}-01`,
+    end:   `${year}-${String(endMonth || 12).padStart(2,'0')}-${String(endDay || 31).padStart(2,'0')}`,
+    val: valM * M, form: '10-K', frame: `CY${year}`, filed: `${year+1}-02-15`, accn: `0000-${year}`
+  });
+  const _stock = (year, valM) => ({
+    end: `${year}-12-31`, val: valM * M, form: '10-K', frame: `CY${year}Q4I`,
+    filed: `${year+1}-02-15`, accn: `0000-${year}`
+  });
+  const _facts = (map) => {
+    const out = { 'us-gaap': {} };
+    for (const k of Object.keys(map)) out['us-gaap'][k] = { units: { USD: map[k] } };
+    return out;
+  };
+  const _ex = (facts, field) => {
+    const tags = SEC_TAG_MAP[field];
+    if (!tags) return { values: [], meta: null, usedTag: null };
+    return _extractWithFallback(facts, tags, 10);
+  };
+  const _build = (facts, fields) => {
+    const o = {};
+    for (const f of fields) o[f] = _ex(facts, f);
+    return o;
+  };
+  const DERIV_FIELDS = ['ebit','da','pretax_income','interest_expense','interest_income',
+    'total_equity','goodwill','intangibles_ex_goodwill','goodwill_and_intangibles_combined'];
+
+  const _mj = () => ({
+    schema_version: '4.0',
+    meta: { ticker: 'SECD', company: 'SEC Derivation Test', country: 'US', currency: 'USD',
+            as_of_date: '2024-12-31', source_primary: 'SEC_EDGAR', cik: '0000777',
+            sub_classification: 'standard_nonfin' },
+    fundamentals: _makeBaseFundamentals(),
+    valuation: _makeBaseValuation(),
+    market: { price: 45.00, market_cap: 45000, price_currency: 'USD' },
+    quality_inputs: { piotroski: {} }
+  });
+
+  // A) EBITDA period-keyed bei versetzten Jahren
+  //    EBIT FY2024/23/22 = 1200/1100/1000 · D&A erst ab FY2023 = 280/250
+  //    Erwartet: [null, 1380, 1250] — der Index-Join hätte 1200+280 = 1480 ergeben.
+  const _fA = _facts({
+    OperatingIncomeLoss: [_flow(2024,1200), _flow(2023,1100), _flow(2022,1000)],
+    DepreciationDepletionAndAmortization: [_flow(2023,280), _flow(2022,250)]
+  });
+  const _rA = _deriveEbitdaFromExtracted(_build(_fA, DERIV_FIELDS));
+
+  // B) Vorsteuerergebnis ohne EBIT: 900 + 120 − 20 = 1000
+  const _fB = _facts({
+    IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest: [_flow(2024,900)],
+    InterestExpense: [_flow(2024,120)],
+    InvestmentIncomeInterest: [_flow(2024,20)]
+  });
+  const _eB = _build(_fB, DERIV_FIELDS);
+  _applySecDerivations(_eB);
+
+  // C) Vorsteuerergebnis ohne Zinsaufwand → EBIT bleibt fehlend
+  const _fC = _facts({
+    IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest: [_flow(2024,900)]
+  });
+  const _eC = _build(_fC, DERIV_FIELDS);
+  _applySecDerivations(_eC);
+
+  // D) Kombiniertes Intangibles-Tag (5000) darf nicht mit Goodwill (3000)
+  //    und Intangibles ex Goodwill (2000) addiert werden.
+  const _fD = _facts({
+    IntangibleAssetsNetIncludingGoodwill: [_stock(2024,5000)],
+    Goodwill: [_stock(2024,3000)],
+    IntangibleAssetsNetExcludingGoodwill: [_stock(2024,2000)]
+  });
+  const _rD = _deriveGoodwillIntangibles(_build(_fD, DERIV_FIELDS));
+
+  // E) Ohne kombiniertes Tag: Summe 3000 + 2000 = 5000
+  const _fE = _facts({
+    Goodwill: [_stock(2024,3000)],
+    IntangibleAssetsNetExcludingGoodwill: [_stock(2024,2000)]
+  });
+  const _rE = _deriveGoodwillIntangibles(_build(_fE, DERIV_FIELDS));
+
+  // F) TBV: Equity 12000/11000, Goodwill nur FY2024 = 3000
+  //    Erwartet [9000, null] — fehlender Goodwill wird nicht als 0 behandelt.
+  const _fF = _facts({
+    StockholdersEquity: [_stock(2024,12000), _stock(2023,11000)],
+    Goodwill: [_stock(2024,3000)]
+  });
+  const _eF = _build(_fF, DERIV_FIELDS);
+  _eF.goodwill_and_intangibles = _deriveGoodwillIntangibles(_eF);
+  const _rF = _deriveTangibleBookValue(_eF);
+
+  REGRESSION_FIXTURES.push({
+    id: 'T-SECD1',
+    label: 'T-SECD1: SEC-Ableitungen — Tag-Trennung, period-keyed Joins, Doppelzählungsschutz',
+    mj: _mj(),
+    assertions: [
+      { path: '__secd_ebit_tags', expected: 'OperatingIncomeLoss', op: 'eq',
+        label: 'SEC_TAG_MAP.ebit enthält nur OperatingIncomeLoss (kein Vorsteuerergebnis)',
+        _value: SEC_TAG_MAP.ebit.join(',') },
+      { path: '__secd_ebitda', expected: 'null,1380,1250', op: 'eq',
+        label: 'EBITDA period-keyed bei versetzten Jahren (kein Index-Mix 1480)',
+        _value: _rA.values.map(v => v === null ? 'null' : v).join(',') },
+      { path: '__secd_ebitda_per', expected: '2024-12-31,2023-12-31,2022-12-31', op: 'eq',
+        label: 'EBITDA behält die Perioden der Leitserie EBIT',
+        _value: (_rA.meta.periods || []).join(',') },
+      { path: '__secd_ebit_rec', expected: '1000', op: 'eq',
+        label: 'EBIT-Rekonstruktion = Pretax 900 + Zins 120 − Zinsertrag 20',
+        _value: String(_eB.ebit.values[0]) },
+      { path: '__secd_ebit_rec_src', expected: true, op: 'eq',
+        label: 'EBIT-Rekonstruktion ist als abgeleitet mit sichtbarer Herleitung markiert',
+        _value: _eB.ebit.derived === true && /Vorsteuerergebnis/.test(_eB.ebit.meta.derivation || '') },
+      { path: '__secd_ebit_missing', expected: 0, op: 'eq',
+        label: 'Ohne Zinsaufwand bleibt EBIT fehlend (kein stiller Pretax-Ersatz)',
+        _value: _eC.ebit.values.length },
+      { path: '__secd_gwi_comb', expected: '5000', op: 'eq',
+        label: 'Kombiniertes Intangibles-Tag wird nicht mit Einzeltags addiert',
+        _value: String(_rD.values[0]) },
+      { path: '__secd_gwi_guard', expected: true, op: 'eq',
+        label: 'Doppelzählungsschutz dokumentiert die ignorierten Einzeltags',
+        _value: !!(_rD.meta.doubleCountGuard && _rD.meta.componentsIgnored.length === 2) },
+      { path: '__secd_gwi_sum', expected: '5000', op: 'eq',
+        label: 'Ohne kombiniertes Tag: Goodwill 3000 + Intangibles 2000 = 5000',
+        _value: String(_rE.values[0]) },
+      { path: '__secd_tbv', expected: '9000,null', op: 'eq',
+        label: 'TBV = Equity − GW&I; fehlender Goodwill ergibt null statt Equity',
+        _value: _rF.values.map(v => v === null ? 'null' : v).join(',') },
+    ]
+  });
+})();
 
 function _runSingleFixture(fixture) {
   // Vollständigen Pipeline-Lauf auf einem Deep-Clone des Fixture-MJ
