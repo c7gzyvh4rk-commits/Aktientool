@@ -4165,13 +4165,30 @@ function coreValuationDetail(ctx, g1Pct, tgPct, waccPct, opMarginPct) {
     : ((opMarginPct != null && isFinite(opMarginPct)) ? opMarginPct : null);
   const r = forecastDcfCore(ctx.fi, g1Pct, tgPct, waccPct, ctx.fade, marginPct);
   if (!r || !(r.total > 0)) return null;
-  const eq = (ctx.netDebtPerShare != null) ? (r.total - ctx.netDebtPerShare) : r.total;
+  // ── Fehlende Nettoschulden ⇒ KEIN Eigenkapitalwert ────────────────
+  // Der Kern diskontiert Cashflows vor Finanzierung; das Ergebnis ist ein
+  // operativer Unternehmenswert. Der Übergang zum Eigenkapitalwert setzt
+  // bekannte Nettoschulden voraus. Sind sie unbekannt, wurde bis V1.0.36
+  // der operative Wert unverändert als Eigenkapitalwert ausgegeben — das
+  // ist rechnerisch die stille Annahme „Nettoschulden = 0" und bei
+  // verschuldeten Unternehmen systematisch zu hoch. Fehlende Werte sind
+  // nicht 0: equityValuePerShare bleibt null, der operative Wert wird
+  // weiterhin separat geliefert.
+  const eq = (ctx.netDebtPerShare != null) ? (r.total - ctx.netDebtPerShare) : null;
   return {
     raw: r,
     operatingValuePerShare: r.total,
     netDebtPerShare: ctx.netDebtPerShare,
     netDebtApplied: ctx.netDebtPerShare != null,
+    netDebtAvailable: !!(ctx.netDebt && ctx.netDebt.available),
+    netDebtMissingFields: (ctx.netDebt && ctx.netDebt.missing) || [],
     equityValuePerShare: eq,
+    equityValueUnavailableReason: (eq == null)
+      ? ('Nettoschulden nicht ermittelbar (fehlend: ' +
+         (((ctx.netDebt && ctx.netDebt.missing) || []).join(', ') || 'Schulden-/Liquiditätsdaten') +
+         ') — ohne sie ist der Übergang vom operativen Unternehmenswert zum ' +
+         'Eigenkapitalwert nicht bestimmbar. Fehlende Daten werden NICHT als 0 angenommen.')
+      : null,
     opMarginPctUsed: marginPct
   };
 }
@@ -4254,6 +4271,20 @@ function solveReverseDcfGrowth(mj, opts) {
   if (missing.length) {
     return res('inputs_missing', 'Fehlende Eingaben: ' + missing.join(', '),
       { targetPricePerShare: price, wacc, terminalGrowth: tg });
+  }
+  // Ohne bekannte Nettoschulden liefert der Kern keinen Eigenkapitalwert; ein
+  // Vergleich mit dem Aktienkurs (einem Eigenkapitalpreis) wäre dann nicht
+  // definiert. Kein Ausweichen auf den operativen Wert — das entspräche der
+  // stillen Annahme „Nettoschulden = 0".
+  if (ctx.netDebtPerShare == null) {
+    return res('net_debt_unknown',
+      'Nettoschulden nicht ermittelbar (fehlend: ' +
+      ((ctx.netDebt && ctx.netDebt.missing || []).join(', ') || 'Schulden-/Liquiditätsdaten') +
+      ') — der Bewertungskern liefert ohne sie keinen Eigenkapitalwert je Aktie, ' +
+      'und nur ein solcher ist mit dem Aktienkurs vergleichbar. Fehlende Daten gelten ' +
+      'NICHT als 0; bitte net_debt[0] oder total_debt[0] mit cash_and_equivalents[0]/cash[0] ergänzen.',
+      { targetPricePerShare: price, wacc, terminalGrowth: tg,
+        netDebtApplied: false, netDebtMissingFields: (ctx.netDebt && ctx.netDebt.missing) || [] });
   }
   if (wacc <= tg) {
     return res('wacc_le_terminal_growth',
@@ -4406,6 +4437,21 @@ function computeSensitivityMatrix(mj, v) {
     out.reason = 'Der gemeinsame Bewertungskern ist nicht verfügbar (fehlend: ' +
       (ctx.missing.join(', ') || 'unbekannt') + '). Eine Matrix aus einer anderen ' +
       'Cashflow-Definition wird bewusst NICHT gezeigt — sie wäre nicht mit dem Haupt-DCF vergleichbar.';
+    return out;
+  }
+  if (ctx.netDebtPerShare == null) {
+    // Die Matrix ist als „Fair Value" beschriftet und wird gegen den Kurs
+    // eingefärbt. Ohne Nettoschulden gibt es keinen Eigenkapitalwert je Aktie —
+    // operative Werte in dieselben Zellen zu schreiben, wäre ein stiller
+    // 0-Abzug und gegenüber dem Kurs irreführend.
+    out.reason = 'Nettoschulden nicht ermittelbar (fehlend: ' +
+      ((ctx.netDebt.missing || []).join(', ') || 'Schulden-/Liquiditätsdaten') +
+      '). Ohne sie liefert der Bewertungskern keinen Eigenkapitalwert je Aktie; ' +
+      'operative Unternehmenswerte werden hier bewusst NICHT als Fair Value gezeigt. ' +
+      'Fehlende Daten werden NICHT als 0 angenommen — bitte net_debt[0] oder ' +
+      'total_debt[0] mit cash_and_equivalents[0]/cash[0] ergänzen.';
+    out.netDebt = ctx.netDebt;
+    out.equityValueUnavailable = true;
     return out;
   }
   // Marge exakt wie im Haupt-DCF (Base-Szenario), damit nur WACC und g1 variieren.
@@ -10251,8 +10297,10 @@ function modelDcf(mj, scenarios, fcfStartOverride, fcfStartMeta) {
     // ── Wertbrücke explizit ausweisen (Base-Szenario) ──────────────
     const opValuePerShareBase = (rBase && rBase.total > 0) ? rBase.total : null;
     const evAbsBase = (rBase && rBase._totalAbs != null) ? rBase._totalAbs : null;
-    const equityValuePerShareBase = (opValuePerShareBase == null) ? null
-      : (netDebtPerShare != null ? opValuePerShareBase - netDebtPerShare : opValuePerShareBase);
+    // Ohne bekannte Nettoschulden gibt es keinen Eigenkapitalwert — der
+    // operative Wert wird NICHT ersatzweise als solcher ausgegeben.
+    const equityValuePerShareBase = (opValuePerShareBase == null || netDebtPerShare == null)
+      ? null : (opValuePerShareBase - netDebtPerShare);
     const equityValueAbsBase = (evAbsBase != null && netDebtInfo.available)
       ? evAbsBase - netDebtInfo.netDebtM : null;
 
@@ -10274,11 +10322,24 @@ function modelDcf(mj, scenarios, fcfStartOverride, fcfStartMeta) {
         warnings.push('⚠ Eigenkapitalwert negativ — Nettoschulden übersteigen den operativen Unternehmenswert.');
       }
     } else {
+      // Ohne bekannte Nettoschulden ist der Eigenkapitalwert nicht bestimmbar.
+      // Der operative Unternehmenswert wird weiterhin ausgewiesen — aber als
+      // das, was er ist, und NICHT als Fair Value je Aktie. Bis V1.0.36 wurde
+      // er unverändert als Modellwert gewichtet; das war die stille Annahme
+      // „Nettoschulden = 0" und bei verschuldeten Unternehmen zu hoch.
       warnings.push(
         `⚠ Nettoschulden nicht ermittelbar (fehlend: ${netDebtInfo.missing.join(', ')}) — ` +
-        `KEIN Nettoschuldenabzug vorgenommen; ausgewiesener Wert ist der operative ` +
-        `Unternehmenswert je Aktie und kann bei verschuldeten Unternehmen zu hoch sein. ` +
-        `Fehlende Schulden-/Liquiditätsdaten wurden NICHT als 0 angenommen.`
+        `der DCF liefert deshalb KEINEN Eigenkapitalwert je Aktie. Der operative ` +
+        `Unternehmenswert beträgt ${opValuePerShareBase != null ? opValuePerShareBase.toFixed(2) : '–'}/Aktie ` +
+        `(${evAbsBase != null ? evAbsBase.toFixed(0) + 'M' : '–'} bei ${shares0.toFixed(1)}M Aktien); ` +
+        `er ist ohne Schuldenabzug NICHT mit dem Aktienkurs vergleichbar. ` +
+        `Fehlende Schulden-/Liquiditätsdaten werden NICHT als 0 angenommen — ` +
+        `bitte ${netDebtInfo.missing.join(' bzw. ')} ergänzen oder net_debt[0] setzen.`
+      );
+      warnings.push(
+        '⚠ Der DCF geht deshalb NICHT in Bewertung und Synthese ein. Sobald ' +
+        'net_debt[0] oder total_debt[0] zusammen mit cash_and_equivalents[0]/cash[0] ' +
+        'vorliegt, rechnet das Modell wieder regulär.'
       );
     }
     // ── Working-Capital-Ausweis ────────────────────────────────────
@@ -10387,10 +10448,28 @@ function modelDcf(mj, scenarios, fcfStartOverride, fcfStartMeta) {
     const _buybackUpliftPct = (rBase.total > 0 && rBase._buybackAdjustedTotal > 0)
       ? ((rBase._buybackAdjustedTotal / rBase.total) - 1) * 100
       : 0;
+    // Ohne Nettoschulden liefert der Kern bewusst keinen Eigenkapitalwert
+    // (cons/baseV/opt sind dann null) ⇒ das Modell ist nicht anwendbar und
+    // wird vom Synthesizer (Filter auf applicable/base) übergangen.
+    const _applicable = cons != null && baseV != null && opt != null;
+    const _naReason = _applicable ? null
+      : (!netDebtInfo.available
+          ? `Nettoschulden nicht ermittelbar (fehlend: ${netDebtInfo.missing.join(', ')}) — ` +
+            `ohne sie ist kein Eigenkapitalwert je Aktie bestimmbar; der operative ` +
+            `Unternehmenswert ${opValuePerShareBase != null ? opValuePerShareBase.toFixed(2) : '–'}/Aktie ` +
+            `wird nur nachrichtlich ausgewiesen. Fehlende Daten gelten NICHT als 0.`
+          : 'Operativer Forecast in mindestens einem Szenario ungültig (z.B. WACC ≤ Terminalwachstum)');
     return {
-      applicable: cons != null && baseV != null && opt != null,
+      applicable: _applicable,
+      reason: _naReason,
       conservative: cons, base: baseV, optimistic: opt,
       warnings, modelName: 'DCF',
+      // Operativer Wert bleibt als eigene Größe erhalten, auch wenn kein
+      // Eigenkapitalwert ableitbar ist.
+      _equityValueUnavailable: !netDebtInfo.available,
+      _equityValueUnavailableReason: !netDebtInfo.available
+        ? `Nettoschulden nicht ermittelbar (fehlend: ${netDebtInfo.missing.join(', ')})` : null,
+      _excludedFromSynthesis: !_applicable,
       _forecastBased: true, _forecastDebug: fi._debug,
       _buybackAdjustedBase: (rBase._buybackAdjustedTotal > 0) ? rBase._buybackAdjustedTotal : null,
       _buybackUpliftPct,
@@ -13108,6 +13187,15 @@ function runMonteCarloDcf(mj, vResult) {
   // Kein Rückfall auf die abweichende Cashflow-Definition (CFO − CapEx ohne
   // Wertbrücke und ohne ΔWC): die Simulationswerte werden über probAbovePrice
   // mit dem Kurs verglichen und müssen dieselbe Größe sein wie der Haupt-DCF.
+  if (ctx.ok && ctx.netDebtPerShare == null) {
+    // probAbovePrice vergleicht die Simulationswerte mit dem Aktienkurs; das
+    // setzt Eigenkapitalwerte voraus. Ohne Nettoschulden liefert der Kern keine.
+    return { _blocked: true, _reason:
+      'Monte Carlo ausgeschlossen — Nettoschulden nicht ermittelbar (fehlend: ' +
+      ((ctx.netDebt.missing || []).join(', ') || 'Schulden-/Liquiditätsdaten') +
+      '). Ohne sie gibt es keinen Eigenkapitalwert je Aktie, der mit dem Kurs ' +
+      'verglichen werden könnte. Fehlende Daten werden NICHT als 0 angenommen.' };
+  }
   if (!useForecast) {
     return { _blocked: true, _reason:
       'Monte Carlo ausgeschlossen — der gemeinsame Bewertungskern ist nicht anwendbar (fehlend: ' +
@@ -27882,14 +27970,34 @@ function _testDcfEquityBridge() {
     check('B-6d: Warnung weist fehlenden Abzug ausdrücklich aus',
       (rNone.warnings || []).some(w => /Nettoschulden nicht ermittelbar/.test(w)),
       'erhalten: ' + JSON.stringify(rNone.warnings));
-    check('B-6e: Wert = operativer Wert 15,00 (unbereinigt, gekennzeichnet)',
-      approx(rNone.base, 15, 1e-9), 'erhalten: ' + rNone.base);
+    // Verhaltensänderung V1.0.36a (fachlich begründet): Bis dahin gab der DCF
+    // bei unbekannten Nettoschulden den OPERATIVEN Wert 15,00 als Modellwert
+    // aus. Das ist rechnerisch die stille Annahme „Nettoschulden = 0" und bei
+    // verschuldeten Unternehmen systematisch zu hoch — genau der Fehler, den
+    // B-6a–d benennen. Der operative Wert bleibt erhalten (B-6e2), aber es
+    // gibt keinen Eigenkapitalwert und damit keinen gewichtbaren Modellwert.
+    check('B-6e: kein Eigenkapitalwert ohne Nettoschulden (kein stiller 0-Abzug)',
+      rNone.base == null && rNone.conservative == null && rNone.optimistic == null
+      && rNone.applicable === false,
+      'erhalten: ' + rNone.base + ' / applicable ' + rNone.applicable);
+    check('B-6e2: operativer Unternehmenswert bleibt separat ausgewiesen (15,00)',
+      approx(rNone._operatingValuePerShareBase, 15, 1e-9)
+      && approx(rNone._operatingValueAbsBase, 1500, 1e-9)
+      && rNone._equityValuePerShareBase == null,
+      'operativ: ' + rNone._operatingValuePerShareBase + ' EK: ' + rNone._equityValuePerShareBase);
+    check('B-6e3: Grund ist verständlich benannt',
+      rNone._equityValueUnavailable === true
+      && /Nettoschulden nicht ermittelbar/.test(rNone.reason || '')
+      && /NICHT als 0/.test((rNone.warnings || []).join(' | ')),
+      'reason: ' + (rNone.reason || '').slice(0, 160));
 
     // Schulden bekannt, Liquidität unbekannt → ebenfalls nicht ableitbar
     const rNoCash = run({ total_debt: [500] });
     check('B-6f: total_debt ohne Liquiditätsangabe → nicht ableitbar (Cash ≠ 0 unterstellt)',
-      rNoCash._netDebtAvailable === false && approx(rNoCash.base, 15, 1e-9),
-      'erhalten: ' + rNoCash._netDebtAvailable + '/' + rNoCash.base);
+      rNoCash._netDebtAvailable === false && rNoCash.base == null
+      && approx(rNoCash._operatingValuePerShareBase, 15, 1e-9),
+      'erhalten: ' + rNoCash._netDebtAvailable + '/' + rNoCash.base
+      + '/ operativ ' + rNoCash._operatingValuePerShareBase);
     check('B-6g: fehlendes Feld ist die Liquidität',
       (rNoCash._netDebtMissingFields || []).join(',') === 'cash_and_equivalents[0]/cash[0]',
       'erhalten: ' + JSON.stringify(rNoCash._netDebtMissingFields));
@@ -27966,9 +28074,15 @@ function _testDcfEquityBridge() {
       /Eigenkapitalwert nach Abzug Nettoschulden 500M/.test(htmlNd),
       'erhalten: ' + htmlNd.slice(0, 600));
 
+    // Verhaltensänderung V1.0.36a: Die Matrix ist als „Fair Value" beschriftet
+    // und wird gegen den Kurs eingefärbt. Ohne Nettoschulden gibt es keinen
+    // Eigenkapitalwert; operative Werte in dieselben Zellen zu schreiben wäre
+    // ein stiller 0-Abzug. Statt Zahlen erscheint jetzt der fehlende Input.
     const htmlNone = buildSensitivityMatrix(mkMatrixMj({}), mkV());
-    check('B-10c: ohne Schulden-/Liquiditätsdaten Basiszelle 15.0 + Kennzeichnung',
-      />15\.0</.test(htmlNone) && /ohne Nettoschuldenabzug/.test(htmlNone),
+    check('B-10c: ohne Schulden-/Liquiditätsdaten keine Zellen, sondern erklärter Hinweis',
+      !/>15\.0</.test(htmlNone)
+      && /Nettoschulden nicht ermittelbar/.test(htmlNone)
+      && /NICHT als 0/.test(htmlNone),
       'erhalten: ' + htmlNone.slice(0, 600));
   }
 
@@ -28547,6 +28661,158 @@ function _testValuationCore() {
       computeReverseDcf(mjNoCore) === null, 'erhalten: ' + computeReverseDcf(mjNoCore));
   }
 
+  // ── C-12: Fehlende Nettoschulden ⇒ kein Eigenkapitalwert ────────
+  // Referenz: Umsatz₀ 1.000M, EBIT-Marge 20 %, Steuer 25 %, D&A 5 %, CapEx 5 %
+  // ⇒ FCFF 150M p.a.; g1 = tg = 0, WACC 10 % ⇒ operativer Unternehmenswert
+  // 150 / 0,10 = 1.500M bei 100M Aktien = 15,00 USD/Aktie operativ.
+  // Fehlen Schulden- UND Liquiditätsdaten vollständig, ist der Übergang zum
+  // Eigenkapitalwert nicht bestimmbar. Ein fehlender Wert ist keine 0.
+  suite('C-12 Fehlende Nettoschulden');
+  {
+    const SC0 = scOf(0, 0, 10);
+    // net_debt: null ⇒ kein net_debt[0]; total_debt und cash fehlen ohnehin.
+    const mkNoNd = (extra) => mkMj(Object.assign(
+      { owcPct: 0, g1: 0, tg: 0, wacc: 10, fund: { net_debt: null } }, extra || {}));
+
+    // (a) Kern: operativer Wert bleibt, Eigenkapitalwert entfällt
+    const ctxNo = buildCoreValuationContext(mkNoNd(), {});
+    const dNo = coreValuationDetail(ctxNo, 0, 0, 10, 20);
+    check('C-12a: operativer Wert je Aktie = 15,00 (1.500M / 100M Aktien)',
+      dNo != null && approx(dNo.operatingValuePerShare, 15) && approx(dNo.raw._totalAbs, 1500, 1e-7),
+      'je Aktie: ' + (dNo && dNo.operatingValuePerShare) + ' absolut: ' + (dNo && dNo.raw._totalAbs));
+    check('C-12b: KEIN numerischer Eigenkapitalwert',
+      dNo.equityValuePerShare === null && dNo.netDebtApplied === false
+      && dNo.netDebtPerShare === null,
+      'erhalten: ' + dNo.equityValuePerShare);
+    check('C-12c: der operative Wert wird NICHT als Eigenkapitalwert ausgegeben',
+      dNo.equityValuePerShare !== dNo.operatingValuePerShare,
+      'operativ: ' + dNo.operatingValuePerShare + ' EK: ' + dNo.equityValuePerShare);
+    check('C-12d: fehlende Felder werden benannt',
+      Array.isArray(dNo.netDebtMissingFields) && dNo.netDebtMissingFields.length === 2
+      && dNo.netDebtMissingFields.indexOf('total_debt[0]') >= 0
+      && /NICHT als 0/.test(dNo.equityValueUnavailableReason || ''),
+      'missing: ' + JSON.stringify(dNo.netDebtMissingFields));
+    check('C-12e: coreEquityValuePerShare liefert null, nicht 15,00',
+      coreEquityValuePerShare(ctxNo, 0, 0, 10, 20) === null,
+      'erhalten: ' + coreEquityValuePerShare(ctxNo, 0, 0, 10, 20));
+
+    // (b) Haupt-DCF: nicht anwendbar, operativer Wert nachrichtlich
+    const mNo = modelDcf(mkNoNd(), SC0);
+    check('C-12f: Haupt-DCF liefert keinen Eigenkapitalwert und ist nicht anwendbar',
+      mNo.applicable === false && mNo.base == null
+      && mNo.conservative == null && mNo.optimistic == null,
+      'base: ' + mNo.base + ' applicable: ' + mNo.applicable);
+    check('C-12g: operativer Unternehmenswert bleibt separat ausgewiesen',
+      approx(mNo._operatingValuePerShareBase, 15) && approx(mNo._operatingValueAbsBase, 1500, 1e-7)
+      && mNo._equityValuePerShareBase === null && mNo._equityValueAbsBase === null,
+      'operativ: ' + mNo._operatingValuePerShareBase + '/' + mNo._operatingValueAbsBase);
+    check('C-12h: fehlender Input ist verständlich benannt',
+      mNo._equityValueUnavailable === true
+      && /Nettoschulden nicht ermittelbar/.test(mNo.reason || '')
+      && /total_debt\[0\]/.test(mNo.reason || '')
+      && mNo.warnings.some(w => /NICHT als 0/.test(w))
+      && mNo.warnings.some(w => /net_debt\[0\]/.test(w)),
+      'reason: ' + (mNo.reason || '').slice(0, 200));
+
+    // (c) Synthese: kein Gewicht für den DCF
+    const rimStub = { applicable: true, base: 12, conservative: 10, optimistic: 14,
+                      modelName: 'RIM', warnings: [] };
+    const vrNo = { error: null,
+      router: { activeModels: ['dcf', 'rim'], subClassification: 'standard_nonfin',
+                diagnosticModels: [], ddmMode: null },
+      scenarios: SC0, modelResults: { dcf: mNo, rim: rimStub } };
+    let synNo = null, synErr = null;
+    try { synNo = runFairValueSynthesizer(mkNoNd(), vrNo, null, SYNTHESIS_CONFIG); }
+    catch (e) { synErr = String(e); }
+    check('C-12i: Synthese läuft ohne Ausnahme', synErr === null, 'err: ' + synErr);
+    check('C-12j: DCF erhält in der Synthese kein Gewicht',
+      synNo && ((synNo._usedWeights || {}).dcf || 0) === 0,
+      'gewichte: ' + JSON.stringify(synNo && synNo._usedWeights));
+    check('C-12k: der operative Wert 15,00 taucht nicht als Fair Value auf',
+      synNo && synNo.range != null && !approx(synNo.range.base, 15, 1e-6),
+      'range.base: ' + (synNo && synNo.range && synNo.range.base));
+
+    // (d) Reverse DCF: erklärter Status statt Zahl
+    const rdNo = solveReverseDcfGrowth(mkNoNd({ price: 15 }));
+    check('C-12l: Reverse DCF meldet net_debt_unknown statt eines Ergebnisses',
+      rdNo.status === 'net_debt_unknown' && rdNo.ok === false
+      && rdNo.impliedGrowthPct === null,
+      'status: ' + rdNo.status + ' g: ' + rdNo.impliedGrowthPct);
+    check('C-12m: Begründung nennt die fehlenden Felder und den 0-Ausschluss',
+      /total_debt\[0\]/.test(rdNo.reason || '') && /NICHT als 0/.test(rdNo.reason || ''),
+      'reason: ' + (rdNo.reason || '').slice(0, 200));
+    check('C-12n: computeReverseDcf gibt null zurück (kein Ausweichen auf den operativen Wert)',
+      computeReverseDcf(mkNoNd({ price: 15 })) === null,
+      'erhalten: ' + computeReverseDcf(mkNoNd({ price: 15 })));
+
+    // (e) Sensitivitätsmatrix: keine Zellen, sondern der fehlende Input
+    const mtxNo = computeSensitivityMatrix(mkNoNd(), vOf(mkNoNd()));
+    check('C-12o: Matrix zeigt keine Zellen ohne Nettoschulden',
+      mtxNo.available === false && mtxNo.equityValueUnavailable === true
+      && mtxNo.cells.length === 0 && mtxNo.baseValue === null,
+      'available: ' + mtxNo.available + ' cells: ' + mtxNo.cells.length);
+    check('C-12p: Matrix-Hinweis nennt den fehlenden Input',
+      /Nettoschulden nicht ermittelbar/.test(mtxNo.reason || '')
+      && /NICHT als 0/.test(mtxNo.reason || ''),
+      'reason: ' + (mtxNo.reason || '').slice(0, 200));
+    const htmlNo = buildSensitivityMatrix(mkNoNd(), vOf(mkNoNd()));
+    check('C-12q: HTML enthält keine Wertzelle 15.0, sondern den Hinweis',
+      !/>15\.0</.test(htmlNo) && /Nettoschulden nicht ermittelbar/.test(htmlNo),
+      'html: ' + htmlNo.slice(0, 300));
+
+    // (f) Monte Carlo: blockiert mit Begründung
+    const mcNo = runMonteCarloDcf(mkNoNd({ price: 15 }), { error: null, scenarios: SC0,
+      router: { activeModels: ['dcf'], subClassification: 'standard_nonfin' } });
+    check('C-12r: Monte Carlo blockiert mit benanntem Grund',
+      mcNo && mcNo._blocked === true && /Nettoschulden nicht ermittelbar/.test(mcNo._reason || ''),
+      'erhalten: ' + JSON.stringify(mcNo).slice(0, 200));
+
+    // ── Gegenprüfung 1: Nettoschulden ausdrücklich 0 ────────────────
+    // Ein gesetzter Wert 0 ist eine Information, kein fehlender Wert.
+    const mZero = modelDcf(mkMj({ owcPct: 0, g1: 0, tg: 0, wacc: 10, netDebt: 0 }), SC0);
+    check('C-12s: ausdrücklich bekannte Nettoschulden 0 ⇒ Eigenkapitalwert 15,00',
+      mZero.applicable === true && approx(mZero.base, 15)
+      && approx(mZero._equityValuePerShareBase, 15) && mZero._netDebtBridgeApplied === true,
+      'base: ' + mZero.base + ' applicable: ' + mZero.applicable);
+    check('C-12t: bei ND = 0 sind operativer Wert und Eigenkapitalwert gleich',
+      approx(mZero._operatingValuePerShareBase, mZero._equityValuePerShareBase, 1e-12)
+      && mZero._equityValueUnavailable === false,
+      'operativ: ' + mZero._operatingValuePerShareBase + ' EK: ' + mZero._equityValuePerShareBase);
+    const rdZero = solveReverseDcfGrowth(mkMj({ owcPct: 0, g1: 0, tg: 0, wacc: 10, netDebt: 0, price: mZero.base }));
+    check('C-12u: Reverse DCF ist bei ND = 0 regulär lösbar (0 % zurückgewonnen)',
+      rdZero.status === 'ok' && approx(rdZero.impliedGrowthPct, 0, CORE_TOL_GROWTH),
+      'status: ' + rdZero.status + ' g: ' + rdZero.impliedGrowthPct);
+    const mtxZero = computeSensitivityMatrix(
+      mkMj({ owcPct: 0, g1: 0, tg: 0, wacc: 10, netDebt: 0 }),
+      vOf(mkMj({ owcPct: 0, g1: 0, tg: 0, wacc: 10, netDebt: 0 })));
+    check('C-12v: Matrix ist bei ND = 0 verfügbar, zentrale Zelle 15,00',
+      mtxZero.available === true && approx(mtxZero.cells[2][2], 15),
+      'zelle: ' + (mtxZero.cells[2] && mtxZero.cells[2][2]));
+
+    // ── Gegenprüfung 2: Nettoschulden ausdrücklich 500M ─────────────
+    // 500M / 100M Aktien = 5,00 je Aktie ⇒ 15,00 − 5,00 = 10,00.
+    const mDebt = modelDcf(mkMj({ owcPct: 0, g1: 0, tg: 0, wacc: 10, netDebt: 500 }), SC0);
+    check('C-12w: bekannte Nettoschulden 500M ⇒ Eigenkapitalwert 10,00',
+      mDebt.applicable === true && approx(mDebt.base, 10)
+      && approx(mDebt._netDebtPerShare, 5) && mDebt._equityValueUnavailable === false,
+      'base: ' + mDebt.base + ' ND/Aktie: ' + mDebt._netDebtPerShare);
+    check('C-12x: operativer Wert bleibt 15,00 — der Abzug erfolgt genau einmal',
+      approx(mDebt._operatingValuePerShareBase, 15)
+      && approx(mDebt._operatingValuePerShareBase - mDebt.base, 5),
+      'operativ: ' + mDebt._operatingValuePerShareBase + ' base: ' + mDebt.base);
+    const rdDebt = solveReverseDcfGrowth(mkMj({ owcPct: 0, g1: 0, tg: 0, wacc: 10, netDebt: 500, price: mDebt.base }));
+    check('C-12y: Reverse DCF ist bei ND = 500M regulär lösbar (0 % zurückgewonnen)',
+      rdDebt.status === 'ok' && approx(rdDebt.impliedGrowthPct, 0, CORE_TOL_GROWTH)
+      && approx(rdDebt.netDebtPerShare, 5),
+      'status: ' + rdDebt.status + ' g: ' + rdDebt.impliedGrowthPct);
+    // Und: fehlend ≠ 0 — die beiden Fälle dürfen sich nicht gleich verhalten.
+    check('C-12z: fehlende Nettoschulden verhalten sich anders als bekannte 0',
+      mNo.applicable === false && mZero.applicable === true
+      && rdNo.status !== rdZero.status,
+      'fehlend: ' + mNo.applicable + '/' + rdNo.status
+      + ' | bekannt 0: ' + mZero.applicable + '/' + rdZero.status);
+  }
+
   return results;
 }
 
@@ -28832,9 +29098,14 @@ function _testDcfWorkingCapital() {
     check('W-7f: kein gemessener Nullbedarf im Warnungstext behauptet',
       !r.warnings.some(w => /gemessen/.test(w) && /Working Capital/.test(w) && !/KEIN gemessener/.test(w)),
       'warnings: ' + r.warnings.filter(w => /Working Capital/.test(w)).join(' | '));
+    // net_debt ausdrücklich 0: geprüft wird der Working-Capital-Effekt, nicht die
+    // Nettoschuldenbrücke. Seit V1.0.36a liefert der Kern ohne bekannte
+    // Nettoschulden bewusst keinen Eigenkapitalwert — ein fehlender Wert ist
+    // keine 0, ein ausdrücklich gesetzter dagegen schon.
+    const _mjWcOnly = mkMj({ fund: { net_debt: [0] } });
     check('W-7g: Wert entspricht dem Stand ohne WC-Modellierung (15,00)',
-      approx(modelDcf(mkMj({}), sc(0, 0, 10)).base, 15, 1e-9),
-      'erhalten: ' + modelDcf(mkMj({}), sc(0, 0, 10)).base);
+      approx(modelDcf(_mjWcOnly, sc(0, 0, 10)).base, 15, 1e-9),
+      'erhalten: ' + modelDcf(_mjWcOnly, sc(0, 0, 10)).base);
   }
 
   // ── W-8: Historischer Vorschlag und manueller Override ──
@@ -28876,9 +29147,11 @@ function _testDcfWorkingCapital() {
       rOv0._owcSource === 'manual_override' && rOv0._owcRatio === 0
       && approx(rOv0._operatingValuePerShareBase, 30, 1e-9),
       'erhalten: ' + rOv0._owcSource + '/' + rOv0._operatingValuePerShareBase);
+    // net_debt ausdrücklich 0 (siehe W-7g): geprüft wird die Monotonie der
+    // WC-Quote, nicht die Nettoschuldenbrücke.
     check('W-8i: Override wirkt monoton — höhere Quote ⇒ niedrigerer Wert',
-      modelDcf(mkMj({ owcPct: 30 }), sc(10, 0, 10)).base
-        < modelDcf(mkMj({ owcPct: 10 }), sc(10, 0, 10)).base,
+      modelDcf(mkMj({ owcPct: 30, fund: { net_debt: [0] } }), sc(10, 0, 10)).base
+        < modelDcf(mkMj({ owcPct: 10, fund: { net_debt: [0] } }), sc(10, 0, 10)).base,
       'erhalten: ' + modelDcf(mkMj({ owcPct: 30 }), sc(10, 0, 10)).base + ' vs '
         + modelDcf(mkMj({ owcPct: 10 }), sc(10, 0, 10)).base);
     check('W-8j: Definition maschinenlesbar ausgewiesen, Cash/Debt ausgeschlossen',

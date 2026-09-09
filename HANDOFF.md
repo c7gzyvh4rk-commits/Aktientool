@@ -1,5 +1,131 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Update (Chat 4 Nachtrag): Fehlende Nettoschulden ⇒ kein Eigenkapitalwert
+
+**Auftrag:** Ausschließlich die Behandlung fehlender Nettoschulden im
+gemeinsamen Bewertungskern korrigieren.
+
+### Befund am Code (vor der Änderung)
+`coreValuationDetail()` bildete
+`eq = netDebtPerShare != null ? total − netDebtPerShare : total`.
+Bei unbekannten Nettoschulden wurde also der **operative Unternehmenswert
+unverändert als Eigenkapitalwert** ausgegeben — rechnerisch die stille Annahme
+„Nettoschulden = 0". Der Wert wurde als DCF gewichtet, gegen den Kurs
+eingefärbt und mit ihm verglichen; bei verschuldeten Unternehmen systematisch
+zu hoch. Ein Warnhinweis benannte den fehlenden Abzug, verhinderte ihn aber
+nicht. Widerspruch zur eigenen Regel „fehlende Werte sind nicht 0".
+
+### Änderungen (Produktdatei, nur dieser Punkt)
+1. **Kern:** `equityValuePerShare` ist `null`, wenn `netDebtPerShare == null`.
+   `operatingValuePerShare` bleibt unverändert erhalten und wird separat
+   geliefert, dazu `netDebtAvailable`, `netDebtMissingFields` und
+   `equityValueUnavailableReason`. `coreEquityValuePerShare()` liefert
+   entsprechend `null` statt des operativen Werts.
+2. **Haupt-DCF:** `applicable:false` mit `reason`, `_equityValueUnavailable`
+   und `_excludedFromSynthesis`; `_equityValuePerShareBase`/`_equityValueAbsBase`
+   sind `null`. `_operatingValuePerShareBase`/`_operatingValueAbsBase` bleiben
+   nachrichtlich erhalten. Zwei Warnungen nennen den fehlenden Input, den
+   operativen Wert und die Abhilfe (`net_debt[0]` bzw. `total_debt[0]` mit
+   `cash_and_equivalents[0]`/`cash[0]`).
+3. **Synthese:** greift über den bestehenden `applicable`-Filter — der
+   operative Wert erhält kein Gewicht.
+4. **Reverse DCF:** neuer Status `net_debt_unknown` vor der Nullstellensuche.
+   Kein Ausweichen auf den operativen Wert; der Kurs ist ein Eigenkapitalpreis
+   und nur mit einem Eigenkapitalwert vergleichbar. `computeReverseDcf()`
+   liefert `null`.
+5. **Sensitivitätsmatrix:** `available:false` mit `equityValueUnavailable:true`
+   und erklärtem Hinweis statt Zellen — die Matrix ist als „Fair Value"
+   beschriftet und wird gegen den Kurs eingefärbt.
+6. **Monte Carlo:** `_blocked` mit Begründung (`probAbovePrice` vergleicht mit
+   dem Kurs).
+
+Ausdrücklich gesetzte Nettoschulden von **0 bleiben ein gültiger Wert** — nur
+fehlende Daten sind jetzt kein Wert.
+
+### Pflicht-Test
+Neu: **C-12 in `_testValuationCore()` — 26 Assertions** (Umsatz₀ 1.000M,
+FCFF 150M p.a., WACC 10 %, g1 = tg = 0 ⇒ operativ **1.500M / 100M Aktien =
+15,00 USD/Aktie**; `net_debt`, `total_debt` und Liquidität vollständig fehlend).
+
+| Fall | Erwartet | Ergebnis |
+|---|---|---|
+| Kern: operativer Wert | 15,00 je Aktie / 1.500M | ✅ |
+| Kern: `equityValuePerShare` | `null`, nicht 15,00 | ✅ |
+| Haupt-DCF | `applicable:false`, base/cons/opt `null` | ✅ |
+| Haupt-DCF: operativer Wert | bleibt 15,00 nachrichtlich | ✅ |
+| Synthese | DCF-Gewicht 0; 15,00 taucht nicht als Fair Value auf | ✅ |
+| Reverse DCF | `net_debt_unknown`, `impliedGrowthPct` `null` | ✅ |
+| Matrix | keine Zellen, erklärter Hinweis, kein `>15.0<` im HTML | ✅ |
+| Monte Carlo | `_blocked` mit benanntem Grund | ✅ |
+| **Gegenprüfung ND = 0 (bekannt)** | base 15,00, Brücke aktiv, Reverse DCF ok (0 %) | ✅ |
+| **Gegenprüfung ND = 500M** | base 10,00, ND/Aktie 5,00, Reverse DCF ok (0 %) | ✅ |
+| fehlend ≠ bekannte 0 | unterschiedliches Verhalten belegt | ✅ |
+
+### Tatsächlich ausgeführte Tests
+Befehl: `node test/run-calc-tests.js` (= `npm test`)
+
+| Lauf | Ergebnis |
+|---|---|
+| Vorher (Commit 4a76e4c) | 775 bestanden · 1 (T-BRL1) · 0 Fehler · Exit 1 |
+| Nach der Änderung | **803 bestanden · 1 (T-BRL1) · 0 Fehler · Exit 1** |
+| Fixture-Ebene beide Läufe | 374 Assertions bestanden, 1 fehlgeschlagen, 0 Pipeline-Fehler |
+| Stabilität | 3 Läufe, identisches Ergebnis |
+
+Suiten: `_testDcfEquityBridge` 46 (war 44), `_testDcfWorkingCapital` 84,
+`_testValuationCore` 111 (war 85).
+
+**Negativprüfung (temporäre, nicht committete Kopien im Scratch-Verzeichnis):**
+| Mutation | Ergebnis |
+|---|---|
+| Ausgangsdefekt: operativer Wert wieder als Eigenkapitalwert | 12 rot (B-6e/e3/f, C-12b–f, C-12h/j/z) |
+| Reverse-DCF-Wächter entfernt | 3 rot (C-12l/m) |
+| Matrix-Wächter entfernt | 5 rot (B-10c, C-12o/p/q) |
+| Monte-Carlo-Wächter entfernt | 2 rot (C-12r) |
+| `_equityValuePerShareBase` fällt auf den operativen Wert zurück | 3 rot (B-6e2, C-12g) |
+
+**Geänderte Testerwartungen (fachlich begründet, im Code dokumentiert):**
+- `B-6e`/`B-6f` (Chat 2): erwarteten bei fehlenden Nettoschulden den operativen
+  Wert 15,00 als Modellwert — genau den stillen 0-Abzug, den B-6a–d benennen.
+  Jetzt: kein Eigenkapitalwert, operativer Wert separat (`B-6e2`, `B-6e3` neu).
+- `B-10c` (Chat 2): Matrix zeigte 15,0 mit Hinweis; jetzt keine Zellen, sondern
+  der benannte fehlende Input.
+- `W-7g`/`W-8i` (Chat 3): **Prüfabsicht unverändert.** Beide messen den
+  Working-Capital-Effekt, nicht die Nettoschuldenbrücke — die Fixtures geben
+  `net_debt: [0]` jetzt ausdrücklich an. Ein gesetzter Wert 0 ist eine
+  Information, ein fehlender ist keine.
+- Alle übrigen Referenztests aus Chat 2, 3 und 4 unverändert grün.
+
+### Wirkung an Daten
+130 Fixtures, Wertvergleich gegen Commit 4a76e4c (115 ausgewertet):
+- **3 Fixtures verlieren ihren DCF:** `T-TXRH-DEBT2`, `-DEBT4`, `-DEBT6`. Alle
+  drei sind laut eigener Beschriftung so konstruiert, dass `total_debt` **nicht
+  ableitbar** ist (veraltete Tags, unpassende Perioden). Sie erhielten bisher
+  den vollen operativen Wert (26,56 bzw. 27,79 USD/Aktie) als Fair Value —
+  ohne jeden Schuldenabzug. Jetzt: `applicable:false` mit
+  `fehlend: total_debt[0]`. Fair Value und Buy Price entfallen dort.
+- **Position/Verdict: 0 Änderungen.** Mid-Cycle: 0 Änderungen.
+- Reverse DCF: dieselben 3 Fixtures liefern jetzt `null` statt einer Zahl.
+- Alle übrigen 112 Fixtures **bitgleich**.
+
+### Offene Einschränkungen
+- Unternehmen ohne Schulden-/Liquiditätsdaten haben jetzt **keinen DCF mehr**.
+  Das ist beabsichtigt, reduziert aber die Modellabdeckung: Betroffene JSONs
+  brauchen `net_debt[0]` oder `total_debt[0]` **und**
+  `cash_and_equivalents[0]`/`cash[0]`. Der operative Unternehmenswert bleibt in
+  `_operatingValuePerShareBase`/`_operatingValueAbsBase` sichtbar.
+- Ein Unternehmen mit tatsächlich null Schulden und null Liquidität muss
+  `net_debt: [0]` ausdrücklich setzen — sonst gilt es als „unbekannt".
+- Alle übrigen Einschränkungen aus dem Chat-4-Eintrag unten gelten unverändert.
+- Kein Merge, kein Deployment.
+
+### Ausgangsstand für den nächsten Schritt
+- **Branch:** `claude/eager-bardeen-l53hvv`
+- **Startbefehl:** `npm test` bzw. `node test/run-calc-tests.js`
+- **Erwarteter Ausgangszustand:** Exit-Code 1, **803 bestanden**, 1 bekannter
+  Fehlschlag (T-BRL1), 0 Fehler/Exceptions.
+
+---
+
 ## Update (Chat 4 Abschluss): Ein gemeinsamer Bewertungskern
 
 **Auftrag:** Haupt-DCF, Reverse DCF und Sensitivitätsmatrix sollen dieselbe
@@ -158,12 +284,13 @@ Haupt-DCF **88,9162 unverändert**; Reverse DCF 7,74 % → **9,75 %**
   Actions-Lauf wegen T-BRL1 ist zu erwarten und kein neuer Defekt.
 - Kein Merge, kein Deployment.
 
-### Ausgangsstand für Chat 5
+### Ausgangsstand nach Chat 4
 - **Branch:** `claude/eager-bardeen-l53hvv` (basiert auf
   `claude/dcf-working-capital`, Commit aef1b34 — nicht auf `main`).
 - **Startbefehl:** `npm test` bzw. `node test/run-calc-tests.js`
-- **Erwarteter Ausgangszustand:** Exit-Code 1, **775 bestanden**, 1 bekannter
+- **Zustand bei Commit 4a76e4c:** Exit-Code 1, **775 bestanden**, 1 bekannter
   Fehlschlag (T-BRL1), 0 Fehler/Exceptions.
+  → **Überholt durch den Chat-4-Nachtrag oben (803 bestanden).**
 - Optional weiterhin offen: T-BRL1-Fixture fachlich neu kalibrieren
   (DCF/RIM-Divergenz < 3x); `short_term_debt` als eigenes Schemafeld;
   Reverse DCF für weitere Parameter; Playwright für die zwei DOM-Formulartests.
