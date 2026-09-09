@@ -52,6 +52,7 @@ const PURE_TEST_FUNCTIONS = [
   '_testSbcDiagnostics',
   '_testGoldenCases',
   '_testSectorClassificationPatch',
+  '_testDcfEquityBridge',
 ];
 
 // Test-Helper, die echte DOM-Formularfelder anlegen/auslesen
@@ -123,6 +124,10 @@ function normalizeResult(name, raw) {
       pass: !!r.pass,
       expected: r.expected,
       actual: r.actual,
+      // Testfunktionen im Stil von _testGoldenCases/_testDcfEquityBridge liefern
+      // statt expected/actual ein Freitext-Feld "extra" — sonst wäre die
+      // Fehlermeldung inhaltsleer ("erwartet: undefined").
+      extra: r.extra,
     }));
     return {
       pass: entries.filter(e => e.pass).length,
@@ -139,6 +144,18 @@ function normalizeResult(name, raw) {
     fail: 1,
     entries: [{ label: `Unerwartetes Rückgabeformat von ${name}`, pass: false, actual: raw }],
   };
+}
+
+// Formatiert eine Fehlschlag-Zeile: expected/actual wenn vorhanden,
+// sonst das Freitext-Feld "extra" der Testfunktion.
+function formatFailure(prefix, entry) {
+  if (entry.expected !== undefined || entry.actual !== undefined) {
+    return `✗ ${prefix} ${entry.label} — erwartet: ${JSON.stringify(entry.expected)}, erhalten: ${JSON.stringify(entry.actual)}`;
+  }
+  if (entry.extra !== undefined) {
+    return `✗ ${prefix} ${entry.label} — ${entry.extra}`;
+  }
+  return `✗ ${prefix} ${entry.label} — fehlgeschlagen (keine Detailangabe der Testfunktion)`;
 }
 
 function main() {
@@ -210,7 +227,7 @@ function main() {
     totalFail += norm.fail;
     if (norm.fail > 0) {
       for (const entry of norm.entries.filter(e => !e.pass)) {
-        failureDetails.push(`✗ [${result.id}] ${entry.label} — erwartet: ${JSON.stringify(entry.expected)}, erhalten: ${JSON.stringify(entry.actual)}`);
+        failureDetails.push(formatFailure(`[${result.id}]`, entry));
       }
     }
   }
@@ -258,7 +275,7 @@ function main() {
     console.log(`${status} ${name}: ${norm.pass} bestanden, ${norm.fail} fehlgeschlagen`);
     if (norm.fail > 0) {
       for (const entry of norm.entries.filter(e => !e.pass)) {
-        failureDetails.push(`✗ [${name}] ${entry.label} — erwartet: ${JSON.stringify(entry.expected)}, erhalten: ${JSON.stringify(entry.actual)}`);
+        failureDetails.push(formatFailure(`[${name}]`, entry));
       }
     }
   }

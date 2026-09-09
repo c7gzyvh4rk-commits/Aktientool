@@ -9471,6 +9471,46 @@ function computeMidCycleFcf(mj) {
   return { value: fcfNorm, status: 'ok', opMarginMed: opMarginMed * 100, capexIntMed: capexIntMed * 100, warning };
 }
 
+// ── Nettoschulden für die DCF-Eigenkapitalbrücke ────────────────────
+// Löst die Nettoschulden für den Übergang "operativer Unternehmenswert →
+// Eigenkapitalwert" auf. Priorität wie im Rest des Tools (vgl.
+// computeNetDebtToEbitda): net_debt[0] → total_debt[0] − cash_and_equivalents[0]
+// → total_debt[0] − cash[0].
+// Wichtig: Fehlende Schulden-/Liquiditätsdaten werden NICHT stillschweigend
+// als 0 behandelt — available=false, damit der Aufrufer das kennzeichnen kann.
+// Vorzeichen: netDebtM > 0 = Nettoschulden (Abzug), netDebtM < 0 =
+// Nettoliquidität (wird über denselben Abzug addiert).
+function _resolveNetDebtForDcfBridge(f) {
+  f = f || {};
+  const nd0 = (Array.isArray(f.net_debt) && f.net_debt[0] != null) ? f.net_debt[0] : null;
+  const td0 = (Array.isArray(f.total_debt) && f.total_debt[0] != null) ? f.total_debt[0] : null;
+  const cae0 = (Array.isArray(f.cash_and_equivalents) && f.cash_and_equivalents[0] != null)
+    ? f.cash_and_equivalents[0] : null;
+  const cash0 = (Array.isArray(f.cash) && f.cash[0] != null) ? f.cash[0] : null;
+  const cashUsed = cae0 != null ? cae0 : cash0;
+
+  if (nd0 != null) {
+    return {
+      available: true, netDebtM: nd0, source: 'net_debt[0]',
+      totalDebtM: td0, cashM: cashUsed, missing: []
+    };
+  }
+  if (td0 != null && cashUsed != null) {
+    return {
+      available: true, netDebtM: td0 - cashUsed,
+      source: 'total_debt[0] − ' + (cae0 != null ? 'cash_and_equivalents[0]' : 'cash[0]'),
+      totalDebtM: td0, cashM: cashUsed, missing: []
+    };
+  }
+  const missing = [];
+  if (td0 == null) missing.push('total_debt[0]');
+  if (cashUsed == null) missing.push('cash_and_equivalents[0]/cash[0]');
+  return {
+    available: false, netDebtM: null, source: null,
+    totalDebtM: td0, cashM: cashUsed, missing
+  };
+}
+
 function modelDcf(mj, scenarios, fcfStartOverride) {
   const f = mj.fundamentals || {};
   const shares = (f.shares_diluted && f.shares_diluted[0]) || null;
@@ -9484,9 +9524,26 @@ function modelDcf(mj, scenarios, fcfStartOverride) {
   const fi = (fcfStartOverride == null) ? buildForecastInputs(mj) : null;
 
   if (fi && fi.shares0 > 0) {
+    // ── Eigenkapitalbrücke ─────────────────────────────────────────
+    // forecastDcfCore liefert OPERATIVE Cashflows vor Finanzierung, mit WACC
+    // diskontiert → operativer Unternehmenswert (Enterprise Value).
+    // Eigenkapitalwert = EV − Nettoschulden. Der Abzug erfolgt hier GENAU
+    // EINMAL; weder forecastDcfCore noch der Synthesizer ziehen Nettoschulden ab.
+    // Nettoschulden sind eine Stichtagsgröße der heutigen Bilanz und werden
+    // deshalb durch die HEUTIGE Aktienzahl (shares0) geteilt — bewusst getrennt
+    // von der jährlichen Verwässerungsprojektion, die ausschließlich die
+    // Aufteilung künftiger operativer Cashflows betrifft (kein Double Counting).
+    const netDebtInfo = _resolveNetDebtForDcfBridge(f);
+    const shares0 = fi.shares0;
+    const netDebtPerShare = netDebtInfo.available ? (netDebtInfo.netDebtM / shares0) : null;
+
     const calc = (sc) => {
       const r = forecastDcfCore(fi, sc.growth_stage1, sc.terminal_growth, sc.wacc, fade, sc.op_margin_pct);
-      return (r && r.total > 0) ? r.total : null;
+      // Gate unverändert: bezieht sich auf die Gültigkeit des operativen
+      // Forecasts (z.B. WACC ≤ terminal growth ⇒ total = 0), NICHT auf das
+      // Vorzeichen des Eigenkapitalwerts.
+      if (!r || !(r.total > 0)) return null;
+      return netDebtPerShare != null ? (r.total - netDebtPerShare) : r.total;
     };
     const cons = calc(scenarios.conservative);
     const baseV = calc(scenarios.base);
@@ -9494,6 +9551,52 @@ function modelDcf(mj, scenarios, fcfStartOverride) {
     const warnings = ['Forecast-DCF: Rev × Marge × (1−t) + D&A − CapEx · per-share Wert (firm-level Cashflows, jährliche Shares-Projektion als Diagnose)'];
     const rBase = forecastDcfCore(fi, scenarios.base.growth_stage1, scenarios.base.terminal_growth, scenarios.base.wacc, fade, scenarios.base.op_margin_pct);
     if (rBase._tvSharePct > 0.70) warnings.push(`TV-Anteil ${(rBase._tvSharePct * 100).toFixed(0)}% — hoch`);
+
+    // ── Wertbrücke explizit ausweisen (Base-Szenario) ──────────────
+    const opValuePerShareBase = (rBase && rBase.total > 0) ? rBase.total : null;
+    const evAbsBase = (rBase && rBase._totalAbs != null) ? rBase._totalAbs : null;
+    const equityValuePerShareBase = (opValuePerShareBase == null) ? null
+      : (netDebtPerShare != null ? opValuePerShareBase - netDebtPerShare : opValuePerShareBase);
+    const equityValueAbsBase = (evAbsBase != null && netDebtInfo.available)
+      ? evAbsBase - netDebtInfo.netDebtM : null;
+
+    if (netDebtInfo.available) {
+      const ndM = netDebtInfo.netDebtM;
+      const debtTxt = netDebtInfo.totalDebtM != null ? `${netDebtInfo.totalDebtM.toFixed(0)}M` : 'n/a (in net_debt enthalten)';
+      const cashTxt = netDebtInfo.cashM != null ? `${netDebtInfo.cashM.toFixed(0)}M` : 'n/a (in net_debt enthalten)';
+      warnings.push(
+        `Wertbrücke (Base): operativer Unternehmenswert ${evAbsBase != null ? evAbsBase.toFixed(0) + 'M' : '–'} ` +
+        `(${opValuePerShareBase != null ? opValuePerShareBase.toFixed(2) : '–'}/Aktie) ` +
+        `− ${ndM >= 0 ? 'Nettoschulden' : 'Nettoliquidität'} ${ndM.toFixed(0)}M ` +
+        `[Schulden ${debtTxt} − anrechenbare Liquidität ${cashTxt}, Quelle: ${netDebtInfo.source}] ` +
+        `= Eigenkapitalwert ${equityValueAbsBase != null ? equityValueAbsBase.toFixed(0) + 'M' : '–'} ` +
+        `(${equityValuePerShareBase != null ? equityValuePerShareBase.toFixed(2) : '–'}/Aktie) ` +
+        `bei ${shares0.toFixed(1)}M Aktien` +
+        (ndM < 0 ? ' · Nettoliquidität wird addiert' : '')
+      );
+      if (equityValuePerShareBase != null && equityValuePerShareBase < 0) {
+        warnings.push('⚠ Eigenkapitalwert negativ — Nettoschulden übersteigen den operativen Unternehmenswert.');
+      }
+    } else {
+      warnings.push(
+        `⚠ Nettoschulden nicht ermittelbar (fehlend: ${netDebtInfo.missing.join(', ')}) — ` +
+        `KEIN Nettoschuldenabzug vorgenommen; ausgewiesener Wert ist der operative ` +
+        `Unternehmenswert je Aktie und kann bei verschuldeten Unternehmen zu hoch sein. ` +
+        `Fehlende Schulden-/Liquiditätsdaten wurden NICHT als 0 angenommen.`
+      );
+    }
+    warnings.push(
+      `Aktienbasis Wertbrücke: shares_diluted[0] = ${shares0.toFixed(1)}M ` +
+      `(Ø verwässerte Aktien der Periode) — Ersatzbasis für die aktuelle ausstehende ` +
+      `Aktienzahl zum Stichtag; kann bei unterjährigen Buybacks/Emissionen abweichen.`
+    );
+    if ((fi.sharesGrowthPa || 0) > 0.5) {
+      warnings.push(
+        'Trennung der Effekte: operativer Wert/Aktie ist jahresweise verwässerungsadjustiert ' +
+        '(künftige Cashflows), die Nettoschulden dagegen einmalig zum Stichtag mit heutiger ' +
+        'Aktienzahl abgezogen — keine doppelte Erfassung der Verwässerung.'
+      );
+    }
 
     // ── Share-Count-Diagnose ─────────────────────────────────────
     // Anfangsaktien, Jahr-10-Aktien, annualisierte Veränderung, Label, Warnings.
@@ -9532,8 +9635,9 @@ function modelDcf(mj, scenarios, fcfStartOverride) {
       const upliftPct = ((rBase._buybackAdjustedTotal / rBase.total) - 1) * 100;
       warnings.push(
         `Buyback-adjusted DCF (Diagnose): ${rBase._buybackAdjustedTotal.toFixed(2)} ` +
-        `vs. Hauptwert ${rBase.total.toFixed(2)} (+${upliftPct.toFixed(1)}%). ` +
-        `Hauptwert vermeidet mögliches Double Counting von FCF und Share-Reduction.`
+        `vs. operativer Wert ${rBase.total.toFixed(2)} (+${upliftPct.toFixed(1)}%) — beide vor ` +
+        `Nettoschuldenabzug. Der konservative Wert vermeidet mögliches Double Counting von ` +
+        `FCF und Share-Reduction.`
       );
     }
     // Expose buyback-adjusted base for MoS addon calculation in synthesizer (diagnostic only)
@@ -9546,7 +9650,23 @@ function modelDcf(mj, scenarios, fcfStartOverride) {
       warnings, modelName: 'DCF',
       _forecastBased: true, _forecastDebug: fi._debug,
       _buybackAdjustedBase: (rBase._buybackAdjustedTotal > 0) ? rBase._buybackAdjustedTotal : null,
-      _buybackUpliftPct
+      _buybackUpliftPct,
+      // ── Wertbrücke EV → Eigenkapital (Base-Szenario), maschinenlesbar ──
+      _operatingValueAbsBase: evAbsBase,
+      _operatingValuePerShareBase: opValuePerShareBase,
+      _netDebtM: netDebtInfo.netDebtM,
+      _netDebtPerShare: netDebtPerShare,
+      _netDebtAvailable: netDebtInfo.available,
+      _netDebtSource: netDebtInfo.source,
+      _netDebtMissingFields: netDebtInfo.missing,
+      _grossDebtM: netDebtInfo.totalDebtM,
+      _cashM: netDebtInfo.cashM,
+      _equityValueAbsBase: equityValueAbsBase,
+      _equityValuePerShareBase: equityValuePerShareBase,
+      _sharesUsedM: shares0,
+      _sharesBasis: 'shares_diluted[0]',
+      _sharesBasisIsSubstitute: true,
+      _sharesBasisNote: 'Ø verwässerte Aktien der Periode — Ersatzbasis für die aktuelle ausstehende Aktienzahl zum Stichtag'
     };
   }
 
@@ -12142,6 +12262,11 @@ function runMonteCarloDcf(mj, vResult) {
   const shares = (f.shares_diluted && f.shares_diluted[0]) || null;
   const fcf0ps = (fcfArr[0] != null && shares) ? fcfArr[0] / shares : null;
   const useForecast = fi && fi.shares0 > 0;
+  // Gleiche Eigenkapitalbrücke wie modelDcf: die Simulationswerte werden mit dem
+  // Aktienkurs verglichen (probAbovePrice), müssen also Eigenkapitalwerte sein.
+  const _mcNetDebt = useForecast ? _resolveNetDebtForDcfBridge(f) : null;
+  const _mcNetDebtPerShare = (_mcNetDebt && _mcNetDebt.available)
+    ? (_mcNetDebt.netDebtM / fi.shares0) : null;
 
   if (!useForecast && fcf0ps == null) return null;
 
@@ -12161,11 +12286,15 @@ function runMonteCarloDcf(mj, vResult) {
       const revPerShare = fi.revenue0 / fi.shares0;
       const marginImpact = mShock * revPerShare * (1 - fi.taxRate / 100) * 3.5;
       fv = r.total + marginImpact;
-    } else {
-      const r = dcfCore(fcf0ps, g1sim, tgSim, waccSim, fade);
-      if (!r || r.total <= 0) continue;
-      fv = r.total;
+      if (_mcNetDebtPerShare != null) fv -= _mcNetDebtPerShare;
+      // Ein negativer Eigenkapitalwert ist ein gültiges Ergebnis und wird nicht
+      // stillschweigend aus der Verteilung entfernt (sonst optimistischer Bias).
+      if (isFinite(fv)) out.push(fv);
+      continue;
     }
+    const r = dcfCore(fcf0ps, g1sim, tgSim, waccSim, fade);
+    if (!r || r.total <= 0) continue;
+    fv = r.total;
     if (fv > 0 && isFinite(fv)) out.push(fv);
   }
 
@@ -12473,6 +12602,12 @@ function buildSensitivityMatrix(mj, v) {
   const isMidCycle = router.activeModels.includes('dcf_midcycle') && !router.activeModels.includes('dcf');
   const mcFcf      = isMidCycle ? computeMidCycleFcf(mj) : null;
   const mcFcfVal   = (mcFcf && mcFcf.status === 'ok') ? mcFcf.value : null;
+  // Gleiche Eigenkapitalbrücke wie im Forecast-DCF (modelDcf): die Matrix zeigt
+  // Fair Values je Aktie, also NACH Nettoschuldenabzug — sonst wiche jede Zelle
+  // um exakt netDebt/Aktie vom Hauptmodell ab.
+  const _sensNetDebt = _resolveNetDebtForDcfBridge(f);
+  const _sensNetDebtPerShare = (_sensNetDebt.available && fi && fi.shares0 > 0)
+    ? (_sensNetDebt.netDebtM / fi.shares0) : null;
   function calcFV(wacc, g1) {
     if (wacc <= tg) return null;
     if (isMidCycle && mcFcfVal != null && shares) {
@@ -12481,7 +12616,8 @@ function buildSensitivityMatrix(mj, v) {
     }
     if (fi && fi.shares0 > 0) {
       const r = forecastDcfCore(fi, g1, tg, wacc, fade, null);
-      return (r && r.total > 0) ? r.total : null;
+      if (!r || !(r.total > 0)) return null;
+      return _sensNetDebtPerShare != null ? (r.total - _sensNetDebtPerShare) : r.total;
     }
     if (fcf0 != null && shares) {
       const r = dcfCore(fcf0 / shares, g1, tg, wacc, fade);
@@ -12525,9 +12661,13 @@ function buildSensitivityMatrix(mj, v) {
   tbl += '</table>';
   const modeNote = isMidCycle ? 'DCF Mid-Cycle' : 'DCF';
   const priceNote = price != null ? ` · Kurs ${price.toFixed(2)} (rot = unter Kurs)` : '';
+  const bridgeNote = (isMidCycle || !(fi && fi.shares0 > 0)) ? ''
+    : (_sensNetDebtPerShare != null
+        ? ` · Eigenkapitalwert nach Abzug Nettoschulden ${_sensNetDebt.netDebtM.toFixed(0)}M (${_sensNetDebtPerShare.toFixed(2)}/Aktie, Quelle: ${_sensNetDebt.source})`
+        : ` · ⚠ ohne Nettoschuldenabzug (${_sensNetDebt.missing.join(', ')} fehlt) — operativer Wert je Aktie`);
   return `<div class="diagnostic" style="margin-top:10px;overflow-x:auto">
     <div class="dl">WACC / g1 Sensitivitätsmatrix — Fair Value (${modeNote}${priceNote})</div>
-    <div class="txt-caption" style="margin-bottom:6px">* = Basiswert · Spalten: Stage-1-Wachstum · Zeilen: WACC</div>
+    <div class="txt-caption" style="margin-bottom:6px">* = Basiswert · Spalten: Stage-1-Wachstum · Zeilen: WACC${escapeHtml(bridgeNote)}</div>
     ${tbl}
   </div>`;
 }
@@ -26758,6 +26898,252 @@ function _runRegressionTests_manualPart() {
     html += '</div>';
   });
   out.innerHTML = html;
+}
+
+// ════════════════════════════════════════════════════════════════
+// DCF-EIGENKAPITALBRÜCKE — Regression Tests
+// Prüft den Übergang operativer Unternehmenswert → Eigenkapitalwert im
+// Forecast-DCF (modelDcf/forecastDcfCore). Reine Rechenprüfung, kein DOM,
+// kein state, kein localStorage.
+//
+// Referenzfall (unabhängig per Hand gerechnet):
+//   Umsatz 1.000M, EBIT 200M (Marge 20%), D&A 50M, CapEx 50M, Steuer 25%,
+//   Wachstum g1 = 0%, Terminalwachstum = 0%, WACC = 10%, 100M konstante Aktien.
+//   NOPAT = 200 × 0,75 = 150 · FCF = 150 + 50 − 50 = 150M p.a. (konstant)
+//   EV = ewige Rente 150 / 0,10 = 1.500M
+//       (= Σ 150/1,1^t für t=1..10  +  (150/0,10)/1,1^10)
+//   Operativ je Aktie = 1.500 / 100 = 15,00 USD
+//   Nettoschulden 0     → 15,00 USD/Aktie
+//   Nettoschulden 500M  → (1.500 − 500)/100 = 10,00 USD/Aktie
+//   Nettoliquidität 200M (net_debt = −200) → (1.500 + 200)/100 = 17,00 USD/Aktie
+// ════════════════════════════════════════════════════════════════
+
+function _testDcfEquityBridge() {
+  const results = [];
+  let _currentSuite = '';
+  function suite(name) { _currentSuite = name; }
+  function check(label, condition, extra) {
+    results.push({ suite: _currentSuite, label, pass: !!condition,
+      extra: extra != null ? String(extra) : undefined });
+  }
+  // Floating-Point-Toleranz: die Reihen-Summation ist mathematisch exakt 1.500,
+  // numerisch aber ~1e-12 daneben.
+  function approx(actual, expected, tol) {
+    return actual != null && isFinite(actual) && Math.abs(actual - expected) <= (tol != null ? tol : 1e-6);
+  }
+
+  // Minimal-mj: nur die Felder, die buildForecastInputs/modelDcf lesen.
+  // Bewusst OHNE Pipeline-Lauf, damit die Erwartungswerte unabhängig von
+  // Normalisierungs-/Heuristikschritten nachrechenbar bleiben.
+  function mkMj(fundOverrides) {
+    return {
+      meta: { ticker: 'BRIDGE', sub_classification: 'standard_nonfin' },
+      fundamentals: Object.assign({
+        revenue:        [1000, 1000, 1000, 1000],
+        ebit:           [200, 200, 200, 200],
+        ebitda:         [250, 250, 250, 250],   // D&A = EBITDA − EBIT = 50
+        capex:          [50, 50, 50, 50],
+        shares_diluted: [100, 100, 100, 100]    // konstant ⇒ sharesGrowthPa = 0
+      }, fundOverrides || {}),
+      valuation: {
+        wacc_components: { tax_rate: 25 },      // Prozentskala (wie im Engine-Pfad)
+        fade: { enabled: false }
+      },
+      market: {}
+    };
+  }
+  // Identische Szenarien: WACC ist fix 10% und wird von Finanzierungsänderungen
+  // NICHT berührt (kein Rückkopplungseffekt Nettoschulden → WACC im Testpfad).
+  const SC = { growth_stage1: 0, terminal_growth: 0, wacc: 10, op_margin_pct: 20 };
+  const SCENARIOS = { conservative: SC, base: SC, optimistic: SC };
+  const run = (fundOverrides) => modelDcf(mkMj(fundOverrides), SCENARIOS);
+
+  // ── B-1: Operativer Unternehmenswert (vor Finanzierung) ──────────
+  suite('B-1 Operativer Unternehmenswert');
+  {
+    const r = run({ net_debt: [0] });
+    check('B-1a: operativer Unternehmenswert = 1.500M',
+      approx(r._operatingValueAbsBase, 1500, 1e-6), 'erhalten: ' + r._operatingValueAbsBase);
+    check('B-1b: operativer Wert je Aktie = 15,00',
+      approx(r._operatingValuePerShareBase, 15, 1e-9), 'erhalten: ' + r._operatingValuePerShareBase);
+    check('B-1c: verwendete Aktienanzahl = 100M',
+      r._sharesUsedM === 100, 'erhalten: ' + r._sharesUsedM);
+    check('B-1d: Aktienbasis als Ersatzbasis gekennzeichnet',
+      r._sharesBasis === 'shares_diluted[0]' && r._sharesBasisIsSubstitute === true,
+      'erhalten: ' + r._sharesBasis + '/' + r._sharesBasisIsSubstitute);
+  }
+
+  // ── B-2: Pflichtfall Nettoschulden 0 → 15 USD/Aktie ──────────────
+  suite('B-2 Nettoschulden 0');
+  {
+    const r = run({ net_debt: [0] });
+    check('B-2a: base = 15,00 USD/Aktie', approx(r.base, 15, 1e-9), 'erhalten: ' + r.base);
+    check('B-2b: conservative = optimistic = base (identische Szenarien)',
+      approx(r.conservative, 15, 1e-9) && approx(r.optimistic, 15, 1e-9),
+      'erhalten: ' + r.conservative + '/' + r.optimistic);
+    check('B-2c: applicable = true', r.applicable === true, 'erhalten: ' + r.applicable);
+    check('B-2d: Eigenkapitalwert absolut = 1.500M',
+      approx(r._equityValueAbsBase, 1500, 1e-6), 'erhalten: ' + r._equityValueAbsBase);
+  }
+
+  // ── B-3: Pflichtfall Nettoschulden 500M → 10 USD/Aktie ───────────
+  suite('B-3 Nettoschulden 500M');
+  {
+    const r = run({ net_debt: [500] });
+    check('B-3a: base = 10,00 USD/Aktie', approx(r.base, 10, 1e-9), 'erhalten: ' + r.base);
+    check('B-3b: Eigenkapitalwert absolut = 1.000M',
+      approx(r._equityValueAbsBase, 1000, 1e-6), 'erhalten: ' + r._equityValueAbsBase);
+    check('B-3c: Nettoschulden je Aktie = 5,00',
+      approx(r._netDebtPerShare, 5, 1e-9), 'erhalten: ' + r._netDebtPerShare);
+    check('B-3d: genau EIN Abzug (nicht 5,00 = doppelt abgezogen)',
+      approx(r.base, 10, 1e-9) && !approx(r.base, 5, 1e-9), 'erhalten: ' + r.base);
+    check('B-3e: operativer Wert unverändert 15,00 (kein Abzug im Operativwert)',
+      approx(r._operatingValuePerShareBase, 15, 1e-9), 'erhalten: ' + r._operatingValuePerShareBase);
+  }
+
+  // ── B-4: Pflichtfall Nettoliquidität 200M → 17 USD/Aktie ─────────
+  suite('B-4 Nettoliquidität 200M (Vorzeichen)');
+  {
+    const r = run({ net_debt: [-200] });
+    check('B-4a: base = 17,00 USD/Aktie (Liquidität wird addiert)',
+      approx(r.base, 17, 1e-9), 'erhalten: ' + r.base);
+    check('B-4b: Eigenkapitalwert absolut = 1.700M',
+      approx(r._equityValueAbsBase, 1700, 1e-6), 'erhalten: ' + r._equityValueAbsBase);
+    check('B-4c: Nettoliquidität hat negatives Vorzeichen in _netDebtM',
+      r._netDebtM === -200, 'erhalten: ' + r._netDebtM);
+  }
+
+  // ── B-5: Ableitung total_debt − Liquidität ───────────────────────
+  suite('B-5 Nettoschulden aus total_debt − cash');
+  {
+    const r = run({ total_debt: [800], cash_and_equivalents: [300] });
+    check('B-5a: netDebt = 800 − 300 = 500 → base = 10,00',
+      approx(r.base, 10, 1e-9), 'erhalten: ' + r.base);
+    check('B-5b: Quelle ausgewiesen (total_debt − cash_and_equivalents)',
+      r._netDebtSource === 'total_debt[0] − cash_and_equivalents[0]', 'erhalten: ' + r._netDebtSource);
+    check('B-5c: Schulden und anrechenbare Liquidität explizit ausgewiesen',
+      r._grossDebtM === 800 && r._cashM === 300,
+      'erhalten: ' + r._grossDebtM + '/' + r._cashM);
+
+    // Legacy-Feld f.cash + explizit 0 Liquidität ist ein WERT, kein fehlender Wert.
+    const r2 = run({ total_debt: [500], cash: [0] });
+    check('B-5d: cash=[0] gilt als vorhandener Wert (netDebt 500) → base = 10,00',
+      approx(r2.base, 10, 1e-9) && r2._netDebtAvailable === true, 'erhalten: ' + r2.base);
+
+    // net_debt[0] hat Vorrang vor total_debt − cash
+    const r3 = run({ net_debt: [500], total_debt: [900], cash_and_equivalents: [500] });
+    check('B-5e: net_debt[0] hat Vorrang (500, nicht 400) → base = 10,00',
+      approx(r3.base, 10, 1e-9) && r3._netDebtSource === 'net_debt[0]',
+      'erhalten: ' + r3.base + '/' + r3._netDebtSource);
+  }
+
+  // ── B-6: Fehlende Schulden-/Liquiditätsdaten ─────────────────────
+  // Dürfen NICHT stillschweigend als 0 gelten: Wert bleibt der operative
+  // Wert, muss aber ausdrücklich als "kein Abzug" gekennzeichnet sein.
+  suite('B-6 Fehlende Daten');
+  {
+    const rNone = run({});   // weder net_debt noch total_debt noch cash
+    check('B-6a: _netDebtAvailable = false', rNone._netDebtAvailable === false,
+      'erhalten: ' + rNone._netDebtAvailable);
+    check('B-6b: _netDebtM = null (nicht 0)', rNone._netDebtM === null,
+      'erhalten: ' + rNone._netDebtM);
+    check('B-6c: fehlende Felder benannt',
+      Array.isArray(rNone._netDebtMissingFields) && rNone._netDebtMissingFields.length === 2,
+      'erhalten: ' + JSON.stringify(rNone._netDebtMissingFields));
+    check('B-6d: Warnung weist fehlenden Abzug ausdrücklich aus',
+      (rNone.warnings || []).some(w => /Nettoschulden nicht ermittelbar/.test(w)),
+      'erhalten: ' + JSON.stringify(rNone.warnings));
+    check('B-6e: Wert = operativer Wert 15,00 (unbereinigt, gekennzeichnet)',
+      approx(rNone.base, 15, 1e-9), 'erhalten: ' + rNone.base);
+
+    // Schulden bekannt, Liquidität unbekannt → ebenfalls nicht ableitbar
+    const rNoCash = run({ total_debt: [500] });
+    check('B-6f: total_debt ohne Liquiditätsangabe → nicht ableitbar (Cash ≠ 0 unterstellt)',
+      rNoCash._netDebtAvailable === false && approx(rNoCash.base, 15, 1e-9),
+      'erhalten: ' + rNoCash._netDebtAvailable + '/' + rNoCash.base);
+    check('B-6g: fehlendes Feld ist die Liquidität',
+      (rNoCash._netDebtMissingFields || []).join(',') === 'cash_and_equivalents[0]/cash[0]',
+      'erhalten: ' + JSON.stringify(rNoCash._netDebtMissingFields));
+  }
+
+  // ── B-7: Negativer Eigenkapitalwert ──────────────────────────────
+  suite('B-7 Negativer Eigenkapitalwert');
+  {
+    const r = run({ net_debt: [2000] });
+    check('B-7a: base = −5,00 USD/Aktie (1.500 − 2.000)/100',
+      approx(r.base, -5, 1e-9), 'erhalten: ' + r.base);
+    check('B-7b: Wert wird ausgewiesen, nicht auf null/0 geklemmt',
+      r.base != null && r.base < 0, 'erhalten: ' + r.base);
+    check('B-7c: applicable bleibt true (Forecast gültig, Eigenkapital negativ)',
+      r.applicable === true, 'erhalten: ' + r.applicable);
+    check('B-7d: negativer Eigenkapitalwert wird gewarnt',
+      (r.warnings || []).some(w => /Eigenkapitalwert negativ/.test(w)),
+      'erhalten: ' + JSON.stringify(r.warnings));
+  }
+
+  // ── B-8: Finanzierung ändert den WACC nicht ──────────────────────
+  suite('B-8 Finanzierung ohne WACC-Rückkopplung');
+  {
+    const r0 = run({ net_debt: [0] });
+    const r5 = run({ net_debt: [500] });
+    const rC = run({ net_debt: [-200] });
+    check('B-8a: operativer Wert je Aktie in allen drei Fällen identisch 15,00',
+      approx(r0._operatingValuePerShareBase, 15, 1e-9) &&
+      approx(r5._operatingValuePerShareBase, 15, 1e-9) &&
+      approx(rC._operatingValuePerShareBase, 15, 1e-9),
+      'erhalten: ' + r0._operatingValuePerShareBase + '/' + r5._operatingValuePerShareBase + '/' + rC._operatingValuePerShareBase);
+    check('B-8b: Differenz base entspricht exakt netDebt/Aktien (15 → 10 → 17)',
+      approx(r0.base - r5.base, 5, 1e-9) && approx(rC.base - r0.base, 2, 1e-9),
+      'erhalten: ' + (r0.base - r5.base) + '/' + (rC.base - r0.base));
+    check('B-8c: Determinismus — zweiter Lauf liefert identische Werte',
+      run({ net_debt: [500] }).base === r5.base, 'erhalten: ' + run({ net_debt: [500] }).base);
+  }
+
+  // ── B-9: Wertbrücke im Klartext ausgewiesen ──────────────────────
+  suite('B-9 Ausweis der Wertbrücke');
+  {
+    const r = run({ total_debt: [800], cash_and_equivalents: [300] });
+    const bridge = (r.warnings || []).find(w => /Wertbrücke \(Base\)/.test(w)) || '';
+    check('B-9a: Wertbrücken-Zeile vorhanden', bridge.length > 0, 'erhalten: ' + bridge);
+    check('B-9b: nennt operativen Unternehmenswert 1500M', /1500M/.test(bridge), 'erhalten: ' + bridge);
+    check('B-9c: nennt Schulden 800M und Liquidität 300M',
+      /Schulden 800M/.test(bridge) && /Liquidität 300M/.test(bridge), 'erhalten: ' + bridge);
+    check('B-9d: nennt Eigenkapitalwert 1000M und 10.00/Aktie',
+      /Eigenkapitalwert 1000M/.test(bridge) && /10\.00\/Aktie/.test(bridge), 'erhalten: ' + bridge);
+    check('B-9e: nennt verwendete Aktienanzahl 100.0M', /100\.0M Aktien/.test(bridge), 'erhalten: ' + bridge);
+    check('B-9f: Aktienbasis-Hinweis (Ersatzbasis) vorhanden',
+      (r.warnings || []).some(w => /Ersatzbasis für die aktuelle ausstehende/.test(w)),
+      'erhalten: ' + JSON.stringify(r.warnings));
+  }
+
+  // ── B-10: Sensitivitätsmatrix zeigt dieselbe Wertbasis ───────────
+  // Die Matrix ist als "Fair Value" beschriftet und muss deshalb denselben
+  // Eigenkapitalwert zeigen wie das DCF-Modell (sonst je Zelle um
+  // netDebt/Aktie daneben).
+  suite('B-10 Sensitivitätsmatrix konsistent zur Wertbrücke');
+  {
+    const mkV = () => ({ error: null, router: { activeModels: ['dcf'], subClassification: 'standard_nonfin' } });
+    const mkMatrixMj = (fundOverrides) => {
+      const mj = mkMj(fundOverrides);
+      mj.valuation.growth_stage1 = 0;
+      mj.valuation.growth_terminal = 0;
+      mj.valuation.wacc_derived = 10;
+      return mj;
+    };
+    const htmlNd = buildSensitivityMatrix(mkMatrixMj({ net_debt: [500] }), mkV());
+    check('B-10a: Basiszelle zeigt 10.0 (Eigenkapitalwert, nicht 15.0)',
+      />10\.0</.test(htmlNd) && !/>15\.0</.test(htmlNd), 'erhalten: ' + htmlNd.slice(0, 400));
+    check('B-10b: Abzug in der Beschriftung ausgewiesen',
+      /Eigenkapitalwert nach Abzug Nettoschulden 500M/.test(htmlNd),
+      'erhalten: ' + htmlNd.slice(0, 600));
+
+    const htmlNone = buildSensitivityMatrix(mkMatrixMj({}), mkV());
+    check('B-10c: ohne Schulden-/Liquiditätsdaten Basiszelle 15.0 + Kennzeichnung',
+      />15\.0</.test(htmlNone) && /ohne Nettoschuldenabzug/.test(htmlNone),
+      'erhalten: ' + htmlNone.slice(0, 600));
+  }
+
+  return results;
 }
 
 // ════════════════════════════════════════════════════════════════
