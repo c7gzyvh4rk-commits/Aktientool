@@ -1,5 +1,224 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Update (Chat 12): Reproduzierbare Bewertungssnapshots, ehrliche Erfolgskontrolle (V1.0.44)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
+`claude/mos-input-validation`, Ausgangscommit `75dd901` — die Spitze dieses
+Branches und der einzige Stand, der die gesamte Historie enthaelt (`main` steht
+weiterhin auf `b023dc8`). Tool-Datei unveraendert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`
+(einzige HTML-Datei, `DEFAULT_TARGET` in `test/run-calc-tests.js`).
+Arbeitsbranch: `claude/awesome-johnson-j9c246`. Testbefehl: `npm test`.
+Baseline auf `75dd901` (ausgefuehrt): 1008 Rechen-Assertions · 28 SEC-Tests ·
+Exit-Code 0.
+
+### Am Code reproduziert (vor der Aenderung)
+
+| Punkt | Befund am Stand `75dd901` |
+|---|---|
+| 1 Snapshot als unabhaengige Kopie | `saveSnapshot` legte `masterJson: state.masterJson` als **lebende Referenz** ab. Dass in localStorage dennoch eine Kopie landete, war ein Nebeneffekt des sofortigen `JSON.stringify`, keine Zusicherung. Datenstand, Aktienbasis und Prognoseziele fehlten ganz. |
+| 2 Isolation | Ueber den Serialisierungs-Nebeneffekt faktisch gegeben, aber ungesichert; ein einziger zirkulaerer Verweis im Master-JSON haette `JSON.stringify` werfen lassen — der Fehler wurde verschluckt (siehe 4) und der Snapshot war lautlos weg. |
+| 3 Anzeige vs. Neuberechnung | Fuer kompatible Snapshots gab es **keine Wahl**: `loadSnapshot` lud still das Original, die erste Aenderung schaltete auf die aktuelle Engine um. Kein Weg, beide Sichten nebeneinander zu sehen. |
+| 4 Speicherfehler | `storeSnapshots` = `try { … } catch (e) {}`, ohne Rueckgabewert. `saveSnapshot` rief danach `renderSnapshots()` — **stiller Totalverlust ohne jede Meldung**. Probe: `setItem` mit `QuotaExceededError` ⇒ `saveSnapshot` warf nicht, meldete nichts, Snapshot-Zahl unveraendert. |
+| 5 Export/Import | `importSnapshots` pruefte **nichts** ausser `Array.isArray`: keine Formatversion, keine Engine-/Breaking-Pruefung, keine Migration. Export war ein blankes Array ohne Versionshuelle. |
+| 6 Forward-Check | Ueberschrift „Forward-Check", Zeile „Rendite (Kurs)", und `_postMortemLine` zeigte bei Kurs ≥ 90 % des Base-FV ein **gruenes „✓ Kurs nahe/über Base FV"** — las sich als bestaetigte Prognose. |
+| 7 Prognoseziele | `key_inputs` enthielt nur Ist-Werte. `forecastDcfCore` rechnete Umsatz/EBIT/FCFF je Jahr, gab die Reihen aber nicht zurueck. |
+
+### Korrekturen
+
+**Prognosekern (rein additiv, Bewertungsrechnung unveraendert).**
+`forecastDcfCore` fuehrt `_revenuePerYearAbs`, `_ebitPerYearAbs`,
+`_fcfPerYearAbs` und `_opMarginUsed` mit und gibt sie in beiden vollstaendigen
+Rueckgabepfaden zurueck. Alle 1008 bestehenden Assertions bleiben unveraendert
+gruen — kein Zahlenwert der Bewertung hat sich bewegt.
+
+**Neuer Snapshot-Kern** (nach `SNAP_KEY`), zentrale Bausteine:
+* `_deepCopyForSnapshot` — explizite Tiefkopie, die **nie wirft**: Zyklen werden
+  markiert (`SNAPSHOT_CYCLE_MARKER`), `Set`/`Map`/`Date` werden JSON-faehig,
+  nicht endliche Zahlen zu `null`, Funktionen/`undefined` entfallen.
+  Mehrfachreferenzen ohne Zyklus werden normal kopiert.
+* `buildSnapshotRecord(ctx)` — **rein**, ohne DOM und ohne globales `state`.
+  Haelt fest: `data_vintage` (as-of, Cutoff, Kursdatum, Periodenende, Periodentyp,
+  SEC-Formulare), `inputs_raw` (Rohimport, `null` wenn keiner vorliegt — **kein**
+  Ersatz durch die normalisierten Inputs), `masterJson` (normalisierte Inputs),
+  `assumptions`, `quality`/`valuation`/`synthesis`/`dataQuality`,
+  `_engineVersion`/`_breakingVersion`/`_schemaVersion`/`_snapshotFormat`,
+  `share_basis` (Aktienzahl, Quelle, Wachstum, Split-Verdacht),
+  `random_seed`/`rng`/`mc_config`, `rule_version`/`synthesis_config`,
+  `forecast_targets`.
+* `SNAPSHOT_FORMAT_VERSION = 2` versioniert den **Datensatz**, nicht die Engine.
+* `storeSnapshots` liefert `{ ok, code, message, count, bytes }` mit den Codes
+  `stored` · `serialize_failed` · `quota_exceeded` · `write_failed` ·
+  `verify_failed` (verifizierendes Zuruecklesen fuer Browser, die `setItem`
+  annehmen und nichts behalten). `describeSnapshotStoreResult` erzeugt die
+  Klartextmeldung (rein), `_renderSnapshotStoreStatus` zeigt sie in der neuen
+  Zeile `#snap-store-status` **und** als Dialog. `saveSnapshot`, `deleteSnapshot`
+  und `importSnapshots` melden Fehlschlaege; **nach einem Fehlschlag gibt es
+  keine Erfolgsmeldung** (der Erfolgsdialog des Imports wird uebersprungen).
+* `readSnapshotStoredResult` / `recomputeSnapshotWithCurrentModel` /
+  `compareStoredVsRecomputed` — die Neuberechnung laeuft auf einer eigenen
+  Kopie und **gibt zurueck**, statt zurueckzuschreiben. Neuer Knopf
+  „Neu rechnen (aktuelles Modell)" neben „Gespeichertes Ergebnis".
+* `buildSnapshotExportBundle` (Huelle `_kind`/`_snapshotFormat`/`_engineVersion`/
+  `_breakingVersion`/`exported_at`/`count`) und `parseSnapshotImportPayload` +
+  `migrateSnapshotRecord`: blankes Array wird als Format 1 gelesen und gewarnt,
+  abweichende Engine-/Breaking-Version wird gewarnt, **neueres Format wird
+  abgelehnt statt geraten**, fremdes `_kind` wird abgelehnt, unbrauchbare
+  Einzeleintraege werden einzeln verworfen. Jeder Migrationsschritt wird
+  protokolliert und dem Nutzer angezeigt.
+* `buildSnapshotForecastTargets` — Umsatz, operative Marge und FCFF je
+  Prognosejahr aus **demselben** Pfad wie der Haupt-DCF, mit Zielperiode
+  (`target_period_end`, `target_fiscal_year`, `target_period_type`), abgeleitet
+  aus dem letzten Ist-Periodenende. Ohne bekanntes Periodenende bleibt die
+  Zielperiode `null` — **kein geratenes Datum**.
+* `compareSnapshotForecastToActual` — liefert Abweichungen und `verdict: null`.
+  Ohne passende Zielperiode, bei abweichendem Periodentyp, ohne Periodenende
+  oder ohne Prognoseziele gibt es **gar keinen Vergleich**, weder positiv noch
+  negativ.
+
+**Kursvergleich statt Forward-Check.** `_forwardCheckBlock` →
+`_priceComparisonBlock` (Altname bleibt als Alias, T-FWDCHECK1 unveraendert).
+Ueberschrift „Kursvergleich", Zusatz „kein Backtest und keine Bestaetigung der
+Geschaeftsprognose. Ein hoeherer Kurs sagt nicht, dass Umsatz, Marge oder FCFF
+wie prognostiziert eingetreten sind."; „Rendite (Kurs)" → „Kursveraenderung",
+„Verdict damals→jetzt" → „Einstufung damals→jetzt". In `_postMortemLine` ist der
+gruene Erfolgshaken entfallen; die Einordnung ist neutral eingefaerbt und traegt
+den Zusatz „reine Kursentwicklung, keine Bestaetigung der Prognose".
+`_fc.kind = 'price_comparison'` (auch per Migration fuer Altdatensaetze).
+
+**Ladepfad gehaertet.** `_applySnapshotToState` arbeitet auf
+`_deepCopyForSnapshot(snapshotNormalizedInputs(s))` statt direkt auf dem
+Datensatz (`migrateV3toV4`/`applyDerivedFieldsV4`/`runFullEvaluation` aendern
+in place), kopiert auch die Ergebnisse in den State und liest den Rohimport
+ueber `s.inputs_raw ?? s.importedSnapshot ?? null`.
+
+### Bewusste Abwaegung: keine zweite Ablage der Inputs
+
+Ein Zwischenstand fuehrte `inputs_normalized` **zusaetzlich** zu `masterJson`.
+Gemessen am synthetischen Fixture waren das 864 von 7597 Zeichen (11 %); bei
+einem echten SEC-Master-JSON, das den Datensatz dominiert, naehert sich das
+einer Verdopplung — und arbeitet damit direkt gegen Punkt 4 (voller
+localStorage). Die normalisierten Inputs liegen deshalb **genau einmal** unter
+`masterJson`; Leser gehen ueber `snapshotNormalizedInputs(snap)`.
+SN-2b2 sichert das mit einer Nutzlast-Marke ab.
+
+### Neue Regressionstests — `_testSnapshotIntegrity` (122 Assertions)
+
+Registriert in `PURE_TEST_FUNCTIONS` (`test/run-calc-tests.js`), DOM-frei.
+Fixture bewusst glatt, damit die Erwartungswerte **unabhaengig** herleitbar sind:
+Umsatz 1000, EBIT 200 (20 %), EBITDA 250 (D&A 5 %), CapEx 50 (5 %), Steuer 25 %,
+g1 = 8 % ⇒ `FCFF_t = 0,15 · 1000 · 1,08^t` ⇒ Jahr 1: 1080,00 / 20,00 % / 162,00 ·
+Jahr 2: 1166,40 / 174,96 · Jahr 10: 1000·1,08^10.
+
+* **SN-1 (20)** Isolation: Kopie statt Referenz (auch verschachtelt); Aenderung
+  an Ticker, Umsatz, Reihenlaenge, Kurs, Annahmen und Ergebnissen erreicht den
+  Snapshot nicht; Gegenrichtung ebenfalls; zwei Snapshots derselben Aktie sind
+  unabhaengig; Zyklus wirft nicht und bleibt serialisierbar (mit Gegenprobe,
+  dass die rohe Referenz es **nicht** waere); Mehrfachreferenz ohne Zyklus;
+  Set/Date/NaN/Infinity/Funktion/undefined.
+* **SN-2 (13)** Vollstaendigkeit: Datenstand, getrennte Roh-/normalisierte
+  Inputs, keine Doppelablage, Annahmen, Ergebnisse, drei Versionsangaben,
+  Aktienbasis, Zufallsstartwert, Regelwerksversion, Zeitstempel, fehlender
+  Rohimport bleibt `null`, Serialisierbarkeit.
+* **SN-3 (10)** Speicherfehler: Erfolg meldet Erfolg; `quota_exceeded`,
+  `serialize_failed`, `verify_failed` werden erkannt; `storeSnapshots` wirft
+  nicht; die Meldung nennt Grund und „NICHTS gespeichert"; der zuvor
+  gespeicherte Stand bleibt unversehrt; **kein** Fehlschlag liefert `ok === true`.
+* **SN-4 (14)** Export/Import: Versionshuelle, Entkopplung, Roundtrip ueber
+  echtes JSON inkl. Datenstand/Aktienbasis/Startwert/Prognoseziele; fremdes
+  `_kind`, fehlende Liste, Textinhalt, leere Datei werden abgelehnt; ein
+  unbrauchbarer Eintrag reisst die brauchbaren nicht mit.
+* **SN-5 (20)** Aeltere Version: Format-1-Datensatz wird migriert, Altschluessel
+  abgebildet, gespeicherte Ergebnisse **nicht** neu gerechnet, Datenstand und
+  Aktienbasis nachgetragen, Startwert uebernommen, fehlende Prognoseziele
+  markiert statt nachgerechnet, Quelldatensatz unangetastet, keine Doppelablage,
+  blankes Array erkannt und gewarnt, Migrationsprotokoll durchgereicht,
+  aeltere Engine-/Breaking-Version gewarnt, **neueres Format abgelehnt**.
+* **SN-6 (16)** Trennung: beide Sichten gekennzeichnet; Neuberechnung auf eigener
+  Kopie; der Snapshot ist danach **Byte fuer Byte** unveraendert (`JSON.stringify`
+  vorher/nachher); die alte Sicht wird mitgefuehrt statt ersetzt;
+  Gegenueberstellung nennt beide Seiten; Engine-Wechsel erkannt; ohne Inputs
+  wird gemeldet statt geraten; Format-1-Altschluessel lesbar.
+* **SN-7 (22)** Prognoseziele: die sechs handgerechneten Werte, Zielperioden
+  2026-12-31 … 2035-12-31, Periodentyp, Szenario/Definition; ohne Periodenende
+  kein geratenes Datum; WACC ≤ tg und fehlendes Base-Szenario liefern einen
+  Grund statt Nullwerten; Soll-Ist: Umsatz −80,00 / −7,41 %, Marge −2,00 pp
+  (kein Prozentwert), FCFF −22,00 — und **`verdict === null` auch bei
+  vergleichbarer Periode**; vier Faelle ohne Vergleichbarkeit.
+* **SN-8 (8)** Kursvergleich: Kennzeichnung, Kursdatum, Ueberschrift, kein
+  „Forward-Check" mehr, ausdrueckliche Klarstellung, „Kursveraenderung" statt
+  „Rendite", Alias, kein Block ohne Kurs.
+
+### Gegenproben (alle ausgefuehrt)
+
+Jede Korrektur wurde einzeln zurueckgebaut; die zugehoerigen Assertions wurden
+rot. Ohne diese Proben waeren die Tests nicht aussagekraeftig.
+
+| Rueckbau | Rot |
+|---|---|
+| GP-1 Tiefkopie entfernt (rohe Referenz wie bis V1.0.43) | 12 (SN-1b/c/e–j/l/n/p/q) |
+| GP-2 `storeSnapshots` schluckt Fehler wieder | 6 (SN-3d/e/f/h/i/j) |
+| GP-3 Import-Versionspruefung entfernt | 3 (SN-4j, SN-5r/s) |
+| GP-4 Neuberechnung schreibt in den Snapshot zurueck | 6 (SN-6f–j, SN-6l) |
+| GP-5 Zielperiode geraten + automatische Erfolgsnote | 3 (SN-7j/q/r) |
+| GP-6 alte „Forward-Check"-Bezeichnung | 4 (SN-8c–f) |
+| GP-7 zweite Ablage der normalisierten Inputs | 1 (SN-2b2) |
+
+### Tatsaechlich ausgefuehrte Tests
+
+* `npm test` → Rechentests **1130 bestanden · 0 fehlgeschlagen ·
+  0 Fehler/Exceptions** (vorher 1008; +122), SEC-Tests **28/28**, gemeinsamer
+  **Exit-Code 0**. **Keine bestehende Erwartung geaendert oder gelockert.**
+* Zusaetzlich ein einmaliger End-to-End-Durchlauf im Node-Sandbox-Kontext
+  (`saveSnapshot` → aktives Unternehmen aendern → Speichern bei vollem
+  localStorage → Export/Import → Format-1-Import → gespeichert vs. neu
+  berechnet). Ergebnis: Snapshot 6979 Zeichen; Prognose Jahr 1
+  1080 / 20 % / 162 zur Zielperiode 2026-12-31; Startwert 20260101;
+  Aktienbasis 100; nach Aenderung des aktiven Unternehmens weiterhin
+  `AAA` / 1000 / BP 17,25; Quota-Fehlschlag liefert `ok:false`,
+  `quota_exceeded` und einen sichtbaren Dialog bei unveraenderter
+  Snapshot-Zahl; Roundtrip fehlerfrei; Format-1-Import migriert in 9 Schritten
+  bei erhaltenem BP 12,50 und Engine `1.0.30-alt`; gespeichert BP 17,25 vs.
+  neu berechnet BP 17,2909 bei unveraendertem Snapshot.
+
+### Verbleibende Einschraenkungen
+
+* **Kein echter Browser.** Die DOM-Verdrahtung (`#snap-store-status`, die beiden
+  Knoepfe je Snapshot, `_applySnapshotToState`, `loadSnapshotWithCurrentModel`)
+  ist **nicht** durch `npm test` abgedeckt — die Suite bleibt bewusst
+  abhaengigkeitsfrei und DOM-frei. Getestet sind die reinen Kernfunktionen; der
+  End-to-End-Durchlauf oben lief im Node-Sandbox-Kontext, nicht im Browser.
+* Der Soll-Ist-Vergleich ist als Funktion vorhanden und getestet, hat aber
+  **noch keine Bedienoberflaeche** — Auftragspunkt 7 verlangt die Grundlage im
+  Snapshot, nicht die Auswertung. Ist-Werte muessen bislang vom Aufrufer
+  kommen; es gibt keinen automatischen Abgleich gegen neue SEC-Daten.
+* `forecast_targets` beruht auf dem **Base-Szenario**; Conservative/Optimistic
+  werden nicht als eigene Zielpfade abgelegt.
+* Prognoseziele fuer Format-1-Altsnapshots werden bewusst **nicht** nachgetragen
+  — sie waeren keine damals prognostizierten Werte.
+* Bestehende Snapshots im localStorage bleiben im Format 1 liegen, bis sie
+  exportiert und wieder importiert werden; sie werden beim Lesen migriert, aber
+  nicht automatisch zurueckgeschrieben.
+* `_deepCopyForSnapshot` wirft, wenn eine Eigenschaft einen werfenden Getter
+  hat. `saveSnapshot` faengt das ab und meldet `build_failed`; in der Praxis
+  stammt das Master-JSON aus `JSON.parse` und hat keine Getter.
+* Ein Snapshot in einem **neueren** Format wird abgelehnt, nicht teilweise
+  gelesen — bewusst, um kein Feld zu raten.
+* Unveraendert offen aus den Vorschritten: index-basierte Ableitung von
+  `eps_diluted`, `book_value` und `dps` in `applyDerivedFieldsV4`; Korrelationen
+  der Monte-Carlo-Groessen nicht modelliert; `ENGINE_VERSION` /
+  `DISPLAY_VERSION` / `REGRESSION_TEST_VERSION` nicht angehoben (im Code als
+  V1.0.44 kommentiert) — mehrere Fixtures pinnen `1.0.35-base-rate-lite` exakt,
+  ein Versionsbump bleibt ein eigener Schritt.
+
+### Ausgangsstand fuer den naechsten Schritt
+
+Uebergabebranch: `claude/awesome-johnson-j9c246` (Basis `75dd901` auf
+`claude/mos-input-validation`). Tool-Datei unveraendert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Testbefehl: `npm test` — beide Suiten gruen, Exit-Code 0.
+Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/awesome-johnson-j9c246
+
 ## Update (Chat 11): Zwei Fehler beim manuellen Sicherheitsabschlag behoben (V1.0.43)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch

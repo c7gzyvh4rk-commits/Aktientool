@@ -2535,6 +2535,10 @@ export default {
       <button class="btn ghost" onclick="document.getElementById('snap-import-file').click()">Snapshots importieren</button>
       <input type="file" id="snap-import-file" accept=".json" style="display:none" onchange="importSnapshots(event)">
     </div>
+    <!-- V1.0.44: Ergebnis jedes Speicher-/Importvorgangs. Ein Fehlschlag
+         (z.B. voller localStorage) erscheint hier UND als Dialog; es gibt
+         keine Erfolgsmeldung nach fehlgeschlagenem Speichern. -->
+    <div class="import-status" id="snap-store-status" style="display:none;margin-top:8px"></div>
     <div class="snap-list" id="snap-list"></div>
   </div>
 </div>
@@ -2593,6 +2597,10 @@ const BREAKING_VERSION             = '11.6';
 const COMPATIBLE_BREAKING_VERSIONS = ['11.5', '11.6'];
 const SCHEMA_VERSION_APP           = '4.0';
 const SEC_FETCH_VERSION            = 'sec_fetch_us_v1_2026-05';
+// Stand V1.0.44 (Snapshot-Kern): ENGINE_VERSION bewusst NICHT gebumpt —
+// mehrere Fixtures/Golden-Tests pinnen '1.0.35-base-rate-lite' exakt.
+// SNAPSHOT_FORMAT_VERSION (siehe Snapshot-Kern) versioniert den Snapshot-
+// DATENSATZ und ist davon unabhaengig.
 
 // ── Patch-Notiz: Sektor-Klassifikations-Provenienz ───────────────
 // ENGINE_VERSION bewusst NICHT gebumpt — mehrere bestehende Fixtures/Golden-Tests
@@ -3985,6 +3993,12 @@ function forecastDcfCore(fi, g1, tg, wacc, fade, opMarginOverridePct) {
   const fcfPerYearAbs  = new Array(11).fill(0);   // index 1..10
   const pvPerYearAbs   = new Array(11).fill(0);   // index 1..10
   const dOwcPerYearAbs = new Array(11).fill(0);   // index 1..10
+  // V1.0.44: Umsatz und EBIT je Prognosejahr werden mitgefuehrt, damit der
+  // Snapshot die prognostizierten Jahresumsaetze, operativen Margen und FCFF
+  // als Grundlage eines spaeteren Soll-Ist-Vergleichs festhalten kann.
+  // Rein additiv — die Bewertungsrechnung selbst ist unveraendert.
+  const revenuePerYearAbs = new Array(11).fill(null); // index 1..10
+  const ebitPerYearAbs    = new Array(11).fill(null); // index 1..10
   let pvAbs = 0, lastFcf = 0;
   // preWcFcf = FCFF vor ΔOWC. Wird separat mitgeführt, damit der
   // Terminalwert exakt wie bisher aus der revenue-proportionalen Größe
@@ -4001,6 +4015,8 @@ function forecastDcfCore(fi, g1, tg, wacc, fade, opMarginOverridePct) {
     }
     const prevRevenue = revenue;
     revenue *= (1 + gi / 100);
+    revenuePerYearAbs[i] = revenue;
+    ebitPerYearAbs[i]    = revenue * margin;
     const nopat = revenue * margin * (1 - fi.taxRate / 100);
     const da = revenue * fi.daRatio;
     const capex = revenue * fi.capexIntensity;
@@ -4051,7 +4067,11 @@ function forecastDcfCore(fi, g1, tg, wacc, fade, opMarginOverridePct) {
       _owcRatio: owcRatio, _owcInfo: (fi && fi._owc) || null,
       _dOwcYear1: dOwcPerYearAbs[1], _dOwcSum: owcTotalDelta,
       _dOwcTerminal: terminalDOwc, _terminalFcf: terminalFcf,
-      _revenueYear10: revenueYear10
+      _revenueYear10: revenueYear10,
+      _revenuePerYearAbs: revenuePerYearAbs,
+      _ebitPerYearAbs: ebitPerYearAbs,
+      _fcfPerYearAbs: fcfPerYearAbs,
+      _opMarginUsed: margin
     };
   }
 
@@ -4115,6 +4135,11 @@ function forecastDcfCore(fi, g1, tg, wacc, fade, opMarginOverridePct) {
     _dOwcTerminal: terminalDOwc,
     _terminalFcf: terminalFcf,
     _revenueYear10: revenueYear10,
+    // V1.0.44: Prognosereihen (firm-level, Mio. USD) fuer den Snapshot.
+    _revenuePerYearAbs: revenuePerYearAbs,
+    _ebitPerYearAbs: ebitPerYearAbs,
+    _fcfPerYearAbs: fcfPerYearAbs,
+    _opMarginUsed: margin,
     _cashflowDefinition: 'FCFF = EBIT × (1 − t) + D&A − CapEx − ΔOWC',
     _discountRateBasis: 'WACC'
   };
@@ -18508,16 +18533,705 @@ function renderAssumptions(keepValues) {
 
 const SNAP_KEY = 'aktien-bewertung-v3-snapshots';
 
+// ════════════════════════════════════════════════════════════════
+// V1.0.44 — SNAPSHOT-KERN
+// ────────────────────────────────────────────────────────────────
+// Ein Snapshot ist eine UNABHAENGIGE Kopie des Bewertungszeitpunkts.
+// Er haelt fest: Datenstand, rohe und normalisierte Inputs, Annahmen,
+// Ergebnisse, Modell-/Schemaversion, Aktienbasis, Zufallsstartwert und
+// die prognostizierten Jahresumsaetze/Margen/FCFF mit Zielperioden.
+//
+// SNAPSHOT_FORMAT_VERSION versioniert den DATENSATZ, nicht die Engine:
+//   1 = Datensaetze bis V1.0.43 — ohne _snapshotFormat, ohne
+//       data_vintage/share_basis/forecast_targets; Ergebnisse liegen
+//       unter den Altschluesseln qualityV3/valuationV3/synthesisV3.
+//   2 = ab V1.0.44 — kanonische Schluessel quality/valuation/synthesis,
+//       Datenstand, Aktienbasis und Prognoseziele enthalten.
+//
+// Feldbelegung der Inputs (jeweils genau EINMAL abgelegt):
+//   inputs_raw  = Rohimport wie geliefert, null wenn keiner vorliegt.
+//   masterJson  = normalisierte Inputs (Ergebnis der Aufbereitungspipeline).
+// Ein zusaetzliches Feld mit derselben Nutzlast waere eine Verdopplung des
+// groessten Bestandteils und ginge unmittelbar zulasten des knappen
+// localStorage-Platzes — deshalb gibt es sie nicht.
+// Ein hoeheres Format als das bekannte wird NICHT geraten, sondern
+// abgelehnt (siehe parseSnapshotImportPayload).
+// ════════════════════════════════════════════════════════════════
+const SNAPSHOT_FORMAT_VERSION = 2;
+const SNAPSHOT_EXPORT_KIND    = 'aktienbewertung.snapshots';
+
+// ── Unabhaengige Tiefkopie ────────────────────────────────────────
+// Grund: `masterJson: state.masterJson` legte bisher eine LEBENDE
+// Referenz in den Snapshot. Dass in localStorage dennoch eine Kopie
+// landete, war ein Nebeneffekt des sofortigen JSON.stringify — keine
+// Zusicherung. Zudem liess ein einziger zirkulaerer Verweis im
+// Master-JSON das stringify werfen; der Fehler wurde verschluckt und
+// der Snapshot war lautlos verloren.
+//
+// _deepCopyForSnapshot kopiert deshalb explizit und wirft nie:
+//   · Zyklen werden markiert statt zu werfen,
+//   · Set/Map/Date werden in JSON-faehige Formen ueberfuehrt,
+//   · nicht endliche Zahlen werden zu null (JSON-Semantik),
+//   · Funktionen und undefined entfallen (wie bei JSON.stringify).
+// Mehrfach referenzierte Objekte OHNE Zyklus werden normal kopiert.
+const SNAPSHOT_CYCLE_MARKER = '[zirkulaerer Verweis — beim Speichern entfernt]';
+
+function _deepCopyForSnapshot(value, _stack) {
+  const t = typeof value;
+  if (value === null) return null;
+  if (t === 'number')   return isFinite(value) ? value : null;
+  if (t === 'bigint')   return String(value);
+  if (t === 'function' || t === 'undefined' || t === 'symbol') return undefined;
+  if (t !== 'object')   return value;
+
+  const stack = _stack || [];
+  for (let i = 0; i < stack.length; i++) {
+    if (stack[i] === value) return SNAPSHOT_CYCLE_MARKER;
+  }
+  stack.push(value);
+  let out;
+  try {
+    if (value instanceof Date) {
+      out = isFinite(value.getTime()) ? value.toISOString() : null;
+    } else if (value instanceof Set) {
+      out = [];
+      value.forEach(v => {
+        const c = _deepCopyForSnapshot(v, stack);
+        out.push(c === undefined ? null : c);
+      });
+    } else if (value instanceof Map) {
+      out = {};
+      value.forEach((v, k) => {
+        const c = _deepCopyForSnapshot(v, stack);
+        if (c !== undefined) out[String(k)] = c;
+      });
+    } else if (Array.isArray(value)) {
+      out = new Array(value.length);
+      for (let i = 0; i < value.length; i++) {
+        const c = _deepCopyForSnapshot(value[i], stack);
+        out[i] = (c === undefined) ? null : c;
+      }
+    } else {
+      out = {};
+      const keys = Object.keys(value);
+      for (let i = 0; i < keys.length; i++) {
+        const c = _deepCopyForSnapshot(value[keys[i]], stack);
+        if (c !== undefined) out[keys[i]] = c;
+      }
+    }
+  } finally {
+    stack.pop();
+  }
+  return out;
+}
+
+// Normalisierte Inputs eines Snapshots — deckt Format 2 (masterJson) und
+// Datensaetze ab, die inputs_normalized aus einer Zwischenfassung tragen.
+function snapshotNormalizedInputs(snap) {
+  if (!snap) return null;
+  return snap.masterJson ?? snap.inputs_normalized ?? null;
+}
+
 function loadSnapshots() {
   try {
     const raw = localStorage.getItem(SNAP_KEY);
     if (!raw) return [];
-    return JSON.parse(raw) || [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
   } catch (e) { return []; }
 }
 
+// ── Speichern mit sichtbarem Ergebnis ─────────────────────────────
+// Rueckgabe: { ok, code, message, count, bytes }.
+// Bisher verschluckte storeSnapshots jeden Fehler (`catch (e) {}`) und
+// saveSnapshot meldete danach trotzdem Erfolg — bei vollem localStorage
+// war der Snapshot weg, ohne dass es jemand bemerkte. Es gibt jetzt
+// keinen Rueckgabewert mehr, der einen Fehlschlag als Erfolg ausweist.
 function storeSnapshots(arr) {
-  try { localStorage.setItem(SNAP_KEY, JSON.stringify(arr)); } catch (e) {}
+  const list = Array.isArray(arr) ? arr : [];
+  let payload;
+  try {
+    payload = JSON.stringify(list);
+  } catch (e) {
+    return { ok: false, code: 'serialize_failed', count: list.length, bytes: null,
+      message: 'Snapshots liessen sich nicht in JSON umwandeln: ' + ((e && e.message) || String(e)) };
+  }
+  try {
+    localStorage.setItem(SNAP_KEY, payload);
+  } catch (e) {
+    const name = (e && e.name) || '';
+    const isQuota = /quota/i.test(name) || /quota/i.test((e && e.message) || '')
+      || name === 'NS_ERROR_DOM_QUOTA_REACHED' || (e && e.code === 22) || (e && e.code === 1014);
+    return {
+      ok: false,
+      code: isQuota ? 'quota_exceeded' : 'write_failed',
+      count: list.length,
+      bytes: payload.length,
+      message: isQuota
+        ? ('Speicher voll — der Browser-Speicher (localStorage) hat ' + payload.length +
+           ' Zeichen nicht aufgenommen. NICHTS wurde gespeichert; der zuletzt gespeicherte Stand ' +
+           'bleibt unveraendert. Alte Snapshots exportieren und loeschen, dann erneut speichern.')
+        : ('Schreiben in den Browser-Speicher fehlgeschlagen (' + (name || 'unbekannter Fehler') + '): ' +
+           ((e && e.message) || String(e)) + ' — es wurde NICHTS gespeichert.')
+    };
+  }
+  // Verifizierendes Zuruecklesen: manche Browser (privater Modus) nehmen
+  // setItem entgegen, behalten die Daten aber nicht.
+  let back = null;
+  try { back = localStorage.getItem(SNAP_KEY); } catch (e) { back = null; }
+  if (back !== payload) {
+    return { ok: false, code: 'verify_failed', count: list.length, bytes: payload.length,
+      message: 'Der Browser-Speicher hat die Snapshots angenommen, gibt sie aber nicht unveraendert ' +
+               'zurueck. Die Speicherung gilt als FEHLGESCHLAGEN.' };
+  }
+  return { ok: true, code: 'stored', count: list.length, bytes: payload.length,
+    message: list.length + ' Snapshot(s) gespeichert (' + payload.length + ' Zeichen).' };
+}
+
+// Klartextmeldung zu einem storeSnapshots-Ergebnis (rein, ohne DOM).
+function describeSnapshotStoreResult(res) {
+  if (!res) return { level: 'error', text: 'Speichern lieferte kein Ergebnis — Zustand unbekannt.' };
+  if (res.ok) return { level: 'ok', text: '✓ ' + res.message };
+  return { level: 'error', text: '⛔ Snapshot NICHT gespeichert. ' + (res.message || 'Unbekannter Speicherfehler.') };
+}
+
+// Sichtbarmachen im UI (DOM-Teil bewusst getrennt, damit die Kernlogik
+// ohne Browser testbar bleibt).
+function _renderSnapshotStoreStatus(res) {
+  const d = describeSnapshotStoreResult(res);
+  const el = (typeof document !== 'undefined' && document.getElementById)
+    ? document.getElementById('snap-store-status') : null;
+  if (el) {
+    el.textContent = d.text;
+    el.className = 'import-status ' + (d.level === 'ok' ? 'ok' : 'err');
+    el.style.display = 'block';
+  }
+  // Ein Speicherfehler darf nicht nur in einer Statuszeile stehen.
+  if (d.level === 'error' && typeof alert === 'function') alert(d.text);
+  return d;
+}
+
+// ════════════════════════════════════════════════════════════════
+// Datenstand, Aktienbasis, Prognoseziele
+// ════════════════════════════════════════════════════════════════
+
+// Datenstand des Snapshots — WELCHE Daten lagen zugrunde, nicht wann
+// gespeichert wurde. Fehlende Angaben bleiben null (kein Ersatzdatum).
+function buildSnapshotDataVintage(mj) {
+  const meta = (mj && mj.meta) || {};
+  const mkt  = (mj && mj.market) || {};
+  const f    = (mj && mj.fundamentals) || {};
+  const v4m  = f._v4_meta || {};
+  const revM = v4m.revenue || {};
+  const secFetch = meta._sec_fetch || (mj && mj._sec_fetch) || null;
+  const periods = Array.isArray(revM.periods) ? revM.periods : null;
+  return {
+    as_of_date:          meta.as_of_date || null,
+    data_cutoff_date:    meta.data_cutoff_date || null,
+    price_as_of_date:    mkt.price_as_of_date || meta.as_of_date || null,
+    source_primary:      meta.source_primary || null,
+    latest_period_end:   (periods && periods[0]) || null,
+    period_type:         revM.period_type || null,
+    period_source:       revM.source_reference || null,
+    periods_available:   periods ? periods.slice(0, 10) : null,
+    sec_fetch_forms:     (secFetch && Array.isArray(secFetch.forms)) ? secFetch.forms.slice(0, 10) : null,
+    sec_fetch_retrieved: (secFetch && (secFetch.retrieved_at || secFetch.fetched_at)) || null
+  };
+}
+
+// Aktienbasis — auf welcher Aktienzahl die Werte je Aktie beruhen.
+function buildSnapshotShareBasis(mj, forecastInputs) {
+  const f  = (mj && mj.fundamentals) || {};
+  const sd = Array.isArray(f.shares_diluted) ? f.shares_diluted : [];
+  const v4m = (f._v4_meta && f._v4_meta.shares_diluted) || {};
+  const fi = forecastInputs || null;
+  return {
+    shares_diluted_latest: (sd.length && sd[0] != null) ? sd[0] : null,
+    shares_diluted_series: sd.slice(0, 10),
+    unit:                  'Mio. Aktien (wie im Master-JSON)',
+    source_type:           v4m.source_type || null,
+    source_reference:      v4m.source_reference || null,
+    shares_growth_pa_pct:  fi ? fi.sharesGrowthPa : null,
+    shares_growth_raw_pct: fi ? fi._sharesGrowthRaw : null,
+    shares_growth_source:  fi ? fi._sharesGrowthSource : null,
+    shares_growth_clamped: fi ? !!fi._sharesGrowthClamped : null,
+    possible_stock_split:  fi ? !!fi._possibleStockSplit : null,
+    warnings:              (fi && Array.isArray(fi._sharesWarnings)) ? fi._sharesWarnings.slice() : []
+  };
+}
+
+// Zielperiode je Prognosejahr aus dem letzten Ist-Periodenende ableiten.
+// Ohne bekanntes Periodenende gibt es KEIN geratenes Datum.
+function _snapshotTargetPeriod(latestPeriodEnd, yearOffset) {
+  if (!latestPeriodEnd || typeof latestPeriodEnd !== 'string') {
+    return { period_end: null, fiscal_year: null, label: 'Jahr ' + yearOffset + ' (Periode unbekannt)' };
+  }
+  const m = latestPeriodEnd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return { period_end: null, fiscal_year: null, label: 'Jahr ' + yearOffset + ' (Periode unbekannt)' };
+  const y = parseInt(m[1], 10) + yearOffset;
+  const end = String(y) + '-' + m[2] + '-' + m[3];
+  return { period_end: end, fiscal_year: y, label: 'FY' + y + ' (bis ' + end + ')' };
+}
+
+// ── Prognoseziele fuer den spaeteren Soll-Ist-Vergleich ───────────
+// Umsatz, operative Marge und FCFF je Prognosejahr — aus DEMSELBEN
+// Prognosepfad wie der Haupt-DCF (forecastDcfCore), damit die im
+// Snapshot festgehaltenen Ziele exakt die gerechneten sind.
+function buildSnapshotForecastTargets(mj, valuationResult) {
+  const unavailable = (reason) => ({
+    available: false, reason: reason, years: [],
+    definition: null, scenario: null, target_periods_known: false
+  });
+  if (!mj) return unavailable('Kein Master-JSON.');
+  let fi = null;
+  try { fi = buildForecastInputs(mj); } catch (e) { return unavailable('Forecast-Inputs nicht berechenbar: ' + ((e && e.message) || String(e))); }
+  if (!fi) return unavailable('Forecast-Inputs unvollstaendig (Umsatz, EBIT oder CapEx fehlen) — es werden keine Ersatzwerte angesetzt.');
+
+  const sc = valuationResult && valuationResult.scenarios && valuationResult.scenarios.base;
+  if (!sc) return unavailable('Kein Base-Szenario in der gespeicherten Bewertung — ohne Annahmen keine Prognoseziele.');
+  const g1   = sc.growth_stage1;
+  const tg   = sc.terminal_growth;
+  const wacc = sc.wacc;
+  if (g1 == null || tg == null || wacc == null || !isFinite(g1) || !isFinite(tg) || !isFinite(wacc)) {
+    return unavailable('Wachstums-/WACC-Annahmen des Base-Szenarios unvollstaendig.');
+  }
+  if (wacc <= tg) return unavailable('WACC ≤ Terminalwachstum — in dieser Parametrierung existiert kein Prognosepfad.');
+
+  const val  = (mj.valuation) || {};
+  const fade = val.fade ? { enabled: !!val.fade.enabled, fromYear: val.fade.from_year } : { enabled: false };
+  const marginPct = (sc.op_margin_pct != null && isFinite(sc.op_margin_pct)) ? sc.op_margin_pct : null;
+
+  let r = null;
+  try { r = forecastDcfCore(fi, g1, tg, wacc, fade, marginPct); } catch (e) { return unavailable('Prognoserechnung fehlgeschlagen: ' + ((e && e.message) || String(e))); }
+  if (!r || !Array.isArray(r._revenuePerYearAbs)) return unavailable('Prognosekern lieferte keine Jahresreihen.');
+
+  const vintage = buildSnapshotDataVintage(mj);
+  const latestEnd = vintage.latest_period_end;
+  const years = [];
+  for (let i = 1; i <= 10; i++) {
+    const rev  = r._revenuePerYearAbs[i];
+    const ebit = r._ebitPerYearAbs[i];
+    const fcff = r._fcfPerYearAbs[i];
+    if (rev == null || !isFinite(rev)) continue;
+    const tp = _snapshotTargetPeriod(latestEnd, i);
+    years.push({
+      year: i,
+      target_period_end: tp.period_end,
+      target_fiscal_year: tp.fiscal_year,
+      target_period_label: tp.label,
+      target_period_type: vintage.period_type || null,
+      revenue: rev,
+      ebit: (ebit != null && isFinite(ebit)) ? ebit : null,
+      op_margin_pct: (ebit != null && isFinite(ebit) && rev > 0) ? (ebit / rev * 100) : null,
+      fcff: (fcff != null && isFinite(fcff)) ? fcff : null
+    });
+  }
+  return {
+    available: years.length > 0,
+    reason: years.length > 0 ? null : 'Prognosepfad ergab keine auswertbaren Jahre.',
+    unit: 'Mio. USD (Unternehmensebene, wie im Master-JSON)',
+    definition: r._cashflowDefinition || 'FCFF = EBIT × (1 − t) + D&A − CapEx − ΔOWC',
+    basis_period_end: latestEnd,
+    target_periods_known: !!latestEnd,
+    scenario: { name: 'base', growth_stage1_pct: g1, terminal_growth_pct: tg, wacc_pct: wacc,
+                op_margin_pct_used: (r._opMarginUsed != null) ? r._opMarginUsed * 100 : null,
+                fade_enabled: !!fade.enabled, fade_from_year: fade.enabled ? (fade.fromYear || null) : null,
+                tax_rate_pct: fi.taxRate, owc_ratio: r._owcRatio },
+    years: years,
+    terminal: { fcff: (r._terminalFcf != null && isFinite(r._terminalFcf)) ? r._terminalFcf : null,
+                revenue_year10: (r._revenueYear10 != null && isFinite(r._revenueYear10)) ? r._revenueYear10 : null }
+  };
+}
+
+// ── Soll-Ist-Vergleich (spaeter) ──────────────────────────────────
+// Vergleicht EINE Ist-Periode gegen das passende Prognosejahr.
+// Ohne uebereinstimmende Periode gibt es KEINE Erfolgsbewertung —
+// weder positiv noch negativ. Das ist der ganze Zweck der Funktion.
+function compareSnapshotForecastToActual(snap, actual) {
+  const ft = snap && snap.forecast_targets;
+  const notComparable = (reason) => ({
+    comparable: false, verdict: null, reason: reason, target: null, actual: actual || null, deltas: null
+  });
+  if (!ft || !ft.available || !Array.isArray(ft.years) || ft.years.length === 0) {
+    return notComparable('Snapshot enthaelt keine Prognoseziele.');
+  }
+  if (!actual || !actual.period_end) {
+    return notComparable('Ist-Periode ohne Periodenende — nicht zuordenbar.');
+  }
+  if (!ft.target_periods_known) {
+    return notComparable('Zielperioden des Snapshots sind unbekannt (kein Periodenende im Datenstand) — ' +
+                         'ein Soll-Ist-Vergleich waere nicht periodengerecht.');
+  }
+  const target = ft.years.find(y => y.target_period_end === actual.period_end) || null;
+  if (!target) {
+    return notComparable('Keine Prognoseperiode mit Ende ' + actual.period_end + ' im Snapshot — ' +
+                         'verfuegbar: ' + ft.years.map(y => y.target_period_end).join(', ') + '.');
+  }
+  if (actual.period_type && target.target_period_type && actual.period_type !== target.target_period_type) {
+    return notComparable('Periodentyp weicht ab (Prognose ' + target.target_period_type +
+                         ', Ist ' + actual.period_type + ') — nicht vergleichbar.');
+  }
+  const rel = (a, t) => (a == null || t == null || !isFinite(a) || !isFinite(t) || t === 0) ? null : ((a - t) / Math.abs(t) * 100);
+  const abs = (a, t) => (a == null || t == null || !isFinite(a) || !isFinite(t)) ? null : (a - t);
+  return {
+    comparable: true,
+    verdict: null,   // bewusst keine automatische Erfolgsnote
+    reason: null,
+    target: target,
+    actual: actual,
+    deltas: {
+      revenue:       { target: target.revenue,       actual: actual.revenue ?? null,
+                       abs: abs(actual.revenue, target.revenue), pct: rel(actual.revenue, target.revenue) },
+      op_margin_pct: { target: target.op_margin_pct, actual: actual.op_margin_pct ?? null,
+                       abs: abs(actual.op_margin_pct, target.op_margin_pct), pct: null },
+      fcff:          { target: target.fcff,          actual: actual.fcff ?? null,
+                       abs: abs(actual.fcff, target.fcff), pct: rel(actual.fcff, target.fcff) }
+    },
+    note: 'Abweichungen sind Messwerte, keine Erfolgsnote. Ein Treffer bestaetigt das Modell nicht, ' +
+          'ein Fehlschlag widerlegt es nicht — dazu braucht es mehrere Perioden und Faelle.'
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+// Snapshot-Datensatz bauen (rein, ohne DOM und ohne globales state)
+// ════════════════════════════════════════════════════════════════
+function buildSnapshotRecord(ctx) {
+  const mj = ctx && ctx.masterJson;
+  if (!mj) return null;
+  const now = (ctx.now instanceof Date && isFinite(ctx.now.getTime())) ? ctx.now : new Date();
+  const iso = now.toISOString();
+  const meta = mj.meta || {};
+  const ticker = meta.ticker || 'unbekannt';
+  const name = meta.company_name || meta.name || ticker;
+  const quality   = ctx.quality || null;
+  const valuation = ctx.valuation || null;
+  const synthesis = ctx.synthesis || null;
+  const dataQuality = ctx.dataQuality || null;
+
+  let fi = null;
+  try { fi = buildForecastInputs(mj); } catch (e) { fi = null; }
+
+  // ── Unabhaengige Kopien: ab hier veraendert kein spaeterer Eingriff
+  //    am aktiven Unternehmen diesen Datensatz mehr.
+  const mjCopy = _deepCopyForSnapshot(mj);
+
+  const rec = {
+    id: ctx.id || (Date.now().toString(36) + Math.random().toString(36).slice(2, 6)),
+    ticker, name,
+    timestamp: iso,
+
+    // ── Version des Snapshot-DATENSATZES ──────────────────────
+    _snapshotFormat:             SNAPSHOT_FORMAT_VERSION,
+    // ── Modell-/Schemaversion ─────────────────────────────────
+    _engineVersion:              ENGINE_VERSION,
+    _breakingVersion:            BREAKING_VERSION,
+    _schemaVersion:              SCHEMA_VERSION_APP,
+    _createdWithSecFetchVersion: SEC_FETCH_VERSION,
+    _savedAt:                    iso,
+
+    // ── Datenstand ────────────────────────────────────────────
+    data_vintage: buildSnapshotDataVintage(mj),
+
+    // ── Inputs: roh (Import wie geliefert) und normalisiert ────
+    // inputs_raw bleibt null, wenn kein Rohimport vorliegt — es wird
+    // NICHT ersatzweise das normalisierte Master-JSON eingesetzt.
+    inputs_raw:        _deepCopyForSnapshot(ctx.importedSnapshot || null),
+    // Die normalisierten Inputs liegen genau einmal unter masterJson
+    // (siehe Feldbelegung im Kopfkommentar). Leser gehen ueber
+    // snapshotNormalizedInputs(snap).
+    masterJson:        mjCopy,
+
+    // ── Annahmen ──────────────────────────────────────────────
+    assumptions: _deepCopyForSnapshot((mj.valuation && mj.valuation.assumptions) || null),
+    manualAssumptionFields: _deepCopyForSnapshot(ctx.manualAssumptionFields || []),
+    masterJsonMode: ctx.masterJsonMode ?? null,
+
+    // ── Ergebnisse ────────────────────────────────────────────
+    quality:          _deepCopyForSnapshot(quality),
+    valuation:        _deepCopyForSnapshot(valuation),
+    synthesis:        _deepCopyForSnapshot(synthesis),
+    dataQuality:      _deepCopyForSnapshot(dataQuality),
+    qualityOverrides: _deepCopyForSnapshot(ctx.qualityOverrides || []),
+    baseRateWarnings: _deepCopyForSnapshot(ctx.baseRateWarnings || []),
+
+    // ── Aktienbasis ───────────────────────────────────────────
+    share_basis: buildSnapshotShareBasis(mj, fi),
+
+    // ── Regelwerk und Zufallsstartwert ────────────────────────
+    rule_version:     SYNTHESIS_CONFIG.rule_version,
+    synthesis_config: _deepCopyForSnapshot(SYNTHESIS_CONFIG),
+    mc_config:        _deepCopyForSnapshot(MC_CONFIG),
+    random_seed:      MC_CONFIG.seed,
+    rng:              MC_CONFIG.rng,
+
+    // ── Prognoseziele fuer den spaeteren Soll-Ist-Vergleich ────
+    forecast_targets: _deepCopyForSnapshot(buildSnapshotForecastTargets(mj, valuation)),
+
+    // ── Kennzahlen und Signale ────────────────────────────────
+    key_inputs: buildSnapshotKeyInputs(mj),
+    output_signals: {
+      verdict:            quality && quality.verdict,
+      buyPrice:           synthesis && synthesis.buyPrice,
+      deepValuePrice:     synthesis && synthesis.deepValuePrice,
+      position:           synthesis && synthesis.position,
+      range_conservative: synthesis && synthesis.range && synthesis.range.conservative,
+      range_base:         synthesis && synthesis.range && synthesis.range.base,
+      range_optimistic:   synthesis && synthesis.range && synthesis.range.optimistic,
+      mos_total:          synthesis && synthesis.mosComponents && synthesis.mosComponents.total,
+      model_agreement:    synthesis && synthesis.modelAgreement,
+      uncertainty_ratio:  synthesis && synthesis.uncertaintyRatio,
+      active_models:      synthesis && synthesis.activeModelsCount
+    },
+
+    // ── Kursvergleich (frueher "Forward-Check") ────────────────
+    // Reiner Kursvergleich ab Snapshot-Zeitpunkt. Kein Backtest und
+    // keine Pruefung der Geschaeftsprognose — siehe _priceComparisonBlock.
+    _fc: {
+      ticker:             ticker,
+      date:               iso.slice(0, 10),
+      price:              mj.market && mj.market.price,
+      price_as_of_date:   (mj.market && mj.market.price_as_of_date) || meta.as_of_date || null,
+      verdict:            quality && quality.verdict,
+      position:           synthesis && synthesis.position,
+      range_conservative: synthesis && synthesis.range && synthesis.range.conservative,
+      range_base:         synthesis && synthesis.range && synthesis.range.base,
+      buyPrice:           synthesis && synthesis.buyPrice,
+      deepValuePrice:     synthesis && synthesis.deepValuePrice,
+      dataQuality:        dataQuality && dataQuality.label,
+      dataQualityScore:   dataQuality && dataQuality.score,
+      qceScore:           quality && quality.qceScore && quality.qceScore.total,
+      topWarnings:        (quality && Array.isArray(quality.hardStops))
+                            ? quality.hardStops.filter(h => h.triggered && !h.overridden).map(h => h.name).slice(0, 5)
+                            : [],
+      kind:               'price_comparison'
+    }
+  };
+  return rec;
+}
+
+// ════════════════════════════════════════════════════════════════
+// Anzeige: "damals gespeichert" vs. "mit aktuellem Modell gerechnet"
+// ════════════════════════════════════════════════════════════════
+// Beides ist strikt getrennt. readSnapshotStoredResult liefert NUR das
+// damals Gespeicherte. recomputeSnapshotWithCurrentModel rechnet die
+// alten Inputs mit dem heutigen Modell neu — auf einer eigenen Kopie,
+// und gibt das Ergebnis ZURUECK, statt den Snapshot zu ueberschreiben.
+
+function readSnapshotStoredResult(snap) {
+  if (!snap) return null;
+  const q = snap.quality ?? snap.qualityV3 ?? null;
+  const s = snap.synthesis ?? snap.synthesisV3 ?? null;
+  const v = snap.valuation ?? snap.valuationV3 ?? null;
+  return {
+    origin: 'stored',
+    label: 'Damals gespeichertes Ergebnis',
+    snapshotId: snap.id || null,
+    savedAt: snap._savedAt || snap.timestamp || null,
+    engineVersion: snap._engineVersion || null,
+    breakingVersion: snap._breakingVersion || null,
+    snapshotFormat: snap._snapshotFormat || 1,
+    quality: q, synthesis: s, valuation: v,
+    output_signals: snap.output_signals || null,
+    forecast_targets: snap.forecast_targets || null
+  };
+}
+
+function recomputeSnapshotWithCurrentModel(snap) {
+  const stored = readSnapshotStoredResult(snap);
+  const base = { origin: 'recomputed', label: 'Neu berechnet mit aktuellem Modell (v' + ENGINE_VERSION + ')',
+    snapshotId: (snap && snap.id) || null, engineVersion: ENGINE_VERSION, breakingVersion: BREAKING_VERSION,
+    stored: stored, quality: null, synthesis: null, valuation: null, error: null };
+  const src = snapshotNormalizedInputs(snap);
+  if (!src) return Object.assign(base, { error: 'Snapshot enthaelt keine gespeicherten Inputs — keine Neuberechnung moeglich.' });
+
+  // Eigene Arbeitskopie: die Neuberechnung fasst den Snapshot nicht an.
+  const mj = _deepCopyForSnapshot(src);
+  try {
+    if (mj.schema_version !== SCHEMA_VERSION_APP) { migrateV3toV4(mj); }
+    _enrichLegacyMeta(mj);
+    applyDerivedFieldsV4(mj);
+    normalizeSharesInPlace(mj);
+    applyDerivedFieldsV4(mj);
+    applyAutoDividendClassification(mj);
+    validateMasterJsonV4(mj);
+    applyConservativeHeuristics(mj);
+    const quality   = runQualityEngine(mj);
+    const valuation = runValuationEngine(mj);
+    const synthesis = runFairValueSynthesizer(mj, valuation, quality, SYNTHESIS_CONFIG);
+    return Object.assign(base, {
+      masterJson: mj, quality, valuation, synthesis,
+      forecast_targets: buildSnapshotForecastTargets(mj, valuation),
+      output_signals: {
+        verdict: quality && quality.verdict,
+        buyPrice: synthesis && synthesis.buyPrice,
+        deepValuePrice: synthesis && synthesis.deepValuePrice,
+        position: synthesis && synthesis.position,
+        range_base: synthesis && synthesis.range && synthesis.range.base
+      }
+    });
+  } catch (e) {
+    return Object.assign(base, { error: 'Neuberechnung fehlgeschlagen: ' + ((e && e.message) || String(e)) });
+  }
+}
+
+// Gegenueberstellung beider Sichten — ohne eine davon zu ersetzen.
+function compareStoredVsRecomputed(snap) {
+  const rec = recomputeSnapshotWithCurrentModel(snap);
+  const st  = rec.stored;
+  const so  = (st && st.output_signals) || {};
+  const ro  = rec.output_signals || {};
+  const d = (a, b) => (a != null && b != null && isFinite(a) && isFinite(b)) ? (b - a) : null;
+  return {
+    stored: st,
+    recomputed: rec,
+    engineChanged: (st && st.engineVersion) ? (st.engineVersion !== ENGINE_VERSION) : true,
+    error: rec.error,
+    deltas: rec.error ? null : {
+      buyPrice:   { stored: so.buyPrice ?? null,   recomputed: ro.buyPrice ?? null,   diff: d(so.buyPrice, ro.buyPrice) },
+      range_base: { stored: so.range_base ?? null, recomputed: ro.range_base ?? null, diff: d(so.range_base, ro.range_base) },
+      verdict:    { stored: so.verdict ?? null,    recomputed: ro.verdict ?? null },
+      position:   { stored: so.position ?? null,   recomputed: ro.position ?? null }
+    },
+    note: 'Das gespeicherte Ergebnis bleibt unveraendert. Die Neuberechnung ist eine zusaetzliche Sicht, ' +
+          'kein Ersatz — sie wird nicht in den Snapshot zurueckgeschrieben.'
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+// Export / Import mit Versionspruefung und nachvollziehbarer Migration
+// ════════════════════════════════════════════════════════════════
+function buildSnapshotExportBundle(snaps, now) {
+  const list = Array.isArray(snaps) ? snaps : [];
+  const ts = (now instanceof Date && isFinite(now.getTime())) ? now : new Date();
+  return {
+    _kind:            SNAPSHOT_EXPORT_KIND,
+    _snapshotFormat:  SNAPSHOT_FORMAT_VERSION,
+    _engineVersion:   ENGINE_VERSION,
+    _breakingVersion: BREAKING_VERSION,
+    _schemaVersion:   SCHEMA_VERSION_APP,
+    exported_at:      ts.toISOString(),
+    count:            list.length,
+    snapshots:        _deepCopyForSnapshot(list)
+  };
+}
+
+// Migriert EINEN Datensatz auf SNAPSHOT_FORMAT_VERSION und protokolliert
+// jeden Schritt. Nichts wird still umgedeutet; was fehlt, bleibt null.
+function migrateSnapshotRecord(snap) {
+  const steps = [];
+  if (!snap || typeof snap !== 'object' || Array.isArray(snap)) {
+    return { ok: false, snapshot: null, steps: [], error: 'Eintrag ist kein Snapshot-Objekt.' };
+  }
+  const out = _deepCopyForSnapshot(snap);
+  const from = (typeof out._snapshotFormat === 'number' && isFinite(out._snapshotFormat))
+    ? out._snapshotFormat : 1;
+  if (from > SNAPSHOT_FORMAT_VERSION) {
+    return { ok: false, snapshot: null, steps: [],
+      error: 'Snapshot-Format ' + from + ' ist neuer als das bekannte Format ' +
+             SNAPSHOT_FORMAT_VERSION + ' — wird nicht geraten und nicht importiert.' };
+  }
+  if (from < 2) {
+    // 1 → 2: kanonische Ergebnisschluessel fuellen, Datenstand/Aktienbasis/
+    // Prognoseziele als "nicht vorhanden" ausweisen statt zu erfinden.
+    if (out.quality == null && out.qualityV3 != null) { out.quality = out.qualityV3; steps.push('qualityV3 → quality'); }
+    if (out.valuation == null && out.valuationV3 != null) { out.valuation = out.valuationV3; steps.push('valuationV3 → valuation'); }
+    if (out.synthesis == null && out.synthesisV3 != null) { out.synthesis = out.synthesisV3; steps.push('synthesisV3 → synthesis'); }
+    if (out.qualityOverrides == null && out.qualityV3Overrides != null) { out.qualityOverrides = out.qualityV3Overrides; steps.push('qualityV3Overrides → qualityOverrides'); }
+    if (out.inputs_raw === undefined) { out.inputs_raw = out.importedSnapshot ?? null; steps.push('importedSnapshot → inputs_raw (null wenn kein Rohimport)'); }
+    if (out.data_vintage == null) {
+      out.data_vintage = out.masterJson ? buildSnapshotDataVintage(out.masterJson) : null;
+      steps.push(out.data_vintage ? 'data_vintage aus gespeichertem Master-JSON nachgetragen'
+                                  : 'data_vintage nicht ableitbar — bleibt null');
+    }
+    if (out.share_basis == null) {
+      let fi = null;
+      try { fi = out.masterJson ? buildForecastInputs(out.masterJson) : null; } catch (e) { fi = null; }
+      out.share_basis = out.masterJson ? buildSnapshotShareBasis(out.masterJson, fi) : null;
+      steps.push(out.share_basis ? 'share_basis aus gespeichertem Master-JSON nachgetragen'
+                                 : 'share_basis nicht ableitbar — bleibt null');
+    }
+    if (out.forecast_targets == null) {
+      // Bewusst NICHT mit dem heutigen Modell nachgerechnet: das waeren
+      // keine damals prognostizierten Ziele.
+      out.forecast_targets = { available: false, years: [], target_periods_known: false,
+        reason: 'Dieser Snapshot stammt aus Format 1 und enthielt keine Prognoseziele. ' +
+                'Sie werden nicht nachtraeglich mit dem heutigen Modell erzeugt.' };
+      steps.push('forecast_targets fehlen (Format 1) — als "nicht vorhanden" markiert, nicht nachgerechnet');
+    }
+    if (out.random_seed === undefined) {
+      out.random_seed = (out.mc_config && out.mc_config.seed != null) ? out.mc_config.seed : null;
+      steps.push(out.random_seed != null ? 'random_seed aus mc_config uebernommen' : 'random_seed unbekannt — bleibt null');
+    }
+    if (out._fc && out._fc.kind === undefined) { out._fc.kind = 'price_comparison'; steps.push('_fc als Kursvergleich gekennzeichnet'); }
+    out._snapshotFormat = 2;
+    out._migratedFrom = from;
+    steps.push('Format ' + from + ' → 2');
+  }
+  return { ok: true, snapshot: out, steps: steps, error: null, fromFormat: from };
+}
+
+// Nimmt den GEPARSTEN Inhalt einer Importdatei entgegen (Huelle oder
+// blankes Array) und liefert gepruefte, migrierte Datensaetze samt
+// nachvollziehbarem Protokoll. Wirft nicht.
+function parseSnapshotImportPayload(raw) {
+  const res = { ok: false, snapshots: [], sourceFormat: null, sourceEngineVersion: null,
+                migrations: [], warnings: [], errors: [], rejected: 0 };
+  if (raw == null) { res.errors.push('Leere Datei.'); return res; }
+
+  let list = null;
+  if (Array.isArray(raw)) {
+    // Format-1-Export: blankes Array ohne Huelle.
+    list = raw;
+    res.sourceFormat = 1;
+    res.warnings.push('Datei ohne Versionshuelle — als Snapshot-Format 1 (bis V1.0.43) gelesen.');
+  } else if (typeof raw === 'object') {
+    if (raw._kind && raw._kind !== SNAPSHOT_EXPORT_KIND) {
+      res.errors.push('Fremdes Dateiformat "' + String(raw._kind) + '" — erwartet "' + SNAPSHOT_EXPORT_KIND + '".');
+      return res;
+    }
+    if (!Array.isArray(raw.snapshots)) {
+      res.errors.push('Datei enthaelt kein Feld "snapshots" mit einer Liste.');
+      return res;
+    }
+    list = raw.snapshots;
+    res.sourceFormat = (typeof raw._snapshotFormat === 'number' && isFinite(raw._snapshotFormat))
+      ? raw._snapshotFormat : 1;
+    res.sourceEngineVersion = raw._engineVersion || null;
+    if (res.sourceFormat > SNAPSHOT_FORMAT_VERSION) {
+      res.errors.push('Datei-Format ' + res.sourceFormat + ' ist neuer als das bekannte Format ' +
+        SNAPSHOT_FORMAT_VERSION + '. Der Import wird abgelehnt, statt Felder zu raten. ' +
+        'Bitte eine neuere Version des Tools verwenden.');
+      return res;
+    }
+    if (raw._engineVersion && raw._engineVersion !== ENGINE_VERSION) {
+      res.warnings.push('Export stammt aus Engine ' + raw._engineVersion + ' (hier: ' + ENGINE_VERSION +
+        ') — gespeicherte Ergebnisse bleiben unveraendert und werden NICHT neu gerechnet.');
+    }
+    if (raw._breakingVersion && !COMPATIBLE_BREAKING_VERSIONS.includes(raw._breakingVersion)) {
+      res.warnings.push('Export stammt aus Breaking-Version ' + raw._breakingVersion +
+        ' (kompatibel: ' + COMPATIBLE_BREAKING_VERSIONS.join(', ') + ') — Snapshots werden importiert, ' +
+        'aber beim Laden als inkompatibel gekennzeichnet.');
+    }
+  } else {
+    res.errors.push('Unerwarteter Dateiinhalt (weder Liste noch Objekt).');
+    return res;
+  }
+
+  for (let i = 0; i < list.length; i++) {
+    const m = migrateSnapshotRecord(list[i]);
+    if (!m.ok) {
+      res.rejected++;
+      res.errors.push('Eintrag ' + (i + 1) + ' abgelehnt: ' + m.error);
+      continue;
+    }
+    res.snapshots.push(m.snapshot);
+    if (m.steps.length) {
+      res.migrations.push({ index: i, id: m.snapshot.id || null, fromFormat: m.fromFormat, steps: m.steps });
+    }
+  }
+  res.ok = res.snapshots.length > 0 || (list.length === 0 && res.errors.length === 0);
+  if (list.length === 0) res.warnings.push('Datei enthaelt keine Snapshots.');
+  return res;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -18574,79 +19288,45 @@ function buildSnapshotKeyInputs(mj) {
 }
 
 function saveSnapshot() {
-  if (!state.masterJson) { alert('Kein Master-JSON geladen.'); return; }
+  if (!state.masterJson) {
+    alert('Kein Master-JSON geladen.');
+    return { ok: false, code: 'no_master_json', message: 'Kein Master-JSON geladen.' };
+  }
+  // Ein Fehler beim Erzeugen des Datensatzes darf nicht als unbehandelte
+  // Ausnahme aus dem Klick-Handler fallen — sonst bliebe der Fehlschlag
+  // wieder unsichtbar.
+  let rec = null, buildErr = null;
+  try {
+    rec = buildSnapshotRecord({
+      masterJson:             state.masterJson,
+      quality:                state.quality,
+      valuation:              state.valuation,
+      synthesis:              state.synthesis,
+      dataQuality:            state.dataQuality,
+      qualityOverrides:       state.qualityOverrides,
+      importedSnapshot:       state.importedSnapshot,
+      masterJsonMode:         state.masterJsonMode,
+      manualAssumptionFields: Array.from(state.manualAssumptionFields || []),
+      baseRateWarnings:       state.baseRateWarnings || [],
+      id:                     Date.now().toString(36)
+    });
+  } catch (e) { buildErr = (e && e.message) || String(e); rec = null; }
+  if (!rec) {
+    const res = { ok: false, code: 'build_failed',
+      message: 'Snapshot-Datensatz liess sich nicht erzeugen' + (buildErr ? (': ' + buildErr) : '.') };
+    _renderSnapshotStoreStatus(res);
+    return res;
+  }
+  // Ab hier ist `rec` eine unabhaengige Kopie: spaetere Aenderungen am
+  // aktiven Unternehmen erreichen ihn nicht mehr.
   const snaps = loadSnapshots();
-  const mj = state.masterJson;
-  const ticker = (mj.meta && mj.meta.ticker) || 'unbekannt';
-  const name = (mj.meta && (mj.meta.company_name || mj.meta.name)) || ticker;
-  const v = mj.valuation || {};
-  const wc = v.wacc_components || {};
-  const f = mj.fundamentals || {};
-
-  snaps.push({
-    id: Date.now().toString(36),
-    ticker, name,
-    timestamp: new Date().toISOString(),
-    // ── Snapshot-Reproducibility ──────────────────────────────────
-    _engineVersion:            ENGINE_VERSION,
-    _breakingVersion:          BREAKING_VERSION,
-    _schemaVersion:            SCHEMA_VERSION_APP,
-    _createdWithSecFetchVersion: SEC_FETCH_VERSION,
-    _savedAt:                  new Date().toISOString(),
-    // ─────────────────────────────────────────────────────────────
-    masterJson: mj,
-    qualityV3: state.quality,       // Key bleibt qualityV3 für Abwärtskompatibilität mit alten Snapshots
-    valuationV3: state.valuation,   // Key bleibt valuationV3 für Abwärtskompatibilität
-    synthesisV3: state.synthesis,   // Key bleibt synthesisV3 für Abwärtskompatibilität
-    qualityV3Overrides: state.qualityOverrides, // Key bleibt für Abwärtskompatibilität
-    masterJsonMode: state.masterJsonMode,
-    importedSnapshot: state.importedSnapshot,
-    manualAssumptionFields: Array.from(state.manualAssumptionFields || []),
-    baseRateWarnings: state.baseRateWarnings || [],
-    // ── Backtesting-Hook ──
-    rule_version: SYNTHESIS_CONFIG.rule_version,
-    synthesis_config: JSON.parse(JSON.stringify(SYNTHESIS_CONFIG)),
-    // V1.0.42: der Zufallsstartwert der Simulation wird MIT dem Snapshot
-    // gespeichert. Damit bleibt nachvollziehbar, mit welchem Startwert und
-    // welcher Laufzahl die gespeicherte Auswertung gerechnet wurde — auch
-    // wenn der Programmwert spaeter geaendert wird.
-    mc_config: JSON.parse(JSON.stringify(MC_CONFIG)),
-    // V11.11: key_inputs über buildSnapshotKeyInputs (testbar, zentral)
-    key_inputs: buildSnapshotKeyInputs(mj),
-    output_signals: {
-      verdict: state.quality && state.quality.verdict,
-      buyPrice: state.synthesis && state.synthesis.buyPrice,
-      deepValuePrice: state.synthesis && state.synthesis.deepValuePrice,
-      position: state.synthesis && state.synthesis.position,
-      range_conservative: state.synthesis && state.synthesis.range && state.synthesis.range.conservative,
-      range_base: state.synthesis && state.synthesis.range && state.synthesis.range.base,
-      range_optimistic: state.synthesis && state.synthesis.range && state.synthesis.range.optimistic,
-      mos_total: state.synthesis && state.synthesis.mosComponents && state.synthesis.mosComponents.total,
-      model_agreement: state.synthesis && state.synthesis.modelAgreement,
-      uncertainty_ratio: state.synthesis && state.synthesis.uncertaintyRatio,
-      active_models: state.synthesis && state.synthesis.activeModelsCount
-    },
-    // ── V1.0.34: Forward-Check Felder ──────────────────────────────
-    _fc: {
-      ticker:             ticker,
-      date:               new Date().toISOString().slice(0,10),
-      price:              mj.market && mj.market.price,
-      verdict:            state.quality && state.quality.verdict,
-      position:           state.synthesis && state.synthesis.position,
-      range_conservative: state.synthesis && state.synthesis.range && state.synthesis.range.conservative,
-      range_base:         state.synthesis && state.synthesis.range && state.synthesis.range.base,
-      buyPrice:           state.synthesis && state.synthesis.buyPrice,
-      deepValuePrice:     state.synthesis && state.synthesis.deepValuePrice,
-      dataQuality:        state.dataQuality && state.dataQuality.label,
-      dataQualityScore:   state.dataQuality && state.dataQuality.score,
-      qceScore:           state.quality && state.quality.qceScore && state.quality.qceScore.total,
-      topWarnings:        (state.quality && state.quality.hardStops
-                            ? state.quality.hardStops.filter(h => h.triggered && !h.overridden).map(h => h.name).slice(0,5)
-                            : [])
-    }
-  });
-  storeSnapshots(snaps);
+  snaps.push(rec);
+  const res = storeSnapshots(snaps);
+  // Die Liste wird IMMER aus dem tatsaechlich gespeicherten Stand neu
+  // gezeichnet — nach einem Fehlschlag erscheint der Snapshot also nicht.
   renderSnapshots();
+  _renderSnapshotStoreStatus(res);
+  return res;
 }
 
 // ── Delta/Post-Mortem Helpers ─────────────────────────────────────
@@ -18703,25 +19383,35 @@ function _postMortemLine(snap) {
     const vsBase = snapBase ? (curPrice - snapBase) / snapBase * 100 : null;
     const gainSign = pct >= 0 ? '+' : '';
     const gainColor = pct >= 0 ? 'var(--accent2)' : 'var(--danger)';
+    // V1.0.44: Die Einordnung beschreibt nur, WO der Kurs relativ zu den
+    // damals gespeicherten Schwellen steht. Kein Haken, kein Erfolgsurteil —
+    // ein Kurs über dem Base-FV bestätigt die Geschäftsprognose nicht.
     let thesis = '';
-    if (curPrice <= snapBP * 1.05) thesis = `<span style="color:var(--warn)">⟳ Kurs noch nahe am Buy Price</span>`;
-    else if (vsBase != null && curPrice >= snapBase * 0.90) thesis = `<span style="color:var(--accent2)">✓ Kurs nahe/über Base FV</span>`;
-    else thesis = `<span style="color:var(--info)">→ Kurs über BP, unter Base FV</span>`;
+    if (curPrice <= snapBP * 1.05) thesis = `<span style="color:var(--muted)">Kurs noch nahe am Buy Price</span>`;
+    else if (vsBase != null && curPrice >= snapBase * 0.90) thesis = `<span style="color:var(--muted)">Kurs nahe/über Base FV</span>`;
+    else thesis = `<span style="color:var(--muted)">Kurs über BP, unter Base FV</span>`;
     review = `<div class="txt-diagnostic" style="margin-top:4px">
-      Post-Mortem: Kurs damals ${snapPrice.toFixed(2)} → heute <span style="color:var(--text)">${curPrice.toFixed(2)}</span>
+      Kursvergleich: Kurs damals ${snapPrice.toFixed(2)} → heute <span style="color:var(--text)">${curPrice.toFixed(2)}</span>
       (<span style="color:${gainColor}">${gainSign}${pct.toFixed(1)}%</span>) · ${thesis}
+      <span style="color:var(--muted)">— reine Kursentwicklung, keine Bestätigung der Prognose</span>
     </div>`;
   } else {
     review = `<div class="txt-diagnostic" style="margin-top:4px">
-      Post-Mortem: Kurs damals ${snapPrice.toFixed(2)} · BP ${snapBP.toFixed(2)} · (aktueller Kurs: lade JSON für ${escapeHtml(snap.ticker)})
+      Kursvergleich: Kurs damals ${snapPrice.toFixed(2)} · BP ${snapBP.toFixed(2)} · (aktueller Kurs: lade JSON für ${escapeHtml(snap.ticker)})
     </div>`;
   }
   return review;
 }
-// ── V1.0.34: Forward-Check Block ─────────────────────────────────────────────
-// Zeigt Rendite und Tage seit Snapshot-Zeitpunkt.
+// ── Kursvergleich (bis V1.0.43 „Forward-Check" genannt) ─────────────────────
+// V1.0.44: Der Block ist ausdrücklich ein KURSVERGLEICH und nichts weiter.
+// Er stellt den Kurs am Snapshot-Tag dem heutigen Kurs gegenüber. Ein
+// höherer Kurs bestätigt KEINE Geschäftsprognose: er sagt nichts darüber,
+// ob die prognostizierten Umsätze, Margen oder FCFF eingetreten sind.
+// Dafür ist der Soll-Ist-Vergleich der forecast_targets zuständig
+// (compareSnapshotForecastToActual), der ohne vergleichbare Perioden
+// bewusst KEIN Urteil abgibt.
 // Aktueller Kurs: aus geladener Aktie (wenn Ticker übereinstimmt), sonst „nicht berechenbar".
-function _forwardCheckBlock(snap) {
+function _priceComparisonBlock(snap) {
   const fc = snap._fc;
   if (!fc || !fc.price) return ''; // Legacy-Snapshot ohne _fc: kein Block
 
@@ -18761,6 +19451,7 @@ function _forwardCheckBlock(snap) {
 
   // Rendite
   let renditeHtml = '<span style="color:var(--muted);font-style:italic">nicht berechenbar — lade JSON für ' + escapeHtml(fc.ticker) + '</span>';
+  // Bewusst wertfrei: die Kursveränderung wird gezeigt, nicht bewertet.
   if (curPrice != null) {
     const pct = (curPrice - snapPrice) / snapPrice * 100;
     const sign  = pct >= 0 ? '+' : '';
@@ -18775,7 +19466,7 @@ function _forwardCheckBlock(snap) {
     const changed = curVerdict !== snapVerdict || curPosition !== snapPosition;
     verdictCompareHtml = `
       <tr>
-        <td class="txt-caption" style="color:var(--muted);padding:2px 6px 2px 0;white-space:nowrap">Verdict damals\u2192jetzt</td>
+        <td class="txt-caption" style="color:var(--muted);padding:2px 6px 2px 0;white-space:nowrap">Einstufung damals\u2192jetzt</td>
         <td style="padding:2px 0;font-size:.68rem">
           ${escapeHtml(snapVerdict)}/${escapeHtml(snapPosition)}
           <span style="color:var(--muted)">\u2192</span>
@@ -18788,8 +19479,8 @@ function _forwardCheckBlock(snap) {
   return `
     <div class="snap-fc-block" style="margin-top:8px;padding:8px 10px;background:var(--dim);border-radius:6px;border-left:3px solid var(--info);font-size:.68rem;line-height:1.6">
       <div style="font-size:.58rem;text-transform:uppercase;letter-spacing:.07em;color:var(--info);margin-bottom:5px;font-weight:600">
-        \uD83D\uDCC8 Forward-Check
-        <span style="font-weight:400;color:var(--muted);text-transform:none;letter-spacing:0;margin-left:6px">Kein wissenschaftlicher Backtest. Nur eigener Forward-Check ab gespeicherten Snapshots.</span>
+        \uD83D\uDCC8 Kursvergleich
+        <span style="font-weight:400;color:var(--muted);text-transform:none;letter-spacing:0;margin-left:6px">Nur Kursentwicklung seit dem Snapshot — kein Backtest und keine Bestätigung der Geschäftsprognose. Ein höherer Kurs sagt nicht, dass Umsatz, Marge oder FCFF wie prognostiziert eingetreten sind.</span>
       </div>
       <table style="width:100%;border-collapse:collapse">
         <tr>
@@ -18801,7 +19492,7 @@ function _forwardCheckBlock(snap) {
           <td style="padding:2px 0;font-size:.68rem">${daysHtml}</td>
         </tr>
         <tr>
-          <td class="txt-caption" style="color:var(--muted);padding:2px 6px 2px 0;white-space:nowrap">Rendite (Kurs)</td>
+          <td class="txt-caption" style="color:var(--muted);padding:2px 6px 2px 0;white-space:nowrap">Kursveränderung</td>
           <td style="padding:2px 0;font-size:.68rem">${renditeHtml}</td>
         </tr>
         ${verdictCompareHtml}
@@ -18830,6 +19521,9 @@ function _forwardCheckBlock(snap) {
       </table>
     </div>`;
 }
+
+// Altname bleibt als Alias erhalten (bestehende Aufrufer und T-FWDCHECK1).
+function _forwardCheckBlock(snap) { return _priceComparisonBlock(snap); }
 
 function renderSnapshots() {
   const list = g('snap-list');
@@ -18935,7 +19629,8 @@ function renderSnapshots() {
             <div class="smeta">${escapeHtml(date)} · ${escapeHtml(verdict)} · ${escapeHtml(position)} · BP ${bp}${dvp ? ' · DVP ' + dvp : ''}${snapPrice ? ' · ' + snapPrice.toFixed(2) + ' Kurs' : ''}</div>
           </div>
           <div class="snap-actions" style="flex-shrink:0;margin-left:10px">
-            <button onclick="loadSnapshot('${s.id}')">Laden</button>
+            <button onclick="loadSnapshot('${s.id}')" title="Zeigt das damals gespeicherte Ergebnis unverändert an.">Gespeichertes Ergebnis</button>
+            <button onclick="loadSnapshotWithCurrentModel('${s.id}')" title="Rechnet die damals gespeicherten Inputs mit dem heutigen Modell neu. Der Snapshot bleibt unverändert.">Neu rechnen (aktuelles Modell)</button>
             <button class="del" onclick="deleteSnapshot('${s.id}')">×</button>
           </div>
         </div>
@@ -18945,6 +19640,38 @@ function renderSnapshots() {
       </div>
     `;
   }).join('');
+}
+
+// ── Anforderung 3: zwei ausdrücklich getrennte Wege ──────────────
+// loadSnapshot(id)                  → damals gespeichertes Ergebnis anzeigen
+// loadSnapshotWithCurrentModel(id)  → alte Inputs mit heutigem Modell neu rechnen
+// Der zweite Weg schreibt NICHTS in den Snapshot zurück: das gespeicherte
+// Ergebnis wird nie still überschrieben.
+function loadSnapshotWithCurrentModel(id) {
+  const snaps = loadSnapshots();
+  const s = snaps.find(x => x.id === id);
+  if (!s) return null;
+  const cmp = compareStoredVsRecomputed(s);
+  if (cmp.error) {
+    alert('Neuberechnung nicht möglich: ' + cmp.error + '\n\nDas gespeicherte Ergebnis bleibt unverändert.');
+    return cmp;
+  }
+  const isLegacy = !s._breakingVersion;
+  const isIncompatible = !isLegacy && !COMPATIBLE_BREAKING_VERSIONS.includes(s._breakingVersion);
+  _applySnapshotToState(s, { isLegacy, isIncompatible, useCurrentEngine: true });
+  // Der gespeicherte Stand wird NICHT angefasst — nur die Anzeige wechselt.
+  const d = cmp.deltas || {};
+  const fmt = (x) => (x == null ? '–' : (typeof x === 'number' ? x.toFixed(2) : String(x)));
+  const el = g('import-master-status');
+  if (el) {
+    el.textContent = 'Neu berechnet mit aktuellem Modell (v' + ENGINE_VERSION + '). Gespeichert bleibt: '
+      + 'BP ' + fmt(d.buyPrice && d.buyPrice.stored) + ' / FV Base ' + fmt(d.range_base && d.range_base.stored)
+      + ' · jetzt gerechnet: BP ' + fmt(d.buyPrice && d.buyPrice.recomputed)
+      + ' / FV Base ' + fmt(d.range_base && d.range_base.recomputed)
+      + ' · Der Snapshot wurde nicht verändert.';
+    el.className = 'import-status info';
+  }
+  return cmp;
 }
 
 function loadSnapshot(id) {
@@ -19030,8 +19757,11 @@ function _showSnapshotWarningModal(title, detail, snapId, snap) {
 
 // ── Snapshot-Daten in State übernehmen ───────────────────────────
 function _applySnapshotToState(s, { isLegacy, isIncompatible, useCurrentEngine }) {
-  // Snapshot-MasterJson ggf. auf v4 migrieren (Snapshots können noch v3-Schema haben)
-  const mj = s.masterJson;
+  // V1.0.44: Auf einer EIGENEN Kopie arbeiten. migrateV3toV4, applyDerivedFieldsV4
+  // und eine spätere Neuberechnung verändern das Master-JSON in place; ohne
+  // Kopie liefe das auf dem Datensatz des Snapshots. Der gespeicherte Stand
+  // darf durch das blosse Laden oder Weiterarbeiten nicht wandern.
+  const mj = _deepCopyForSnapshot(snapshotNormalizedInputs(s));
   if (mj && mj.schema_version !== '4.0') {
     migrateV3toV4(mj);
     applyDerivedFieldsV4(mj);
@@ -19041,13 +19771,14 @@ function _applySnapshotToState(s, { isLegacy, isIncompatible, useCurrentEngine }
 
   state.masterJson = mj;
   // Liest neue Keys (quality) mit Fallback auf alte Keys (qualityV3) für bestehende Snapshots
-  state.quality = s.quality ?? s.qualityV3 ?? null;
-  state.valuation = s.valuation ?? s.valuationV3 ?? null;
-  state.synthesis = s.synthesis ?? s.synthesisV3 ?? null;
-  state.qualityOverrides = s.qualityOverrides ?? s.qualityV3Overrides ?? [];
+  state.quality = _deepCopyForSnapshot(s.quality ?? s.qualityV3 ?? null);
+  state.valuation = _deepCopyForSnapshot(s.valuation ?? s.valuationV3 ?? null);
+  state.synthesis = _deepCopyForSnapshot(s.synthesis ?? s.synthesisV3 ?? null);
+  state.qualityOverrides = _deepCopyForSnapshot(s.qualityOverrides ?? s.qualityV3Overrides ?? []);
   state.masterJsonMode = s.masterJsonMode;
   state.lastBuyPriceForDiff = (state.synthesis && state.synthesis.buyPrice) ?? null;
-  state.importedSnapshot = s.importedSnapshot || null;
+  // Format 2 legt den Rohimport unter inputs_raw ab; Format 1 unter importedSnapshot.
+  state.importedSnapshot = _deepCopyForSnapshot(s.inputs_raw ?? s.importedSnapshot ?? null);
   state.manualAssumptionFields = new Set(Array.isArray(s.manualAssumptionFields) ? s.manualAssumptionFields : []);
   state.baseRateWarnings = Array.isArray(s.baseRateWarnings) ? s.baseRateWarnings : [];
 
@@ -19064,7 +19795,7 @@ function _applySnapshotToState(s, { isLegacy, isIncompatible, useCurrentEngine }
     state._usingCurrentEngine = true;
   }
 
-  syncPiotroskiCheckboxes(s.masterJson);
+  syncPiotroskiCheckboxes(mj);
   switchTab('overview');
   _updateGrowthTabVisibility();   // Growth-Tab sichtbar sobald Aktie importiert wurde
   updateTickerBadge();
@@ -19080,8 +19811,10 @@ function _applySnapshotToState(s, { isLegacy, isIncompatible, useCurrentEngine }
 function deleteSnapshot(id) {
   if (!confirm('Snapshot wirklich löschen?')) return;
   const snaps = loadSnapshots().filter(s => s.id !== id);
-  storeSnapshots(snaps);
+  const res = storeSnapshots(snaps);
   renderSnapshots();
+  if (!res.ok) _renderSnapshotStoreStatus(res);
+  return res;
 }
 
 function exportSnapshots() {
@@ -19090,7 +19823,10 @@ function exportSnapshots() {
     alert('Keine Snapshots zu exportieren.');
     return;
   }
-  const blob = new Blob([JSON.stringify(snaps, null, 2)], {type:'application/json'});
+  // Export traegt eine Versionshuelle, damit der Import pruefen kann,
+  // womit die Datei erzeugt wurde (siehe parseSnapshotImportPayload).
+  const bundle = buildSnapshotExportBundle(snaps);
+  const blob = new Blob([JSON.stringify(bundle, null, 2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -19099,7 +19835,7 @@ function exportSnapshots() {
   URL.revokeObjectURL(url);
 }
 
-// ── V1.0.34: CSV-Export der Forward-Check Felder ─────────────────────────────
+// ── CSV-Export der Kursvergleichs-Felder (früher „Forward-Check") ───────────
 function exportSnapshotsCSV() {
   const snaps = loadSnapshots();
   if (snaps.length === 0) { alert('Keine Snapshots zu exportieren.'); return; }
@@ -19152,15 +19888,32 @@ function importSnapshots(event) {
   const reader = new FileReader();
   reader.onload = (e) => {
     try {
-      const imported = JSON.parse(e.target.result);
-      if (!Array.isArray(imported)) throw new Error('Kein Array');
+      const parsedFile = JSON.parse(e.target.result);
+      // Versionspruefung und Migration vor jedem Schreibzugriff.
+      const chk = parseSnapshotImportPayload(parsedFile);
+      if (!chk.ok || chk.errors.length > 0) {
+        alert('Import abgebrochen — nichts wurde gespeichert.\n\n' + chk.errors.join('\n'));
+        return;
+      }
+      const imported = chk.snapshots;
       const existing = loadSnapshots();
       const existingIds = new Set(existing.map(s => s.id || (s.ticker + '|' + s.timestamp)));
       const newOnes = imported.filter(s => !existingIds.has(s.id || (s.ticker + '|' + s.timestamp)));
       const merged = existing.concat(newOnes);
-      storeSnapshots(merged);
+      const res = storeSnapshots(merged);
       renderSnapshots();
-      alert(`${newOnes.length} neue Snapshot(s) importiert (${imported.length - newOnes.length} Duplikat(e) übersprungen).`);
+      _renderSnapshotStoreStatus(res);
+      if (!res.ok) return;   // kein Erfolgsdialog nach fehlgeschlagenem Speichern
+      const lines = [`${newOnes.length} neue Snapshot(s) importiert (${imported.length - newOnes.length} Duplikat(e) übersprungen).`];
+      lines.push(`Quellformat: ${chk.sourceFormat}` + (chk.sourceEngineVersion ? ` · Engine ${chk.sourceEngineVersion}` : ''));
+      chk.warnings.forEach(w => lines.push('⚠ ' + w));
+      if (chk.migrations.length) {
+        lines.push('');
+        lines.push(`Migration (${chk.migrations.length} Datensatz/-saetze):`);
+        chk.migrations.slice(0, 5).forEach(m => lines.push(`· ${m.id || '(ohne id)'} [Format ${m.fromFormat}]: ${m.steps.join('; ')}`));
+        if (chk.migrations.length > 5) lines.push(`· … ${chk.migrations.length - 5} weitere`);
+      }
+      alert(lines.join('\n'));
     } catch (err) {
       alert('Import fehlgeschlagen: ' + err.message);
     }
@@ -31770,6 +32523,637 @@ function _testSynthesisPrecision() {
       /class="card collapsed"/.test(cardS) && cardS.indexOf('P(FV') < 0
       && /keine empirisch belegte Wahrscheinlichkeit/.test(cardS),
       'html: ' + cardS.slice(0, 200));
+  }
+
+  return results;
+}
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// V1.0.44 — _testSnapshotIntegrity
+// ────────────────────────────────────────────────────────────────────────────
+// Pflichtbereiche des Auftrags "reproduzierbare Bewertungssnapshots":
+//   SN-1  Snapshot-Isolation (Änderungen am aktiven Unternehmen ändern
+//         vorhandene Snapshots nicht — auch nicht im Arbeitsspeicher)
+//   SN-2  Vollständigkeit des Datensatzes (Datenstand, Roh-/normalisierte
+//         Inputs, Annahmen, Ergebnisse, Modell-/Schemaversion, Aktienbasis,
+//         Zufallsstartwert)
+//   SN-3  Speicherfehler sind sichtbar; keine Erfolgsmeldung nach Fehlschlag
+//   SN-4  Export/Import-Roundtrip mit Versionsprüfung
+//   SN-5  Ältere Version (Format 1) — Migration nachvollziehbar, neueres
+//         Format wird abgelehnt statt geraten
+//   SN-6  Trennung "damals gespeichert" vs. "neu berechnet"
+//   SN-7  Prognoseziele im Snapshot; kein automatisches Erfolgsurteil bei
+//         nicht vergleichbaren Perioden
+//   SN-8  Kursvergleich ist als solcher bezeichnet
+// Alle Erwartungswerte sind unabhängig von der Implementierung hergeleitet
+// (siehe Kommentare an den jeweiligen Prüfungen).
+// ════════════════════════════════════════════════════════════════════════════
+function _testSnapshotIntegrity() {
+  const results = [];
+  let _currentSuite = '';
+  function suite(name) { _currentSuite = name; }
+  function check(label, condition, extra) {
+    results.push({ suite: _currentSuite, label, pass: !!condition,
+      extra: extra != null ? String(extra) : undefined });
+  }
+  const approx = (a, b, tol) => a != null && isFinite(a) && Math.abs(a - b) <= (tol != null ? tol : 1e-9);
+
+  // ── Synthetische Aktie ───────────────────────────────────────────────────
+  // Bewusst glatte Zahlen, damit die Prognosewerte per Hand nachrechenbar sind:
+  //   Umsatz_0 = 1000 · EBIT_0 = 200  ⇒ Marge 20 %
+  //   EBITDA_0 = 250                  ⇒ D&A 50    ⇒ D&A-Quote 5 %
+  //   CapEx_0  = 50                   ⇒ CapEx-Quote 5 %
+  //   Steuerquote 25 %
+  // Alle Reihen konstant proportional, damit die Mediane exakt 5 % ergeben.
+  const mkSnapMj = () => ({
+    schema_version: '4.0',
+    meta: { ticker: 'SNAPCO', company_name: 'Snapshot Test Corp',
+            country: 'US', currency: 'USD',
+            as_of_date: '2026-02-15', data_cutoff_date: '2025-12-31',
+            source_primary: 'SEC_EDGAR', sub_classification: 'standard_nonfin',
+            // Marke, um die Master-JSON-Nutzlast im Datensatz exakt zu zaehlen (SN-2b2).
+            _payloadMarker: 'MJ-PAYLOAD-MARKER' },
+    fundamentals: {
+      revenue:              [1000, 900, 800, 700],
+      ebit:                 [200, 180, 160, 140],
+      ebitda:               [250, 225, 200, 175],
+      capex:                [50, 45, 40, 35],
+      cfo:                  [220, 198, 176, 154],
+      operating_cash_flow:  [220, 198, 176, 154],
+      shares_diluted:       [100, 100, 100, 100],
+      total_debt:           [200, 200, 200, 200],
+      cash_and_equivalents: [100, 100, 100, 100],
+      net_income:           [150, 135, 120, 105],
+      eps_diluted:          [1.5, 1.35, 1.2, 1.05],
+      total_equity:         [500, 480, 460, 440],
+      total_assets:         [1200, 1150, 1100, 1050],
+      total_liabilities:    [700, 670, 640, 610],
+      dps:                  [0, 0, 0, 0],
+      sbc:                  [10, 9, 8, 7],
+      _v4_meta: { revenue: { period_type: 'FY', source_reference: '10-K FY2025',
+                             periods: ['2025-12-31', '2024-12-31', '2023-12-31', '2022-12-31'] } }
+    },
+    valuation: {
+      growth_stage1: 8, growth_terminal: 2, wacc_derived: 10, cost_of_equity_derived: 11,
+      wacc_components: { risk_free: 4, equity_risk_premium: 5, beta: 1.0, tax_rate: 25 },
+      fade: { enabled: false },
+      assumptions: { note: 'synthetische Annahmen' }
+    },
+    market: { price: 20, price_as_of_date: '2026-02-14', market_cap: 2000, price_currency: 'USD' },
+    quality_inputs: { piotroski: {} }
+  });
+
+  // Bewertungsergebnis in der Form, die buildSnapshotForecastTargets erwartet.
+  const mkVal = (g1, tg, wacc, marginPct) => ({
+    error: null,
+    scenarios: {
+      base:         { growth_stage1: g1, terminal_growth: tg, wacc: wacc, op_margin_pct: marginPct },
+      conservative: { growth_stage1: g1 - 2, terminal_growth: tg, wacc: wacc + 1, op_margin_pct: marginPct },
+      optimistic:   { growth_stage1: g1 + 2, terminal_growth: tg, wacc: wacc - 1, op_margin_pct: marginPct }
+    },
+    router: { activeModels: ['dcf'], subClassification: 'standard_nonfin' },
+    modelResults: {}
+  });
+
+  const mkCtx = (mj, extra) => Object.assign({
+    masterJson: mj,
+    quality:   { verdict: 'investable_high', qceScore: { total: 8 }, hardStops: [] },
+    valuation: mkVal(8, 2, 10, 20),
+    synthesis: { buyPrice: 17.25, deepValuePrice: 13.8, position: 'buy',
+                 range: { conservative: 18, base: 23, optimistic: 28 },
+                 mosComponents: { total: 25 }, modelAgreement: 0.9,
+                 uncertaintyRatio: 0.3, activeModelsCount: 2 },
+    dataQuality: { label: 'gut', score: 8.4 },
+    qualityOverrides: [],
+    importedSnapshot: { raw_note: 'Rohimport wie geliefert', revenue_raw: [1000, 900] },
+    masterJsonMode: 'import',
+    manualAssumptionFields: ['as-wacc'],
+    baseRateWarnings: [],
+    id: 'snapfix1',
+    now: new Date('2026-03-01T12:00:00.000Z')
+  }, extra || {});
+
+  // localStorage sauber halten (Runner und Browser).
+  const _clearSnaps = () => { try { localStorage.removeItem(SNAP_KEY); } catch (e) {} };
+
+  // ═══════════════════════════════════════════════════════════════════════
+  suite('SN-1: Snapshot-Isolation');
+  {
+    const mj = mkSnapMj();
+    const ctx = mkCtx(mj);
+    const rec = buildSnapshotRecord(ctx);
+
+    check('SN-1a: Snapshot wurde erzeugt', !!rec, String(rec));
+    // Der Datensatz darf NICHT dasselbe Objekt sein wie das aktive Master-JSON.
+    check('SN-1b: masterJson ist eine eigene Kopie, keine Referenz',
+      rec.masterJson !== mj && snapshotNormalizedInputs(rec) !== mj);
+    check('SN-1c: verschachtelte Felder sind eigene Kopien',
+      rec.masterJson.fundamentals !== mj.fundamentals &&
+      rec.masterJson.fundamentals.revenue !== mj.fundamentals.revenue);
+
+    // Ausgangswerte festhalten (unabhängig notiert, nicht aus rec gelesen).
+    check('SN-1d: Kopie trägt die Ausgangswerte (Ticker SNAPCO, Umsatz 1000, Kurs 20)',
+      rec.masterJson.meta.ticker === 'SNAPCO' &&
+      rec.masterJson.fundamentals.revenue[0] === 1000 &&
+      rec.masterJson.market.price === 20,
+      rec.masterJson.meta.ticker + '/' + rec.masterJson.fundamentals.revenue[0] + '/' + rec.masterJson.market.price);
+
+    // ── Nachträgliche Änderungen am aktiven Unternehmen ──
+    mj.meta.ticker = 'GEAENDERT';
+    mj.fundamentals.revenue[0] = 999999;
+    mj.fundamentals.ebit.push(1);
+    mj.market.price = 1.11;
+    mj.valuation.assumptions.note = 'nachträglich geändert';
+    ctx.synthesis.buyPrice = 0.01;
+    ctx.quality.verdict = 'not_investable';
+
+    check('SN-1e: Ticker im Snapshot unverändert',    rec.masterJson.meta.ticker === 'SNAPCO', rec.masterJson.meta.ticker);
+    check('SN-1f: Umsatz im Snapshot unverändert',    rec.masterJson.fundamentals.revenue[0] === 1000, rec.masterJson.fundamentals.revenue[0]);
+    check('SN-1g: Reihenlänge im Snapshot unverändert', rec.masterJson.fundamentals.ebit.length === 4, rec.masterJson.fundamentals.ebit.length);
+    check('SN-1h: Kurs im Snapshot unverändert',      rec.masterJson.market.price === 20, rec.masterJson.market.price);
+    check('SN-1i: Annahmen im Snapshot unverändert',
+      rec.masterJson.valuation.assumptions.note === 'synthetische Annahmen', rec.masterJson.valuation.assumptions.note);
+    check('SN-1j: Ergebnisse im Snapshot unverändert (BP 17,25 · Verdict)',
+      approx(rec.synthesis.buyPrice, 17.25) && rec.quality.verdict === 'investable_high' &&
+      approx(rec.output_signals.buyPrice, 17.25),
+      rec.synthesis.buyPrice + '/' + rec.quality.verdict);
+    check('SN-1k: inputs_raw ist eigene Kopie des Rohimports',
+      rec.inputs_raw !== ctx.importedSnapshot && rec.inputs_raw.raw_note === 'Rohimport wie geliefert');
+
+    // Umgekehrte Richtung: eine Änderung IM Snapshot darf das aktive
+    // Unternehmen nicht anfassen.
+    rec.masterJson.meta.company_name = 'nur im Snapshot';
+    check('SN-1l: Änderung im Snapshot erreicht das aktive Unternehmen nicht',
+      mj.meta.company_name === 'Snapshot Test Corp', mj.meta.company_name);
+
+    // Zwei Snapshots derselben Aktie sind voneinander unabhängig.
+    const mj2 = mkSnapMj();
+    const recA = buildSnapshotRecord(mkCtx(mj2, { id: 'A' }));
+    mj2.fundamentals.revenue[0] = 1200;
+    const recB = buildSnapshotRecord(mkCtx(mj2, { id: 'B' }));
+    check('SN-1m: zweiter Snapshot sieht den neuen Wert (1200)', recB.masterJson.fundamentals.revenue[0] === 1200, recB.masterJson.fundamentals.revenue[0]);
+    check('SN-1n: erster Snapshot bleibt bei 1000',              recA.masterJson.fundamentals.revenue[0] === 1000, recA.masterJson.fundamentals.revenue[0]);
+
+    // Zirkuläre Verweise dürfen das Speichern nicht sprengen.
+    const mjCyc = mkSnapMj();
+    mjCyc.meta._self = mjCyc;
+    mjCyc.fundamentals._back = mjCyc.fundamentals;
+    let cycRec = null, cycThrew = null;
+    try { cycRec = buildSnapshotRecord(mkCtx(mjCyc, { id: 'cyc' })); } catch (e) { cycThrew = e.message; }
+    check('SN-1o: zirkulärer Verweis wirft nicht', cycThrew === null && !!cycRec, cycThrew);
+    check('SN-1p: Zyklus wird markiert statt zu werfen',
+      cycRec && cycRec.masterJson.meta._self === SNAPSHOT_CYCLE_MARKER, cycRec && cycRec.masterJson.meta._self);
+    let cycSerialisable = false;
+    try { JSON.stringify(cycRec); cycSerialisable = true; } catch (e) { cycSerialisable = false; }
+    check('SN-1q: Snapshot mit Zyklus bleibt serialisierbar', cycSerialisable);
+    // Gegenprobe: ohne die Tiefkopie wäre genau das nicht mehr möglich.
+    let rawThrew = false;
+    try { JSON.stringify({ masterJson: mjCyc }); } catch (e) { rawThrew = true; }
+    check('SN-1r: Gegenprobe — rohe Referenz wäre nicht serialisierbar', rawThrew === true);
+
+    // Mehrfachreferenz OHNE Zyklus darf nicht fälschlich als Zyklus gelten.
+    const shared = { a: 1 };
+    const dbl = _deepCopyForSnapshot({ x: shared, y: shared });
+    check('SN-1s: doppelte Referenz ohne Zyklus wird normal kopiert',
+      dbl.x && dbl.y && dbl.x.a === 1 && dbl.y.a === 1 && dbl.x !== dbl.y,
+      JSON.stringify(dbl));
+    // Set/Date/nicht endliche Zahlen werden JSON-fähig überführt.
+    const conv = _deepCopyForSnapshot({ s: new Set([1, 2]), d: new Date('2026-01-02T03:04:05.000Z'),
+                                        n: NaN, i: Infinity, f: function () {}, u: undefined });
+    check('SN-1t: Set → Array, Date → ISO, NaN/Infinity → null, Funktion/undefined entfallen',
+      Array.isArray(conv.s) && conv.s.length === 2 &&
+      conv.d === '2026-01-02T03:04:05.000Z' &&
+      conv.n === null && conv.i === null &&
+      !('f' in conv) && !('u' in conv),
+      JSON.stringify(conv));
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  suite('SN-2: Vollständigkeit des Snapshot-Datensatzes');
+  {
+    const rec = buildSnapshotRecord(mkCtx(mkSnapMj()));
+    check('SN-2a: Datenstand vorhanden (as_of, cutoff, Kursdatum, Periodenende)',
+      rec.data_vintage && rec.data_vintage.as_of_date === '2026-02-15' &&
+      rec.data_vintage.data_cutoff_date === '2025-12-31' &&
+      rec.data_vintage.price_as_of_date === '2026-02-14' &&
+      rec.data_vintage.latest_period_end === '2025-12-31' &&
+      rec.data_vintage.period_type === 'FY',
+      JSON.stringify(rec.data_vintage));
+    check('SN-2b: Rohinputs und normalisierte Inputs getrennt abrufbar',
+      rec.inputs_raw != null && snapshotNormalizedInputs(rec) != null &&
+      rec.inputs_raw.raw_note === 'Rohimport wie geliefert' &&
+      snapshotNormalizedInputs(rec).fundamentals.revenue[0] === 1000);
+    // Die normalisierten Inputs liegen genau EINMAL im Datensatz. Eine zweite
+    // Kopie waere der groesste Einzelposten und ginge zulasten des knappen
+    // localStorage-Platzes (siehe SN-3).
+    const _marks = JSON.stringify(rec).split('MJ-PAYLOAD-MARKER').length - 1;
+    check('SN-2b2: die Master-JSON-Nutzlast liegt genau einmal im Datensatz',
+      rec.inputs_normalized === undefined && _marks === 1,
+      'Vorkommen der Nutzlast-Marke: ' + _marks);
+    check('SN-2c: Annahmen vorhanden', rec.assumptions && rec.assumptions.note === 'synthetische Annahmen');
+    check('SN-2d: Ergebnisse unter kanonischen Schlüsseln',
+      rec.quality != null && rec.valuation != null && rec.synthesis != null && rec.dataQuality != null);
+    check('SN-2e: Modell-/Schema-/Datensatzversion vorhanden',
+      rec._engineVersion === ENGINE_VERSION && rec._breakingVersion === BREAKING_VERSION &&
+      rec._schemaVersion === SCHEMA_VERSION_APP && rec._snapshotFormat === SNAPSHOT_FORMAT_VERSION,
+      rec._engineVersion + '/' + rec._breakingVersion + '/' + rec._schemaVersion + '/' + rec._snapshotFormat);
+    // Aktienbasis: 100 Mio. Aktien, konstant ⇒ Wachstum 0 %/Jahr.
+    check('SN-2f: Aktienbasis vorhanden (100, Wachstum 0 %)',
+      rec.share_basis && rec.share_basis.shares_diluted_latest === 100 &&
+      approx(rec.share_basis.shares_growth_pa_pct, 0, 1e-9),
+      JSON.stringify(rec.share_basis && { s: rec.share_basis.shares_diluted_latest, g: rec.share_basis.shares_growth_pa_pct }));
+    check('SN-2g: Zufallsstartwert und Generator festgehalten',
+      rec.random_seed === MC_CONFIG.seed && rec.rng === MC_CONFIG.rng &&
+      rec.mc_config && rec.mc_config.seed === MC_CONFIG.seed,
+      rec.random_seed + '/' + rec.rng);
+    check('SN-2h: Regelwerksversion festgehalten',
+      rec.rule_version === SYNTHESIS_CONFIG.rule_version && rec.synthesis_config != null);
+    check('SN-2i: Zeitstempel gesetzt', rec.timestamp === '2026-03-01T12:00:00.000Z' && rec._savedAt === rec.timestamp, rec.timestamp);
+    // Ohne Rohimport wird NICHT ersatzweise das normalisierte JSON eingesetzt.
+    const recNoRaw = buildSnapshotRecord(mkCtx(mkSnapMj(), { importedSnapshot: null }));
+    check('SN-2j: fehlender Rohimport bleibt null (kein Ersatz durch normalisierte Inputs)',
+      recNoRaw.inputs_raw === null && snapshotNormalizedInputs(recNoRaw) != null, String(recNoRaw.inputs_raw));
+    check('SN-2k: Snapshot ist vollständig serialisierbar',
+      (function () { try { return JSON.parse(JSON.stringify(rec)).id === rec.id; } catch (e) { return false; } })());
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  suite('SN-3: Speicherfehler sind sichtbar');
+  {
+    _clearSnaps();
+    const okRes = storeSnapshots([{ id: 'x', ticker: 'T' }]);
+    check('SN-3a: erfolgreiches Speichern meldet ok', okRes.ok === true && okRes.code === 'stored' && okRes.count === 1, JSON.stringify(okRes));
+    check('SN-3b: Erfolgsmeldung ist als Erfolg formuliert',
+      describeSnapshotStoreResult(okRes).level === 'ok');
+
+    // localStorage voll simulieren.
+    const realSet = localStorage.setItem;
+    let quotaRes = null, threw = null;
+    try {
+      localStorage.setItem = function () { const e = new Error('exceeded the quota'); e.name = 'QuotaExceededError'; throw e; };
+      try { quotaRes = storeSnapshots([{ id: 'y', ticker: 'T2' }]); } catch (e) { threw = e.message; }
+    } finally { localStorage.setItem = realSet; }
+
+    check('SN-3c: storeSnapshots wirft nicht, sondern meldet', threw === null, threw);
+    check('SN-3d: Fehlschlag wird als Fehlschlag gemeldet (nicht als Erfolg)',
+      quotaRes && quotaRes.ok === false && quotaRes.code === 'quota_exceeded', JSON.stringify(quotaRes));
+    check('SN-3e: Meldung nennt den Grund und dass nichts gespeichert wurde',
+      quotaRes && /Speicher voll/.test(quotaRes.message) && /NICHTS/.test(quotaRes.message), quotaRes && quotaRes.message);
+    const d = describeSnapshotStoreResult(quotaRes);
+    check('SN-3f: Klartextmeldung ist als Fehler eingestuft und beginnt nicht mit einem Erfolgshaken',
+      d.level === 'error' && d.text.indexOf('✓') !== 0 && /NICHT gespeichert/.test(d.text), d.text);
+    check('SN-3g: der zuvor gespeicherte Stand ist unversehrt (Fehlschlag hat nichts überschrieben)',
+      loadSnapshots().length === 1 && loadSnapshots()[0].id === 'x',
+      JSON.stringify(loadSnapshots().map(s => s.id)));
+
+    // Nicht serialisierbare Nutzlast (BigInt ist für JSON.stringify ein Fehler).
+    const serRes = storeSnapshots([{ id: 'z', bad: (typeof BigInt === 'function' ? BigInt(1) : undefined),
+                                     get boom() { throw new Error('getter kaputt'); } }]);
+    check('SN-3h: nicht serialisierbare Daten melden serialize_failed statt still zu scheitern',
+      serRes.ok === false && serRes.code === 'serialize_failed', JSON.stringify(serRes));
+
+    // Browser nimmt an, behält aber nichts (privater Modus).
+    const realSet2 = localStorage.setItem;
+    let verifyRes = null;
+    try {
+      localStorage.setItem = function () { /* tut so, als ob */ };
+      verifyRes = storeSnapshots([{ id: 'v', ticker: 'T3' }]);
+    } finally { localStorage.setItem = realSet2; }
+    check('SN-3i: stilles Verwerfen durch den Browser wird als verify_failed erkannt',
+      verifyRes && verifyRes.ok === false && verifyRes.code === 'verify_failed', JSON.stringify(verifyRes));
+
+    // Kein Erfolgsergebnis nach einem Fehlschlag — Gesamtprobe.
+    check('SN-3j: kein Fehlschlag liefert ok === true',
+      [quotaRes, serRes, verifyRes].every(r => r && r.ok === false));
+    _clearSnaps();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  suite('SN-4: Export/Import-Roundtrip mit Versionsprüfung');
+  {
+    const recs = [buildSnapshotRecord(mkCtx(mkSnapMj(), { id: 'r1' })),
+                  buildSnapshotRecord(mkCtx(mkSnapMj(), { id: 'r2' }))];
+    const bundle = buildSnapshotExportBundle(recs, new Date('2026-03-02T00:00:00.000Z'));
+    check('SN-4a: Export trägt Kennung und Formatversion',
+      bundle._kind === SNAPSHOT_EXPORT_KIND && bundle._snapshotFormat === SNAPSHOT_FORMAT_VERSION &&
+      bundle._engineVersion === ENGINE_VERSION && bundle.count === 2,
+      bundle._kind + '/' + bundle._snapshotFormat + '/' + bundle.count);
+    check('SN-4b: Export ist von den Quelldatensätzen entkoppelt',
+      bundle.snapshots[0] !== recs[0]);
+
+    // Roundtrip über echtes JSON (wie eine Datei).
+    const wire = JSON.parse(JSON.stringify(bundle));
+    const back = parseSnapshotImportPayload(wire);
+    check('SN-4c: Import akzeptiert den eigenen Export',
+      back.ok === true && back.errors.length === 0 && back.snapshots.length === 2,
+      JSON.stringify(back.errors));
+    check('SN-4d: Quellformat wird erkannt', back.sourceFormat === SNAPSHOT_FORMAT_VERSION, back.sourceFormat);
+    check('SN-4e: gleiche Engine ⇒ keine Versionswarnung', back.warnings.length === 0, JSON.stringify(back.warnings));
+    check('SN-4f: Format-2-Datensätze werden nicht migriert', back.migrations.length === 0, JSON.stringify(back.migrations));
+
+    // Inhaltstreue: die Werte müssen den Roundtrip überstehen.
+    const a = recs[0], b = back.snapshots[0];
+    check('SN-4g: Kennungen und Ergebnisse unverändert',
+      b.id === a.id && b.ticker === 'SNAPCO' && approx(b.synthesis.buyPrice, 17.25) &&
+      b.quality.verdict === 'investable_high', b.id + '/' + b.ticker + '/' + b.synthesis.buyPrice);
+    check('SN-4h: Datenstand, Aktienbasis und Startwert überstehen den Roundtrip',
+      b.data_vintage.latest_period_end === '2025-12-31' &&
+      b.share_basis.shares_diluted_latest === 100 &&
+      b.random_seed === MC_CONFIG.seed,
+      b.data_vintage.latest_period_end + '/' + b.share_basis.shares_diluted_latest + '/' + b.random_seed);
+    check('SN-4i: Prognoseziele überstehen den Roundtrip',
+      b.forecast_targets && b.forecast_targets.available === true &&
+      b.forecast_targets.years.length === 10 &&
+      approx(b.forecast_targets.years[0].revenue, 1080, 1e-9),
+      b.forecast_targets && b.forecast_targets.years && b.forecast_targets.years[0].revenue);
+
+    // Fremdes Dateiformat wird abgelehnt.
+    const alien = parseSnapshotImportPayload({ _kind: 'irgendwas.anderes', snapshots: [] });
+    check('SN-4j: fremdes Dateiformat wird abgelehnt',
+      alien.ok === false && alien.errors.length === 1 && /Fremdes Dateiformat/.test(alien.errors[0]), JSON.stringify(alien.errors));
+    const noList = parseSnapshotImportPayload({ _kind: SNAPSHOT_EXPORT_KIND, snapshots: 'keine Liste' });
+    check('SN-4k: Hülle ohne Snapshot-Liste wird abgelehnt', noList.ok === false && noList.errors.length === 1, JSON.stringify(noList.errors));
+    const junk = parseSnapshotImportPayload('nur Text');
+    check('SN-4l: unerwarteter Inhalt wird abgelehnt', junk.ok === false && junk.errors.length === 1, JSON.stringify(junk.errors));
+    const empty = parseSnapshotImportPayload(null);
+    check('SN-4m: leere Datei wird abgelehnt', empty.ok === false && /Leere Datei/.test(empty.errors[0]), JSON.stringify(empty.errors));
+    // Ein einzelner unbrauchbarer Eintrag darf die brauchbaren nicht mitreißen.
+    const mixed = parseSnapshotImportPayload({ _kind: SNAPSHOT_EXPORT_KIND, _snapshotFormat: 2,
+      snapshots: [wire.snapshots[0], 'kein Objekt', null] });
+    check('SN-4n: unbrauchbare Einträge werden einzeln abgelehnt, brauchbare übernommen',
+      mixed.snapshots.length === 1 && mixed.rejected === 2 && mixed.errors.length === 2,
+      mixed.snapshots.length + '/' + mixed.rejected);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  suite('SN-5: Ältere Version — Migration und Ablehnung neuerer Formate');
+  {
+    // Datensatz im Format 1 (Stand bis V1.0.43): blankes Array, Altschlüssel,
+    // kein _snapshotFormat, keine data_vintage/share_basis/forecast_targets.
+    const legacy = {
+      id: 'old1', ticker: 'SNAPCO', name: 'Snapshot Test Corp',
+      timestamp: '2025-06-01T10:00:00.000Z',
+      _engineVersion: '1.0.30-alt', _breakingVersion: '11.5', _schemaVersion: '4.0',
+      masterJson: mkSnapMj(),
+      qualityV3: { verdict: 'investable_low', hardStops: [] },
+      valuationV3: mkVal(6, 2, 11, 18),
+      synthesisV3: { buyPrice: 12.5, range: { base: 18 } },
+      qualityV3Overrides: [{ id: 'hs1' }],
+      mc_config: { runs: 2000, seed: 424242, rng: 'mulberry32' },
+      key_inputs: { price: 15 },
+      output_signals: { verdict: 'investable_low', buyPrice: 12.5 },
+      _fc: { ticker: 'SNAPCO', date: '2025-06-01', price: 15, buyPrice: 12.5 }
+    };
+
+    const m = migrateSnapshotRecord(legacy);
+    check('SN-5a: Format-1-Datensatz wird angenommen', m.ok === true && m.fromFormat === 1, m.error);
+    check('SN-5b: Format wird auf 2 gehoben und die Herkunft vermerkt',
+      m.snapshot._snapshotFormat === 2 && m.snapshot._migratedFrom === 1,
+      m.snapshot._snapshotFormat + '/' + m.snapshot._migratedFrom);
+    check('SN-5c: Altschlüssel werden auf kanonische Schlüssel abgebildet',
+      m.snapshot.quality.verdict === 'investable_low' &&
+      approx(m.snapshot.synthesis.buyPrice, 12.5) &&
+      m.snapshot.valuation != null && m.snapshot.qualityOverrides.length === 1);
+    check('SN-5d: gespeicherte Ergebnisse werden NICHT neu gerechnet',
+      approx(m.snapshot.output_signals.buyPrice, 12.5) &&
+      m.snapshot._engineVersion === '1.0.30-alt',
+      m.snapshot.output_signals.buyPrice + '/' + m.snapshot._engineVersion);
+    check('SN-5e: Datenstand wird aus dem gespeicherten Master-JSON nachgetragen',
+      m.snapshot.data_vintage && m.snapshot.data_vintage.latest_period_end === '2025-12-31',
+      JSON.stringify(m.snapshot.data_vintage));
+    check('SN-5f: Aktienbasis wird nachgetragen',
+      m.snapshot.share_basis && m.snapshot.share_basis.shares_diluted_latest === 100,
+      m.snapshot.share_basis && m.snapshot.share_basis.shares_diluted_latest);
+    check('SN-5g: Zufallsstartwert wird aus mc_config übernommen', m.snapshot.random_seed === 424242, m.snapshot.random_seed);
+    // Prognoseziele werden NICHT nachträglich mit dem heutigen Modell erfunden.
+    check('SN-5h: fehlende Prognoseziele werden markiert, nicht nachgerechnet',
+      m.snapshot.forecast_targets && m.snapshot.forecast_targets.available === false &&
+      m.snapshot.forecast_targets.years.length === 0 &&
+      /nicht nachtr/.test(m.snapshot.forecast_targets.reason),
+      m.snapshot.forecast_targets && m.snapshot.forecast_targets.reason);
+    check('SN-5i: Kursvergleichsblock wird als solcher gekennzeichnet',
+      m.snapshot._fc.kind === 'price_comparison', m.snapshot._fc.kind);
+    check('SN-5j: jeder Migrationsschritt ist protokolliert',
+      m.steps.length >= 5 && m.steps.some(x => /Format 1 → 2/.test(x)), m.steps.join(' | '));
+    check('SN-5k2: Migration legt keine zweite Kopie der normalisierten Inputs an',
+      m.snapshot.inputs_normalized === undefined && snapshotNormalizedInputs(m.snapshot) != null,
+      String(m.snapshot.inputs_normalized));
+    check('SN-5k: Migration lässt den Quelldatensatz unangetastet',
+      legacy._snapshotFormat === undefined && legacy.quality === undefined,
+      String(legacy._snapshotFormat) + '/' + String(legacy.quality));
+
+    // Blankes Array (Format-1-Exportdatei) wird erkannt und gewarnt.
+    const arr = parseSnapshotImportPayload([legacy]);
+    check('SN-5l: blankes Array wird als Format 1 gelesen',
+      arr.ok === true && arr.sourceFormat === 1 && arr.snapshots.length === 1, JSON.stringify(arr.errors));
+    check('SN-5m: fehlende Versionshülle wird ausdrücklich gemeldet',
+      arr.warnings.some(w => /ohne Versionsh/.test(w)), JSON.stringify(arr.warnings));
+    check('SN-5n: Migrationsprotokoll wird an den Aufrufer durchgereicht',
+      arr.migrations.length === 1 && arr.migrations[0].fromFormat === 1 && arr.migrations[0].steps.length >= 5,
+      JSON.stringify(arr.migrations[0] && arr.migrations[0].steps));
+
+    // Ältere Engine-/Breaking-Version wird gewarnt, nicht verworfen.
+    const oldBundle = { _kind: SNAPSHOT_EXPORT_KIND, _snapshotFormat: 1,
+      _engineVersion: '1.0.30-alt', _breakingVersion: '9.9', snapshots: [legacy] };
+    const oldRes = parseSnapshotImportPayload(oldBundle);
+    check('SN-5o: älterer Export wird importiert', oldRes.ok === true && oldRes.snapshots.length === 1, JSON.stringify(oldRes.errors));
+    check('SN-5p: abweichende Engine-Version wird gewarnt',
+      oldRes.warnings.some(w => /1\.0\.30-alt/.test(w) && /NICHT neu gerechnet/.test(w)), JSON.stringify(oldRes.warnings));
+    check('SN-5q: inkompatible Breaking-Version wird gewarnt',
+      oldRes.warnings.some(w => /9\.9/.test(w)), JSON.stringify(oldRes.warnings));
+
+    // NEUERES Format wird abgelehnt statt geraten.
+    const future = { _kind: SNAPSHOT_EXPORT_KIND, _snapshotFormat: SNAPSHOT_FORMAT_VERSION + 1, snapshots: [legacy] };
+    const futRes = parseSnapshotImportPayload(future);
+    check('SN-5r: neueres Dateiformat wird abgelehnt',
+      futRes.ok === false && futRes.snapshots.length === 0 &&
+      futRes.errors.some(e => /neuer als das bekannte Format/.test(e)), JSON.stringify(futRes.errors));
+    const futRec = migrateSnapshotRecord(Object.assign({}, legacy, { _snapshotFormat: SNAPSHOT_FORMAT_VERSION + 1 }));
+    check('SN-5s: einzelner Datensatz aus neuerem Format wird abgelehnt',
+      futRec.ok === false && /nicht geraten/.test(futRec.error), futRec.error);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  suite('SN-6: Trennung gespeichert vs. neu berechnet');
+  {
+    // Snapshot mit ABSICHTLICH abweichend gespeicherten Ergebnissen bauen:
+    // Die gespeicherten Werte (BP 17,25 / FV Base 23,00) stammen aus einem
+    // fiktiven älteren Modell und lassen sich mit dem heutigen Modell aus
+    // denselben Inputs nicht reproduzieren. Genau daran zeigt sich, ob die
+    // beiden Sichten getrennt bleiben.
+    const rec = buildSnapshotRecord(mkCtx(mkSnapMj(), { id: 'sep1' }));
+    rec._engineVersion = '1.0.30-alt';
+    const frozen = JSON.stringify(rec);
+
+    const stored = readSnapshotStoredResult(rec);
+    check('SN-6a: gespeicherte Sicht ist als solche gekennzeichnet',
+      stored.origin === 'stored' && /Damals gespeichert/.test(stored.label), stored.origin + '/' + stored.label);
+    check('SN-6b: gespeicherte Sicht liefert die damaligen Werte',
+      approx(stored.output_signals.buyPrice, 17.25) && stored.quality.verdict === 'investable_high' &&
+      stored.engineVersion === '1.0.30-alt',
+      stored.output_signals.buyPrice + '/' + stored.engineVersion);
+
+    const re = recomputeSnapshotWithCurrentModel(rec);
+    check('SN-6c: Neuberechnung ist als solche gekennzeichnet',
+      re.origin === 'recomputed' && re.engineVersion === ENGINE_VERSION, re.origin + '/' + re.engineVersion);
+    check('SN-6d: Neuberechnung lief ohne Fehler', re.error === null, re.error);
+    check('SN-6e: Neuberechnung arbeitet auf einer eigenen Kopie',
+      re.masterJson !== rec.masterJson && re.masterJson !== snapshotNormalizedInputs(rec));
+
+    // ── Kern der Anforderung: der Snapshot bleibt Byte für Byte gleich. ──
+    check('SN-6f: der gespeicherte Snapshot ist nach der Neuberechnung unverändert',
+      JSON.stringify(rec) === frozen);
+    check('SN-6g: die gespeicherten Ergebnisse wurden nicht überschrieben',
+      approx(rec.synthesis.buyPrice, 17.25) && approx(rec.output_signals.buyPrice, 17.25) &&
+      rec._engineVersion === '1.0.30-alt',
+      rec.synthesis.buyPrice + '/' + rec._engineVersion);
+    check('SN-6h: die Neuberechnung trägt die alte Sicht mit, statt sie zu ersetzen',
+      re.stored && approx(re.stored.output_signals.buyPrice, 17.25), re.stored && re.stored.output_signals.buyPrice);
+
+    const cmp = compareStoredVsRecomputed(rec);
+    check('SN-6i: Gegenüberstellung nennt beide Seiten getrennt',
+      cmp.deltas && cmp.deltas.buyPrice &&
+      approx(cmp.deltas.buyPrice.stored, 17.25) &&
+      cmp.deltas.buyPrice.recomputed !== undefined, JSON.stringify(cmp.deltas && cmp.deltas.buyPrice));
+    check('SN-6j: abweichende Engine-Version wird erkannt', cmp.engineChanged === true);
+    check('SN-6k: Gegenüberstellung sagt ausdrücklich, dass nichts zurückgeschrieben wird',
+      /nicht in den Snapshot zur/.test(cmp.note), cmp.note);
+    check('SN-6l: auch nach der Gegenüberstellung ist der Snapshot unverändert',
+      JSON.stringify(rec) === frozen);
+
+    // Gleiche Engine ⇒ engineChanged false.
+    const recSame = buildSnapshotRecord(mkCtx(mkSnapMj(), { id: 'sep2' }));
+    check('SN-6m: gleiche Engine-Version ⇒ kein Versionswechsel gemeldet',
+      compareStoredVsRecomputed(recSame).engineChanged === false);
+
+    // Ohne Inputs keine Neuberechnung — und kein stiller Ersatzwert.
+    const noIn = recomputeSnapshotWithCurrentModel({ id: 'leer', output_signals: { buyPrice: 9 } });
+    check('SN-6n: ohne gespeicherte Inputs wird nicht geraten, sondern gemeldet',
+      noIn.error != null && noIn.synthesis === null && /keine gespeicherten Inputs/.test(noIn.error), noIn.error);
+    check('SN-6o: auch dann bleibt die gespeicherte Sicht abrufbar',
+      noIn.stored && approx(noIn.stored.output_signals.buyPrice, 9), noIn.stored && noIn.stored.output_signals.buyPrice);
+
+    // Format-1-Snapshot: gespeicherte Sicht über die Altschlüssel lesbar.
+    const legacyStored = readSnapshotStoredResult({ id: 'l1', qualityV3: { verdict: 'not_investable' },
+      synthesisV3: { buyPrice: 5 }, valuationV3: {} });
+    check('SN-6p: gespeicherte Sicht liest auch Format-1-Altschlüssel',
+      legacyStored.quality.verdict === 'not_investable' && approx(legacyStored.synthesis.buyPrice, 5) &&
+      legacyStored.snapshotFormat === 1,
+      legacyStored.quality.verdict + '/' + legacyStored.snapshotFormat);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  suite('SN-7: Prognoseziele und Soll-Ist-Vergleich');
+  {
+    // Unabhängig hergeleitete Erwartungswerte (g1 = 8 %, Marge 20 %,
+    // Steuerquote 25 %, D&A 5 %, CapEx 5 %, ΔOWC = 0 mangels WC-Daten):
+    //   Umsatz_t = 1000 · 1,08^t
+    //   EBIT_t   = 0,20 · Umsatz_t
+    //   FCFF_t   = 0,20·0,75·Umsatz_t + 0,05·Umsatz_t − 0,05·Umsatz_t
+    //            = 0,15 · Umsatz_t
+    //   t=1: Umsatz 1080,00 · EBIT 216,00 · FCFF 162,00
+    //   t=2: Umsatz 1166,40 · EBIT 233,28 · FCFF 174,96
+    //   t=10: Umsatz 1000·1,08^10 = 2158,924997...
+    const mj = mkSnapMj();
+    const ft = buildSnapshotForecastTargets(mj, mkVal(8, 2, 10, 20));
+    check('SN-7a: Prognoseziele verfügbar', ft.available === true && ft.years.length === 10, ft.reason);
+    check('SN-7b: Jahr 1 — Umsatz 1080,00', approx(ft.years[0].revenue, 1080, 1e-9), ft.years[0].revenue);
+    check('SN-7c: Jahr 1 — operative Marge 20,00 %', approx(ft.years[0].op_margin_pct, 20, 1e-9), ft.years[0].op_margin_pct);
+    check('SN-7d: Jahr 1 — FCFF 162,00', approx(ft.years[0].fcff, 162, 1e-9), ft.years[0].fcff);
+    check('SN-7e: Jahr 2 — Umsatz 1166,40 · FCFF 174,96',
+      approx(ft.years[1].revenue, 1166.4, 1e-9) && approx(ft.years[1].fcff, 174.96, 1e-9),
+      ft.years[1].revenue + '/' + ft.years[1].fcff);
+    check('SN-7f: Jahr 10 — Umsatz 1000·1,08^10',
+      approx(ft.years[9].revenue, 1000 * Math.pow(1.08, 10), 1e-9), ft.years[9].revenue);
+    // Zielperioden: letztes Ist-Periodenende 2025-12-31 ⇒ Jahr t endet 2025+t.
+    check('SN-7g: Zielperioden aus dem Datenstand abgeleitet',
+      ft.target_periods_known === true &&
+      ft.years[0].target_period_end === '2026-12-31' && ft.years[0].target_fiscal_year === 2026 &&
+      ft.years[9].target_period_end === '2035-12-31',
+      ft.years[0].target_period_end + ' … ' + ft.years[9].target_period_end);
+    check('SN-7h: Periodentyp wird mitgeführt', ft.years[0].target_period_type === 'FY', ft.years[0].target_period_type);
+    check('SN-7i: Szenario und Cashflow-Definition dokumentiert',
+      ft.scenario && approx(ft.scenario.growth_stage1_pct, 8) && approx(ft.scenario.wacc_pct, 10) &&
+      approx(ft.scenario.op_margin_pct_used, 20, 1e-9) && /FCFF/.test(ft.definition),
+      ft.definition);
+
+    // Ohne bekanntes Periodenende gibt es KEIN geratenes Zieldatum.
+    const mjNoPeriod = mkSnapMj();
+    delete mjNoPeriod.fundamentals._v4_meta.revenue.periods;
+    const ftNoPeriod = buildSnapshotForecastTargets(mjNoPeriod, mkVal(8, 2, 10, 20));
+    check('SN-7j: ohne Periodenende bleibt die Zielperiode leer (kein geratenes Datum)',
+      ftNoPeriod.available === true && ftNoPeriod.target_periods_known === false &&
+      ftNoPeriod.years[0].target_period_end === null,
+      String(ftNoPeriod.years[0].target_period_end));
+
+    // Nicht bewertbare Parametrierung liefert einen Grund, keine Nullwerte.
+    const ftBad = buildSnapshotForecastTargets(mkSnapMj(), mkVal(8, 12, 10, 20)); // WACC 10 < tg 12
+    check('SN-7k: WACC ≤ Terminalwachstum ⇒ kein Prognosepfad, mit Begründung',
+      ftBad.available === false && ftBad.years.length === 0 && /WACC/.test(ftBad.reason), ftBad.reason);
+    const ftNoScen = buildSnapshotForecastTargets(mkSnapMj(), { scenarios: null });
+    check('SN-7l: ohne Base-Szenario keine erfundenen Ziele',
+      ftNoScen.available === false && /Base-Szenario/.test(ftNoScen.reason), ftNoScen.reason);
+
+    // ── Soll-Ist-Vergleich ──
+    const rec = buildSnapshotRecord(mkCtx(mkSnapMj(), { id: 'fc1' }));
+    const hit = compareSnapshotForecastToActual(rec,
+      { period_end: '2026-12-31', period_type: 'FY', revenue: 1000, op_margin_pct: 18, fcff: 140 });
+    check('SN-7m: passende Periode ist vergleichbar', hit.comparable === true, hit.reason);
+    // Umsatz 1000 gegen Ziel 1080 ⇒ −80,00 absolut und −7,4074074…% relativ.
+    check('SN-7n: Umsatzabweichung −80,00 / −7,41 %',
+      approx(hit.deltas.revenue.abs, -80, 1e-9) &&
+      approx(hit.deltas.revenue.pct, -80 / 1080 * 100, 1e-9),
+      hit.deltas.revenue.abs + '/' + hit.deltas.revenue.pct);
+    check('SN-7o: Margenabweichung −2,00 Prozentpunkte (kein Prozentwert)',
+      approx(hit.deltas.op_margin_pct.abs, -2, 1e-9) && hit.deltas.op_margin_pct.pct === null,
+      hit.deltas.op_margin_pct.abs);
+    check('SN-7p: FCFF-Abweichung −22,00', approx(hit.deltas.fcff.abs, -22, 1e-9), hit.deltas.fcff.abs);
+    // Entscheidend: KEINE automatische Erfolgsnote.
+    check('SN-7q: auch bei vergleichbarer Periode gibt es kein automatisches Urteil',
+      hit.verdict === null && /keine Erfolgsnote/.test(hit.note), String(hit.verdict));
+
+    const wrongPeriod = compareSnapshotForecastToActual(rec, { period_end: '2031-06-30', revenue: 1500 });
+    check('SN-7r: nicht vorhandene Zielperiode ⇒ kein Vergleich, kein Urteil',
+      wrongPeriod.comparable === false && wrongPeriod.verdict === null &&
+      /Keine Prognoseperiode/.test(wrongPeriod.reason), wrongPeriod.reason);
+    const wrongType = compareSnapshotForecastToActual(rec,
+      { period_end: '2027-12-31', period_type: 'TTM', revenue: 1200 });
+    check('SN-7s: abweichender Periodentyp ⇒ kein Vergleich',
+      wrongType.comparable === false && wrongType.verdict === null && /Periodentyp/.test(wrongType.reason), wrongType.reason);
+    const noEnd = compareSnapshotForecastToActual(rec, { revenue: 1200 });
+    check('SN-7t: Ist-Wert ohne Periodenende ⇒ kein Vergleich',
+      noEnd.comparable === false && /nicht zuordenbar/.test(noEnd.reason), noEnd.reason);
+    const noTargets = compareSnapshotForecastToActual({ id: 'x' }, { period_end: '2026-12-31', revenue: 1 });
+    check('SN-7u: Snapshot ohne Prognoseziele ⇒ kein Vergleich',
+      noTargets.comparable === false && /keine Prognoseziele/.test(noTargets.reason), noTargets.reason);
+    // Snapshot mit Zielen, aber ohne bekannte Zielperioden.
+    const recNoPeriod = buildSnapshotRecord(mkCtx(mjNoPeriod, { id: 'fc2' }));
+    const unknownPeriods = compareSnapshotForecastToActual(recNoPeriod, { period_end: '2026-12-31', revenue: 1 });
+    check('SN-7v: unbekannte Zielperioden ⇒ ausdrücklich kein periodengerechter Vergleich',
+      unknownPeriods.comparable === false && /periodengerecht/.test(unknownPeriods.reason), unknownPeriods.reason);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  suite('SN-8: Kursvergleich statt Erfolgskontrolle');
+  {
+    const rec = buildSnapshotRecord(mkCtx(mkSnapMj(), { id: 'pc1' }));
+    check('SN-8a: Kursblock ist als Kursvergleich gekennzeichnet',
+      rec._fc && rec._fc.kind === 'price_comparison', rec._fc && rec._fc.kind);
+    check('SN-8b: Kursdatum wird mitgeführt', rec._fc.price_as_of_date === '2026-02-14', rec._fc.price_as_of_date);
+
+    const block = _priceComparisonBlock(rec);
+    check('SN-8c: Block trägt die Überschrift "Kursvergleich"', /Kursvergleich/.test(block));
+    check('SN-8d: Block nennt sich nicht mehr "Forward-Check"', block.indexOf('Forward-Check') === -1);
+    check('SN-8e: Block stellt ausdrücklich klar, dass er keine Prognose bestätigt',
+      /keine Bestätigung der Geschäftsprognose/.test(block) &&
+      /Umsatz, Marge oder FCFF/.test(block));
+    check('SN-8f: Block spricht von Kursveränderung statt von Rendite',
+      /Kursveränderung/.test(block) && block.indexOf('Rendite') === -1);
+    check('SN-8g: Altname bleibt als Alias erhalten',
+      typeof _forwardCheckBlock === 'function' && _forwardCheckBlock(rec) === block);
+    check('SN-8h: Snapshot ohne Kursangabe liefert keinen Block',
+      _priceComparisonBlock({ ticker: 'X', key_inputs: {}, output_signals: {} }) === '');
   }
 
   return results;
