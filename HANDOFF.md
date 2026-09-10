@@ -222,7 +222,10 @@ Arbeitsbranch: `claude/dcf-core-extraction` (Basis `4c1fdc4` auf
 Neue Dateien: `src/dcf-core.js`, `tests/dcf-core.test.mjs`,
 `tests/dcf-core-isolation.test.mjs`.
 Testbefehl: `npm test` — beide Suiten grün, Exit-Code 0.
+Code-Commit dieses Schritts: `6f084a8`; Ergebniscommit ist die Spitze des
+Arbeitsbranches (dieser Nachtrag).
 Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/dcf-core-extraction
+Commit-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/commit/6f084a8
 
 ## Update (Chat 7 Restfehler): Numerisch verwendete Snapshot-Felder validiert (V1.0.46)
 
