@@ -173,8 +173,10 @@ von 73 auf 102 Assertions; die 73 Assertions aus Chat 8 laufen unverändert.
 `claude/brl1-alignment-fixes`). Tool-Datei unverändert
 `us-aktienbewertungstool-v1036-sector-classification-patch.html`.
 Testbefehl: `npm test` — beide Suiten grün, Exit-Code 0.
-Ergebniscommit: siehe Spitze des Übergabebranches.
+Code-Commit dieses Schritts: `c1da760`; Ergebniscommit ist die Spitze des
+Übergabebranches (dieser Nachtrag).
 Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/happy-hamilton-fytsq5
+Commit-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/commit/c1da760
 
 **Der nächste Schritt setzt auf `origin/claude/happy-hamilton-fytsq5` auf,
 nicht auf `main`.**
