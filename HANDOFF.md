@@ -1,5 +1,208 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Update (Chat 8 Reparatur): Drei Fehler der DCF-Schnittstelle behoben (V1.0.48)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, geprüfter Branch
+`claude/dcf-core-extraction`, geprüfter Commit `8a928d6` — die Spitze dieses
+Branches und der einzige Stand, der ihn enthält; keine nachfolgenden
+Korrekturen (`main` steht weiterhin auf `b023dc8`). Tool-Datei unverändert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`, Modul
+`src/dcf-core.js`. Reparaturbranch: `claude/dcf-core-interface-fixes`.
+Testbefehl: `npm test`. Baseline auf `8a928d6` (ausgeführt):
+1298 Rechen-Assertions · 51 Node-Tests · Exit-Code 0.
+
+Umfang: ausschliesslich die drei gemeldeten Fehler, die unmittelbar
+betroffenen Kernfunktionen, die Modulabhängigkeiten, Tests und dieses
+Dokument. Keine Bewertungsformel, keine Abschlagsregel und keine fachliche
+Mid-Cycle-Definition geändert.
+
+---
+
+### Fehler 1 — DCF, Reverse DCF und Sensitivität rechneten mit verschiedenen Annahmen
+
+**Am Code reproduziert** (synthetisches `mkMj()`, Master-JSON 10 % WACC, über
+`options.scenarios.base` 12 % übergeben):
+
+| | vorher | nachher |
+|---|---|---|
+| DCF | 21,9830750630 | 21,9830750630 |
+| zentrale Matrixzelle | **28,4977840857** | **21,9830750630** |
+| Matrix `baseWaccPct` | 10 | 12 |
+| Reverse DCF (Zielkurs = DCF) | **4,5581359863 %** bei WACC 10 | **8,0000000000 %** bei WACC 12 |
+
+Ursache: `solveReverseDcfGrowth()` und `computeSensitivityMatrix()` lesen
+ihren Base-Stand aus `valuation.wacc_derived` / `growth_stage1` /
+`growth_terminal`. Der Einstiegspunkt reichte die übergebenen Szenarien nur an
+`coreValuationDetail()` weiter — die beiden anderen sahen weiterhin die
+Master-JSON-Werte.
+
+**Korrektur.** `normalizeDcfCoreInput()` legt jetzt einen **wirksamen
+Base-Stand** fest und schreibt ihn in die (nun eigenständige, siehe Fehler 3)
+Datenbasis, aus der alle drei Berechnungen lesen:
+
+* **Vorrangregel:** ausdrücklich übergebene Szenarioannahmen vor den
+  Ausgangswerten des Master-JSON — **feldweise**, damit ein teilweise
+  besetztes Szenario die übrigen Felder nicht verliert. `null`/`undefined`
+  bedeuten „nicht angegeben".
+* `conservative`/`optimistic` fallen feldweise auf den wirksamen Base-Stand
+  zurück; sie wirken nur auf die Bewertung je Szenario.
+* Ein expliziter `opMarginOverridePct` wird zusätzlich in
+  `scenarios.base.op_margin_pct` mitgeführt — die Matrix liest ihre Marge von
+  dort und übernahm den Override sonst nicht.
+* Neu `input.effectiveBase` mit den wirksamen Werten **und** der Herkunft je
+  Feld (`options.scenarios.base` / `master_json` / `options.opMarginOverridePct`
+  / `midcycle_median` / `none`).
+
+Reverse DCF variiert unverändert **ausschliesslich** das Umsatzwachstum; alle
+übrigen Annahmen stehen jetzt auf dem wirksamen Base-Stand. Keine zusätzliche
+Bewertungslogik — der Einstiegspunkt delegiert weiterhin an dieselben
+Funktionen.
+
+### Fehler 2 — Mid-Cycle-Pfad scheiterte im isolierten Modul
+
+**Am Code reproduziert:**
+`loadDcfCore().analyzeDcfFromMasterJson(mj, {activeModels:['dcf_midcycle']})`
+⇒ `computeMidCycleFcf is not defined`.
+
+Ursache: `computeSensitivityMatrix()` ruft `computeMidCycleFcf()` für den
+Mid-Cycle-Pfad, die deklarierte Helferliste enthielt ihn aber nicht. Die
+Abhängigkeit wurde nachgezogen: `computeMidCycleFcf` (41 Zeilen) benötigt
+seinerseits nur `_median`, der bereits gelistet war — keine weiteren
+indirekten Helfer.
+
+**Korrektur.**
+* `computeMidCycleFcf` in `DCF_CORE_REQUIRED_HELPERS` ergänzt. Der Pfad läuft
+  damit in der **standardmäßig isolierten, leeren Sandbox** — ohne
+  Browserobjekte, ohne globalen Anwendungszustand, ohne zweite Kopie der
+  Rechenlogik.
+* Die Margenbasis wird an der Grenze **einmal** aufgelöst (dieselbe
+  `computeMidCycleFcf()`, die auch die Matrix verwendet) und als
+  `opMarginOverridePct` in `ctx` gelegt. DCF, Reverse DCF und Matrix nutzen
+  dadurch dieselbe Marge; im Testfall durchgängig 18,00 % (Median aus
+  20/16/15/20/15/20).
+* Bei unzureichenden Daten liefert die Grenze einen **erklärten
+  Nichtverfügbarkeitsstatus** (`ok:false`, `reason`, `diagnostics.midCycle`)
+  — kein `ReferenceError` und **kein stiller Wechsel zum Haupt-DCF**
+  (`valuation` bleibt `null`).
+
+Fachliche Mid-Cycle-Definition unverändert.
+
+### Fehler 3 — normalisierte Inputs blieben mit dem Original verbunden
+
+**Am Code reproduziert:** nach Änderung von `fundamentals.total_debt[0]` von
+200 auf 1200 **nur im Original** blieb der DCF bei 28,4977840857, während die
+zentrale Matrixzelle auf 18,4977840857 fiel. Ursache: `ctx` trug vorberechnete
+Werte, `input.source` hielt weiterhin Referenzen auf das übergebene
+Master-JSON (`input.source.fundamentals === orig.fundamentals` war `true`).
+
+**Korrektur.**
+* Neu `_dcfCoreCloneData()`: die Grenze erzeugt **eine** eigenständige Kopie
+  der Master-JSON-Daten. `ctx` wird aus **dieser** Kopie abgeleitet, und
+  `input.source` **ist** diese Kopie — vorberechnete und erneut abgeleitete
+  Werte können nicht mehr auseinanderlaufen.
+* Neu `_dcfCoreDeepFreeze()`: das normalisierte Inputobjekt ist eingefroren.
+  `runDcfCoreAnalysis()` kann es nicht verändern; im Modul (strict mode)
+  schlägt ein Schreibversuch sofort fehl statt still ein abweichendes Ergebnis
+  zu erzeugen.
+* Die Normalisierung schreibt nie in das übergebene Master-JSON; auch
+  übergebene Optionsobjekte werden nur gelesen.
+
+Bewusst schlank und **ohne** Bezug zur Snapshot-Logik — Master-JSON-Daten sind
+reine JSON-Werte; Zyklen können darin nicht vorkommen, werden aber abgefangen
+statt zu werfen.
+
+### Neue Regressionstests — 17 in `tests/dcf-core.test.mjs`
+
+* **F1 (7)** Der gemeldete Fall exakt: DCF 21,9830750630 = zentrale
+  Matrixzelle, ausdrücklich **nicht** 28,4977840857, `baseWaccPct` 12;
+  Reverse DCF gewinnt 8 % innerhalb der dokumentierten Solvertoleranz
+  (`REVERSE_DCF_SEARCH.tolerancePp` = 1e-4) bei WACC 12 zurück; abweichendes
+  Terminalwachstum (4 %) und explizite Marge (15 %) wirken in allen drei
+  Berechnungen und in der jeweils erwarteten Richtung; `opMarginOverridePct`
+  schlägt bis in die Matrix durch; die ausgewiesenen wirksamen Annahmen samt
+  Herkunft je Feld werden geprüft, einschliesslich feldweisem Rückfall;
+  **ohne Overrides bleibt das Verhalten unverändert** (28,497784085663053,
+  `baseWaccPct` 10).
+* **F2 (5)** Gültiger Mid-Cycle-Fall über `loadDcfCore()` mit der
+  standardmäßig isolierten Sandbox (kein `realm:'this'`, keine Attrappe);
+  gleiche Margenbasis in DCF, Matrix und Reverse DCF (18,00 %);
+  Übereinstimmung mit dem vorhandenen Baustein (`computeMidCycleFcf` und
+  `coreValuationDetail`); unzureichende Historie ⇒ erklärter Status
+  `insufficient_data` ohne Rückfall; `computeMidCycleFcf` steht in der
+  Helferliste.
+* **F3 (5)** Änderung am Original erreicht ein bereits normalisiertes Input
+  nicht (DCF, Matrixzelle und Reverse DCF unverändert, `source.fundamentals`
+  ist eine eigene Kopie); erneute Normalisierung berücksichtigt die
+  1000 Mio. Mehrschulden bei 100 Mio. Aktien korrekt — DCF und Matrixzelle
+  sinken **je um exakt 10,00 USD** (`netDebtPerShare` 11); verschachtelte
+  Änderungen an Fundamentaldaten und am übergebenen Optionsobjekt wirken nicht
+  zurück; Normalisierung und Berechnung verändern weder Original noch Input
+  (eingefroren, Schreibversuch wirft `TypeError`); `ctx` und `source` stammen
+  nachweislich aus derselben Datenbasis.
+
+### Gegenproben (ausgeführt)
+
+| Rückbau | Rot |
+|---|---|
+| GP-1 wirksamer Base-Stand nicht in die Datenbasis geschrieben (Stand V1.0.47) | 4 (alle F1-Fälle mit Overrides) |
+| GP-2 `computeMidCycleFcf` aus der Helferliste entfernt | 5 (alle F2) |
+| GP-3 Datenbasis wieder als Referenz aufs Original, kein Einfrieren | 3 (F3 Unabhängigkeit, verschachtelte Änderungen, Unveränderlichkeit) |
+
+### Tatsächlich ausgeführte Tests
+
+* `npm test` → Rechentests **1298 bestanden · 0 fehlgeschlagen ·
+  0 Fehler/Exceptions** (unverändert zur Baseline), Node-Tests **68/68**
+  (vorher 51; +17), gemeinsamer **Exit-Code 0**. Keine bestehende Erwartung
+  geändert oder gelockert.
+* **Produktionsäquivalenz.** Fingerabdruck über **alle 134**
+  Regressions-Fixtures gegen `8a928d6` — je Fixture Forecast-Inputs,
+  72 Bewertungspunkte, Reverse-DCF-Status samt Nullstellen und die
+  vollständige Sensitivitätsmatrix: **byte-identisch** (1 256 993 Zeichen,
+  0 Abweichungen). Bestehende Produktionsaufrufe ohne die fehlerhaften neuen
+  Schnittstellenfälle liefern also unveränderte Ergebnisse.
+* **Echter Browser** (Chromium 1194 headless über `playwright-core`, nur im
+  Arbeitsverzeichnis ausserhalb des Repositories installiert — das Projekt
+  bleibt abhängigkeitsfrei), Datei per `file://`, **0 JS-Fehler**:
+  alleinstehender Start gelingt; bestehender Import- und Bewertungsaufruf
+  (`T-TXRH-DEBT2` über `runFullEvaluation`) unverändert BP 7,4357081414 /
+  FV Base 10,4360816, Matrix-Adapter rendert; Fehler 1 im Browser behoben
+  (DCF = Zelle = 21,9830750630, Reverse DCF WACC 12 → 8,0000000000);
+  Fehler 2 behoben (`ok`, `mode: dcf_midcycle`, Marge 18, DCF = Zelle);
+  Fehler 3 behoben (altes Input unverändert, neu normalisiert 18,4977840857).
+
+### Verbleibende Grenzen
+
+* Der Browsercheck ist ein einmalig ausgeführtes Skript im Arbeitsverzeichnis,
+  **kein** Bestandteil von `npm test`; die Suiten bleiben abhängigkeitsfrei und
+  DOM-frei. Node-Prüfungen sind ausdrücklich **kein** Browsernachweis.
+* Das Einfrieren wirkt hart nur im Modul (strict mode). Im Browser-`<script>`
+  (nicht strict) würde ein Schreibversuch still verpuffen statt zu werfen — er
+  bliebe aber wirkungslos, das Ergebnis also unverändert.
+* Die Vorrangregel gilt für den **Base**-Stand. `conservative`/`optimistic`
+  wirken weiterhin nur auf die Bewertung je Szenario; Matrix und Reverse DCF
+  sind per Definition um den Base-Stand herum aufgebaut.
+* `_dcfCoreCloneData` kopiert reine JSON-Werte. Nicht-JSON-Werte im
+  Master-JSON (Funktionen, `Map`, `Set`) würden nicht sinnvoll übernommen —
+  im Schema kommen sie nicht vor.
+* Nicht behoben, wie beauftragt: der Einheitenverdacht in
+  `_makeBaseValuation()` (125 von 134 Fixtures setzen Sätze als Brüche,
+  während der Produktionspfad in Prozentpunkten arbeitet). Keine pauschale
+  Umrechnung, keine Neukalibrierung.
+* Weiter offen aus den Vorschritten: index-basierte Ableitung von
+  `eps_diluted`, `book_value` und `dps` in `applyDerivedFieldsV4`;
+  Korrelationen der Monte-Carlo-Größen nicht modelliert; `ENGINE_VERSION` /
+  `DISPLAY_VERSION` nicht angehoben (mehrere Fixtures pinnen
+  `1.0.35-base-rate-lite` exakt).
+
+### Ausgangsstand für den nächsten Schritt
+
+Reparaturbranch: `claude/dcf-core-interface-fixes` (Basis `8a928d6` auf
+`claude/dcf-core-extraction`). Tool-Datei unverändert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`, Modul
+`src/dcf-core.js`.
+Testbefehl: `npm test` — beide Suiten grün, Exit-Code 0.
+Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/dcf-core-interface-fixes
+
 ## Update (Chat 8): DCF-Rechenkern von Oberfläche und globalem Zustand entkoppelt (V1.0.47)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch

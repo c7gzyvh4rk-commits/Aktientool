@@ -4626,6 +4626,13 @@ const DCF_CORE_UNITS = Object.freeze({
 // Ausdrücklich deklariert, damit `src/dcf-core.js` sie mitladen kann und
 // `tests/dcf-core-isolation.test.mjs` die Vollständigkeit prüfen kann.
 // Sie sind selbst frei von DOM, localStorage und globalem `state`.
+// V1.0.48: computeMidCycleFcf ergänzt. Der Mid-Cycle-Pfad (aktives Modell
+// dcf_midcycle) ruft ihn sowohl in der Sensitivitätsmatrix als auch an der
+// Eingabegrenze auf; ohne ihn scheiterte das Modul in der leeren Sandbox mit
+// "computeMidCycleFcf is not defined". Er benötigt seinerseits nur _median.
+// Hinweis: Die Liste wird von src/dcf-core.js zeilenweise gelesen — je Zeile
+// gilt die erste Zeichenkette in Hochkommata als Eintrag. Erklärungen deshalb
+// über den Block setzen, nicht in eine Eintragszeile.
 const DCF_CORE_REQUIRED_HELPERS = Object.freeze([
   '_median',                        // Median einer Zahlenreihe
   '_computeOwcHistory',             // operatives Working Capital je Jahr
@@ -4634,8 +4641,52 @@ const DCF_CORE_REQUIRED_HELPERS = Object.freeze([
   '_secPeriodYear',                 // Jahr eines Periodenendes
   '_secPeriodDaysApart',            // Abstand zweier Periodenenden
   '_joinPeriodKeyed',               // periodengetreuer Join (SEC-Datenschicht)
-  '_resolveNetDebtForDcfBridge'     // Nettoschuldenbrücke zum Eigenkapitalwert
+  '_resolveNetDebtForDcfBridge',    // Nettoschuldenbrücke zum Eigenkapitalwert
+  'computeMidCycleFcf'              // Mid-Cycle-Marge; V1.0.48 ergänzt, siehe unten
 ]);
+
+// ── V1.0.48: unabhängige Datenbasis der Eingabegrenze ────────────────────
+// Bis V1.0.47 hielt `input.source` weiterhin Referenzen auf das übergebene
+// Master-JSON, während `ctx` bereits abgeleitete Werte trug. Eine spätere
+// Änderung am Original (z. B. total_debt[0]) liess dann DCF und
+// Sensitivitätsmatrix auseinanderlaufen: der DCF rechnete mit dem
+// vorberechneten ctx weiter, die Matrix leitete aus dem geänderten Original
+// neu ab. _dcfCoreCloneData erzeugt deshalb an der Grenze eine eigenständige
+// Kopie; ctx und source stammen danach aus DERSELBEN Kopie.
+// Bewusst schlank und ohne Bezug zur Snapshot-Logik: Master-JSON-Daten sind
+// reine JSON-Werte. Zyklen können darin nicht vorkommen, werden aber
+// abgefangen statt zu werfen.
+function _dcfCoreCloneData(value, _stack) {
+  if (value === null || typeof value !== 'object') return value;
+  const stack = _stack || [];
+  for (let i = 0; i < stack.length; i++) if (stack[i] === value) return null;
+  stack.push(value);
+  let out;
+  try {
+    if (Array.isArray(value)) {
+      out = new Array(value.length);
+      for (let i = 0; i < value.length; i++) out[i] = _dcfCoreCloneData(value[i], stack);
+    } else {
+      out = {};
+      const keys = Object.keys(value);
+      for (let i = 0; i < keys.length; i++) out[keys[i]] = _dcfCoreCloneData(value[keys[i]], stack);
+    }
+  } finally { stack.pop(); }
+  return out;
+}
+
+// Friert die normalisierten Inputs ein. Damit kann runDcfCoreAnalysis sein
+// Argument nicht verändern — im Modul (strict mode) schlägt ein Schreibversuch
+// sofort fehl, statt still ein abweichendes Ergebnis zu erzeugen.
+function _dcfCoreDeepFreeze(value, _seen) {
+  if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  const seen = _seen || [];
+  for (let i = 0; i < seen.length; i++) if (seen[i] === value) return value;
+  seen.push(value);
+  Object.freeze(value);
+  Object.keys(value).forEach(k => _dcfCoreDeepFreeze(value[k], seen));
+  return value;
+}
 
 // Rate, die wie ein Bruch statt wie Prozentpunkte aussieht.
 function _dcfCoreLooksLikeFraction(v) {
@@ -4673,14 +4724,84 @@ function normalizeDcfCoreInput(masterJson, options) {
              reason: 'Kein Master-JSON übergeben.' };
   }
 
-  const val  = masterJson.valuation   || {};
-  const mkt  = masterJson.market      || {};
-  const meta = masterJson.meta        || {};
-  const fund = masterJson.fundamentals || {};
+  // ── V1.0.48: EINE unabhängige Datenbasis für diesen Aufruf ───────────
+  // Alles Weitere leitet sich aus `src` ab — auch `ctx`. Das Original wird
+  // weder gelesen noch geschrieben, nachdem die Kopie steht. Damit können
+  // vorberechnete Werte (ctx) und erneut abgeleitete Werte (Matrix, Reverse
+  // DCF, die ihrerseits aus `source` ableiten) nicht mehr auseinanderlaufen,
+  // und spätere Änderungen am Original erreichen diesen Stand nicht.
+  const src = _dcfCoreCloneData(masterJson);
+  if (!src.valuation)    src.valuation = {};
+  if (!src.market)       src.market = {};
+  if (!src.meta)         src.meta = {};
+  if (!src.fundamentals) src.fundamentals = {};
 
-  const ctx = buildCoreValuationContext(masterJson, {
-    opMarginOverridePct: opts.opMarginOverridePct,
-    marginBasis: opts.marginBasis
+  const val  = src.valuation;
+  const mkt  = src.market;
+  const meta = src.meta;
+  const fund = src.fundamentals;
+
+  // ── Wirksame Base-Annahmen festlegen (Vorrangregel) ──────────────────
+  // Ausdrücklich übergebene Szenarioannahmen haben Vorrang vor den
+  // entsprechenden Ausgangswerten des Master-JSON. Die Auswertung ist
+  // FELDWEISE: ein teilweise besetztes Szenario übernimmt die übrigen Felder
+  // aus dem Master-JSON, statt sie zu verlieren. `null` und `undefined`
+  // bedeuten "nicht angegeben".
+  const pick = (a, b) => (a !== undefined && a !== null) ? a : b;
+  const expBase = (opts.scenarios && typeof opts.scenarios === 'object' &&
+                   opts.scenarios.base && typeof opts.scenarios.base === 'object')
+    ? opts.scenarios.base : {};
+  const effBase = {
+    growth_stage1:   pick(expBase.growth_stage1,   val.growth_stage1),
+    terminal_growth: pick(expBase.terminal_growth, val.growth_terminal),
+    wacc:            pick(expBase.wacc,            val.wacc_derived),
+    op_margin_pct:   pick(expBase.op_margin_pct,   null)
+  };
+
+  // ── Mid-Cycle-Margenbasis, falls dieser Pfad gewählt ist ─────────────
+  // Fachliche Definition unverändert: dieselbe computeMidCycleFcf(), die auch
+  // die Sensitivitätsmatrix verwendet. Sie wird hier EINMAL aufgelöst, damit
+  // DCF, Reverse DCF und Matrix dieselbe Margenbasis benutzen.
+  const _am = (Array.isArray(opts.activeModels) && opts.activeModels.length > 0)
+    ? opts.activeModels : null;
+  const _wantsMidCycle = !!(_am && _am.indexOf('dcf_midcycle') >= 0 && _am.indexOf('dcf') < 0);
+  let effMarginOverridePct = (opts.opMarginOverridePct != null && isFinite(opts.opMarginOverridePct))
+    ? Number(opts.opMarginOverridePct) : null;
+  let effMarginBasis = (effMarginOverridePct != null) ? (opts.marginBasis || 'override') : 'scenario';
+  let midCycle = null;
+  if (_wantsMidCycle && effMarginOverridePct == null) {
+    midCycle = computeMidCycleFcf(src);
+    if (!midCycle || midCycle.status !== 'ok') {
+      // Erklärter Nichtverfügbarkeitsstatus — KEIN stiller Wechsel zum Haupt-DCF.
+      diagnostics.midCycle = midCycle || null;
+      diagnostics.notes.push('Mid-Cycle-Pfad gewählt, aber die Mid-Cycle-Marge ist ' +
+        'nicht ableitbar. Es wird bewusst NICHT auf den Haupt-DCF zurückgefallen.');
+      return { ok: false, input: null, diagnostics: diagnostics,
+               reason: 'Mid-Cycle-Marge nicht ableitbar: ' +
+                       ((midCycle && midCycle.reason) || 'unbekannt') };
+    }
+    effMarginOverridePct = midCycle.opMarginMed;
+    effMarginBasis = 'midcycle_median';
+    diagnostics.midCycle = midCycle;
+    diagnostics.notes.push('Mid-Cycle-Pfad: Betriebsmarge auf den Median ' +
+      midCycle.opMarginMed.toFixed(2) + ' % normalisiert — dieselbe Basis für ' +
+      'DCF, Reverse DCF und Sensitivitätsmatrix.');
+  }
+
+  // ── Wirksamen Base-Stand in die Datenbasis schreiben ─────────────────
+  // solveReverseDcfGrowth() und computeSensitivityMatrix() lesen ihren
+  // Base-Stand aus valuation.wacc_derived / growth_stage1 / growth_terminal.
+  // Bis V1.0.47 sahen sie deshalb weiter die Master-JSON-Werte, während der
+  // DCF bereits mit den übergebenen Szenarioannahmen rechnete — daher die
+  // gemeldete Abweichung (DCF 21,98 vs. Matrixzelle 28,50, Reverse DCF mit
+  // 10 % statt 12 % WACC). Auf der eigenen Kopie ist das jetzt EIN Stand.
+  val.growth_stage1   = effBase.growth_stage1;
+  val.growth_terminal = effBase.terminal_growth;
+  val.wacc_derived    = effBase.wacc;
+
+  const ctx = buildCoreValuationContext(src, {
+    opMarginOverridePct: effMarginOverridePct,
+    marginBasis: effMarginBasis
   });
   if (!ctx.ok) {
     diagnostics.missing = (ctx.missing || []).slice();
@@ -4724,23 +4845,29 @@ function normalizeDcfCoreInput(masterJson, options) {
     op_margin_pct:   (sc.op_margin_pct   != null) ? sc.op_margin_pct   : null
   } : null;
 
-  let scenarios = null;
+  // Base ist der oben festgelegte wirksame Stand. Ein Margen-Override wird
+  // hier mitgeführt, damit auch die Sensitivitätsmatrix ihn sieht — sie liest
+  // die Marge aus scenarios.base.op_margin_pct.
+  const scenarios = { base: {
+    growth_stage1:   effBase.growth_stage1,
+    terminal_growth: effBase.terminal_growth,
+    wacc:            effBase.wacc,
+    op_margin_pct:   (effMarginOverridePct != null) ? effMarginOverridePct : effBase.op_margin_pct
+  }};
+  // Conservative und Optimistic wirken nur auf die Bewertung je Szenario.
+  // Fehlende Felder fallen feldweise auf den wirksamen Base-Stand zurück.
   if (opts.scenarios && typeof opts.scenarios === 'object') {
-    scenarios = {};
-    ['conservative', 'base', 'optimistic'].forEach(k => {
+    ['conservative', 'optimistic'].forEach(k => {
       const sc = scOf(opts.scenarios[k]);
-      if (sc) scenarios[k] = sc;
+      if (!sc) return;
+      scenarios[k] = {
+        growth_stage1:   pick(sc.growth_stage1,   scenarios.base.growth_stage1),
+        terminal_growth: pick(sc.terminal_growth, scenarios.base.terminal_growth),
+        wacc:            pick(sc.wacc,            scenarios.base.wacc),
+        op_margin_pct:   pick(sc.op_margin_pct,   scenarios.base.op_margin_pct)
+      };
     });
-    if (!scenarios.base) scenarios.base = null;
   } else {
-    // Base-Szenario aus dem Master-JSON — dieselben Felder, die der
-    // Haupt-DCF liest.
-    scenarios = { base: {
-      growth_stage1:   (val.growth_stage1   != null) ? val.growth_stage1   : null,
-      terminal_growth: (val.growth_terminal != null) ? val.growth_terminal : null,
-      wacc:            (val.wacc_derived    != null) ? val.wacc_derived    : null,
-      op_margin_pct:   null
-    }};
     diagnostics.notes.push('Kein Szenarienblock übergeben — Base-Szenario aus ' +
       'valuation.growth_stage1 / growth_terminal / wacc_derived gebildet.');
   }
@@ -4777,8 +4904,8 @@ function normalizeDcfCoreInput(masterJson, options) {
   // unterscheidet Haupt-DCF und DCF Mid-Cycle. Fehlt die Angabe, wird
   // ['dcf'] angesetzt UND das im Diagnoseteil ausgewiesen.
   let activeModels;
-  if (Array.isArray(opts.activeModels) && opts.activeModels.length > 0) {
-    activeModels = opts.activeModels.slice();
+  if (_am) {
+    activeModels = _am.slice();
   } else {
     activeModels = ['dcf'];
     diagnostics.appliedDefaults.push({
@@ -4800,16 +4927,31 @@ function normalizeDcfCoreInput(masterJson, options) {
     activeModels: activeModels,
     opMarginOverridePct: (ctx.marginOverridePct != null) ? ctx.marginOverridePct : null,
     marginBasis: ctx.marginBasis,
-    // Vollständige Datenbasis für die delegierenden Kernfunktionen. Der Kern
-    // liest ausschliesslich hieraus — nichts stammt aus einem globalen Zustand.
-    source: {
-      meta:         { sub_classification: meta.sub_classification || null },
-      valuation:    val,
-      market:       mkt,
-      fundamentals: fund
+    midCycle: midCycle,
+    // Die wirksamen Base-Annahmen ausdrücklich ausweisen, damit ein Aufrufer
+    // nachsehen kann, womit tatsächlich gerechnet wurde.
+    effectiveBase: {
+      growth_stage1:   effBase.growth_stage1,
+      terminal_growth: effBase.terminal_growth,
+      wacc:            effBase.wacc,
+      op_margin_pct:   scenarios.base.op_margin_pct,
+      marginBasis:     effMarginBasis,
+      source: {
+        growth_stage1:   (expBase.growth_stage1   != null) ? 'options.scenarios.base' : 'master_json',
+        terminal_growth: (expBase.terminal_growth != null) ? 'options.scenarios.base' : 'master_json',
+        wacc:            (expBase.wacc            != null) ? 'options.scenarios.base' : 'master_json',
+        op_margin_pct:   (effMarginBasis === 'midcycle_median') ? 'midcycle_median'
+                          : (effMarginOverridePct != null ? 'options.opMarginOverridePct'
+                          : (expBase.op_margin_pct != null ? 'options.scenarios.base' : 'none'))
+      }
     },
+    // DIESELBE Datenbasis, aus der auch ctx abgeleitet wurde — eine eigene,
+    // vom Original unabhängige Kopie. Der Kern liest ausschliesslich hieraus.
+    source: src,
     diagnostics: diagnostics
   };
+  // Eingefroren: runDcfCoreAnalysis darf sein Inputobjekt nicht verändern.
+  _dcfCoreDeepFreeze(input);
   return { ok: true, input: input, diagnostics: diagnostics, reason: null };
 }
 
