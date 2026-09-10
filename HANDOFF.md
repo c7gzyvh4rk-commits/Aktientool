@@ -1,5 +1,173 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Update (Chat 9): T-BRL1 und Mehrheitsjahr-Typfehler behoben (V1.0.41)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`. Basiscommit
+`72d75c3` auf `claude/us-stock-tool-precision-og5azo` — der neueste
+Fortsetzungsstand, der `ef9fce2` als Vorfahre enthält (per `git merge-base
+--is-ancestor` bestätigt; `main` steht weiterhin auf `b023dc8`). Arbeitsbranch:
+`claude/brl1-alignment-fixes`. Tool-Datei unverändert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Testbefehl: `npm test`.
+
+**Baseline vor den Änderungen** (auf `72d75c3`, tatsächlich ausgeführt):
+Rechentests 927 bestanden · 1 fehlgeschlagen (T-BRL1) · 0 Exceptions;
+SEC-Tests 23/23. Die 73 Assertions aus Chat 8 (`_testSynthesisPrecision`)
+sind vollständig erhalten.
+
+### Punkt 1 — T-BRL1: Fixture-Fehler, kein Produktfehler
+
+**Bestätigte Ursache (am aktuellen Code reproduziert, nicht übernommen).**
+Der Synthese-Lauf auf dem T-BRL1-Datensatz ergab
+`blockReason: "Modell-Divergenz >3x nach Outlier-Entfernung … Eingeschlossen:
+[dcf, rim], Ratio: 3.05x"`, `_modelDivergenceSevere = true`,
+`_diagnosticOnlyReason = 'model_divergence_severe'` ⇒ `buyPrice = null`.
+DCF-Base 15,62 gegen RIM-Base 5,13 je Aktie.
+
+Die Divergenz entstand im Fixture: Es überschrieb **nur** `revenue`, `ebit` und
+`fcf` auf eine Firma der Größenordnung ~1.200 Mio Umsatz und ließ
+`net_income`, `eps_diluted`, `total_equity`, `cfo`, `ebitda`, `capex`,
+`shares_diluted`, `total_debt` und `cash_and_equivalents` auf den Werten des
+5.000-Mio-Basisdatensatzes stehen. Daraus folgten unmögliche Relationen
+(EBITDA 950 bei Umsatz 1.210 = 78 % Marge; CapEx 300 = 25 % vom Umsatz;
+CFO 900 = 74 % vom Umsatz) und daraus der Modellabstand. Gegenprobe: derselbe
+Basisdatensatz **ohne** die Teilüberschreibung ergibt Ratio 2,83 und einen
+regulären Einstiegspreis.
+
+**Bewertung.** Das Produktverhalten ist korrekt — das Divergenz-Gate verweigert
+bei >3× Modellabstand bewusst eine Einstiegszone. Ungeeignet war der
+Testaufbau. Geändert wurde daher **ausschließlich das Fixture**; am Produkt
+wurde für Punkt 1 keine Zeile angefasst.
+
+**Fachliche Prüfabsicht, geklärt.** T-BRL* prüft das Modul *Base-Rate-Lite*
+(`computeBaseRateLite`, V1.0.35), dessen Modulkopf ausdrücklich sagt: „KEIN
+Einfluss auf Fair Value, Buy Price, MoS oder Verdict". Nicht gemeint ist
+`evaluateBaseRateWarnings()` aus Abschnitt 5 — dessen MoS-Zuschlag
+(+5pp/+10pp) ist gewollt und bleibt unberührt. Die alte Assertion
+(`buyPrice != null`) hat diese Absicht nicht geprüft, sondern nur die Existenz
+eines Werts.
+
+**Änderungen am Fixture (T-BRL1).**
+* Datensatz jetzt in sich konsistent: 8 Jahre, Umsatz-CAGR(5J) = 9,99 %, alle
+  Größen als fester Anteil vom Umsatz (EBIT 14,4 % · Net Income 12,0 % ·
+  CFO 18,0 % · EBITDA 19,0 % · CapEx 6,0 % · FCF = CFO − CapEx = 12,0 % ·
+  Eigenkapital 60 % · Fremdkapital 100 %). `g1 = 8` bleibt ≤ revCAGR ⇒
+  Rating weiterhin konservativ/plausibel. Divergenz 2,72× ⇒ Gate inaktiv.
+* Ein Datensatz-Builder `_brl1Mj()` für `mj:` **und** Assertions — die frühere
+  Dopplung war der Weg, auf dem beide Kopien auseinanderlaufen konnten.
+* Assertions (3 → 7):
+  1. BRL `available = true`
+  2. Rating konservativ/plausibel
+  3. **Vorbedingung gegen „null gleich null":** `buyPrice` ist eine endliche
+     Zahl > 0, `_modelDivergenceSevere !== true`, `_diagnosticOnlyReason ==
+     null`, `position !== 'blocked'`
+  4. Gegenprobe-Stub liefert wirklich ein abweichendes BRL-Urteil
+  5. **Kernprüfung:** `computeBaseRateLite` wird vorübergehend durch einen Stub
+     mit widersprechendem Urteil ('sehr ambitioniert') ersetzt; `buyPrice`,
+     `deepValuePrice`, `position`, `_qualityVerdict`, alle drei
+     `range`-Werte und `mosComponents.total` müssen **identisch** bleiben
+  6. `computeBaseRateLite` nach der Gegenprobe wiederhergestellt
+  7. `computeBaseRateLite` verändert das MasterJSON nicht (Mutation wäre der
+     stille Weg zu einem Einfluss)
+* **Neu: T-BRL1b** (4 Assertions) mit genau dem alten, widersprüchlichen
+  Datensatz: Divergenz > 3×, `_modelDivergenceSevere = true`,
+  `buyPrice === null`, Sperrgrund nennt die Modell-Divergenz. Damit ist
+  belegt, dass der korrigierte T-BRL1 das Gate nicht umgeht, sondern eine
+  geeignete Datenlage verwendet.
+
+Divergenzgrenzen, Bewertungsgewichte und Sicherheitsprüfungen blieben
+unverändert; kein Test wurde übersprungen.
+
+### Punkt 2 — Typfehler im Mehrheitsjahr-Fallback (Produktkorrektur)
+
+**Reproduktion am aktuellen Code.** `validatePeriodAlignment()` bildet
+`yearCounts` über `p.year` (Zahl aus `parseInt`), liest das Mehrheitsjahr aber
+über `Object.keys(yearCounts)` zurück — als **String**. Ohne bevorzugtes
+Ankerfeld (`revenue`/`net_income`/`eps_diluted`) wird dieser String zu
+`anchorYear`, und `populated.filter(p => p.year !== anchorYear)` vergleicht
+dann `2024 !== "2024"`. Gemessen vor der Korrektur:
+* genau ein Feld (`total_debt`, 2024): `ok: false`, Mismatch `total_debt@2024`
+  — ein Widerspruch gegen sich selbst;
+* drei Felder alle 2024: `ok: false`, alle drei als abweichend gemeldet;
+* echte Abweichung (2× 2024, 1× 2021): Mismatch-Liste enthielt zusätzlich die
+  beiden korrekt ausgerichteten 2024-Felder;
+* mit Ankerfeld: `anchorYear` korrekt als Zahl, `majorityYear` aber weiterhin
+  als String im Ergebnisobjekt.
+
+**Korrektur (eine Stelle, eine Zeile).** Das Ergebnis des `reduce` wird mit
+`Number(...)` zurück in eine Zahl gewandelt. Auswahllogik (häufigstes Jahr,
+erstes bei Gleichstand), Ankerpriorität und die Erkennung echter
+Periodenabweichungen bleiben unverändert. Kein lockerer Vergleich (`==`), keine
+Neugestaltung der Periodenlogik.
+
+**Pflichttests** — neu in `tests/sec-derivations.test.mjs` (dort war
+`validatePeriodAlignment` bereits geladen), 5 Tests:
+1. genau ein Feld mit Perioden-Meta ohne Ankerfeld ⇒ kein Mismatch gegen sich
+   selbst (inkl. `typeof majorityYear === 'number'` als eigentlicher
+   Regressionsschutz);
+2. mehrere Felder desselben Jahres ohne Ankerfeld ⇒ kein Mismatch;
+3. tatsächlich abweichende Jahre werden erkannt — und die Mismatch-Liste
+   enthält **nur** das abweichende Feld;
+4. bevorzugtes Ankerfeld behält Vorrang vor dem Mehrheitsjahr (`revenue`, und
+   zweitrangig `net_income`);
+5. fehlende/ungültige Perioden erzeugen keinen erfundenen Jahreswert
+   (`missing` unverändert, `anchorYear === undefined`).
+
+### Gegenprüfungen (tatsächlich ausgeführt)
+
+* **Alignment-Tests gegen die alte Implementierung:** `Number(...)` temporär
+  entfernt ⇒ **4 der 5** neuen Tests rot (Test 5 bleibt grün, weil er den
+  Mehrheitsjahr-Fallback gar nicht erreicht — genau das ist seine Aussage);
+  nach Wiedereinspielen 28/28.
+* **T-BRL1 erkennt einen unerwünschten BRL-Einfluss:** In einer Arbeitskopie
+  wurde `computeBaseRateLite` in den MoS-Pfad des Synthesizers eingehängt
+  (+10pp bei 'sehr ambitioniert') ⇒ `__brl1_noeffect` rot
+  (935 · 1 fehlgeschlagen).
+* **Divergenz-Gate weiterhin wirksam:** In einer Arbeitskopie den
+  `_modelDivergenceSevere`-Zweig abgeschaltet ⇒ T-BRL1b rot
+  (`buyPrice` 9,35 statt `null`; Sperrgrund fehlt).
+
+### Tatsächlich ausgeführte Tests (nach den Änderungen)
+
+`npm test` (= `node test/run-all.js`), beide Suiten laufen:
+* `node test/run-calc-tests.js` → **936 bestanden · 0 fehlgeschlagen ·
+  0 Fehler/Exceptions** (Fixtures: 434 Assertions, 0 fehlgeschlagen,
+  0 Pipeline-Fehler). Vorher 927 · 1; +8 neue Assertions (T-BRL1 +4,
+  T-BRL1b +4), der bisherige Fehlschlag ist behoben.
+* `node --test tests/*.test.mjs` → **28/28** (vorher 23/23, +5).
+* **Gemeinsamer Exit-Code 0** — `npm test` ist erstmals seit Chat 2 grün.
+
+Keine bestehende Testerwartung wurde an ein Ergebnis angepasst. Die einzige
+geänderte Erwartung ist die T-BRL1-Assertion selbst; sie wurde von einem
+inhaltsleeren Existenz-Check auf die dokumentierte Prüfabsicht umgestellt
+(Begründung oben).
+
+### Offene Einschränkungen / nur dokumentiert, nicht bearbeitet
+
+* Der T-BRL1-Datensatz liegt mit Divergenz 2,72× unter, aber nicht weit unter
+  der 3×-Schwelle. Das ist strukturell: In dieser Fixture-Familie liegt der
+  DCF wegen des Terminalwerts rund 2,6–2,8× über dem RIM (RIM-Spread-Fade bei
+  ROE ≈ 20 % gegen CoE 10 %). Assertion 3 macht sichtbar, falls eine künftige
+  Änderung den Fall wieder über die Schwelle schiebt.
+* Unverändert offen aus Chat 6/7: index-basierte Ableitung von `eps_diluted`,
+  `book_value` und `dps` in `applyDerivedFieldsV4`.
+* Unverändert offen aus Chat 8: kein manuelles Eingabefeld für den
+  Sicherheitsabschlag; Korrelationen der Monte-Carlo-Größen nicht modelliert;
+  `MC_CONFIG.seed` ist ein fester Programmwert.
+* `ENGINE_VERSION` / `DISPLAY_VERSION` / `REGRESSION_TEST_VERSION` weiterhin
+  nicht angehoben (durch Tests festgeschrieben); Änderung im Code als V1.0.41
+  kommentiert.
+* `_testPeriodAlignment` im Quelltext bleibt auskommentierter toter Code; der
+  Node-Runner führt ihn bewusst als bekannt-tot. Nicht angefasst.
+
+### Ausgangsstand für den nächsten Schritt
+
+Übergabebranch: `claude/brl1-alignment-fixes` (Basis `72d75c3` auf
+`claude/us-stock-tool-precision-og5azo`). Tool-Datei unverändert.
+Testbefehl: `npm test` — beide Suiten grün, Exit-Code 0.
+Abschlusscommit siehe Abschlussmeldung des Chats.
+Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/brl1-alignment-fixes
+
 ## Update (Chat 8): Weniger Scheinpräzision in Synthese und Monte Carlo (V1.0.40)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch

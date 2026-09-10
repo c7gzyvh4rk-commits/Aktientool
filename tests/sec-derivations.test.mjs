@@ -456,3 +456,117 @@ test('_joinPeriodKeyed: ohne periods-Meta wird nicht auf Index zurückgefallen',
   assert.equal(r.ok, false);
   assert.deepEqual(r.values, []);
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 10. validatePeriodAlignment — Mehrheitsjahr-Fallback (V1.0.41)
+//
+// Befund: Object.keys(yearCounts) liefert Strings ("2024"), p.year ist per
+// parseInt eine Zahl. Ohne Rückwandlung verglich der Fallback ohne bevorzugtes
+// Ankerfeld 2024 !== "2024" — jedes Feld galt als abweichend, auch das einzige
+// vorhandene. Die Erwartungswerte unten sind aus den Eingabejahren direkt
+// ablesbar und unabhängig von der Implementierung.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Minimal-MasterJSON: je Feld ein Wert plus periods-Meta.
+function mkAlignMj(spec) {
+  const f = { _v4_meta: {} };
+  for (const [field, period] of Object.entries(spec)) {
+    f[field] = [100];
+    f._v4_meta[field] = period === undefined ? {} : { periods: [period] };
+  }
+  return { fundamentals: f };
+}
+
+test('Period-Alignment: genau ein Feld ohne bevorzugtes Ankerfeld ⇒ kein Mismatch gegen sich selbst', () => {
+  // total_debt ist Core-Feld, aber nicht in ANCHOR_PRIORITY (revenue/net_income/
+  // eps_diluted) ⇒ der Mehrheitsjahr-Fallback greift. Ein einzelnes Feld kann
+  // nicht von sich selbst abweichen.
+  const r = A.validatePeriodAlignment(mkAlignMj({ total_debt: '2024-12-31' }));
+  assert.equal(r.ok, true);
+  assert.equal(r.anchorField, 'majority');
+  assert.equal(r.anchorYear, 2024);
+  assert.equal(typeof r.anchorYear, 'number');
+  assert.equal(r.majorityYear, 2024);
+  assert.equal(typeof r.majorityYear, 'number');   // eigentliche Regression
+  assert.equal(r.mismatch, undefined);
+});
+
+test('Period-Alignment: mehrere Felder desselben Jahres ohne Ankerfeld ⇒ kein Mismatch', () => {
+  // Drei Nicht-Anker-Felder, alle 2024 ⇒ ein einziges Jahr, keine Abweichung.
+  const r = A.validatePeriodAlignment(mkAlignMj({
+    total_debt: '2024-12-31',
+    capex: '2024-12-31',
+    cash_and_equivalents: '2024-12-31'
+  }));
+  assert.equal(r.ok, true);
+  assert.equal(r.anchorField, 'majority');
+  assert.equal(r.anchorYear, 2024);
+  assert.equal(r.mismatch, undefined);
+});
+
+test('Period-Alignment: tatsächlich abweichende Jahre werden weiterhin erkannt', () => {
+  // 2× 2024 gegen 1× 2021 ⇒ Mehrheitsjahr 2024; abweichend ist genau
+  // cash_and_equivalents. Vor der Korrektur enthielt die Mismatch-Liste
+  // zusätzlich die beiden korrekt ausgerichteten 2024-Felder.
+  const r = A.validatePeriodAlignment(mkAlignMj({
+    total_debt: '2024-12-31',
+    capex: '2024-12-31',
+    cash_and_equivalents: '2021-12-31'
+  }));
+  assert.equal(r.ok, false);
+  assert.equal(r.anchorField, 'majority');
+  assert.equal(r.anchorYear, 2024);
+  assert.deepEqual(r.mismatch.map(m => m.field), ['cash_and_equivalents']);
+  assert.equal(r.mismatch[0].year, 2021);
+});
+
+test('Period-Alignment: bevorzugtes Ankerfeld behält Vorrang vor dem Mehrheitsjahr', () => {
+  // revenue steht an erster Stelle der Ankerpriorität. Obwohl 2024 mit drei
+  // Feldern das Mehrheitsjahr ist, bleibt der Anker revenue mit 2025 — und
+  // genau die drei 2024-Felder gelten als abweichend.
+  const r = A.validatePeriodAlignment(mkAlignMj({
+    revenue: '2025-12-31',
+    total_debt: '2024-12-31',
+    capex: '2024-12-31',
+    cash_and_equivalents: '2024-12-31'
+  }));
+  assert.equal(r.ok, false);
+  assert.equal(r.anchorField, 'revenue');
+  assert.equal(r.anchorYear, 2025);
+  assert.equal(r.majorityYear, 2024);
+  assert.deepEqual(
+    r.mismatch.map(m => m.field).sort(),
+    ['capex', 'cash_and_equivalents', 'total_debt']
+  );
+
+  // Zweitrangiger Anker: ohne revenue übernimmt net_income vor dem Mehrheitsjahr.
+  const r2 = A.validatePeriodAlignment(mkAlignMj({
+    net_income: '2025-12-31',
+    total_debt: '2024-12-31',
+    capex: '2024-12-31'
+  }));
+  assert.equal(r2.anchorField, 'net_income');
+  assert.equal(r2.anchorYear, 2025);
+});
+
+test('Period-Alignment: fehlende oder ungültige Perioden erzeugen keinen Jahreswert', () => {
+  // capex ohne periods-Meta, total_debt mit einem String ohne Jahreszahl:
+  // beide landen in `missing`, keines wird zu einem erfundenen Jahr.
+  const r = A.validatePeriodAlignment(mkAlignMj({
+    total_debt: 'kein-jahr',
+    capex: undefined
+  }));
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.missing.sort(), ['capex', 'total_debt']);
+  assert.equal(r.anchorYear, undefined);
+  assert.equal(r.majorityYear, undefined);
+
+  // Feld ganz ohne Wert bleibt unberücksichtigt, blockiert aber den gültigen
+  // Anker nicht: revenue trägt weiterhin 2025.
+  const mj = mkAlignMj({ revenue: '2025-12-31', total_debt: '2024-12-31' });
+  mj.fundamentals.total_debt = [null];
+  const r2 = A.validatePeriodAlignment(mj);
+  assert.equal(r2.ok, true);
+  assert.equal(r2.anchorField, 'revenue');
+  assert.equal(r2.anchorYear, 2025);
+});

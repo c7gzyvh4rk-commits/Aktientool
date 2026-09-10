@@ -11632,9 +11632,18 @@ function validatePeriodAlignment(mj) {
   if (populated.length === 0) return { ok: true, missing };
 
   // Majority-Jahr
+  // V1.0.41 — Typkorrektur: Object.keys() liefert Strings ("2024"), p.year ist
+  // jedoch eine Zahl (parseInt in _yearOf). Ohne die Rückwandlung verglich der
+  // Fallback ohne bevorzugtes Ankerfeld unten `2024 !== "2024"` — jedes Feld
+  // galt dann als abweichend, auch das einzige vorhandene (Mismatch gegen sich
+  // selbst), und bei einer echten Abweichung enthielt die Mismatch-Liste
+  // zusätzlich alle korrekt ausgerichteten Felder. Die Auswahllogik selbst
+  // (häufigstes Jahr, erstes bei Gleichstand) bleibt unverändert.
   const yearCounts = {};
   for (const p of populated) yearCounts[p.year] = (yearCounts[p.year] || 0) + 1;
-  const majorityYear = Object.keys(yearCounts).reduce((a, b) => yearCounts[a] >= yearCounts[b] ? a : b);
+  const majorityYear = Number(
+    Object.keys(yearCounts).reduce((a, b) => yearCounts[a] >= yearCounts[b] ? a : b)
+  );
 
   // Anchor bevorzugt aus: revenue → net_income → eps_diluted → majorityYear
   const ANCHOR_PRIORITY = ['revenue', 'net_income', 'eps_diluted'];
@@ -27578,38 +27587,123 @@ const REGRESSION_FIXTURES = [
 
 
   // ── T-BRL1: Base-Rate-Lite — konservativer/plausibler Fall ───────────────────
+  //
+  // V1.0.41 — Fixture korrigiert (Befund und Begründung):
+  // Der bisherige Datensatz überschrieb NUR revenue/ebit/fcf auf eine Firma der
+  // Größenordnung ~1.200 Mio Umsatz und ließ net_income, eps_diluted,
+  // total_equity, cfo, ebitda, capex und shares auf den Werten des
+  // 5.000-Mio-Basisdatensatzes stehen. Daraus entstanden unmögliche Relationen
+  // (EBITDA 950 bei Umsatz 1.210 = 78 % Marge, CapEx 25 % vom Umsatz) und —
+  // als Folge — ein DCF von 15,62 gegen einen RIM von 5,13 je Aktie, also
+  // Ratio 3,05x. Das bestehende Divergenz-Gate (>3x) sperrte deshalb korrekt
+  // den Einstiegspreis. Der Fehlschlag lag am Fixture, nicht am Produkt.
+  //
+  // Der Datensatz ist jetzt in sich konsistent (alle Größen proportional zur
+  // Umsatzreihe, ~10 % Umsatz-CAGR, g1 = 8 ⇒ konservativ/plausibel). Die
+  // Divergenz liegt damit bei ~2,72x, das Gate greift nicht, und es entsteht
+  // ein regulärer Einstiegspreis — die Voraussetzung dafür, dass der
+  // BRL-Vergleich überhaupt etwas aussagt (kein „null gleich null").
+  //
+  // Prüfabsicht unverändert: Base-Rate-Lite (computeBaseRateLite, V1.0.35) ist
+  // laut Modulkopf ohne Einfluss auf Fair Value, Buy Price, MoS und Verdict.
+  // NICHT gemeint ist evaluateBaseRateWarnings() aus Abschnitt 5 — dessen
+  // MoS-Zuschlag ist ausdrücklich gewollt und bleibt unberührt.
+  //
+  // Ein Datensatz, zwei Verwendungen (mj + Assertions): die frühere Dopplung
+  // war der Weg, auf dem beide Kopien auseinanderlaufen konnten.
+  function _brl1Mj() {
+    var mj = _makeMj(45, 45000);
+    // 8 Jahre, Umsatz-CAGR(5J) = 9,99 %; alle Größen als fester Anteil vom Umsatz:
+    // EBIT 14,4 % · Net Income 12,0 % · CFO 18,0 % · EBITDA 19,0 % · CapEx 6,0 %
+    // FCF = CFO − CapEx = 12,0 % · Eigenkapital 60 % · Fremdkapital 100 % vom Umsatz
+    mj.fundamentals.revenue             = [2143.0, 1948.0, 1771.0, 1610.0, 1464.0, 1331.0, 1210.0, 1100.0];
+    mj.fundamentals.ebit                = [ 308.6,  280.5,  255.0,  231.8,  210.8,  191.7,  174.2,  158.4];
+    mj.fundamentals.net_income          = [ 257.2,  233.8,  212.5,  193.2,  175.7,  159.7,  145.2,  132.0];
+    mj.fundamentals.cfo                 = [ 385.7,  350.6,  318.8,  289.8,  263.5,  239.6,  217.8,  198.0];
+    mj.fundamentals.operating_cash_flow = [ 385.7,  350.6,  318.8,  289.8,  263.5,  239.6,  217.8,  198.0];
+    mj.fundamentals.ebitda              = [ 407.2,  370.1,  336.5,  305.9,  278.2,  252.9,  229.9,  209.0];
+    mj.fundamentals.capex               = [ 128.6,  116.9,  106.3,   96.6,   87.8,   79.9,   72.6,   66.0];
+    mj.fundamentals.fcf                 = [ 257.1,  233.7,  212.5,  193.2,  175.7,  159.7,  145.2,  132.0];
+    mj.fundamentals.total_equity        = [1285.8, 1168.8, 1062.6,  966.0,  878.4,  798.6,  726.0,  660.0];
+    mj.fundamentals.total_liabilities   = [2143.0, 1948.0, 1771.0, 1610.0, 1464.0, 1331.0, 1210.0, 1100.0];
+    mj.fundamentals.total_assets        = [3428.8, 3116.8, 2833.6, 2576.0, 2342.4, 2129.6, 1936.0, 1760.0];
+    mj.fundamentals.total_debt          = [ 514.3,  467.5,  425.0,  386.4,  351.4,  319.4,  290.4,  264.0];
+    mj.fundamentals.cash_and_equivalents= [ 342.9,  311.7,  283.4,  257.6,  234.2,  213.0,  193.6,  176.0];
+    mj.fundamentals.eps_diluted         = [0.257, 0.235, 0.215, 0.196, 0.179, 0.164, 0.150, 0.137];
+    mj.valuation.growth_stage1   = 8;     // <= revCAGR (9,99) ⇒ konservativ
+    mj.valuation.growth_terminal = 2.5;
+    return mj;
+  }
+
   REGRESSION_FIXTURES.push({
     id: 'T-BRL1',
-    label: 'T-BRL1: Base-Rate-Lite — konservativer/plausibler Fall (g1 <= revCAGR+2)',
-    mj: (() => {
-      var mj = _makeMj(45, 45000);
-      // Revenue: 5 Datenpunkte, CAGR ~10%; g1=8 (konservativ/plausibel)
-      mj.fundamentals.revenue = [1210, 1100, 1000, 900, 800];
-      mj.fundamentals.ebit    = [242, 220, 190, 162, 140];
-      mj.fundamentals.fcf     = [200, 180, 155, 130, 100];
-      mj.valuation.growth_stage1    = 8;
-      mj.valuation.growth_terminal  = 2.5;
-      return mj;
-    })(),
+    label: 'T-BRL1: Base-Rate-Lite — konservativer/plausibler Fall (g1 <= revCAGR+2), ohne Einfluss auf die Einstiegszone',
+    mj: _brl1Mj(),
     assertions: (() => {
-      var _mj = (() => {
-        var mj = _makeMj(45, 45000);
-        mj.fundamentals.revenue = [1210, 1100, 1000, 900, 800];
-        mj.fundamentals.ebit    = [242, 220, 190, 162, 140];
-        mj.fundamentals.fcf     = [200, 180, 155, 130, 100];
-        mj.valuation.growth_stage1    = 8;
-        mj.valuation.growth_terminal  = 2.5;
-        return mj;
-      })();
+      var _mj = _brl1Mj();
+
       var brl;
       try { brl = computeBaseRateLite(_mj, null, null); } catch(e) { brl = null; }
-      var _avail    = brl ? brl.available : false;
-      var _rating   = brl ? brl.overallRating : 'error';
-      var _isConPl  = _rating === 'konservativ' || _rating === 'plausibel';
-      // Synthese: BRL darf buyPrice/mosComponents.total nicht verändern
-      var _syn;
+      var _avail   = brl ? brl.available : false;
+      var _rating  = brl ? brl.overallRating : 'error';
+      var _isConPl = _rating === 'konservativ' || _rating === 'plausibel';
+
+      // (a) Regulärer Einstiegspreis: echte Zahl > 0 UND Divergenz-Gate inaktiv.
+      //     Ohne diese Vorbedingung wäre der Vergleich unten inhaltsleer.
+      var _syn = null;
       try { _syn = _runSyn(_mj); } catch(e) { _syn = null; }
-      var _buyOk = _syn ? (_syn.buyPrice != null) : false; // nur Existenz-Check
+      var _buyRegular = !!(_syn
+        && typeof _syn.buyPrice === 'number' && isFinite(_syn.buyPrice) && _syn.buyPrice > 0
+        && _syn._modelDivergenceSevere !== true
+        && _syn._diagnosticOnlyReason == null
+        && _syn.position !== 'blocked');
+
+      // (b) Kein Einfluss von Base-Rate-Lite auf die Entscheidungsgrößen.
+      //     Nachweis durch Gegenprobe: computeBaseRateLite wird vorübergehend
+      //     durch einen Stub ersetzt, der ein ABWEICHENDES Urteil liefert
+      //     ('sehr ambitioniert' statt konservativ/plausibel). Würde die
+      //     Synthese Base-Rate-Lite irgendwo lesen, müssten sich Fair Value,
+      //     Einstiegspreis, MoS oder Position ändern.
+      var _noEffect = false, _stubRating = null, _restored = false;
+      try {
+        var _orig = computeBaseRateLite;
+        var _synReal = _runSyn(_mj);
+        try {
+          computeBaseRateLite = function() {
+            return { available: true, overallRating: 'sehr ambitioniert',
+                     overallColor: 'var(--danger)', historicProfile: null,
+                     comparisons: [], insufficientReason: null,
+                     diagnosticNote: 'Gegenprobe-Stub (T-BRL1)' };
+          };
+          _stubRating = computeBaseRateLite(_mj, null, null).overallRating;
+          var _synStub = _runSyn(_mj);
+          _noEffect = !!(_synReal && _synStub
+            && _synReal.buyPrice        === _synStub.buyPrice
+            && _synReal.deepValuePrice  === _synStub.deepValuePrice
+            && _synReal.position        === _synStub.position
+            && _synReal._qualityVerdict === _synStub._qualityVerdict
+            && _synReal.range && _synStub.range
+            && _synReal.range.base         === _synStub.range.base
+            && _synReal.range.conservative === _synStub.range.conservative
+            && _synReal.range.optimistic   === _synStub.range.optimistic
+            && _synReal.mosComponents && _synStub.mosComponents
+            && _synReal.mosComponents.total === _synStub.mosComponents.total);
+        } finally {
+          computeBaseRateLite = _orig;
+          _restored = (computeBaseRateLite === _orig);
+        }
+      } catch(e) { _noEffect = false; }
+
+      // (c) computeBaseRateLite darf das MasterJSON nicht verändern — eine
+      //     Mutation wäre der stille Weg, auf dem BRL doch einwirken könnte.
+      var _noMutation = false;
+      try {
+        var _probe  = _brl1Mj();
+        var _before = JSON.stringify(_probe);
+        computeBaseRateLite(_probe, null, null);
+        _noMutation = (JSON.stringify(_probe) === _before);
+      } catch(e) { _noMutation = false; }
+
       return [
         { path: '__brl1_avail', expected: true, op: 'eq',
           label: 'T-BRL1: BRL available=true (genug Revenue-Daten)',
@@ -27617,9 +27711,61 @@ const REGRESSION_FIXTURES = [
         { path: '__brl1_rating', expected: true, op: 'eq',
           label: 'T-BRL1: overallRating = konservativ oder plausibel',
           _value: _isConPl },
+        { path: '__brl1_buyprice_regular', expected: true, op: 'eq',
+          label: 'T-BRL1: regulärer Einstiegspreis vorhanden (Divergenz-Gate inaktiv) — Vorbedingung des Vergleichs',
+          _value: _buyRegular },
+        { path: '__brl1_stub_rating', expected: 'sehr ambitioniert', op: 'eq',
+          label: 'T-BRL1: Gegenprobe-Stub liefert wirklich ein abweichendes BRL-Urteil',
+          _value: _stubRating },
         { path: '__brl1_noeffect', expected: true, op: 'eq',
-          label: 'T-BRL1: synthesis.buyPrice existiert (BRL kein Einfluss)',
-          _value: _buyOk },
+          label: 'T-BRL1: abweichendes BRL-Urteil ändert Fair Value, Einstiegspreis, MoS und Position nicht',
+          _value: _noEffect },
+        { path: '__brl1_restored', expected: true, op: 'eq',
+          label: 'T-BRL1: computeBaseRateLite nach der Gegenprobe wiederhergestellt',
+          _value: _restored },
+        { path: '__brl1_nomutation', expected: true, op: 'eq',
+          label: 'T-BRL1: computeBaseRateLite verändert das MasterJSON nicht',
+          _value: _noMutation },
+      ];
+    })()
+  });
+
+  // ── T-BRL1b: Gegenstück — bewusst ungeeigneter Fall, Gate muss sperren ───────
+  // Genau der frühere, in sich widersprüchliche T-BRL1-Datensatz: revenue/ebit/
+  // fcf auf ~1.200 Mio, der Rest auf 5.000-Mio-Basis. Er belegt, dass das
+  // Divergenz-Gate weiterhin wirksam ist und der korrigierte T-BRL1 es nicht
+  // umgeht, sondern eine geeignete Datenlage verwendet.
+  function _brl1bMj() {
+    var mj = _makeMj(45, 45000);
+    mj.fundamentals.revenue = [1210, 1100, 1000, 900, 800];
+    mj.fundamentals.ebit    = [242, 220, 190, 162, 140];
+    mj.fundamentals.fcf     = [200, 180, 155, 130, 100];
+    mj.valuation.growth_stage1    = 8;
+    mj.valuation.growth_terminal  = 2.5;
+    return mj;
+  }
+
+  REGRESSION_FIXTURES.push({
+    id: 'T-BRL1b',
+    label: 'T-BRL1b: ungeeignete Datenlage (DCF/RIM > 3x) — Divergenz-Gate sperrt den Einstiegspreis weiterhin',
+    mj: _brl1bMj(),
+    assertions: (() => {
+      var _syn = null;
+      try { _syn = _runSyn(_brl1bMj()); } catch(e) { _syn = null; }
+      var _ratio = _syn ? _syn._divergenceRatio : null;
+      return [
+        { path: '__brl1b_ratio', expected: true, op: 'eq',
+          label: 'T-BRL1b: gewichtete Modell-Divergenz liegt über der 3x-Schwelle',
+          _value: !!(_ratio != null && _ratio > 3) },
+        { path: '__brl1b_severe', expected: true, op: 'eq',
+          label: 'T-BRL1b: _modelDivergenceSevere ist gesetzt',
+          _value: !!(_syn && _syn._modelDivergenceSevere === true) },
+        { path: '__brl1b_noprice', expected: null, op: 'eq',
+          label: 'T-BRL1b: kein Einstiegspreis trotz verfügbarer Modelle',
+          _value: _syn ? _syn.buyPrice : 'keine Synthese' },
+        { path: '__brl1b_reason', expected: true, op: 'eq',
+          label: 'T-BRL1b: Sperrgrund nennt die Modell-Divergenz',
+          _value: !!(_syn && /Modell-Divergenz/.test(String(_syn.blockReason || ''))) },
       ];
     })()
   });
