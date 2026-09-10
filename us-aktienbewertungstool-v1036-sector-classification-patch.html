@@ -2923,6 +2923,74 @@ const SYNTHESIS_CONFIG = {
   }
 };
 
+// ── V1.0.43: EINE Prüfstelle für den manuell gewählten Sicherheitsabschlag ──
+// Vorher wandelte die Synthese die Eingabe direkt mit Number(...) um. Damit
+// wurden `false` und " " zu 0 % und `true` zu 1 % — also zu einem angeblich
+// bewusst gewählten Abschlag. Der Datentyp wird jetzt VOR der Umwandlung
+// geprüft, und dieselbe Funktion bedient Import, Formular und Synthese.
+//
+// Rückgabe: { status: 'unset' | 'valid' | 'rejected', pct, reason }
+//   unset    — keine Wahl getroffen (fehlt, null, leerer String, nur Leerzeichen)
+//              ⇒ der Regelabschlag gilt, ohne Meldung
+//   valid    — Zahl in [0, maxPct]; 0 ist eine gültige bewusste Wahl
+//   rejected — Datentyp oder Wertebereich unzulässig ⇒ Regelabschlag gilt,
+//              mit nachvollziehbarem Grund
+function parseManualSafetyDiscount(raw, maxPct) {
+  const max = (maxPct != null) ? maxPct
+    : ((SYNTHESIS_CONFIG.mos && SYNTHESIS_CONFIG.mos.manual_max_pct != null)
+        ? SYNTHESIS_CONFIG.mos.manual_max_pct : 90);
+  const unset  = { status: 'unset',    pct: null, reason: null };
+  const reject = (r) => ({ status: 'rejected', pct: null, reason: r });
+
+  if (raw === undefined || raw === null) return unset;
+
+  // Objektform { value, source_type, notes } auspacken — Listen sind kein
+  // Einzelwert und werden ausdrücklich zurückgewiesen (nicht still ignoriert).
+  let v = raw;
+  if (Array.isArray(raw)) {
+    return reject('Liste statt einzelner Zahl — Regelabschlag bleibt aktiv');
+  }
+  if (typeof raw === 'object') {
+    if (!Object.prototype.hasOwnProperty.call(raw, 'value')) {
+      return reject('Objekt ohne Feld "value" — Regelabschlag bleibt aktiv');
+    }
+    v = raw.value;
+    if (Array.isArray(v) || (v !== null && typeof v === 'object')) {
+      return reject('Feld "value" enthält keinen Einzelwert — Regelabschlag bleibt aktiv');
+    }
+  }
+
+  if (v === undefined || v === null) return unset;
+
+  let n;
+  if (typeof v === 'number') {
+    n = v;
+  } else if (typeof v === 'string') {
+    const t = v.trim();
+    // Leerer String und reine Leerzeichen sind KEINE Wahl von 0 %.
+    if (t === '') return unset;
+    // Nur eindeutig numerische Strings — kein Number('') / Number(' ')-Effekt.
+    if (!/^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/.test(t)) {
+      return reject('keine Zahl: "' + v + '" — Regelabschlag bleibt aktiv');
+    }
+    n = Number(t);
+  } else {
+    // Boolesche Werte, Funktionen, Symbole: kein bewusst gewählter Abschlag.
+    return reject('unzulässiger Datentyp ' + (typeof v) + ' (' + String(v)
+      + ') — nur Zahlen gelten als bewusste Wahl; Regelabschlag bleibt aktiv');
+  }
+
+  if (!isFinite(n)) {
+    return reject('keine endliche Zahl: ' + String(v) + ' — Regelabschlag bleibt aktiv');
+  }
+  if (n < 0 || n > max) {
+    return reject('ausserhalb des zulaessigen Bereichs 0–' + max + ' % (erhalten: ' + n
+      + ') — Regelabschlag bleibt aktiv');
+  }
+  return { status: 'valid', pct: n, reason: null };
+}
+
+
 function g(id) { return document.getElementById(id); }
 function v(id) { const el = g(id); return el ? (parseFloat(el.value) || 0) : 0; }
 function fmt(n) { return n != null && !isNaN(n) ? n.toLocaleString('de-DE', {minimumFractionDigits:2, maximumFractionDigits:2}) : '–'; }
@@ -4979,6 +5047,30 @@ function migrateV3toV4(obj) {
   for (const [v3k, v4k] of Object.entries(V3_TO_ASS)) {
     if (val[v3k] != null && val.assumptions[v4k] == null) {
       val.assumptions[v4k] = { value: val[v3k], source_type: 'manual', notes: 'migriert aus v3' };
+    }
+  }
+
+  // ── V1.0.43: manuell gewählten Sicherheitsabschlag auf das Annahmen-Objekt
+  // normieren. Vorher blieb eine direkt eingetragene Zahl (z.B. 40) eine Zahl;
+  // renderAssumptions() liest aber nur `.value`, zeigte ein leeres Feld — und
+  // recalcFromAssumptions() löschte die Wahl anschließend als "leer".
+  // WICHTIG: nur bereits GÜLTIGE Eingaben werden normiert. Ungültige Werte
+  // bleiben unverändert stehen und werden von der Synthese mit Grund
+  // zurückgewiesen — die Normalisierung macht aus ihnen keine gültige Zahl.
+  if (Object.prototype.hasOwnProperty.call(val.assumptions, 'safety_discount_override_pct')) {
+    const _mosRawImp = val.assumptions.safety_discount_override_pct;
+    const _mosImp = parseManualSafetyDiscount(_mosRawImp);
+    if (_mosImp.status === 'valid') {
+      if (_mosRawImp && typeof _mosRawImp === 'object' && !Array.isArray(_mosRawImp)) {
+        // Vorhandenes Objekt samt Metadaten erhalten, Wert numerisch führen.
+        _mosRawImp.value = _mosImp.pct;
+        if (_mosRawImp.source_type == null) _mosRawImp.source_type = 'manual';
+      } else {
+        val.assumptions.safety_discount_override_pct = {
+          value: _mosImp.pct, source_type: 'manual',
+          notes: 'manuell gewählter Sicherheitsabschlag (Direkteingabe normalisiert)'
+        };
+      }
     }
   }
 
@@ -12996,26 +13088,17 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
   // damit die Synthese rein und testbar bleibt.
   // Fehlende, leere oder unplausible Eingaben werden NICHT als 0 gelesen:
   // sie lassen den Regelabschlag unveraendert und werden mit Grund gemeldet.
+  // V1.0.43: Datentyp-Pruefung VOR der Zahlenumwandlung — dieselbe Pruefstelle
+  // wie Import und Formular (parseManualSafetyDiscount). Fruehere Fassung nutzte
+  // Number(...) direkt und machte aus `false` / " " ein gewaehltes 0 % und aus
+  // `true` ein gewaehltes 1 %.
   const _mosManualMaxPct = (mc.manual_max_pct != null) ? mc.manual_max_pct : 90;
   const _mosManualRaw = (mj && mj.valuation && mj.valuation.assumptions)
     ? mj.valuation.assumptions.safety_discount_override_pct : null;
-  const _mosManualVal = (_mosManualRaw && typeof _mosManualRaw === 'object')
-    ? _mosManualRaw.value : _mosManualRaw;
-  let _mosManualActive   = false;
-  let _mosManualPct      = null;   // gewaehlter Wert in Prozentpunkten
-  let _mosManualRejected = null;   // Grund, falls eine Eingabe verworfen wurde
-  if (_mosManualVal !== null && _mosManualVal !== undefined && _mosManualVal !== '') {
-    const _v = Number(_mosManualVal);
-    if (!isFinite(_v)) {
-      _mosManualRejected = 'keine Zahl: ' + String(_mosManualVal) + ' — Regelabschlag bleibt aktiv';
-    } else if (_v < 0 || _v > _mosManualMaxPct) {
-      _mosManualRejected = 'ausserhalb des zulaessigen Bereichs 0–' + _mosManualMaxPct
-        + ' % (erhalten: ' + _v + ') — Regelabschlag bleibt aktiv';
-    } else {
-      _mosManualActive = true;
-      _mosManualPct    = _v;
-    }
-  }
+  const _mosParsed = parseManualSafetyDiscount(_mosManualRaw, _mosManualMaxPct);
+  const _mosManualActive   = (_mosParsed.status === 'valid');
+  const _mosManualPct      = _mosParsed.pct;      // gewaehlter Wert in Prozentpunkten
+  const _mosManualRejected = _mosParsed.reason;   // Grund, falls eine Eingabe verworfen wurde
   const mosTotalFinal = _mosManualActive ? (_mosManualPct / 100) : _mosRuleTotal;
 
   // V1.0.14: Starter-Zone-Berechnung (diagnostisch, keine Entscheidungsänderung)
@@ -15118,9 +15201,10 @@ function recalcFromAssumptions() {
     { id: 'as-fade-from', path: ['valuation','fade','from_year'] },
     { id: 'as-tom',       path: ['valuation','assumptions','target_op_margin_pct','value'] },
     { id: 'as-mcm',       path: ['valuation','assumptions','midcycle_margin_pct','value'] },
-    { id: 'as-owc',       path: ['valuation','assumptions','owc_pct_of_revenue','value'] },
-    // V1.0.42: manuell gewaehlter Sicherheitsabschlag (Prozentpunkte).
-    { id: 'as-mos',       path: ['valuation','assumptions','safety_discount_override_pct','value'] }
+    { id: 'as-owc',       path: ['valuation','assumptions','owc_pct_of_revenue','value'] }
+    // as-mos steht bewusst NICHT hier: der Sicherheitsabschlag wird als
+    // Annahmen-Objekt geführt und ein leeres Feld nimmt die Wahl zurück
+    // (kein 0 %). Eigener Pfad weiter unten.
   ];
   fields.forEach(f => {
     const el = g(f.id);
@@ -15146,24 +15230,39 @@ function recalcFromAssumptions() {
     obj[f.path[f.path.length - 1]] = val;
   });
 
-  // V1.0.42: leeres Eingabefeld nimmt die manuelle Wahl ZURUECK (Regelabschlag gilt
-  // wieder). Es wird ausdruecklich NICHT als 0 % gelesen.
+  // ── V1.0.42/43: manuell gewaehlter Sicherheitsabschlag ─────────────────
+  // Eigener Pfad statt der generischen fields-Liste: der Wert wird als
+  // Annahmen-OBJEKT gefuehrt (sonst laufen Import, Formular und Synthese
+  // auseinander), ein LEERES Feld nimmt die Wahl zurueck und wird
+  // ausdruecklich nicht als 0 % gelesen.
   {
     const _elMos = g('as-mos');
-    if (_elMos && _elMos.value === '') {
-      const _assMos = state.masterJson.valuation && state.masterJson.valuation.assumptions;
-      if (_assMos && _assMos.safety_discount_override_pct) {
+    if (_elMos) {
+      if (!state.masterJson.valuation.assumptions) state.masterJson.valuation.assumptions = {};
+      const _assMos = state.masterJson.valuation.assumptions;
+      const _rawMos = _elMos.value;
+      if (String(_rawMos).trim() === '') {
         delete _assMos.safety_discount_override_pct;
+        if (state.manualAssumptionFields) state.manualAssumptionFields.delete('safety_discount_override_pct');
+      } else {
+        const _pMos = parseManualSafetyDiscount(_rawMos);
+        const _prevMos = _assMos.safety_discount_override_pct;
+        if (_pMos.status === 'valid') {
+          if (_prevMos && typeof _prevMos === 'object' && !Array.isArray(_prevMos)) {
+            _prevMos.value = _pMos.pct;          // Metadaten des Objekts erhalten
+            _prevMos.source_type = 'manual';
+          } else {
+            _assMos.safety_discount_override_pct = { value: _pMos.pct, source_type: 'manual',
+              notes: 'manuell gewählter Sicherheitsabschlag (Annahmen-Tab)' };
+          }
+        } else {
+          // Ungueltige Eingabe unveraendert hinterlegen — die Synthese weist sie
+          // mit Grund zurueck, statt sie still als Zahl zu deuten.
+          _assMos.safety_discount_override_pct = { value: _rawMos, source_type: 'manual',
+            notes: 'ungültige Eingabe im Annahmen-Tab' };
+        }
+        if (state.manualAssumptionFields) state.manualAssumptionFields.add('safety_discount_override_pct');
       }
-      if (state.manualAssumptionFields) state.manualAssumptionFields.delete('safety_discount_override_pct');
-    } else if (_elMos) {
-      const _assMos2 = state.masterJson.valuation && state.masterJson.valuation.assumptions;
-      if (_assMos2 && _assMos2.safety_discount_override_pct
-          && typeof _assMos2.safety_discount_override_pct === 'object') {
-        _assMos2.safety_discount_override_pct.source_type = 'manual';
-        _assMos2.safety_discount_override_pct.notes = 'manuell gewählter Sicherheitsabschlag (Annahmen-Tab)';
-      }
-      if (state.manualAssumptionFields) state.manualAssumptionFields.add('safety_discount_override_pct');
     }
   }
 
@@ -18194,7 +18293,12 @@ function renderAssumptions(keepValues) {
         <span class="alabel">✎ Sicherheitsabschlag manuell (%)
           <span class="sensitive-hint">Gewählte Größe, KEIN Modellergebnis: wirkt nur auf Einstiegspreis und tiefen Prüfpreis, nie auf den Modellwert. Leer = Regelabschlag aus dem Regelwerk.</span>
         </span>
-        <input type="number" id="as-mos" step="1" min="0" max="${SYNTHESIS_CONFIG.mos.manual_max_pct}" value="${get(['valuation','assumptions','safety_discount_override_pct','value'], '') ?? ''}">
+        <input type="number" id="as-mos" step="1" min="0" max="${SYNTHESIS_CONFIG.mos.manual_max_pct}" value="${(() => {
+          // V1.0.43: über dieselbe Prüfstelle lesen wie Import und Synthese —
+          // sonst bleibt eine direkt eingetragene Zahl im Formular unsichtbar.
+          const _p = parseManualSafetyDiscount(get(['valuation','assumptions','safety_discount_override_pct'], null));
+          return _p.status === 'valid' ? _p.pct : '';
+        })()}">
       </div>
       <div class="assumption-row">
         <span class="alabel">✎ Aktueller Kurs ${srcBadge(getAssumptionSource(mj,'price'))}
@@ -31402,6 +31506,221 @@ function _testSynthesisPrecision() {
       syn40.safetyDiscount.starterZoneBasis === 'rule_structural'
       && syn40.starterZonePrice >= syn40.buyPrice - 1e-12,
       'erhalten: ' + syn40.starterZonePrice + ' vs ' + syn40.buyPrice);
+  }
+
+  // ── S-13: Datentyp-Prüfung des manuellen Abschlags (Fehler 1, V1.0.43) ─
+  // Vorher wandelte die Synthese die Eingabe direkt mit Number(...) um:
+  // `false` und " " wurden zu einem "gewählten" 0 %, `true` zu 1 %. Der
+  // Einstiegspreis stieg dadurch von 17,25 (Regelabschlag) auf 23,00.
+  suite('S-13 Datentyp-Prüfung des manuellen Abschlags');
+  {
+    const runMos2 = (val, omit) => {
+      const mj = mkSynMj();
+      if (!omit) mj.valuation.assumptions.safety_discount_override_pct = val;
+      return runFairValueSynthesizer(mj, mkVr(false), null, SYNTHESIS_CONFIG);
+    };
+    const RULE = SYNTHESIS_CONFIG.mos.caution_quality;   // 0.25
+    const BASE = 23.00, CONS = 18.40;
+    const ruleEntry = BASE * (1 - RULE);                 // 17.25
+    const ruleDeep  = CONS * (1 - RULE);                 // 13.80
+
+    // (a) Zurückgewiesene Datentypen: Regelabschlag gilt, mit Grund.
+    const rejects = [
+      ['false',          false],
+      ['true',           true],
+      ['{value:false}',  { value: false, source_type: 'manual' }],
+      ['{value:true}',   { value: true,  source_type: 'manual' }],
+      ['[]',             []],
+      ['[40]',           [40]],
+      ['{} ohne value',  {}],
+      ['{value:{}}',     { value: {} }],
+      ['"40%"',          '40%'],
+      ['Infinity',       Infinity]
+    ];
+    rejects.forEach(([lbl, val], i) => {
+      const sy = runMos2(val);
+      const sd = sy.safetyDiscount;
+      check('S-13a' + i + ': ' + lbl + ' wird zurückgewiesen, Regelabschlag bleibt',
+        sd.kind === 'chosen_rule_based' && sd.manual.active === false
+        && sd.manual.valuePct === null
+        && approx(sd.total, RULE, 1e-12)
+        && approx(sy.buyPrice, ruleEntry, 1e-9)
+        && approx(sy.deepValuePrice, ruleDeep, 1e-9)
+        && typeof sd.manual.rejectedReason === 'string' && sd.manual.rejectedReason.length > 0,
+        'erhalten: total ' + sd.total + ' · buyPrice ' + sy.buyPrice
+        + ' · manual ' + JSON.stringify(sd.manual));
+    });
+
+    // (b) "Keine Wahl": fehlt, null, leerer String, reine Leerzeichen.
+    //     ⇒ Regelabschlag OHNE Meldung (das ist kein Fehler des Anwenders).
+    const unsets = [['nicht gesetzt', undefined, true], ['null', null, false],
+                    ['""', '', false], ['"   "', '   ', false],
+                    ['{value:null}', { value: null }, false],
+                    ['{value:"  "}', { value: '  ' }, false]];
+    unsets.forEach(([lbl, val, omit], i) => {
+      const sy = runMos2(val, omit);
+      const sd = sy.safetyDiscount;
+      check('S-13b' + i + ': ' + lbl + ' ist keine manuelle Wahl (kein 0 %)',
+        sd.kind === 'chosen_rule_based' && sd.manual.active === false
+        && sd.manual.rejectedReason == null
+        && approx(sd.total, RULE, 1e-12) && approx(sy.buyPrice, ruleEntry, 1e-9),
+        'erhalten: total ' + sd.total + ' · buyPrice ' + sy.buyPrice
+        + ' · manual ' + JSON.stringify(sd.manual));
+    });
+
+    // (c) Gültige Eingaben bleiben gültig — direkt und unter .value.
+    //     23,00 × (1 − 0,40) = 13,80 · ausdrücklich 0 % ⇒ 23,00.
+    const valids = [['40', 40, 40, 13.80], ['"40"', '40', 40, 13.80],
+                    ['{value:40}', { value: 40, source_type: 'manual' }, 40, 13.80],
+                    ['0', 0, 0, 23.00], ['"0"', '0', 0, 23.00],
+                    ['{value:0}', { value: 0 }, 0, 23.00],
+                    ['" 40 "', ' 40 ', 40, 13.80]];
+    valids.forEach(([lbl, val, pct, entry], i) => {
+      const sy = runMos2(val);
+      const sd = sy.safetyDiscount;
+      check('S-13c' + i + ': ' + lbl + ' bleibt eine gültige bewusste Wahl',
+        sd.kind === 'chosen_manual' && sd.manual.active === true
+        && sd.manual.valuePct === pct && approx(sd.total, pct / 100, 1e-12)
+        && approx(sy.buyPrice, entry, 1e-9),
+        'erhalten: ' + JSON.stringify([sd.manual.valuePct, sd.total, sy.buyPrice]));
+      check('S-13d' + i + ': ' + lbl + ' lässt Modellwert und Szenarien unverändert',
+        approx(sy.range.base, BASE, 1e-12) && approx(sy.range.conservative, CONS, 1e-12)
+        && approx(sy.range.optimistic, 27.6, 1e-9)
+        && sy.synthesisMethod.weights.every(w => approx(
+             w.contribution, w.effectiveWeight * w.base, 1e-12)),
+        'erhalten: ' + JSON.stringify(sy.range));
+    });
+
+    // (d) Die Prüfstelle selbst — direkt getestet.
+    check('S-13e: parseManualSafetyDiscount trennt unset / valid / rejected',
+      parseManualSafetyDiscount(undefined).status === 'unset'
+      && parseManualSafetyDiscount(null).status === 'unset'
+      && parseManualSafetyDiscount('  ').status === 'unset'
+      && parseManualSafetyDiscount(false).status === 'rejected'
+      && parseManualSafetyDiscount(true).status === 'rejected'
+      && parseManualSafetyDiscount(95).status === 'rejected'
+      && parseManualSafetyDiscount(-1).status === 'rejected'
+      && parseManualSafetyDiscount(NaN).status === 'rejected'
+      && parseManualSafetyDiscount(0).status === 'valid'
+      && parseManualSafetyDiscount(0).pct === 0
+      && parseManualSafetyDiscount(90).status === 'valid',
+      'erhalten: ' + JSON.stringify([parseManualSafetyDiscount(false),
+                                     parseManualSafetyDiscount(0)]));
+  }
+
+  // ── S-14: Direkteingabe überlebt den Formularweg (Fehler 2, V1.0.43) ────
+  // Vorher blieb `safety_discount_override_pct: 40` nach migrateV3toV4() eine
+  // Zahl; renderAssumptions() liest `.value`, zeigte ein leeres Feld, und
+  // recalcFromAssumptions() löschte die Wahl beim nächsten Neuberechnen.
+  suite('S-14 Direkteingabe im Formularweg');
+  {
+    // Feldwert exakt so lesen, wie renderAssumptions() ihn setzt.
+    const fieldValue = (mj) => {
+      const p = parseManualSafetyDiscount(
+        (mj.valuation && mj.valuation.assumptions)
+          ? mj.valuation.assumptions.safety_discount_override_pct : null);
+      return p.status === 'valid' ? p.pct : '';
+    };
+    const mkImport = (raw) => {
+      const mj = {
+        schema_version: '3.0', meta: { ticker: 'MOSIMP' },
+        fundamentals: { revenue: [1000, 1000, 1000, 1000], ebit: [200, 200, 200, 200],
+                        shares_diluted: [100, 100, 100, 100] },
+        valuation: { growth_stage1: 8, growth_terminal: 2, wacc_derived: 10,
+                     wacc_components: { tax_rate: 25 }, fade: { enabled: false },
+                     assumptions: { safety_discount_override_pct: raw } },
+        market: { price: 20 }
+      };
+      migrateV3toV4(mj);
+      return mj;
+    };
+    const synOf = (mj) => {
+      const mj2 = mkSynMj();
+      mj2.valuation.assumptions = mj.valuation.assumptions;
+      return runFairValueSynthesizer(mj2, mkVr(false), null, SYNTHESIS_CONFIG);
+    };
+
+    // Import 40 % (direkte Zahl) ⇒ Objektformat, im Feld sichtbar, 13,80.
+    const imp40 = mkImport(40);
+    check('S-14a: importierte 40 werden in das Annahmen-Objekt normalisiert',
+      typeof imp40.valuation.assumptions.safety_discount_override_pct === 'object'
+      && imp40.valuation.assumptions.safety_discount_override_pct.value === 40
+      && imp40.valuation.assumptions.safety_discount_override_pct.source_type === 'manual',
+      'erhalten: ' + JSON.stringify(imp40.valuation.assumptions.safety_discount_override_pct));
+    check('S-14b: importierte 40 sind im Formularfeld sichtbar und wirken (13,80)',
+      fieldValue(imp40) === 40 && approx(synOf(imp40).buyPrice, 13.80, 1e-9),
+      'feld: ' + fieldValue(imp40) + ' · buyPrice: ' + synOf(imp40).buyPrice);
+    // Import 0 % ⇒ sichtbar als 0 und weiterhin eine bewusste Wahl (23,00).
+    const imp0 = mkImport(0);
+    check('S-14c: importierte 0 % bleiben sichtbar und als Wahl erhalten',
+      imp0.valuation.assumptions.safety_discount_override_pct.value === 0
+      && fieldValue(imp0) === 0
+      && synOf(imp0).safetyDiscount.manual.active === true
+      && approx(synOf(imp0).buyPrice, 23.00, 1e-9),
+      'feld: ' + fieldValue(imp0) + ' · buyPrice: ' + synOf(imp0).buyPrice);
+    // Vorhandene Objektwerte samt Metadaten bleiben erhalten.
+    const impObj = mkImport({ value: 40, source_type: 'import', notes: 'aus Datei' });
+    check('S-14d: vorhandene Objektwerte und Metadaten bleiben erhalten',
+      impObj.valuation.assumptions.safety_discount_override_pct.value === 40
+      && impObj.valuation.assumptions.safety_discount_override_pct.source_type === 'import'
+      && impObj.valuation.assumptions.safety_discount_override_pct.notes === 'aus Datei',
+      'erhalten: ' + JSON.stringify(impObj.valuation.assumptions.safety_discount_override_pct));
+    // Ungültige Eingaben werden durch die Normalisierung NICHT gültig.
+    [['false', false], ['"abc"', 'abc'], ['95', 95], ['[40]', [40]]].forEach(([lbl, raw], i) => {
+      const impBad = mkImport(raw);
+      const sd = synOf(impBad).safetyDiscount;
+      check('S-14e' + i + ': ' + lbl + ' wird durch die Normalisierung nicht gültig',
+        fieldValue(impBad) === '' && sd.manual.active === false
+        && approx(sd.total, SYNTHESIS_CONFIG.mos.caution_quality, 1e-12)
+        && approx(synOf(impBad).buyPrice, 17.25, 1e-9),
+        'nach migrate: '
+        + JSON.stringify(impBad.valuation.assumptions.safety_discount_override_pct)
+        + ' · feld: ' + JSON.stringify(fieldValue(impBad)));
+    });
+    // Unverändertes Neuberechnen: derselbe Feldwert erzeugt denselben Zustand.
+    // (Schreibweg von recalcFromAssumptions ohne DOM nachgebildet — die
+    //  DOM-Verdrahtung selbst ist hier nicht geprüft, siehe HANDOFF.)
+    const writeField = (mj, fieldStr) => {
+      const ass = mj.valuation.assumptions || (mj.valuation.assumptions = {});
+      if (String(fieldStr).trim() === '') { delete ass.safety_discount_override_pct; return mj; }
+      const p = parseManualSafetyDiscount(fieldStr);
+      const prev = ass.safety_discount_override_pct;
+      if (p.status === 'valid') {
+        if (prev && typeof prev === 'object' && !Array.isArray(prev)) {
+          prev.value = p.pct; prev.source_type = 'manual';
+        } else {
+          ass.safety_discount_override_pct = { value: p.pct, source_type: 'manual', notes: null };
+        }
+      } else {
+        ass.safety_discount_override_pct = { value: fieldStr, source_type: 'manual', notes: null };
+      }
+      return mj;
+    };
+    const round = writeField(mkImport(40), String(fieldValue(mkImport(40))));
+    check('S-14f: unverändertes Neuberechnen erhält die importierte Wahl',
+      round.valuation.assumptions.safety_discount_override_pct.value === 40
+      && fieldValue(round) === 40 && approx(synOf(round).buyPrice, 13.80, 1e-9),
+      'erhalten: ' + JSON.stringify(round.valuation.assumptions.safety_discount_override_pct));
+    const round0 = writeField(mkImport(0), String(fieldValue(mkImport(0))));
+    check('S-14g: unverändertes Neuberechnen erhält importierte 0 %',
+      round0.valuation.assumptions.safety_discount_override_pct.value === 0
+      && synOf(round0).safetyDiscount.manual.active === true
+      && approx(synOf(round0).buyPrice, 23.00, 1e-9),
+      'erhalten: ' + JSON.stringify(round0.valuation.assumptions.safety_discount_override_pct));
+    // Änderung im Formular wird übernommen (40 → 10 ⇒ 23,00 × 0,90 = 20,70).
+    const changed = writeField(mkImport(40), '10');
+    check('S-14h: Änderung im Formular wird übernommen',
+      changed.valuation.assumptions.safety_discount_override_pct.value === 10
+      && approx(synOf(changed).buyPrice, 20.70, 1e-9),
+      'erhalten: ' + synOf(changed).buyPrice);
+    // Bewusstes Leeren entfernt die Wahl ⇒ Regelabschlag 17,25.
+    const cleared = writeField(mkImport(40), '');
+    check('S-14i: bewusstes Leeren entfernt die Wahl und aktiviert den Regelabschlag',
+      !('safety_discount_override_pct' in cleared.valuation.assumptions)
+      && synOf(cleared).safetyDiscount.manual.active === false
+      && approx(synOf(cleared).buyPrice, 17.25, 1e-9),
+      'erhalten: ' + JSON.stringify(cleared.valuation.assumptions.safety_discount_override_pct)
+      + ' · buyPrice ' + synOf(cleared).buyPrice);
   }
 
   // ── S-12: Abnahmekriterien des Auftrags, direkt geprüft ────────────────

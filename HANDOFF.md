@@ -1,5 +1,139 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Update (Chat 11): Zwei Fehler beim manuellen Sicherheitsabschlag behoben (V1.0.43)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
+`claude/happy-hamilton-fytsq5`, Ausgangscommit `f7eaee9` — die Spitze dieses
+Branches und der neueste auf GitHub gespeicherte Fortsetzungsstand (kein
+neuerer Branch enthält ihn; `main` steht weiterhin auf `b023dc8`).
+Tool-Datei unverändert `us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Arbeitsbranch: `claude/mos-input-validation`. Testbefehl: `npm test`.
+Baseline auf `f7eaee9` (ausgeführt): 965 Rechen-Assertions · 28 SEC-Tests · Exit-Code 0.
+
+### Fehler 1 — ungültige Eingaben galten als bewusster Abschlag
+
+**Am Code reproduziert** (Referenzfall DCF 16/20/24, RIM 24/30/36 ⇒ Modellwert
+Base 23,00; Regelabschlag 25 % ⇒ Einstiegspreis 17,25):
+`false` → 0 % „gewählt", Einstiegspreis **23,00**; `" "` → 0 %, **23,00**;
+`true` → 1 %, 22,77; `{value:false}` → 0 %, **23,00**. Ursache: die Synthese
+wandelte die Eingabe direkt mit `Number(...)` um, ohne den Datentyp zu prüfen.
+Zusätzlich fielen `[]`, `[40]` und `{}` still auf den Regelabschlag zurück —
+ohne Meldung.
+
+**Korrektur.** Neue, gemeinsame Prüfstelle `parseManualSafetyDiscount(raw, max)`
+(direkt nach `SYNTHESIS_CONFIG`), die Import, Formular und Synthese bedienen.
+Sie prüft den Datentyp **vor** der Zahlenumwandlung und liefert
+`{ status: 'unset' | 'valid' | 'rejected', pct, reason }`:
+* `unset` (Regelabschlag, ohne Meldung): fehlend, `null`, leerer String, reine
+  Leerzeichen — auch unter `.value`.
+* `rejected` (Regelabschlag, **mit** Grund): boolesche Werte, Arrays, Objekte
+  ohne `value`, Objekte/Arrays in `.value`, nichtnumerische Strings,
+  nichtendliche Zahlen sowie Zahlen außerhalb 0–90.
+* `valid`: Zahlen und eindeutig numerische, nichtleere Strings (jeweils direkt
+  oder unter `.value`); **echte numerische 0 % bleiben eine gültige Wahl**.
+`runFairValueSynthesizer()` nutzt nur noch diese Funktion; die frühere
+`Number(...)`-Auswertung ist entfernt.
+
+### Fehler 2 — direkte Zahlen gingen beim Neuberechnen verloren
+
+**Im echten Browser reproduziert** (Stand `f7eaee9`, Import mit
+`safety_discount_override_pct: 40`): nach dem Import stand im Feld `as-mos`
+ein **leerer** Wert, im MasterJSON die rohe `40`; nach einmaligem
+*unverändertem* „Neu berechnen" war die Wahl gelöscht
+(`kind` zurück auf `chosen_rule_based`, Einstiegspreis 20,02 statt 18,68).
+Ursache: `migrateV3toV4()` ließ die Zahl unangetastet, `renderAssumptions()`
+liest aber nur `.value`, und `recalcFromAssumptions()` wertete das leere Feld
+als „Wahl zurückgenommen".
+
+**Korrektur an drei Stellen, jede für sich ausreichend:**
+1. **Import-/Migrationsgrenze** (`migrateV3toV4`): eine bereits **gültige**
+   Direkteingabe wird in `{ value, source_type: 'manual', notes }` normiert.
+   Vorhandene Objektwerte samt Metadaten (`source_type`, `notes`) bleiben
+   erhalten. **Ungültige Werte werden nicht normiert** — sie bleiben
+   unverändert stehen und werden von der Synthese mit Grund zurückgewiesen.
+2. **Anzeige** (`renderAssumptions`): der Feldwert wird über dieselbe
+   Prüfstelle gelesen statt über den rohen `.value`-Pfad.
+3. **Schreibweg** (`recalcFromAssumptions`): `as-mos` läuft nicht mehr über die
+   generische `fields`-Liste (die auf einer rohen Zahl ins Leere geschrieben
+   hätte), sondern über einen eigenen Pfad: leeres Feld ⇒ Wahl entfernen (kein
+   0 %), gültige Eingabe ⇒ Objekt schreiben bzw. vorhandenes Objekt
+   aktualisieren, ungültige Eingabe ⇒ unverändert hinterlegen, damit die
+   Synthese sie mit Grund zurückweist.
+
+Monte Carlo, Modellwerte, Szenarien, Gewichte, Kappungen und die Anzeige der
+Synthese blieben unverändert.
+
+### Neue Regressionstests (43 Assertions in `_testSynthesisPrecision`)
+
+* **S-13 (28)** Datentyp-Prüfung: 10 zurückgewiesene Eingaben (`false`, `true`,
+  `{value:false}`, `{value:true}`, `[]`, `[40]`, `{}`, `{value:{}}`, `"40%"`,
+  `Infinity`) ⇒ jeweils Regelabschlag, Einstiegspreis 17,25, tiefer Prüfpreis
+  13,80 und ein nichtleerer Grund · 6 „keine Wahl"-Fälle (fehlend, `null`,
+  `""`, `"   "`, `{value:null}`, `{value:"  "}`) ⇒ Regelabschlag **ohne** Grund ·
+  7 gültige Eingaben (`40`, `"40"`, `{value:40}`, `0`, `"0"`, `{value:0}`,
+  `" 40 "`) ⇒ 13,80 bzw. 23,00, Modellwert und Gewichte unverändert ·
+  `parseManualSafetyDiscount` direkt geprüft.
+* **S-14 (15)** Formularweg: Import `40` wird normiert und ist im Feld sichtbar
+  (13,80) · importierte `0 %` bleiben sichtbar und eine Wahl (23,00) ·
+  vorhandene Objektmetadaten bleiben erhalten · `false`, `"abc"`, `95`, `[40]`
+  werden durch die Normalisierung **nicht** gültig (Feld leer, 17,25) ·
+  unverändertes Neuberechnen erhält 40 % und 0 % · Änderung 40 → 10 ergibt
+  20,70 · bewusstes Leeren entfernt die Wahl und aktiviert 17,25.
+
+**Gegenproben (ausgeführt).** Alte `Number(...)`-Auswertung wiederhergestellt ⇒
+**10** Assertions rot (u. a. `false`/`true`/`" "` wieder als Wahl, Einstiegspreis
+23,00 statt 17,25). Normalisierung an der Migrationsgrenze abgeschaltet ⇒
+S-14a und S-14c rot.
+
+### Tatsächlich ausgeführte Tests
+
+* `npm test` → Rechentests **1008 bestanden · 0 fehlgeschlagen ·
+  0 Fehler/Exceptions** (vorher 965; +43), SEC-Tests **28/28**, gemeinsamer
+  **Exit-Code 0**. Keine bestehende Erwartung geändert oder gelockert.
+* **Echter Browser** (Chromium 1194 headless über `playwright-core`, nur im
+  Arbeitsverzeichnis außerhalb des Repositories installiert — das Projekt
+  bleibt abhängigkeitsfrei), Datei per `file://` geladen, Ablauf
+  Import → Anzeige → unverändertes Neuberechnen → Ändern → Leeren:
+  1. Import `safety_discount_override_pct: 40` ⇒ Feld `as-mos` zeigt **40**,
+     MasterJSON enthält das normierte Objekt, `kind: 'chosen_manual'`.
+  2. Unverändertes „Neu berechnen" ⇒ Feld weiterhin **40**, Wahl erhalten,
+     Einstiegspreis 18,68 (Modellwert Base 31,13 × 0,60).
+  3. Änderung auf **10** ⇒ übernommen, Einstiegspreis 28,02.
+  4. Leeren ⇒ Wahl entfernt, Regelabschlag 35,7 %, Einstiegspreis 20,02.
+  5. Ausdrückliche **0** ⇒ gültige Wahl, Einstiegspreis = Modellwert 31,13.
+  6. Anzeige: „Manuell gewählt: 40.0% — ersetzt den Regelabschlag von 35.7%.
+     Bisherige Einstiegszone (Regelabschlag): 20.02 → jetzt 18.68 (−6.7%)
+     Modellwert unverändert: 31.13"; bei `95`: „Manuelle Eingabe verworfen —
+     ausserhalb des zulaessigen Bereichs 0–90 %".
+  Gegenprobe im selben Browser auf dem Stand `f7eaee9`: Feld nach Import leer,
+  Wahl nach unverändertem Neuberechnen gelöscht (20,02 statt 18,68).
+
+### Verbleibende Prüfgrenzen
+
+* Der Browser-Ablauf wurde mit einem **synthetischen** Master-JSON gefahren
+  (Fixture-Metadaten so ergänzt, dass Scope- und Data-Quality-Gates passieren);
+  kein Test mit echten SEC-Daten.
+* Der Browser-Check ist ein einmalig ausgeführtes Skript im Arbeitsverzeichnis,
+  **kein** Bestandteil von `npm test` — die Suite bleibt abhängigkeitsfrei und
+  ohne DOM. Die DOM-Verdrahtung ist damit nicht dauerhaft regressionsgesichert.
+* Im Node-Test S-14 ist der Schreibweg von `recalcFromAssumptions()` ohne DOM
+  nachgebildet; er gilt dort ausdrücklich nicht als Bedienungstest.
+* Eine zurückgewiesene Eingabe (z. B. 95) verschwindet beim nächsten Rendern aus
+  dem Feld; der Grund steht in der Einstiegszonen-Box und im Rechenweg.
+* Unverändert offen aus den Vorschritten: index-basierte Ableitung von
+  `eps_diluted`, `book_value` und `dps` in `applyDerivedFieldsV4`; Korrelationen
+  der Monte-Carlo-Größen nicht modelliert; `ENGINE_VERSION` /
+  `DISPLAY_VERSION` / `REGRESSION_TEST_VERSION` nicht angehoben (im Code als
+  V1.0.43 kommentiert).
+
+### Ausgangsstand für den nächsten Schritt
+
+Übergabebranch: `claude/mos-input-validation` (Basis `f7eaee9` auf
+`claude/happy-hamilton-fytsq5`). Tool-Datei unverändert.
+Testbefehl: `npm test` — beide Suiten grün, Exit-Code 0.
+Ergebniscommit: siehe Spitze des Übergabebranches.
+Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/mos-input-validation
+
 ## Update (Chat 10): Manuell gewählter Sicherheitsabschlag, Abnahme abgesichert (V1.0.42)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`. Ausgangsbranch
