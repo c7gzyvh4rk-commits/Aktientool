@@ -184,7 +184,10 @@ Arbeitsbranch: `claude/snapshot-numeric-field-validation` (Basis `d345dea` auf
 `claude/snapshot-repair-fixes`). Tool-Datei unveraendert
 `us-aktienbewertungstool-v1036-sector-classification-patch.html`.
 Testbefehl: `npm test` — beide Suiten gruen, Exit-Code 0.
+Code-Commit dieses Schritts: `b09d6be`; Ergebniscommit ist die Spitze des
+Arbeitsbranches (dieser Nachtrag).
 Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/snapshot-numeric-field-validation
+Commit-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/commit/b09d6be
 
 ## Update (Chat 7 Reparatur): Drei Pruefbefunde behoben (V1.0.45)
 
