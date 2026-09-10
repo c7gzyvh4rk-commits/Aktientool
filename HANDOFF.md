@@ -217,7 +217,10 @@ Uebergabebranch: `claude/awesome-johnson-j9c246` (Basis `75dd901` auf
 `claude/mos-input-validation`). Tool-Datei unveraendert
 `us-aktienbewertungstool-v1036-sector-classification-patch.html`.
 Testbefehl: `npm test` — beide Suiten gruen, Exit-Code 0.
+Code-Commit dieses Schritts: `a5272cf`; Ergebniscommit ist die Spitze des
+Uebergabebranches (dieser Nachtrag).
 Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/awesome-johnson-j9c246
+Commit-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/commit/a5272cf
 
 ## Update (Chat 11): Zwei Fehler beim manuellen Sicherheitsabschlag behoben (V1.0.43)
 
