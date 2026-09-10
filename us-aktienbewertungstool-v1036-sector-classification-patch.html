@@ -2885,7 +2885,12 @@ const SYNTHESIS_CONFIG = {
     caution_quality:  0.25,   // echte Qualitätsschwäche
     caution_data:     0.25,   // insufficient evidence
     heuristic_addon: 0.10,
-    cap: 0.50
+    cap: 0.50,
+    // V1.0.42: Obergrenze fuer einen MANUELL gewaehlten Sicherheitsabschlag.
+    // Sie begrenzt nur die Eingabe auf einen sinnvollen Bereich; sie kappt den
+    // gewaehlten Wert nicht still (eine Eingabe darueber wird verworfen und
+    // gemeldet, der Regelabschlag bleibt aktiv).
+    manual_max_pct: 90
   },
   model_agreement: {
     high_max_dev: 0.10,
@@ -12976,7 +12981,42 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
     mosSectorAddon,
   ];
   const _mosComposed = 1 - _mosComponents.reduce((prod, c) => prod * (1 - c), 1);
-  const mosTotalFinal = Math.min(_mosComposed, mc.cap);
+  // Regelabschlag: zusammengesetzte Komponenten, danach die Regel-Obergrenze.
+  const _mosRuleTotal = Math.min(_mosComposed, mc.cap);
+
+  // ── V1.0.42: MANUELL GEWAEHLTER SICHERHEITSABSCHLAG ─────────────────────
+  // Punkt 4 des Auftrags: Der Sicherheitsabschlag ist eine Wahl, kein
+  // Modellergebnis. Wird er manuell gesetzt, ersetzt er den Regelabschlag
+  // GENAU an der Stelle, an der ein Abschlag wirkt (Einstiegspreis und tiefer
+  // Pruefpreis). Der Modellwert (range.conservative/base/optimistic) bleibt
+  // unberuehrt, der Regelabschlag bleibt vollstaendig erhalten und sichtbar.
+  //
+  // Quelle ist ausschliesslich das MasterJSON
+  // (valuation.assumptions.safety_discount_override_pct) — kein DOM-Zugriff,
+  // damit die Synthese rein und testbar bleibt.
+  // Fehlende, leere oder unplausible Eingaben werden NICHT als 0 gelesen:
+  // sie lassen den Regelabschlag unveraendert und werden mit Grund gemeldet.
+  const _mosManualMaxPct = (mc.manual_max_pct != null) ? mc.manual_max_pct : 90;
+  const _mosManualRaw = (mj && mj.valuation && mj.valuation.assumptions)
+    ? mj.valuation.assumptions.safety_discount_override_pct : null;
+  const _mosManualVal = (_mosManualRaw && typeof _mosManualRaw === 'object')
+    ? _mosManualRaw.value : _mosManualRaw;
+  let _mosManualActive   = false;
+  let _mosManualPct      = null;   // gewaehlter Wert in Prozentpunkten
+  let _mosManualRejected = null;   // Grund, falls eine Eingabe verworfen wurde
+  if (_mosManualVal !== null && _mosManualVal !== undefined && _mosManualVal !== '') {
+    const _v = Number(_mosManualVal);
+    if (!isFinite(_v)) {
+      _mosManualRejected = 'keine Zahl: ' + String(_mosManualVal) + ' — Regelabschlag bleibt aktiv';
+    } else if (_v < 0 || _v > _mosManualMaxPct) {
+      _mosManualRejected = 'ausserhalb des zulaessigen Bereichs 0–' + _mosManualMaxPct
+        + ' % (erhalten: ' + _v + ') — Regelabschlag bleibt aktiv';
+    } else {
+      _mosManualActive = true;
+      _mosManualPct    = _v;
+    }
+  }
+  const mosTotalFinal = _mosManualActive ? (_mosManualPct / 100) : _mosRuleTotal;
 
   // V1.0.14: Starter-Zone-Berechnung (diagnostisch, keine Entscheidungsänderung)
   // mosStructural = "harte" Addons (Qualität der Daten/Leverage/Sektor/BaseRate)
@@ -13226,6 +13266,19 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
   const _keyOfModel = (m) => Object.keys(valuationResult.modelResults)
     .find(k => valuationResult.modelResults[k] === m) || null;
 
+  // V1.0.42: Aenderung gegenueber der BISHERIGEN Einstiegszone bezifferbar machen.
+  // Die bisherige Zone ist die mit dem Regelabschlag gerechnete; sie wird auch
+  // dann ausgewiesen, wenn ein manueller Abschlag gilt. Ohne Einstiegspreis
+  // (gesperrt) bleibt die Angabe null — kein erfundener Vergleichswert.
+  const _entryPriceRule = (buyPriceAdj != null && rangeBase != null)
+    ? rangeBase * (1 - _mosRuleTotal) : null;
+  const _deepValueRule  = (deepValuePrice != null && rangeCons != null)
+    ? rangeCons * (1 - _mosRuleTotal) : null;
+  const _entryPriceDeltaAbs = (buyPriceAdj != null && _entryPriceRule != null)
+    ? buyPriceAdj - _entryPriceRule : null;
+  const _entryPriceDeltaPct = (_entryPriceDeltaAbs != null && _entryPriceRule > 0)
+    ? (_entryPriceDeltaAbs / _entryPriceRule * 100) : null;
+
   // (a) Ausschlüsse: welches Modell warum NICHT gewichtet wurde
   const _synthesisExclusions = [];
   Object.entries(valuationResult.modelResults || {}).forEach(([k, m]) => {
@@ -13271,6 +13324,20 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
       reason: _capReason,
       effect: 'Positionsurteil von "' + (_rawPosBeforeCap || '–') + '" auf "' + position + '" begrenzt' });
   }
+  if (_mosManualActive && _mosManualPct / 100 > mc.cap + 1e-12) {
+    // Die Regel-Obergrenze gilt fuer den Regelabschlag. Eine bewusste manuelle
+    // Wahl darueber wird NICHT still gekappt, sondern hier ausdruecklich benannt.
+    _synthesisCaps.push({ name: 'Regel-Obergrenze des Sicherheitsabschlags',
+      reason: 'manuell gewählter Abschlag ' + _mosManualPct.toFixed(1) + '% liegt über der '
+              + 'Regel-Obergrenze von ' + (mc.cap * 100).toFixed(0) + '%',
+      effect: 'keine stille Kappung — die Wahl wird angewendet und ersetzt den Regelabschlag von '
+              + (_mosRuleTotal * 100).toFixed(1) + '%' });
+  }
+  if (_mosManualRejected) {
+    _synthesisCaps.push({ name: 'Verworfene manuelle Eingabe',
+      reason: _mosManualRejected,
+      effect: 'Regelabschlag ' + (_mosRuleTotal * 100).toFixed(1) + '% bleibt angewendet — keine Auslegung als 0%' });
+  }
   _synthesisCaps.push({ name: 'EPV-Wertuntergrenze', reason: 'seit V1.0.40 entfernt',
     effect: 'keine Anhebung von conservative/base durch den EPV (früher: cons = max(cons, EPV-cons), base bis +30%)' });
 
@@ -13298,28 +13365,73 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
             + ' · opt = ' + (rangeOpt != null ? rangeOpt.toFixed(2) : '–')
   });
   _synthesisSteps.push({
-    step: 5, label: 'Sicherheitsabschlag (gewählt, kein Modellergebnis)',
+    step: 5, label: 'Sicherheitsabschlag nach Regelwerk (gewählt, kein Modellergebnis)',
     detail: 'zusammengesetzt 1 − Π(1 − Komponente) = ' + (_mosComposed * 100).toFixed(1) + '%'
             + (_mosComposed > mc.cap + 1e-12 ? ', gekappt auf ' + (mc.cap * 100).toFixed(0) + '%' : '')
-            + ' ⇒ ' + (mosTotalFinal * 100).toFixed(1) + '%'
+            + ' ⇒ Regelabschlag ' + (_mosRuleTotal * 100).toFixed(1) + '%'
+  });
+  // V1.0.42: die manuelle Wahl ist ein eigener, sichtbarer Rechenschritt.
+  _synthesisSteps.push({
+    step: 6, label: 'Manuell gewählter Sicherheitsabschlag',
+    detail: _mosManualActive
+      ? 'manuell gesetzt auf ' + _mosManualPct.toFixed(1) + '% — ersetzt den Regelabschlag von '
+        + (_mosRuleTotal * 100).toFixed(1) + '% (nur im Preis, nicht im Modellwert)'
+      : (_mosManualRejected
+          ? 'Eingabe verworfen — ' + _mosManualRejected
+          : 'nicht gesetzt — es gilt der Regelabschlag ' + (_mosRuleTotal * 100).toFixed(1) + '%')
   });
   _synthesisSteps.push({
-    step: 6, label: 'Einstiegspreis = Modellwert(Base) × (1 − Sicherheitsabschlag)',
+    step: 7, label: 'Einstiegspreis = Modellwert(Base) × (1 − angewendeter Sicherheitsabschlag)',
     detail: buyPriceAdj != null
       ? rangeBase.toFixed(2) + ' × (1 − ' + (mosTotalFinal * 100).toFixed(1) + '%) = ' + buyPriceAdj.toFixed(2)
+        + (_mosManualActive && _entryPriceRule != null
+            ? ' · bisherige Einstiegszone mit Regelabschlag: ' + _entryPriceRule.toFixed(2)
+              + ' (Änderung ' + (_entryPriceDeltaPct >= 0 ? '+' : '') + _entryPriceDeltaPct.toFixed(1) + '%)'
+            : '')
       : 'kein Einstiegspreis: ' + (blockReason || 'gesperrt')
   });
 
   // (d) Sicherheitsabschlag GETRENNT vom Modellwert ausweisen
   const _safetyDiscount = {
-    kind: 'chosen_rule_based',
-    label: 'Gewählter Sicherheitsabschlag — Regelwerk, kein Modellergebnis',
+    // V1.0.42: 'chosen_manual', sobald eine gueltige manuelle Wahl vorliegt.
+    kind: _mosManualActive ? 'chosen_manual' : 'chosen_rule_based',
+    label: _mosManualActive
+      ? 'Manuell gewählter Sicherheitsabschlag — Wahl des Anwenders, kein Modellergebnis'
+      : 'Gewählter Sicherheitsabschlag — Regelwerk, kein Modellergebnis',
     isModelOutput: false,
+    source: _mosManualActive ? 'manual' : 'rule',
     total: mosTotalFinal,
+    // Regelabschlag bleibt vollstaendig erhalten und getrennt lesbar.
+    ruleTotal: _mosRuleTotal,
+    manual: {
+      active:        _mosManualActive,
+      valuePct:      _mosManualPct,
+      maxPct:        _mosManualMaxPct,
+      rejectedReason: _mosManualRejected,
+      aboveRuleCap:  _mosManualActive ? (_mosManualPct / 100 > mc.cap + 1e-12) : false,
+      note: 'Der manuell gewählte Abschlag ersetzt den Regelabschlag nur im Preis. '
+          + 'Modellwert, Gewichte und Szenarien bleiben unverändert.'
+    },
+    // Aenderung gegenueber der bisherigen (regelbasierten) Einstiegszone.
+    entryZoneChange: {
+      entryPriceRule:      _entryPriceRule,
+      entryPriceApplied:   buyPriceAdj,
+      deepValuePriceRule:  _deepValueRule,
+      deltaAbsolute:       _mosManualActive ? _entryPriceDeltaAbs : null,
+      deltaPct:            _mosManualActive ? _entryPriceDeltaPct : null,
+      note: _mosManualActive
+        ? 'Bisherige Einstiegszone = Modellwert(Base) × (1 − Regelabschlag); '
+          + 'angewendet wird die manuelle Wahl.'
+        : 'Keine Änderung — es gilt der Regelabschlag.'
+    },
     composedBeforeCap: _mosComposed,
     cap: mc.cap,
     capActive: _mosComposed > mc.cap + 1e-12,
-    compositionRule: 'MoS_total = 1 − Π(1 − Komponente_i), anschließend Obergrenze',
+    // Die Starter-Zone bleibt bewusst regelbasiert (strukturelle Komponenten)
+    // und wird nur nach unten auf den Einstiegspreis begrenzt.
+    starterZoneBasis: 'rule_structural',
+    compositionRule: 'MoS_total = 1 − Π(1 − Komponente_i), anschließend Obergrenze; '
+                   + 'eine gültige manuelle Wahl ersetzt dieses Ergebnis',
     components: {
       base: mosBase, qualityAddon: mosDataQualityAddon, baseRateAddon: mosBaseRateAddon,
       heuristicAddon: mosHeuristicAddon, divergenceAddon: _mosDivergenceAddon,
@@ -13389,6 +13501,10 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
       _mosBaseRateLevel,
       _mosLeverageRatio,
       total: mosTotalFinal,
+      // V1.0.42: Regelabschlag und angewendeter Abschlag bleiben unterscheidbar.
+      ruleTotal: _mosRuleTotal,
+      manualPct: _mosManualPct,
+      manualActive: _mosManualActive,
       structural: mosStructural,
       // patch10: Diagnose-Felder für Kompositions-Transparenz
       _additiveSum: Math.min(
@@ -15002,7 +15118,9 @@ function recalcFromAssumptions() {
     { id: 'as-fade-from', path: ['valuation','fade','from_year'] },
     { id: 'as-tom',       path: ['valuation','assumptions','target_op_margin_pct','value'] },
     { id: 'as-mcm',       path: ['valuation','assumptions','midcycle_margin_pct','value'] },
-    { id: 'as-owc',       path: ['valuation','assumptions','owc_pct_of_revenue','value'] }
+    { id: 'as-owc',       path: ['valuation','assumptions','owc_pct_of_revenue','value'] },
+    // V1.0.42: manuell gewaehlter Sicherheitsabschlag (Prozentpunkte).
+    { id: 'as-mos',       path: ['valuation','assumptions','safety_discount_override_pct','value'] }
   ];
   fields.forEach(f => {
     const el = g(f.id);
@@ -15027,6 +15145,27 @@ function recalcFromAssumptions() {
     }
     obj[f.path[f.path.length - 1]] = val;
   });
+
+  // V1.0.42: leeres Eingabefeld nimmt die manuelle Wahl ZURUECK (Regelabschlag gilt
+  // wieder). Es wird ausdruecklich NICHT als 0 % gelesen.
+  {
+    const _elMos = g('as-mos');
+    if (_elMos && _elMos.value === '') {
+      const _assMos = state.masterJson.valuation && state.masterJson.valuation.assumptions;
+      if (_assMos && _assMos.safety_discount_override_pct) {
+        delete _assMos.safety_discount_override_pct;
+      }
+      if (state.manualAssumptionFields) state.manualAssumptionFields.delete('safety_discount_override_pct');
+    } else if (_elMos) {
+      const _assMos2 = state.masterJson.valuation && state.masterJson.valuation.assumptions;
+      if (_assMos2 && _assMos2.safety_discount_override_pct
+          && typeof _assMos2.safety_discount_override_pct === 'object') {
+        _assMos2.safety_discount_override_pct.source_type = 'manual';
+        _assMos2.safety_discount_override_pct.notes = 'manuell gewählter Sicherheitsabschlag (Annahmen-Tab)';
+      }
+      if (state.manualAssumptionFields) state.manualAssumptionFields.add('safety_discount_override_pct');
+    }
+  }
 
   // v4-assumptions-Objekte synchron halten wenn Flat-Felder manuell geändert wurden
   const _mval = state.masterJson.valuation || {};
@@ -16382,6 +16521,35 @@ function buildBuyPriceBox(s) {
                 : (s.range && s.range.base != null ? s.range.base : null);
   const _mvCons = _sd && _sd.modelValueConservative != null ? _sd.modelValueConservative
                 : (s.range && s.range.conservative != null ? s.range.conservative : null);
+  // ── V1.0.42: manuell gewählter Abschlag getrennt vom Regelabschlag ──────
+  // Der Modellwert bleibt in jedem Fall unverändert; sichtbar wird, welcher
+  // Abschlag angewendet wurde und wie sich die BISHERIGE (regelbasierte)
+  // Einstiegszone dadurch verschiebt.
+  const _sdManual       = _sd && _sd.manual ? _sd.manual : null;
+  const _sdManualActive = !!(_sdManual && _sdManual.active);
+  const _sdRulePct      = (_sd && _sd.ruleTotal != null) ? (_sd.ruleTotal * 100).toFixed(1) : null;
+  const _sdChange       = (_sd && _sd.entryZoneChange) ? _sd.entryZoneChange : null;
+  let _manualDiscountLine = '';
+  if (_sdManualActive) {
+    const _dPct = _sdChange && _sdChange.deltaPct != null ? _sdChange.deltaPct : null;
+    _manualDiscountLine = `
+        <div class="txt-caption" style="margin-top:5px;border-top:1px dashed var(--border);padding-top:4px;color:var(--muted)">
+          <strong style="color:var(--warn)">Manuell gewählt:</strong> ${_sdManual.valuePct.toFixed(1)}% —
+          ersetzt den Regelabschlag von ${_sdRulePct}%${_sdManual.aboveRuleCap ? ' (über der Regel-Obergrenze, bewusst gewählt, nicht gekappt)' : ''}.
+          <div style="font-family:var(--font-mono);margin-top:2px">
+            Bisherige Einstiegszone (Regelabschlag): ${_sdChange && _sdChange.entryPriceRule != null ? _sdChange.entryPriceRule.toFixed(2) : '–'}
+            → jetzt ${_sdChange && _sdChange.entryPriceApplied != null ? _sdChange.entryPriceApplied.toFixed(2) : '–'}
+            ${_dPct != null ? `(${_dPct >= 0 ? '+' : ''}${_dPct.toFixed(1)}%)` : ''}
+          </div>
+          <div style="margin-top:2px">Modellwert unverändert: ${_mvBase != null ? _mvBase.toFixed(2) : '–'} — die Wahl wirkt nur auf den Preis.</div>
+        </div>`;
+  } else if (_sdManual && _sdManual.rejectedReason) {
+    _manualDiscountLine = `
+        <div class="txt-caption" style="margin-top:5px;border-top:1px dashed var(--border);padding-top:4px;color:var(--danger)">
+          Manuelle Eingabe verworfen — ${escapeHtml(_sdManual.rejectedReason)}. Angewendet wird der Regelabschlag ${_sdRulePct}%.
+        </div>`;
+  }
+
   const separationLine = `
       <div style="margin-top:8px;padding:7px 9px;background:var(--surface2);border:1px solid var(--border);border-radius:6px">
         <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:baseline">
@@ -16390,7 +16558,7 @@ function buildBuyPriceBox(s) {
             <span style="font-family:var(--font-mono);color:var(--text);margin-left:6px">${_mvBase != null ? _mvBase.toFixed(2) : '–'}</span>
           </span>
           <span>
-            <span class="txt-caption" style="letter-spacing:.06em;text-transform:uppercase;color:var(--warn)">Gewählter Sicherheitsabschlag</span>
+            <span class="txt-caption" style="letter-spacing:.06em;text-transform:uppercase;color:var(--warn)">${_sdManualActive ? 'Manuell gewählter' : 'Gewählter'} Sicherheitsabschlag</span>
             <span style="font-family:var(--font-mono);color:var(--warn);margin-left:6px">${mosPct}%</span>
           </span>
           <span>
@@ -16402,9 +16570,10 @@ function buildBuyPriceBox(s) {
           ${_mvBase != null ? _mvBase.toFixed(2) : '–'} × (1 − ${mosPct}%) = ${bp}
         </div>
         <div class="txt-caption" style="color:var(--muted);margin-top:3px">
-          Der Sicherheitsabschlag ist eine <strong>gewählte Regelgröße</strong> (Qualitätsstufe + Zuschläge), <strong>kein Modellergebnis</strong>.
+          Der Sicherheitsabschlag ist eine <strong>gewählte Größe</strong>${_sdManualActive ? ' (manuell gesetzt)' : ' (Regelwerk: Qualitätsstufe + Zuschläge)'}, <strong>kein Modellergebnis</strong>.
           Er verändert den Modellwert nicht, sondern nur den Preis, ab dem geprüft wird.
         </div>
+        ${_manualDiscountLine}
       </div>`;
 
   return `
@@ -16736,6 +16905,9 @@ function buildRangeBoxFull(s) {
             <span class="txt-caption" style="letter-spacing:.06em;text-transform:uppercase;color:var(--warn)">Sicherheitsabschlag — getrennt vom Modellwert</span>
             <div style="font-family:var(--font-mono);color:var(--text)">${escapeHtml(sd2.formulaEntryPrice || '')}</div>
             <div style="font-family:var(--font-mono)">${escapeHtml(sd2.compositionRule || '')}${sd2.capActive ? ' · Obergrenze aktiv' : ''}</div>
+            ${sd2.ruleTotal != null ? `<div style="font-family:var(--font-mono)">Regelabschlag ${(sd2.ruleTotal*100).toFixed(1)}% · angewendet ${(sd2.total*100).toFixed(1)}% (${escapeHtml(sd2.source || 'rule')})</div>` : ''}
+            ${(sd2.manual && sd2.manual.active && sd2.entryZoneChange && sd2.entryZoneChange.deltaPct != null) ? `<div style="font-family:var(--font-mono);color:var(--warn)">Einstiegszone bisher (Regel) ${sd2.entryZoneChange.entryPriceRule.toFixed(2)} → jetzt ${sd2.entryZoneChange.entryPriceApplied.toFixed(2)} (${sd2.entryZoneChange.deltaPct >= 0 ? '+' : ''}${sd2.entryZoneChange.deltaPct.toFixed(1)}%)</div>` : ''}
+            ${(sd2.manual && sd2.manual.rejectedReason) ? `<div style="color:var(--danger)">Manuelle Eingabe verworfen — ${escapeHtml(sd2.manual.rejectedReason)}</div>` : ''}
           </div>
         </div>
       </details>`;
@@ -18019,6 +18191,12 @@ function renderAssumptions(keepValues) {
       <div class="ass-group-header"><span>◎ Ergänzend</span><span class="agh-line"></span></div>
 
       <div class="assumption-row">
+        <span class="alabel">✎ Sicherheitsabschlag manuell (%)
+          <span class="sensitive-hint">Gewählte Größe, KEIN Modellergebnis: wirkt nur auf Einstiegspreis und tiefen Prüfpreis, nie auf den Modellwert. Leer = Regelabschlag aus dem Regelwerk.</span>
+        </span>
+        <input type="number" id="as-mos" step="1" min="0" max="${SYNTHESIS_CONFIG.mos.manual_max_pct}" value="${get(['valuation','assumptions','safety_discount_override_pct','value'], '') ?? ''}">
+      </div>
+      <div class="assumption-row">
         <span class="alabel">✎ Aktueller Kurs ${srcBadge(getAssumptionSource(mj,'price'))}
           <span class="sensitive-hint">Nur für MoS-Berechnung und Upside-Anzeige</span>
         </span>
@@ -18324,6 +18502,11 @@ function saveSnapshot() {
     // ── Backtesting-Hook ──
     rule_version: SYNTHESIS_CONFIG.rule_version,
     synthesis_config: JSON.parse(JSON.stringify(SYNTHESIS_CONFIG)),
+    // V1.0.42: der Zufallsstartwert der Simulation wird MIT dem Snapshot
+    // gespeichert. Damit bleibt nachvollziehbar, mit welchem Startwert und
+    // welcher Laufzahl die gespeicherte Auswertung gerechnet wurde — auch
+    // wenn der Programmwert spaeter geaendert wird.
+    mc_config: JSON.parse(JSON.stringify(MC_CONFIG)),
     // V11.11: key_inputs über buildSnapshotKeyInputs (testbar, zentral)
     key_inputs: buildSnapshotKeyInputs(mj),
     output_signals: {
@@ -31083,6 +31266,191 @@ function _testSynthesisPrecision() {
     check('S-10e: Sicherheitsabschlag getrennt vom Modellwert erklärt',
       /Sicherheitsabschlag — getrennt vom Modellwert/.test(html),
       'html enthaelt Trennung? ' + /getrennt vom Modellwert/.test(html));
+  }
+
+  // ── S-11: MANUELL gewählter Sicherheitsabschlag (V1.0.42) ──────────────
+  // Punkt 4 des Auftrags: die Wahl erscheint getrennt vom Modellwert, wirkt
+  // ausschliesslich auf den Preis und macht die Aenderung gegenueber der
+  // bisherigen (regelbasierten) Einstiegszone bezifferbar sichtbar.
+  suite('S-11 manueller Sicherheitsabschlag');
+  {
+    // mj mit manueller Wahl — sonst identisch zu mkSynMj().
+    const runMos = (val) => {
+      const mj = mkSynMj();
+      if (val !== undefined) {
+        mj.valuation.assumptions.safety_discount_override_pct =
+          { value: val, source_type: 'manual', notes: 'Test' };
+      }
+      return runFairValueSynthesizer(mj, mkVr(false), null, SYNTHESIS_CONFIG);
+    };
+    // Unabhaengig nachgerechnet: DCF 16/20/24 und RIM 24/30/36 ergeben
+    // base = 23,00 und conservative = 18,40; Regelabschlag = 25 %
+    // (caution_quality, kein Quality-Ergebnis) ⇒ bisherige Einstiegszone 17,25.
+    const RULE = SYNTHESIS_CONFIG.mos.caution_quality;              // 0.25
+    const BASE = 23.00, CONS = 18.40;
+    const ruleEntry = BASE * (1 - RULE);                            // 17.25
+
+    const synRule = runMos(undefined);
+    check('S-11a: Vorbedingung — ohne manuelle Wahl gilt der Regelabschlag',
+      approx(synRule.range.base, BASE, 1e-9) && approx(synRule.safetyDiscount.total, RULE, 1e-12)
+      && approx(synRule.buyPrice, ruleEntry, 1e-9)
+      && synRule.safetyDiscount.kind === 'chosen_rule_based'
+      && synRule.safetyDiscount.manual.active === false,
+      'erhalten: ' + JSON.stringify([synRule.range.base, synRule.safetyDiscount.total, synRule.buyPrice]));
+
+    const syn40 = runMos(40);
+    check('S-11b: gültige Wahl wird angewendet und als manuell gekennzeichnet',
+      syn40.safetyDiscount.kind === 'chosen_manual' && syn40.safetyDiscount.source === 'manual'
+      && syn40.safetyDiscount.isModelOutput === false
+      && approx(syn40.safetyDiscount.total, 0.40, 1e-12)
+      && syn40.safetyDiscount.manual.active === true && syn40.safetyDiscount.manual.valuePct === 40,
+      'erhalten: ' + JSON.stringify(syn40.safetyDiscount.manual));
+    check('S-11c: Modellwert bleibt vom Abschlag unberührt',
+      approx(syn40.range.base, synRule.range.base, 1e-12)
+      && approx(syn40.range.conservative, synRule.range.conservative, 1e-12)
+      && approx(syn40.range.optimistic, synRule.range.optimistic, 1e-12),
+      'mit Wahl: ' + JSON.stringify(syn40.range) + ' · Regel: ' + JSON.stringify(synRule.range));
+    // 23,00 × (1 − 0,40) = 13,80 ; 18,40 × (1 − 0,40) = 11,04
+    check('S-11d: Einstiegspreis und tiefer Prüfpreis folgen der Wahl',
+      approx(syn40.buyPrice, 13.80, 1e-9) && approx(syn40.deepValuePrice, 11.04, 1e-9)
+      && approx(syn40.buyPrice, BASE * (1 - 0.40), 1e-9),
+      'erhalten: ' + syn40.buyPrice + ' / ' + syn40.deepValuePrice);
+    check('S-11e: Regelabschlag bleibt getrennt erhalten und sichtbar',
+      approx(syn40.safetyDiscount.ruleTotal, RULE, 1e-12)
+      && approx(syn40.mosComponents.ruleTotal, RULE, 1e-12)
+      && approx(syn40.safetyDiscount.components.base, RULE, 1e-12),
+      'erhalten: ' + syn40.safetyDiscount.ruleTotal);
+    // Aenderung gegenueber der bisherigen Einstiegszone: 13,80 − 17,25 = −3,45
+    // = −20,0 % ( (1−0,40)/(1−0,25) − 1 ).
+    check('S-11f: Änderung gegenüber der bisherigen Einstiegszone beziffert',
+      approx(syn40.safetyDiscount.entryZoneChange.entryPriceRule, ruleEntry, 1e-9)
+      && approx(syn40.safetyDiscount.entryZoneChange.deltaAbsolute, -3.45, 1e-9)
+      && approx(syn40.safetyDiscount.entryZoneChange.deltaPct, -20, 1e-9),
+      'erhalten: ' + JSON.stringify(syn40.safetyDiscount.entryZoneChange));
+    // Gegenrichtung: kleinerer Abschlag hebt die Einstiegszone (23,00 × 0,90 = 20,70).
+    const syn10 = runMos(10);
+    check('S-11g: kleinere Wahl hebt die Einstiegszone nachrechenbar',
+      approx(syn10.buyPrice, 20.70, 1e-9)
+      && approx(syn10.safetyDiscount.entryZoneChange.deltaPct, 20, 1e-9)
+      && approx(syn10.range.base, BASE, 1e-12),
+      'erhalten: ' + syn10.buyPrice + ' / ' + syn10.safetyDiscount.entryZoneChange.deltaPct);
+    // Ueber der Regel-Obergrenze (50 %): bewusst gewaehlt, nicht still gekappt.
+    const syn60 = runMos(60);
+    check('S-11h: Wahl über der Regel-Obergrenze wird angewendet und benannt',
+      approx(syn60.safetyDiscount.total, 0.60, 1e-12)
+      && syn60.safetyDiscount.manual.aboveRuleCap === true
+      && approx(syn60.buyPrice, BASE * 0.40, 1e-9)
+      && syn60.synthesisMethod.caps.some(c => /Regel-Obergrenze des Sicherheitsabschlags/.test(c.name)),
+      'erhalten: ' + syn60.safetyDiscount.total + ' · caps: '
+      + JSON.stringify(syn60.synthesisMethod.caps.map(c => c.name)));
+    // Ungueltige Eingaben duerfen NICHT als 0 % gelesen werden.
+    ['abc', -5, 95, NaN].forEach((bad, i) => {
+      const synBad = runMos(bad);
+      check('S-11i' + i + ': unplausible Eingabe (' + String(bad) + ') fällt auf den Regelabschlag zurück',
+        approx(synBad.safetyDiscount.total, RULE, 1e-12)
+        && synBad.safetyDiscount.kind === 'chosen_rule_based'
+        && synBad.safetyDiscount.manual.active === false
+        && typeof synBad.safetyDiscount.manual.rejectedReason === 'string'
+        && approx(synBad.buyPrice, ruleEntry, 1e-9),
+        'erhalten: ' + JSON.stringify(synBad.safetyDiscount.manual));
+    });
+    // Leerer Wert = keine Wahl (kein 0 %-Abschlag).
+    const synEmpty = runMos('');
+    check('S-11j: leere Eingabe ist keine Wahl von 0 %',
+      approx(synEmpty.safetyDiscount.total, RULE, 1e-12)
+      && synEmpty.safetyDiscount.manual.active === false
+      && synEmpty.safetyDiscount.manual.rejectedReason == null,
+      'erhalten: ' + JSON.stringify(synEmpty.safetyDiscount.manual));
+    // 0 % ist eine ZULAESSIGE Wahl und wird nicht mit "fehlt" verwechselt.
+    const syn0 = runMos(0);
+    check('S-11k: ausdrücklich gewählte 0 % gelten als Wahl',
+      syn0.safetyDiscount.manual.active === true && syn0.safetyDiscount.total === 0
+      && approx(syn0.buyPrice, BASE, 1e-9),
+      'erhalten: ' + JSON.stringify([syn0.safetyDiscount.total, syn0.buyPrice]));
+    // Rechenweg: die Wahl ist ein eigener, beschrifteter Schritt.
+    check('S-11l: Rechenweg nennt die manuelle Wahl als eigenen Schritt',
+      syn40.synthesisMethod.steps.some(st => /Manuell gewählter Sicherheitsabschlag/.test(st.label)
+        && /ersetzt den Regelabschlag/.test(st.detail))
+      && syn40.synthesisMethod.steps.some(st => /bisherige Einstiegszone mit Regelabschlag: 17\.25/.test(st.detail)),
+      'steps: ' + JSON.stringify(syn40.synthesisMethod.steps.map(st => st.label)));
+    // Anzeige: Modellwert und Wahl getrennt, Aenderung sichtbar.
+    const htmlM = buildBuyPriceBox(syn40);
+    check('S-11m: Anzeige weist die Wahl getrennt vom Modellwert aus',
+      /Manuell gewählter Sicherheitsabschlag/.test(htmlM)
+      && /Manuell gewählt:/.test(htmlM)
+      && /Bisherige Einstiegszone \(Regelabschlag\): 17\.25/.test(htmlM)
+      && /Modellwert unverändert: 23\.00/.test(htmlM),
+      'html: ' + htmlM.slice(0, 200));
+    const htmlBad = buildBuyPriceBox(runMos(95));
+    check('S-11n: Anzeige meldet verworfene Eingabe statt still 0 % zu zeigen',
+      /Manuelle Eingabe verworfen/.test(htmlBad) && !/Manuell gewählt:/.test(htmlBad),
+      'html: ' + htmlBad.slice(0, 200));
+    // Die Wahl darf die Urteile nicht verschieben (Punkt 7).
+    check('S-11o: Qualitäts- und Datenurteil bleiben von der Wahl unberührt',
+      syn40.judgements.quality.verdict === synRule.judgements.quality.verdict
+      && syn40.judgements.data.cap === synRule.judgements.data.cap
+      && syn40.judgements.merged === false,
+      'erhalten: ' + JSON.stringify(syn40.judgements.quality));
+    // Starter-Zone bleibt regelbasiert, faellt aber nie unter den Einstiegspreis.
+    const rangeHtmlM = buildRangeBoxFull(syn40);
+    check('S-11q: Rechenweg der Synthese zeigt Regel- und angewendeten Abschlag',
+      /Regelabschlag 25\.0% · angewendet 40\.0% \(manual\)/.test(rangeHtmlM)
+      && /Einstiegszone bisher \(Regel\) 17\.25 → jetzt 13\.80 \(-20\.0%\)/.test(rangeHtmlM)
+      && /Manuell gewählter Sicherheitsabschlag/.test(rangeHtmlM),
+      'html enthaelt Abschlagszeile? ' + /Regelabschlag/.test(rangeHtmlM));
+    check('S-11p: Starter-Zone bleibt regelbasiert und nie unter dem Einstiegspreis',
+      syn40.safetyDiscount.starterZoneBasis === 'rule_structural'
+      && syn40.starterZonePrice >= syn40.buyPrice - 1e-12,
+      'erhalten: ' + syn40.starterZonePrice + ' vs ' + syn40.buyPrice);
+  }
+
+  // ── S-12: Abnahmekriterien des Auftrags, direkt geprüft ────────────────
+  suite('S-12 Abnahmekriterien');
+  {
+    // (1) Gleiche Eingaben und gleicher Startwert ⇒ gleiche Simulation.
+    const r1 = runMonteCarloDcf(mkMcMj(0), mcV(), { seed: 4242, runs: 500 });
+    const r2 = runMonteCarloDcf(mkMcMj(0), mcV(), { seed: 4242, runs: 500 });
+    check('S-12a: gleicher Startwert ⇒ bitgleiche Kennzahlen',
+      r1 && r2 && r1.median === r2.median && r1.p10 === r2.p10 && r1.p90 === r2.p90
+      && r1.runsValid === r2.runsValid && r1.runsNegative === r2.runsNegative
+      && r1.runsInvalid === r2.runsInvalid && r1.shareRunsAbovePrice === r2.shareRunsAbovePrice,
+      'erhalten: ' + JSON.stringify([r1 && r1.median, r2 && r2.median]));
+    check('S-12b: der verwendete Startwert steht im Ergebnis',
+      r1.seed === 4242 && r1.runsRequested === 500,
+      'erhalten: ' + r1.seed + ' / ' + r1.runsRequested);
+    // (2) Keine automatisch angehobene Bewertung durch eine EPV-Untergrenze —
+    // auch bei einem EPV weit über der Synthese.
+    const vrHighEpv = mkVr(false);
+    vrHighEpv.modelResults.epv_floor = stub('EPV (Floor)', 200, 250, 300, { _isEpvFloor: true });
+    const synHighEpv = runFairValueSynthesizer(mkSynMj(), vrHighEpv, null, SYNTHESIS_CONFIG);
+    check('S-12c: EPV weit über der Synthese hebt weder Range noch Einstiegszone',
+      approx(synHighEpv.range.base, synNoEpv.range.base, 1e-12)
+      && approx(synHighEpv.range.conservative, synNoEpv.range.conservative, 1e-12)
+      && approx(synHighEpv.buyPrice, synNoEpv.buyPrice, 1e-12)
+      && approx(synHighEpv.deepValuePrice, synNoEpv.deepValuePrice, 1e-12)
+      && synHighEpv.epvFloorApplied === false,
+      'mit EPV 250: ' + JSON.stringify(synHighEpv.range) + ' · ohne: ' + JSON.stringify(synNoEpv.range));
+    check('S-12d: der EPV bleibt dabei sichtbar und benannt',
+      synHighEpv.epvComparison && synHighEpv.epvComparison.base === 250
+      && synHighEpv.epvComparison.role === 'diagnostic_only',
+      'erhalten: ' + JSON.stringify(synHighEpv.epvComparison));
+    // (3) Jede angezeigte Synthese laesst ihre Rechenschritte erkennen:
+    // der angezeigte Basiswert ist aus den offengelegten Gewichten reproduzierbar,
+    // und der angezeigte Einstiegspreis aus Basiswert und Abschlag.
+    [synNoEpv, synHighEpv].forEach((sy, i) => {
+      const rec = sy.synthesisMethod.weights.reduce((a, w) => a + w.effectiveWeight * w.base, 0);
+      check('S-12e' + i + ': angezeigter Basiswert aus offengelegten Gewichten reproduzierbar',
+        approx(rec, sy.range.base, 1e-9), 'nachgerechnet: ' + rec + ' · angezeigt: ' + sy.range.base);
+      check('S-12f' + i + ': angezeigter Einstiegspreis aus Basiswert und Abschlag reproduzierbar',
+        approx(sy.buyPrice, sy.range.base * (1 - sy.safetyDiscount.total), 1e-9),
+        'nachgerechnet: ' + (sy.range.base * (1 - sy.safetyDiscount.total)) + ' · angezeigt: ' + sy.buyPrice);
+    });
+    // (4) Die Simulation wird nicht als empirische Wahrscheinlichkeit angezeigt.
+    const cardS = buildMcDiagCard(mkMcMj(0), mcV());
+    check('S-12g: Simulationskarte bleibt eingeklappt und ohne „P(FV > Kurs)"',
+      /class="card collapsed"/.test(cardS) && cardS.indexOf('P(FV') < 0
+      && /keine empirisch belegte Wahrscheinlichkeit/.test(cardS),
+      'html: ' + cardS.slice(0, 200));
   }
 
   return results;

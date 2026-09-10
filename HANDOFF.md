@@ -1,5 +1,184 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Update (Chat 10): Manuell gewählter Sicherheitsabschlag, Abnahme abgesichert (V1.0.42)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`. Ausgangsbranch
+`claude/brl1-alignment-fixes`, Ausgangscommit `94ae23c` — der neueste auf
+GitHub gespeicherte Stand; er enthält alle Vorgängercommits als Vorfahren
+(`main` steht weiterhin auf `b023dc8`). Tool-Datei unverändert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html` (einzige
+HTML-Datei, `DEFAULT_TARGET` in `test/run-calc-tests.js`). Arbeitsbranch:
+`claude/happy-hamilton-fytsq5`. Testbefehl: `npm test`.
+
+**Baseline vor den Änderungen** (auf `94ae23c`, tatsächlich ausgeführt):
+Rechentests 936 bestanden · 0 fehlgeschlagen · 0 Exceptions; SEC-Tests 28/28.
+
+### Prüfung des Auftrags am Code (vor der Bearbeitung)
+
+Die Punkte 1, 2, 3, 5, 6 und 7 waren bereits in Chat 8 (`87ce510`) umgesetzt
+und sind am aktuellen Code verifiziert worden:
+
+* Punkt 1 — `_modelComparisonNote()` je Modellkachel (sichtbare Inputs, Rolle
+  bzw. Ausschlussgrund, bezifferte Abweichung, Modelleignung).
+* Punkt 2 — `synthesisMethod` mit `kind: 'heuristic'`, Formel, Gewichten,
+  Ausschlüssen, Kappungen und nummerierten Schritten; Anzeige als aufklappbarer
+  „Rechenweg der heuristischen Synthese".
+* Punkt 3 — `epvFloorApplied` dauerhaft `false`; `epvModel` wird nicht mehr in
+  Range oder Entscheidungsrange verwendet; EPV nur noch als `epvComparison`.
+* Punkt 5/6 — `buildMcDiagCard()` mit `class="card collapsed"`, „Anteil Läufe
+  > Kurs" statt „P(FV > Kurs)", `_mulberry32` mit `MC_CONFIG.seed`, getrennte
+  Zählung `runsValid`/`runsNegative`/`runsInvalid(Core|NonFinite)`.
+* Punkt 7 — `judgements` mit `merged: false` und je eigener Quelle.
+
+Offen war ausschließlich **Punkt 4 in seinem wörtlichen Teil**: einen *manuell
+gewählten* Sicherheitsabschlag gab es nicht; Chat 8 hat nur den bestehenden
+Regelabschlag getrennt ausgewiesen und das ausdrücklich als Einschränkung
+notiert. Genau diese Lücke schließt dieser Schritt; alles Übrige wurde nicht
+umgebaut, sondern durch zusätzliche Tests abgesichert.
+
+### Änderungen (Produktdatei)
+
+**1. Manuell gewählter Sicherheitsabschlag (Punkt 4).**
+`runFairValueSynthesizer()` liest den Abschlag aus
+`valuation.assumptions.safety_discount_override_pct` — ausschließlich aus dem
+MasterJSON, kein DOM-Zugriff, damit die Synthese rein und testbar bleibt.
+* Gültiger Bereich 0–`SYNTHESIS_CONFIG.mos.manual_max_pct` (= 90 %).
+* Der gewählte Wert ersetzt den Regelabschlag **nur dort, wo ein Abschlag
+  wirkt**: Einstiegspreis (`buyPrice`) und tiefer Prüfpreis
+  (`deepValuePrice`). `range.conservative/base/optimistic`, Gewichte,
+  Szenarien und Modellwerte bleiben unverändert.
+* Der Regelabschlag bleibt vollständig erhalten und getrennt lesbar:
+  `safetyDiscount.ruleTotal`, `mosComponents.ruleTotal`,
+  `safetyDiscount.components` (Regelkomposition).
+* Fehlende oder leere Eingabe = **keine Wahl** (Regelabschlag gilt), nicht 0 %.
+  Ausdrücklich gewählte 0 % gelten dagegen als Wahl. Unplausible Eingaben
+  (keine Zahl, < 0, > 90) werden verworfen, mit Grund gemeldet
+  (`safetyDiscount.manual.rejectedReason`, Eintrag unter „Kappungen") und
+  fallen auf den Regelabschlag zurück — kein stilles 0 %.
+* Eine Wahl über der Regel-Obergrenze (50 %) wird **nicht still gekappt**,
+  sondern angewendet und als `manual.aboveRuleCap` sowie als benannter Eintrag
+  im Rechenweg ausgewiesen.
+* Neuer Rechenschritt 6 „Manuell gewählter Sicherheitsabschlag"; der frühere
+  Schritt 6 (Einstiegspreis) ist jetzt Schritt 7 und nennt bei aktiver Wahl die
+  bisherige Einstiegszone samt Änderung.
+
+**2. Änderung gegenüber der bisherigen Einstiegszone (Punkt 4, zweiter Satz).**
+Neues `safetyDiscount.entryZoneChange` mit `entryPriceRule` (Zone mit
+Regelabschlag), `entryPriceApplied`, `deepValuePriceRule`, `deltaAbsolute` und
+`deltaPct`. Ohne Einstiegspreis (gesperrte Zone) bleiben die Felder `null` —
+kein erfundener Vergleichswert. Gemessen am Testfall S-11
+(DCF 16/20/24, RIM 24/30/36, Modellwert Base 23,00, Regelabschlag 25 %):
+bisherige Zone **17,25**; bei manuell 40 % **13,80** (−20,0 %), bei manuell
+10 % **20,70** (+20,0 %). Der Modellwert bleibt in beiden Fällen 23,00.
+
+**3. Anzeige.** Die Einstiegszonen-Box zeigt bei aktiver Wahl „Manuell
+gewählter Sicherheitsabschlag", die Zeile „Bisherige Einstiegszone
+(Regelabschlag) … → jetzt … (±x %)" und ausdrücklich „Modellwert unverändert:
+…". Eine verworfene Eingabe wird als solche gemeldet statt still als 0 %
+dargestellt. Der Rechenweg in der Range-Box nennt zusätzlich „Regelabschlag x %
+· angewendet y % (manual|rule)" und dieselbe Zonenänderung.
+
+**4. Eingabefeld.** Neues Feld `as-mos` („Sicherheitsabschlag manuell (%)") im
+Annahmen-Tab, eingelesen über die bestehende `fields`-Liste in
+`recalcFromAssumptions()`. Ein **leeres** Feld nimmt die Wahl zurück (löscht
+`safety_discount_override_pct`), setzt sie nicht auf 0. Bei gesetztem Wert
+werden `source_type: 'manual'` und der Eintrag in
+`state.manualAssumptionFields` gepflegt — dieselbe Mechanik wie bei den
+bestehenden Overrides. Kein neues Framework, keine neue Abhängigkeit.
+
+**5. Gespeicherter Zufallsstartwert (Punkt 6, Ergänzung).** `saveSnapshot()`
+legt zusätzlich `mc_config` (Startwert, Generator, Laufzahl, Verteilungs-
+parameter) neben dem bereits gespeicherten `synthesis_config` ab. Damit bleibt
+nachvollziehbar, mit welchem Startwert eine gespeicherte Auswertung gerechnet
+wurde, auch wenn `MC_CONFIG.seed` später geändert wird. Die Simulationslogik
+selbst wurde nicht angefasst.
+
+### Pflicht-Tests (neu, 29 Assertions in `_testSynthesisPrecision`)
+
+Synthetische Daten, unabhängig nachgerechnete Erwartungswerte.
+
+**S-11 (21) — manueller Sicherheitsabschlag.**
+a Vorbedingung (Regelabschlag 25 %, Zone 17,25) · b Wahl wird angewendet und
+als `chosen_manual` gekennzeichnet · c Modellwert unverändert (alle drei
+Szenarien) · d 23,00 × (1 − 0,40) = 13,80 und 18,40 × (1 − 0,40) = 11,04 ·
+e Regelabschlag bleibt getrennt erhalten · f Zonenänderung −3,45 = −20,0 % ·
+g Gegenrichtung +20,0 % bei 10 % · h Wahl über der Obergrenze wird angewendet
+und benannt · i0–i3 `'abc'`, `-5`, `95`, `NaN` fallen auf den Regelabschlag
+zurück (**kein stilles 0 %**) · j leere Eingabe ist keine Wahl von 0 % ·
+k gewählte 0 % gelten als Wahl · l Rechenweg nennt die Wahl als eigenen
+Schritt · m/n Anzeige (Trennung bzw. Meldung der verworfenen Eingabe) ·
+o Urteile bleiben unberührt · p Starter-Zone bleibt regelbasiert und nie unter
+dem Einstiegspreis · q Rechenweg zeigt Regel- und angewendeten Abschlag.
+
+**S-12 (8) — Abnahmekriterien direkt geprüft.**
+a gleicher Startwert ⇒ bitgleiche Kennzahlen (Median, P10, P90, Zählungen,
+Anteil) · b Startwert und Laufzahl stehen im Ergebnis · c EPV bei 200/250/300
+— weit über der Synthese — hebt weder Range noch Einstiegszone · d EPV bleibt
+sichtbar und als `diagnostic_only` benannt · e0/e1 angezeigter Basiswert aus
+den offengelegten Gewichten reproduzierbar · f0/f1 angezeigter Einstiegspreis
+aus Basiswert und Abschlag reproduzierbar · g Simulationskarte bleibt
+eingeklappt, ohne „P(FV" und mit dem Hinweis „keine empirisch belegte
+Wahrscheinlichkeit".
+
+### Gegenprüfungen (tatsächlich ausgeführt, in Arbeitskopien)
+
+* **Manuelle Wahl abgeschaltet** (`mosTotalFinal = _mosRuleTotal`) ⇒ **6**
+  Assertions rot (S-11b/d/f/g/h/k).
+* **Unplausible Eingabe still als 0 % gelesen** ⇒ **5** Assertions rot
+  (S-11i0–i3, S-11n).
+* **Alter EPV-Floor wieder eingeschaltet** (`cons = max(cons, EPV-cons)`,
+  `base` bis +30 %) ⇒ S-12c rot (conservative 200 statt 18,40, base 29,90 statt
+  23,00) und S-12e1 rot — der angezeigte Basiswert war dann nicht mehr aus den
+  offengelegten Gewichten reproduzierbar. Damit prüft S-12e genau das dritte
+  Abnahmekriterium.
+
+### Tatsächlich ausgeführte Tests (nach den Änderungen)
+
+`npm test` (= `node test/run-all.js`), beide Suiten:
+* `node test/run-calc-tests.js` → **965 bestanden · 0 fehlgeschlagen ·
+  0 Fehler/Exceptions** (vorher 936; +29 durch S-11/S-12).
+  Fixtures unverändert 434 Assertions, 0 fehlgeschlagen.
+* `node --test tests/*.test.mjs` → **28/28** (unverändert).
+* **Gemeinsamer Exit-Code 0.**
+
+Keine bestehende Testerwartung wurde geändert. `_testSynthesisPrecision` wuchs
+von 73 auf 102 Assertions; die 73 Assertions aus Chat 8 laufen unverändert.
+
+### Offene Einschränkungen / bewusst nicht bearbeitet
+
+* Das neue Eingabefeld `as-mos` selbst ist **nicht automatisiert getestet** —
+  der Node-Runner stellt bewusst kein DOM bereit (wie schon
+  `_testManualAssumptionOverride`). Getestet ist die vollständige Wirkungskette
+  ab dem MasterJSON-Feld `safety_discount_override_pct`; die Feld-Verdrahtung
+  ist manuell im Browser zu prüfen.
+* Die Starter-Zone bleibt bewusst regelbasiert (strukturelle Komponenten,
+  `safetyDiscount.starterZoneBasis = 'rule_structural'`) und wird nur nach
+  unten auf den Einstiegspreis begrenzt. Ein manuell gewählter Abschlag wirkt
+  dort nicht.
+* `MC_CONFIG.seed` bleibt ein Programmwert; neu ist nur, dass er mit dem
+  Snapshot gespeichert wird. Eine Startwert-Verwaltung je Titel gibt es nicht.
+* Korrelationen der Monte-Carlo-Größen sind weiterhin nicht modelliert (nur
+  benannt).
+* `epvModel` in `runFairValueSynthesizer()` ist seit V1.0.40 unbenutzt (tote
+  Zuweisung); nicht angefasst, um den Diff auf den Auftrag zu begrenzen.
+* Unverändert offen aus Chat 6/7: index-basierte Ableitung von `eps_diluted`,
+  `book_value` und `dps` in `applyDerivedFieldsV4`.
+* `ENGINE_VERSION` / `DISPLAY_VERSION` / `REGRESSION_TEST_VERSION` weiterhin
+  nicht angehoben (durch Tests festgeschrieben); die Änderung ist im Code als
+  V1.0.42 kommentiert.
+
+### Ausgangsstand für den nächsten Schritt
+
+Übergabebranch: `claude/happy-hamilton-fytsq5` (Basis `94ae23c` auf
+`claude/brl1-alignment-fixes`). Tool-Datei unverändert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Testbefehl: `npm test` — beide Suiten grün, Exit-Code 0.
+Ergebniscommit: siehe Spitze des Übergabebranches.
+Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/happy-hamilton-fytsq5
+
+**Der nächste Schritt setzt auf `origin/claude/happy-hamilton-fytsq5` auf,
+nicht auf `main`.**
+
 ## Update (Chat 9): T-BRL1 und Mehrheitsjahr-Typfehler behoben (V1.0.41)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`. Basiscommit
