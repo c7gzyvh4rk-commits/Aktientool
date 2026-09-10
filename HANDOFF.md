@@ -1,5 +1,241 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Update (Chat 7 Reparatur): Drei Pruefbefunde behoben (V1.0.45)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, geprueftes Branch
+`claude/awesome-johnson-j9c246`, geprueftes Commit `e71a4d5` — die Spitze dieses
+Branches und der einzige Stand, der es enthaelt (`main` steht weiterhin auf
+`b023dc8`). Tool-Datei unveraendert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Reparaturbranch: `claude/snapshot-repair-fixes`. Testbefehl: `npm test`.
+Baseline auf `e71a4d5` (ausgefuehrt): 1130 Rechen-Assertions · 28 SEC-Tests ·
+Exit-Code 0.
+
+Umfang: ausschliesslich die drei gemeldeten Fehler, unmittelbar noetige Helfer,
+Tests und dieses Dokument. Keine Aenderung an Bewertungsformeln oder
+Abschlagsregeln.
+
+---
+
+### Fehler 1 — Vergleich und Anzeige rechneten unterschiedlich
+
+**Am Code reproduziert** (Fixture `T-TXRH-DEBT2`, Stand `e71a4d5`):
+
+| | Einstiegspreis | Sicherheitsabschlag |
+|---|---|---|
+| Anzeigepfad (`runFullEvaluation`) | **7,4357081414** | **28,75 %** |
+| Helfer (`recomputeSnapshotWithCurrentModel`) | 7,8270612014 | 25,00 % |
+
+Ursache: der Helfer pflegte einen **eigenen, zweiten Bewertungsablauf**. Er rief
+`runFairValueSynthesizer(mj, valuation, quality, SYNTHESIS_CONFIG)` direkt auf —
+ohne `computeDataQualityScore` und ohne das daraus gebildete `_dqResult`, an dem
+der Datenqualitaets-Abschlag haengt — und liess `checkPerShareSanity` ganz aus.
+Zusaetzlich rechnete `loadSnapshotWithCurrentModel` **zweimal**: einmal in
+`compareStoredVsRecomputed` (Meldung) und einmal ueber
+`_applySnapshotToState` → `runFullEvaluation` (Anzeige). Die Meldung nannte
+also einen anderen Wert als die Anzeige daneben.
+
+**Korrektur — ein gemeinsamer Ablauf statt zweier gepflegter.**
+* Neu `_runFullEvaluationCore(mj)`: der vollstaendige Ablauf, **Schritt fuer
+  Schritt unveraendert** aus `runFullEvaluation` herausgeloest — Aufbereitung,
+  `runQualityEngine`, `runValuationEngine`, `computeDataQualityScore`,
+  `_applyValuationResult` (das `_dqResult` weiterreicht), `checkPerShareSanity`,
+  `evaluateBaseRateWarnings`, Growth-Layer. `runFullEvaluation` ist jetzt ein
+  Dreizeiler darum herum.
+* Neu `evaluateMasterJsonDetached(mj)`: fuehrt denselben Ablauf aus und stellt
+  den sichtbaren Zustand danach vollstaendig wieder her. Die Ergebnisfelder
+  (`EVALUATION_STATE_KEYS`) werden vorher geleert, damit Einstellungen einer
+  zuvor aktiven Aktie nicht einfliessen.
+* `recomputeSnapshotWithCurrentModel` rechnet auf `_deepCopyForSnapshot(...)`
+  der gespeicherten Inputs und laeuft ueber diese eine Stelle.
+* `compareStoredVsRecomputed(snap, precomputed)` nimmt ein fertiges Ergebnis
+  entgegen; `_applySnapshotToState(..., { recomputed })` **uebernimmt** es,
+  statt ein zweites Mal zu rechnen. `loadSnapshotWithCurrentModel` rechnet damit
+  genau einmal und speist Meldung und Anzeige aus demselben Ergebnis.
+* Der Vergleich fuehrt jetzt auch `range_cons`, `range_opt` und `mos_total`.
+
+### Fehler 2 — gespeicherte Datenqualitaet wurde beim Laden nicht wiederhergestellt
+
+**Am Code reproduziert:** Zustand `{grade:'D',score:5}`, Snapshot mit
+`{grade:'A',score:95}` geladen ⇒ `state.dataQuality` blieb **D**.
+`_applySnapshotToState` fasste das Feld ueberhaupt nicht an.
+
+**Korrektur.** `_applySnapshotToState` uebernimmt `s.dataQuality` als
+**unabhaengige Kopie** (`_deepCopyForSnapshot`). Fehlt die Angabe
+(Format-1-Altsnapshot), wird sie als **nicht vorhanden** gefuehrt (`null`) —
+die Note der zuvor aktiven Aktie bleibt nicht stehen, und es wird auch nichts
+heute Berechnetes als damals gespeichertes Ergebnis ausgegeben. Das Fehlen
+steht in `state._snapshotDataQualityMissing`. Beim ausdruecklich gewaehlten
+Neuberechnen gilt die mit dem aktuellen Modell ermittelte Datenqualitaet.
+
+### Fehler 3 — Import akzeptierte unbrauchbare Datensaetze und ungueltige Versionen
+
+**Am Code reproduziert:** `[{},{}]` wurde angenommen und gespeichert; die
+anschliessende Journal-Sortierung warf
+`Cannot read properties of undefined (reading 'localeCompare')`; der leere
+Datensatz war nicht ladbar. `_snapshotFormat: "999"` galt auf Huellen- **und**
+Datensatzebene als Format 1 statt als ungueltige Angabe.
+
+**Korrektur.**
+* Neu `validateSnapshotRecordStructure(rec)` — Anforderungen aus den
+  **tatsaechlichen Aufrufern** abgeleitet: `renderSnapshots` braucht `ticker`
+  (Gruppenschluessel), `timestamp` (`localeCompare`, `new Date`), `id`
+  (Aktionsknoepfe, `find`) und `name`; `exportSnapshotsCSV` braucht
+  `timestamp.slice`; `_applySnapshotToState` braucht normalisierte Inputs als
+  Objekt; `_snapDelta` braucht `output_signals`/`key_inputs` als Objekte, falls
+  vorhanden. Geprueft **vor** der Migration — eine Migration macht einen
+  unbrauchbaren Datensatz nicht brauchbar.
+* Neu `_resolveSnapshotFormatValue(value, wo)`: **fehlende** Angabe bleibt
+  zulaessig (Altdaten, Format 1); eine **vorhandene** muss eine unterstuetzte
+  positive Ganzzahl sein. Strings (`"999"`, `"1"`), `true`/`false`, `1.5`, `0`,
+  negative Werte, `NaN`, `Infinity`, Objekte und Arrays werden abgewiesen.
+  Neuere Formate weiterhin abgelehnt. Gilt fuer Huelle und Datensatz.
+  Die Datensatzangabe wird am **Rohwert** geprueft, nicht an der Tiefkopie:
+  diese ueberfuehrt `NaN`/`Infinity` nach JSON-Semantik in `null`, was sonst
+  als "fehlt" durchginge.
+* `parseSnapshotImportPayload` bricht bei **jedem** ungueltigen Eintrag den
+  gesamten Import ab — mit Eintragsnummer (`Eintrag 2 von 3`) und konkretem
+  Grund; `snapshots` bleibt leer. Kein Teilimport mehr.
+  `importSnapshots` schrieb schon bisher erst nach dieser Pruefung.
+* `renderSnapshots` weist bereits im Browser-Speicher liegende unbrauchbare
+  Eintraege aus, statt an ihnen zu scheitern. Wer unter V1.0.44 `[{},{}]`
+  importiert hat, konnte das Journal sonst nie wieder oeffnen — auch nicht,
+  um zu loeschen.
+* Gueltige Format-1-Altsnapshots bleiben gueltig: fehlende **neue**
+  Zusatzfelder machen sie nicht unbrauchbar, Altschluessel werden weiter
+  abgebildet, und sie sind danach anzeigbar und ladbar.
+
+### Geaenderte Testerwartung (fachlich begruendet)
+
+`SN-4n` sicherte bis hier das alte Verhalten "unbrauchbare Eintraege einzeln
+ablehnen, brauchbare uebernehmen". Genau dieser Teilimport ist Gegenstand von
+Auftragspunkt 3.4 ("Brich bei ungueltigen Eintraegen den gesamten Import vor dem
+Speichern ab"). Die Erwartung wurde umgestellt und um `SN-4n2` ergaenzt, das
+Eintragsnummer und die Aussage "NICHTS importiert" prueft. Keine andere
+Erwartung wurde geaendert oder gelockert.
+
+### Neue Regressionstests — `_testSnapshotPathConsistency` (98 Assertions)
+
+Registriert in `PURE_TEST_FUNCTIONS` (`test/run-calc-tests.js`). Die Tests fahren
+die **tatsaechlichen Aufrufwege** — `runFullEvaluation` ueber `state`,
+`loadSnapshot(id)` und `loadSnapshotWithCurrentModel(id)` ueber den
+Journalbestand in `localStorage` — nicht zweimal denselben isolierten Helfer.
+Rein visuelle Helfer werden waehrend des Laufs betaeubt und danach
+wiederhergestellt; `state` und der Snapshot-Bestand werden gesichert und
+zurueckgesetzt.
+
+* **PC-1 (13)** `T-TXRH-DEBT2`: Anzeigepfad liefert 7,4357081414 / 28,75 % und
+  ausdruecklich **nicht** 7,8270612014 / 25 %; ueber
+  `loadSnapshotWithCurrentModel` stimmen Vergleichsmeldung, Anzeige und
+  frischer Anzeigepfad in Einstiegspreis, Abschlag, Position und allen drei
+  Baendern ueberein; der gespeicherte Snapshot bleibt bei 1,11 und
+  `1.0.30-alt`; der Vergleichsweg ruft den gemeinsamen Ablauf **genau einmal**.
+* **PC-2 (5)** Nachgelagerte Sperre: Fixture mit 20.000 Aktien loest
+  `checkPerShareSanity` aus. Anzeigepfad, Vergleichshelfer und Anzeige nach dem
+  Vergleichsweg sperren gleich (`position: 'blocked'`, `buyPrice: null`,
+  identische Begruendung).
+* **PC-3 (3)** Kein Uebertrag: mit einer fremden aktiven Aktie
+  (`dataQuality D`, `buyPrice 999`) ergibt die Neuberechnung exakt den Wert des
+  frischen Anzeigepfads; der sichtbare Zustand bleibt danach unberuehrt.
+* **PC-4 (9)** Datenqualitaet: D → Snapshot A laden → A; Aenderungen am
+  geladenen Wert lassen den Snapshot unberuehrt (beide Richtungen);
+  Altsnapshot ohne Angabe ⇒ `null` statt D, Fehlen gekennzeichnet, uebrige
+  Altschluessel kommen an; nach ausdruecklichem Neuberechnen gilt die heutige
+  Datenqualitaet, der gespeicherte A-Wert bleibt im Snapshot.
+* **PC-5 (29)** Struktur: `[{},{}]` abgelehnt mit Eintragsnummer und Grund,
+  bestehender Bestand unveraendert, Gegenprobe dass die Journal-Sortierung an
+  solchen Eintraegen scheitert; 11 Typfehler in tatsaechlich benoetigten
+  Feldern (`id`, `ticker`, `name`, `timestamp` unlesbar/als Zahl, nur
+  Leerzeichen, fehlende/falsch getypte Inputs, `meta` als Text,
+  `output_signals` als Array); gueltig + ungueltig ⇒ kein Teilimport.
+* **PC-6 (29)** Versionsangaben: 11 ungueltige Werte je auf Datensatz- und
+  Huellenebene abgelehnt (darunter der gemeldete Fall `"999"`), neueres Format
+  weiterhin abgelehnt, fehlende Angabe bleibt zulaessig und wird zu Format 1.
+* **PC-7 (9)** Gueltige Importe bleiben funktionsfaehig: Format-1-Import samt
+  Altschluesseln wird angenommen, migriert, ist journaltauglich und laesst sich
+  ueber `loadSnapshot` laden; Format-2-Export/Import-Roundtrip laedt samt
+  gespeicherter Datenqualitaet.
+
+### Gegenproben (ausgefuehrt)
+
+| Rueckbau | Rot |
+|---|---|
+| GP-1 alter Helferablauf (kein `_dqResult`, keine Per-share-Pruefung) | 7 — u. a. PC-1e/f mit **exakt** 7,827061201422972 und 0,25, PC-2b/c ohne Sperre |
+| GP-2 `dataQuality` beim Laden nicht uebernehmen | 4 (PC-4a/e/f, PC-7h) |
+| GP-3 Strukturpruefung entfernt | 16 (PC-5a/b/c, alle PC-5h) |
+| GP-4 alte, lasche Formatpruefung (`typeof number`) | 22 (alle PC-6a/b) |
+| GP-5 Teilimport wieder zulassen | 2 (PC-5j/k) |
+| GP-7 Wiederherstellung des sichtbaren Zustands entfernt | 2 (PC-3b/c) |
+| GP-8 `loadSnapshotWithCurrentModel` rechnet wieder zweimal | 1 (PC-1l) |
+
+**GP-6 griff nicht** und wird nicht als Erfolg ausgegeben: das Leeren der
+Ergebnisfelder in `evaluateMasterJsonDetached` ist nach dem Zusammenlegen
+**nicht mehr ergebniswirksam**, weil `_runFullEvaluationCore` jedes gelesene
+Feld (insbesondere `state.dataQuality`) vor der Verwendung selbst setzt. Es
+bleibt als Absicherung gegen kuenftige Leser stehen; ergebniswirksam und
+geprueft ist die **Wiederherstellung** (GP-7).
+
+### Tatsaechlich ausgefuehrte Tests
+
+* `npm test` → Rechentests **1229 bestanden · 0 fehlgeschlagen ·
+  0 Fehler/Exceptions** (vorher 1130; +98 neu, +1 in `_testSnapshotIntegrity`),
+  SEC-Tests **28/28**, gemeinsamer **Exit-Code 0**.
+* **Echter Browser** (Chromium 1194 headless ueber `playwright-core`, nur im
+  Arbeitsverzeichnis ausserhalb des Repositories installiert — das Projekt
+  bleibt abhaengigkeitsfrei), Datei per `file://`, Bedienung ueber die
+  Oberflaeche, **0 JS-Fehler**:
+  1. Anzeigepfad: 7,4357081414 · 28,75 % · `overvalued` · Band-Base 10,4360816.
+  2. Journal gerendert, beide Knoepfe vorhanden.
+  3. „Gespeichertes Ergebnis": Zustand vorher `D/5` ⇒ danach `{grade:'A',score:95}`,
+     Einstiegspreis 1,11, Statuszeile „Original-Bewertung geladen."
+  4. „Neu rechnen (aktuelles Modell)": Vergleichsmeldung und Anzeige beide
+     7,4357081414 / 28,75 %, identisch zum frischen Anzeigepfad; gespeicherter
+     Wert 1,11 steht daneben; Snapshot unveraendert; Datenqualitaet ist die
+     heute berechnete (Grade C).
+  5. Import ueber `#snap-import-file`: `[{},{}]` ⇒ Dialog „Import abgebrochen —
+     nichts wurde gespeichert. Eintrag 1 von 2 abgelehnt: …", Bestand
+     unveraendert, Journal weiter bedienbar; gueltiger Export ⇒ importiert und
+     gerendert; `_snapshotFormat: "999"` ⇒ „Exporthuelle: Formatversion muss
+     eine Zahl sein, erhalten string (\"999\")", Bestand unveraendert.
+
+### Verbleibende Grenzen
+
+* Der Browsercheck ist ein **einmalig ausgefuehrtes Skript** im
+  Arbeitsverzeichnis, kein Bestandteil von `npm test`; die Suite bleibt
+  abhaengigkeitsfrei und DOM-frei. Die DOM-Verdrahtung ist damit nicht dauerhaft
+  regressionsgesichert.
+* `_testSnapshotPathConsistency` betaeubt `switchTab`, `updateTickerBadge`,
+  `renderSnapshots`, `initAssumptionLiveRecalc`, `syncPiotroskiCheckboxes` und
+  `_updateGrowthTabVisibility`. Das ist ausdruecklich **kein** Browsernachweis —
+  dafuer steht der Punkt darueber.
+* `_applySnapshotToState` schreibt seine Statuszeile jetzt defensiv
+  (`if (el)`), damit der Ladepfad ausserhalb der fertigen Seite pruefbar ist.
+* Der Kompatibilitaetsdialog (`_showSnapshotWarningModal`, Legacy- und
+  inkompatible Snapshots) braucht `document.createElement` und ist im
+  Node-Runner nicht gefahren; die PC-Tests nutzen Snapshots mit kompatibler
+  Breaking-Version, wie `saveSnapshot` sie erzeugt.
+* Der Bestand im Browser-Speicher wird **nicht** automatisch bereinigt:
+  unbrauchbare Eintraege aus einem Import vor V1.0.45 werden im Journal
+  ausgewiesen, aber nicht geloescht.
+
+### Weitere entdeckte Punkte (nicht behoben, ausserhalb des Auftrags)
+
+* `_snapshotDataQualityMissing` wird gesetzt, aber noch nirgends angezeigt —
+  der Nutzer sieht das Fehlen nur als leere Datenqualitaet.
+* Unveraendert offen aus den Vorschritten: index-basierte Ableitung von
+  `eps_diluted`, `book_value` und `dps` in `applyDerivedFieldsV4`; Korrelationen
+  der Monte-Carlo-Groessen nicht modelliert; `ENGINE_VERSION` /
+  `DISPLAY_VERSION` / `REGRESSION_TEST_VERSION` nicht angehoben (mehrere
+  Fixtures pinnen `1.0.35-base-rate-lite` exakt).
+
+### Ausgangsstand fuer Chat 8
+
+Reparaturbranch: `claude/snapshot-repair-fixes` (Basis `e71a4d5` auf
+`claude/awesome-johnson-j9c246`). Tool-Datei unveraendert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Testbefehl: `npm test` — beide Suiten gruen, Exit-Code 0.
+Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/snapshot-repair-fixes
+
 ## Update (Chat 12): Reproduzierbare Bewertungssnapshots, ehrliche Erfolgskontrolle (V1.0.44)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch

@@ -2804,6 +2804,10 @@ const state = {
   _snapshotBreakingVersion: null,    // BREAKING_VERSION des Snapshots
   _snapshotIsLegacy: false,          // true wenn Snapshot keine _breakingVersion hat
   _usingCurrentEngine: false,        // true wenn nach Snapshot-Laden manuell geändert/neu berechnet wurde
+  // V1.0.45: true, wenn der geladene Snapshot KEINE gespeicherte Datenqualitaet
+  // enthielt (Format-1-Altsnapshot). Dann steht dort bewusst nichts statt der
+  // Note der zuvor aktiven Aktie.
+  _snapshotDataQualityMissing: false,
   // ── Growth Layer (MVP) — vollständig isoliert, kein Einfluss auf Synthese ──
   growth: null,                      // Ergebnis von runGrowthCaseEngine(); nur Diagnose
   // ── Globale Risk-Free Rate (manuell gepflegt) ──────────────────────────────
@@ -14891,9 +14895,24 @@ function rerunQualityFromUi() {
 // ── runFullEvaluation: Alle Engines auf state.masterJson ausführen ──
 // Verwendet für "Mit aktueller Engine neu bewerten" beim Snapshot-Laden.
 // Ändert keine Assumptions — nur Re-Evaluation.
-function runFullEvaluation() {
-  if (!state.masterJson) return;
-  const mj = state.masterJson;
+// ════════════════════════════════════════════════════════════════
+// V1.0.45: _runFullEvaluationCore — der EINZIGE vollstaendige Bewertungsablauf
+// ────────────────────────────────────────────────────────────────
+// Bis V1.0.44 gab es zwei unabhaengig gepflegte Ablaeufe: runFullEvaluation
+// (Anzeige) und recomputeSnapshotWithCurrentModel (Snapshot-Vergleich). Der
+// Helfer uebergab die Datenqualitaet nicht als `_dqResult` an den Synthesizer
+// und liess die Per-share-Plausibilitaetspruefung aus. Beim Fixture
+// T-TXRH-DEBT2 ergab das 7,8270612014 statt 7,4357081414 USD Einstiegspreis
+// (Sicherheitsabschlag 25 % statt 28,75 %) — die Vergleichsmeldung nannte
+// also einen anderen Wert als die Anzeige daneben.
+//
+// Beide Wege laufen jetzt durch DIESE Funktion. Sie schreibt bewusst nach
+// state (so wie bisher, `_applyValuationResult` tut das ebenfalls); wer ohne
+// Nebenwirkung auf die Anzeige rechnen will, nimmt evaluateMasterJsonDetached.
+// KEINE Aenderung an Bewertungsformeln oder Abschlagsregeln — die Schritte
+// sind unveraendert aus runFullEvaluation uebernommen.
+// ════════════════════════════════════════════════════════════════
+function _runFullEvaluationCore(mj) {
   // V11.9.20: Pipeline gespiegelt zur Hauptpipeline
   //   applyDerivedFieldsV4 (1st pass) → normalizeSharesInPlace → applyDerivedFieldsV4 (2nd pass)
   // V11.9.21: + applyAutoDividendClassification nach 2nd pass
@@ -14906,9 +14925,11 @@ function runFullEvaluation() {
   state.quality = runQualityEngine(mj);
   const valuation = runValuationEngine(mj);
   // V1.0.24 P2: state.dataQuality vor _applyValuationResult setzen
+  // (_applyValuationResult liest sie und reicht sie als _dqResult an den
+  //  Synthesizer weiter — daran haengt der Datenqualitaets-Abschlag).
   state.dataQuality = computeDataQualityScore(mj);
   _applyValuationResult(mj, valuation, state.quality);
-  // V1.0.24 P1/P2: checkPerShareSanity auch im runFullEvaluation-Pfad anwenden
+  // V1.0.24 P1/P2: checkPerShareSanity gehoert zum Ablauf, nicht zur Anzeige
   const _sanityFE = checkPerShareSanity(state.synthesis, mj);
   if (_sanityFE.blocked && state.synthesis) {
     state.synthesis = Object.assign({}, state.synthesis, {
@@ -14919,6 +14940,39 @@ function runFullEvaluation() {
   state.baseRateWarnings = evaluateBaseRateWarnings(mj, state.quality, state.valuation);
   // Growth Layer mitführen (isoliert, kein Einfluss auf Synthese)
   _runGrowthLayer(mj);
+}
+
+// Ergebnisfelder, die _runFullEvaluationCore in state schreibt. Einzige
+// Aufzaehlung — evaluateMasterJsonDetached sichert und leert genau diese.
+const EVALUATION_STATE_KEYS = ['quality', 'valuation', 'synthesis', 'dataQuality',
+                               'baseRateWarnings', 'growth'];
+
+// ── Bewertung ohne Nebenwirkung auf die Anzeige ───────────────────
+// Fuehrt denselben Ablauf auf dem uebergebenen Master-JSON aus und stellt den
+// sichtbaren Zustand danach vollstaendig wieder her. Die Ergebnisfelder werden
+// VORHER geleert: `_applyValuationResult` liest `state.dataQuality`, und ohne
+// das Leeren wuerde die Note einer zuvor aktiven Aktie in das Ergebnis
+// einfliessen. state.masterJson wird ebenfalls getauscht, damit nachgelagerte
+// Leser nicht auf die alte Aktie zeigen.
+function evaluateMasterJsonDetached(mj) {
+  const savedMj = state.masterJson;
+  const saved = {};
+  EVALUATION_STATE_KEYS.forEach(k => { saved[k] = state[k]; state[k] = null; });
+  state.masterJson = mj;
+  try {
+    _runFullEvaluationCore(mj);
+    const out = { masterJson: mj };
+    EVALUATION_STATE_KEYS.forEach(k => { out[k] = state[k]; });
+    return out;
+  } finally {
+    state.masterJson = savedMj;
+    EVALUATION_STATE_KEYS.forEach(k => { state[k] = saved[k]; });
+  }
+}
+
+function runFullEvaluation() {
+  if (!state.masterJson) return;
+  _runFullEvaluationCore(state.masterJson);
   _updateGrowthTabVisibility();
 }
 
@@ -19047,26 +19101,29 @@ function recomputeSnapshotWithCurrentModel(snap) {
   // Eigene Arbeitskopie: die Neuberechnung fasst den Snapshot nicht an.
   const mj = _deepCopyForSnapshot(src);
   try {
+    // Snapshots koennen noch das v3-Schema tragen — der Anzeigepfad erledigt
+    // das beim Import, hier gehoert es vor den gemeinsamen Ablauf.
     if (mj.schema_version !== SCHEMA_VERSION_APP) { migrateV3toV4(mj); }
     _enrichLegacyMeta(mj);
-    applyDerivedFieldsV4(mj);
-    normalizeSharesInPlace(mj);
-    applyDerivedFieldsV4(mj);
-    applyAutoDividendClassification(mj);
-    validateMasterJsonV4(mj);
-    applyConservativeHeuristics(mj);
-    const quality   = runQualityEngine(mj);
-    const valuation = runValuationEngine(mj);
-    const synthesis = runFairValueSynthesizer(mj, valuation, quality, SYNTHESIS_CONFIG);
+    // V1.0.45: derselbe vollstaendige Ablauf wie die Anzeige — einschliesslich
+    // Datenqualitaets-Abschlag, Sperren und Per-share-Plausibilitaetspruefung.
+    // Die Felder der zuvor aktiven Aktie werden dabei geleert (siehe
+    // evaluateMasterJsonDetached), damit sie das Ergebnis nicht verfaelschen.
+    const r = evaluateMasterJsonDetached(mj);
     return Object.assign(base, {
-      masterJson: mj, quality, valuation, synthesis,
-      forecast_targets: buildSnapshotForecastTargets(mj, valuation),
+      masterJson: r.masterJson,
+      quality: r.quality, valuation: r.valuation, synthesis: r.synthesis,
+      dataQuality: r.dataQuality, baseRateWarnings: r.baseRateWarnings, growth: r.growth,
+      forecast_targets: buildSnapshotForecastTargets(r.masterJson, r.valuation),
       output_signals: {
-        verdict: quality && quality.verdict,
-        buyPrice: synthesis && synthesis.buyPrice,
-        deepValuePrice: synthesis && synthesis.deepValuePrice,
-        position: synthesis && synthesis.position,
-        range_base: synthesis && synthesis.range && synthesis.range.base
+        verdict: r.quality && r.quality.verdict,
+        buyPrice: r.synthesis && r.synthesis.buyPrice,
+        deepValuePrice: r.synthesis && r.synthesis.deepValuePrice,
+        position: r.synthesis && r.synthesis.position,
+        range_conservative: r.synthesis && r.synthesis.range && r.synthesis.range.conservative,
+        range_base: r.synthesis && r.synthesis.range && r.synthesis.range.base,
+        range_optimistic: r.synthesis && r.synthesis.range && r.synthesis.range.optimistic,
+        mos_total: r.synthesis && r.synthesis.mosComponents && r.synthesis.mosComponents.total
       }
     });
   } catch (e) {
@@ -19075,8 +19132,11 @@ function recomputeSnapshotWithCurrentModel(snap) {
 }
 
 // Gegenueberstellung beider Sichten — ohne eine davon zu ersetzen.
-function compareStoredVsRecomputed(snap) {
-  const rec = recomputeSnapshotWithCurrentModel(snap);
+// V1.0.45: `precomputed` nimmt ein bereits vollstaendig berechnetes Ergebnis
+// entgegen. Der Ladepfad rechnet damit genau EINMAL und bildet die
+// Vergleichsmeldung aus demselben Ergebnis, das er anzeigt.
+function compareStoredVsRecomputed(snap, precomputed) {
+  const rec = precomputed || recomputeSnapshotWithCurrentModel(snap);
   const st  = rec.stored;
   const so  = (st && st.output_signals) || {};
   const ro  = rec.output_signals || {};
@@ -19088,7 +19148,10 @@ function compareStoredVsRecomputed(snap) {
     error: rec.error,
     deltas: rec.error ? null : {
       buyPrice:   { stored: so.buyPrice ?? null,   recomputed: ro.buyPrice ?? null,   diff: d(so.buyPrice, ro.buyPrice) },
+      range_cons: { stored: so.range_conservative ?? null, recomputed: ro.range_conservative ?? null, diff: d(so.range_conservative, ro.range_conservative) },
       range_base: { stored: so.range_base ?? null, recomputed: ro.range_base ?? null, diff: d(so.range_base, ro.range_base) },
+      range_opt:  { stored: so.range_optimistic ?? null,   recomputed: ro.range_optimistic ?? null,   diff: d(so.range_optimistic, ro.range_optimistic) },
+      mos_total:  { stored: so.mos_total ?? null,  recomputed: ro.mos_total ?? null,  diff: d(so.mos_total, ro.mos_total) },
       verdict:    { stored: so.verdict ?? null,    recomputed: ro.verdict ?? null },
       position:   { stored: so.position ?? null,   recomputed: ro.position ?? null }
     },
@@ -19115,6 +19178,86 @@ function buildSnapshotExportBundle(snaps, now) {
   };
 }
 
+// ── V1.0.45: Formatangabe pruefen ────────────────────────────────
+// Bis V1.0.44 galt `typeof x === 'number'` als einzige Huerde: `"999"`,
+// `true` und `1.5` fielen still auf Format 1 zurueck und wurden als
+// Altdatensatz migriert. FEHLEN darf die Angabe (zulaessige Altdaten,
+// Format 1); VORHANDEN muss sie eine unterstuetzte positive Ganzzahl sein.
+// Rueckgabe: { ok, format, error }.
+function _resolveSnapshotFormatValue(value, whereLabel) {
+  if (value === undefined || value === null) {
+    return { ok: true, format: 1, error: null };   // Altdaten ohne Angabe
+  }
+  if (typeof value !== 'number' || !isFinite(value)) {
+    return { ok: false, format: null,
+      error: whereLabel + ': Formatversion muss eine Zahl sein, erhalten ' +
+             (typeof value) + ' (' + JSON.stringify(value) + ').' };
+  }
+  if (!Number.isInteger(value)) {
+    return { ok: false, format: null,
+      error: whereLabel + ': Formatversion muss ganzzahlig sein, erhalten ' + value + '.' };
+  }
+  if (value < 1) {
+    return { ok: false, format: null,
+      error: whereLabel + ': Formatversion muss groesser als 0 sein, erhalten ' + value + '.' };
+  }
+  if (value > SNAPSHOT_FORMAT_VERSION) {
+    return { ok: false, format: null,
+      error: whereLabel + ': Format ' + value + ' ist neuer als das bekannte Format ' +
+             SNAPSHOT_FORMAT_VERSION + ' — wird nicht geraten und nicht importiert.' };
+  }
+  return { ok: true, format: value, error: null };
+}
+
+// ── V1.0.45: Mindeststruktur pruefen ─────────────────────────────
+// Die Anforderungen sind aus den TATSAECHLICHEN Aufrufern abgeleitet:
+//   · renderSnapshots  — s.ticker als Gruppenschluessel und escapeHtml,
+//                        s.timestamp fuer .localeCompare und new Date(),
+//                        s.id fuer die Aktionsknoepfe und loadSnapshots().find,
+//                        s.name fuer escapeHtml
+//   · exportSnapshotsCSV — s.timestamp.slice(0,10)
+//   · loadSnapshot / _applySnapshotToState — normalisierte Inputs als Objekt
+//   · _snapDelta       — output_signals / key_inputs, falls vorhanden, Objekte
+// Ein leerer Datensatz `{}` liess bis V1.0.44 renderSnapshots an
+// `timestamp.localeCompare` scheitern und war nicht ladbar.
+// Rueckgabe: Liste konkreter Maengel (leer = brauchbar).
+function validateSnapshotRecordStructure(rec) {
+  const problems = [];
+  if (!rec || typeof rec !== 'object' || Array.isArray(rec)) {
+    return ['Eintrag ist kein Snapshot-Objekt.'];
+  }
+  const nonEmptyString = (v) => typeof v === 'string' && v.trim().length > 0;
+
+  if (!nonEmptyString(rec.id))     problems.push('Feld "id" fehlt oder ist kein nichtleerer Text (Journal-Aktionen und Laden brauchen es).');
+  if (!nonEmptyString(rec.ticker)) problems.push('Feld "ticker" fehlt oder ist kein nichtleerer Text (Journal gruppiert danach).');
+  if (!nonEmptyString(rec.name))   problems.push('Feld "name" fehlt oder ist kein nichtleerer Text (Journal zeigt es an).');
+
+  if (!nonEmptyString(rec.timestamp)) {
+    problems.push('Feld "timestamp" fehlt oder ist kein nichtleerer Text (Journal sortiert damit).');
+  } else if (!isFinite(new Date(rec.timestamp).getTime())) {
+    problems.push('Feld "timestamp" ist kein lesbarer Zeitpunkt: ' + JSON.stringify(rec.timestamp) + '.');
+  }
+
+  const mj = snapshotNormalizedInputs(rec);
+  if (mj == null) {
+    problems.push('Normalisierte Inputs fehlen (weder "masterJson" noch "inputs_normalized") — der Snapshot waere nicht ladbar.');
+  } else if (typeof mj !== 'object' || Array.isArray(mj)) {
+    problems.push('Normalisierte Inputs sind kein Objekt (erhalten ' + (Array.isArray(mj) ? 'Array' : typeof mj) + ').');
+  } else if (mj.meta != null && (typeof mj.meta !== 'object' || Array.isArray(mj.meta))) {
+    problems.push('"masterJson.meta" ist kein Objekt.');
+  } else if (mj.fundamentals != null && (typeof mj.fundamentals !== 'object' || Array.isArray(mj.fundamentals))) {
+    problems.push('"masterJson.fundamentals" ist kein Objekt.');
+  }
+
+  ['output_signals', 'key_inputs', '_fc'].forEach(k => {
+    const v = rec[k];
+    if (v != null && (typeof v !== 'object' || Array.isArray(v))) {
+      problems.push('Feld "' + k + '" ist kein Objekt (erhalten ' + (Array.isArray(v) ? 'Array' : typeof v) + ').');
+    }
+  });
+  return problems;
+}
+
 // Migriert EINEN Datensatz auf SNAPSHOT_FORMAT_VERSION und protokolliert
 // jeden Schritt. Nichts wird still umgedeutet; was fehlt, bleibt null.
 function migrateSnapshotRecord(snap) {
@@ -19122,13 +19265,19 @@ function migrateSnapshotRecord(snap) {
   if (!snap || typeof snap !== 'object' || Array.isArray(snap)) {
     return { ok: false, snapshot: null, steps: [], error: 'Eintrag ist kein Snapshot-Objekt.' };
   }
+  // Die Formatangabe am ROHWERT pruefen, nicht an der Kopie: die Tiefkopie
+  // ueberfuehrt NaN/Infinity nach JSON-Semantik in null, was sonst als
+  // "Angabe fehlt" (= Format 1) durchginge statt als ungueltige Angabe.
+  const fmt = _resolveSnapshotFormatValue(snap._snapshotFormat, 'Snapshot-Datensatz');
+  if (!fmt.ok) return { ok: false, snapshot: null, steps: [], error: fmt.error };
   const out = _deepCopyForSnapshot(snap);
-  const from = (typeof out._snapshotFormat === 'number' && isFinite(out._snapshotFormat))
-    ? out._snapshotFormat : 1;
-  if (from > SNAPSHOT_FORMAT_VERSION) {
+  const from = fmt.format;
+  // Struktur VOR der Migration pruefen: eine Migration macht einen
+  // unbrauchbaren Datensatz nicht brauchbar, sie verdeckt den Mangel nur.
+  const structProblems = validateSnapshotRecordStructure(out);
+  if (structProblems.length > 0) {
     return { ok: false, snapshot: null, steps: [],
-      error: 'Snapshot-Format ' + from + ' ist neuer als das bekannte Format ' +
-             SNAPSHOT_FORMAT_VERSION + ' — wird nicht geraten und nicht importiert.' };
+      error: 'Unbrauchbarer Datensatz — ' + structProblems.join(' ') };
   }
   if (from < 2) {
     // 1 → 2: kanonische Ergebnisschluessel fuellen, Datenstand/Aktienbasis/
@@ -19194,14 +19343,15 @@ function parseSnapshotImportPayload(raw) {
       return res;
     }
     list = raw.snapshots;
-    res.sourceFormat = (typeof raw._snapshotFormat === 'number' && isFinite(raw._snapshotFormat))
-      ? raw._snapshotFormat : 1;
-    res.sourceEngineVersion = raw._engineVersion || null;
-    if (res.sourceFormat > SNAPSHOT_FORMAT_VERSION) {
-      res.errors.push('Datei-Format ' + res.sourceFormat + ' ist neuer als das bekannte Format ' +
-        SNAPSHOT_FORMAT_VERSION + '. Der Import wird abgelehnt, statt Felder zu raten. ' +
-        'Bitte eine neuere Version des Tools verwenden.');
+    const envFmt = _resolveSnapshotFormatValue(raw._snapshotFormat, 'Exporthuelle');
+    if (!envFmt.ok) {
+      res.errors.push(envFmt.error + ' Der Import wird abgelehnt, statt die Angabe zu raten.');
       return res;
+    }
+    res.sourceFormat = envFmt.format;
+    res.sourceEngineVersion = raw._engineVersion || null;
+    if (raw._snapshotFormat === undefined || raw._snapshotFormat === null) {
+      res.warnings.push('Exporthuelle ohne Formatangabe — als Snapshot-Format 1 (bis V1.0.43) gelesen.');
     }
     if (raw._engineVersion && raw._engineVersion !== ENGINE_VERSION) {
       res.warnings.push('Export stammt aus Engine ' + raw._engineVersion + ' (hier: ' + ENGINE_VERSION +
@@ -19217,19 +19367,36 @@ function parseSnapshotImportPayload(raw) {
     return res;
   }
 
+  // ── V1.0.45: Alles oder nichts ────────────────────────────────────
+  // Bis V1.0.44 wurden unbrauchbare Eintraege uebersprungen und der Rest
+  // gespeichert — ein Teilimport, der den Journalbestand still veraendert.
+  // Jetzt wird bei JEDEM ungueltigen Eintrag der gesamte Import abgebrochen,
+  // mit Eintragsnummer und konkretem Grund. Der Aufrufer schreibt erst,
+  // wenn nichts beanstandet wurde.
+  const accepted = [];
   for (let i = 0; i < list.length; i++) {
     const m = migrateSnapshotRecord(list[i]);
     if (!m.ok) {
       res.rejected++;
-      res.errors.push('Eintrag ' + (i + 1) + ' abgelehnt: ' + m.error);
+      res.errors.push('Eintrag ' + (i + 1) + ' von ' + list.length + ' abgelehnt: ' + m.error);
       continue;
     }
-    res.snapshots.push(m.snapshot);
+    accepted.push(m.snapshot);
     if (m.steps.length) {
       res.migrations.push({ index: i, id: m.snapshot.id || null, fromFormat: m.fromFormat, steps: m.steps });
     }
   }
-  res.ok = res.snapshots.length > 0 || (list.length === 0 && res.errors.length === 0);
+  if (res.errors.length > 0) {
+    // Nichts uebernehmen — auch die gueltigen Eintraege nicht.
+    res.ok = false;
+    res.snapshots = [];
+    res.migrations = [];
+    res.errors.push('Import abgebrochen: ' + res.rejected + ' von ' + list.length +
+      ' Eintraegen unbrauchbar. Es wurde NICHTS importiert; der bestehende Snapshot-Bestand bleibt unveraendert.');
+    return res;
+  }
+  res.snapshots = accepted;
+  res.ok = true;
   if (list.length === 0) res.warnings.push('Datei enthaelt keine Snapshots.');
   return res;
 }
@@ -19527,9 +19694,31 @@ function _forwardCheckBlock(snap) { return _priceComparisonBlock(snap); }
 
 function renderSnapshots() {
   const list = g('snap-list');
-  const snaps = loadSnapshots();
+  const all = loadSnapshots();
+  // ── V1.0.45: bereits vorhandener Schrott darf das Journal nicht sperren ──
+  // Der Import laesst unbrauchbare Datensaetze nicht mehr durch (siehe
+  // validateSnapshotRecordStructure). Wer unter V1.0.44 z.B. `[{},{}]`
+  // importiert hat, traegt sie aber noch im Browser-Speicher — und
+  // `a.timestamp.localeCompare` unten warf dann bei JEDEM Rendern, sodass
+  // das Journal samt Loesch-Knopf unerreichbar war. Solche Eintraege werden
+  // hier ausgewiesen statt ausgefuehrt.
+  const snaps = [];
+  const broken = [];
+  all.forEach((s, i) => {
+    const problems = validateSnapshotRecordStructure(s);
+    if (problems.length === 0) snaps.push(s);
+    else broken.push({ index: i + 1, id: (s && typeof s.id === 'string') ? s.id : null, problems });
+  });
+  const brokenNote = broken.length === 0 ? '' : `
+    <div class="import-status err" style="margin-bottom:10px">
+      ⛔ ${broken.length} unbrauchbare(r) Eintrag/Eintraege im Browser-Speicher werden nicht angezeigt
+      (Eintrag ${broken.map(b => b.index).join(', ')}): ${escapeHtml(broken[0].problems[0])}
+      ${broken.length > 1 ? ' …' : ''}
+      <div style="margin-top:4px">Sie stammen aus einem Import vor V1.0.45. Alle Snapshots exportieren,
+      Bestand bereinigen und erneut importieren — der Import weist solche Eintraege jetzt ab.</div>
+    </div>`;
   if (snaps.length === 0) {
-    list.innerHTML = `<div class="muted-help">Noch keine Snapshots gespeichert.</div>`;
+    list.innerHTML = brokenNote + `<div class="muted-help">Noch keine Snapshots gespeichert.</div>`;
     return;
   }
 
@@ -19541,7 +19730,7 @@ function renderSnapshots() {
   });
   Object.values(byTicker).forEach(arr => arr.sort((a, b) => a.timestamp.localeCompare(b.timestamp)));
 
-  list.innerHTML = snaps.slice().reverse().map(s => {
+  list.innerHTML = brokenNote + snaps.slice().reverse().map(s => {
     const bp      = s.output_signals && s.output_signals.buyPrice != null ? s.output_signals.buyPrice.toFixed(2)
                   : (s.synthesis && s.synthesis.buyPrice != null ? s.synthesis.buyPrice.toFixed(2) : '–');
     const dvp     = s.output_signals && s.output_signals.deepValuePrice != null ? s.output_signals.deepValuePrice.toFixed(2) : null;
@@ -19651,14 +19840,19 @@ function loadSnapshotWithCurrentModel(id) {
   const snaps = loadSnapshots();
   const s = snaps.find(x => x.id === id);
   if (!s) return null;
-  const cmp = compareStoredVsRecomputed(s);
+  // V1.0.45: EINE Neuberechnung, aus der sowohl die Vergleichsmeldung als
+  // auch die Anzeige gespeist werden. Vorher rechnete compareStoredVsRecomputed
+  // einmal und _applySnapshotToState (ueber runFullEvaluation) ein zweites Mal,
+  // mit unterschiedlichem Ablauf und dadurch abweichenden Zahlen.
+  const re  = recomputeSnapshotWithCurrentModel(s);
+  const cmp = compareStoredVsRecomputed(s, re);
   if (cmp.error) {
     alert('Neuberechnung nicht möglich: ' + cmp.error + '\n\nDas gespeicherte Ergebnis bleibt unverändert.');
     return cmp;
   }
   const isLegacy = !s._breakingVersion;
   const isIncompatible = !isLegacy && !COMPATIBLE_BREAKING_VERSIONS.includes(s._breakingVersion);
-  _applySnapshotToState(s, { isLegacy, isIncompatible, useCurrentEngine: true });
+  _applySnapshotToState(s, { isLegacy, isIncompatible, useCurrentEngine: true, recomputed: re });
   // Der gespeicherte Stand wird NICHT angefasst — nur die Anzeige wechselt.
   const d = cmp.deltas || {};
   const fmt = (x) => (x == null ? '–' : (typeof x === 'number' ? x.toFixed(2) : String(x)));
@@ -19756,7 +19950,7 @@ function _showSnapshotWarningModal(title, detail, snapId, snap) {
 }
 
 // ── Snapshot-Daten in State übernehmen ───────────────────────────
-function _applySnapshotToState(s, { isLegacy, isIncompatible, useCurrentEngine }) {
+function _applySnapshotToState(s, { isLegacy, isIncompatible, useCurrentEngine, recomputed }) {
   // V1.0.44: Auf einer EIGENEN Kopie arbeiten. migrateV3toV4, applyDerivedFieldsV4
   // und eine spätere Neuberechnung verändern das Master-JSON in place; ohne
   // Kopie liefe das auf dem Datensatz des Snapshots. Der gespeicherte Stand
@@ -19781,6 +19975,16 @@ function _applySnapshotToState(s, { isLegacy, isIncompatible, useCurrentEngine }
   state.importedSnapshot = _deepCopyForSnapshot(s.inputs_raw ?? s.importedSnapshot ?? null);
   state.manualAssumptionFields = new Set(Array.isArray(s.manualAssumptionFields) ? s.manualAssumptionFields : []);
   state.baseRateWarnings = Array.isArray(s.baseRateWarnings) ? s.baseRateWarnings : [];
+  // ── V1.0.45: gespeicherte Datenqualitaet als unabhaengige Kopie ──────
+  // Bis V1.0.44 blieb hier die Note der ZUVOR aktiven Aktie stehen: ein
+  // Snapshot mit {grade:'A',score:95} wurde geladen, state.dataQuality zeigte
+  // weiter {grade:'D',score:5}. Fehlt die Angabe (Format-1-Altsnapshot), wird
+  // sie als NICHT VORHANDEN gefuehrt (null) — die alte Note darf nicht
+  // stehenbleiben, und eine heutige Berechnung darf nicht als damals
+  // gespeichertes Ergebnis erscheinen.
+  const _storedDq = s.dataQuality ?? null;
+  state.dataQuality = (_storedDq != null) ? _deepCopyForSnapshot(_storedDq) : null;
+  state._snapshotDataQualityMissing = (_storedDq == null);
 
   // ── Snapshot-Reproducibility State ──
   state._loadedFromSnapshot      = true;
@@ -19790,22 +19994,49 @@ function _applySnapshotToState(s, { isLegacy, isIncompatible, useCurrentEngine }
   state._usingCurrentEngine      = useCurrentEngine;
 
   if (useCurrentEngine) {
-    // Explizite Re-Evaluation nach Nutzerwahl mit aktueller Engine
-    runFullEvaluation();
+    // ── V1.0.45: genau EINE Neuberechnung ──────────────────────────────
+    // `recomputed` ist das Ergebnis, aus dem der Aufrufer bereits seine
+    // Vergleichsmeldung gebildet hat. Es wird hier uebernommen, statt ein
+    // zweites Mal zu rechnen — Meldung und Anzeige koennen so nicht
+    // auseinanderlaufen. Ohne uebergebenes Ergebnis (Modal-Pfad) wird es
+    // hier einmal erzeugt, ebenfalls ueber den gemeinsamen Ablauf.
+    const _re = (recomputed && !recomputed.error)
+      ? recomputed
+      : recomputeSnapshotWithCurrentModel(s);
+    if (_re && !_re.error) {
+      state.masterJson       = _re.masterJson;
+      state.quality          = _re.quality;
+      state.valuation        = _re.valuation;
+      state.synthesis        = _re.synthesis;
+      // Beim ausdruecklich gewaehlten Neuberechnen gilt die mit dem
+      // aktuellen Modell ermittelte Datenqualitaet.
+      state.dataQuality      = _re.dataQuality ?? null;
+      state._snapshotDataQualityMissing = false;
+      state.baseRateWarnings = Array.isArray(_re.baseRateWarnings) ? _re.baseRateWarnings : [];
+      state.growth           = _re.growth ?? null;
+      state.lastBuyPriceForDiff = (state.synthesis && state.synthesis.buyPrice) ?? null;
+    }
     state._usingCurrentEngine = true;
   }
 
-  syncPiotroskiCheckboxes(mj);
+  syncPiotroskiCheckboxes(state.masterJson);
   switchTab('overview');
   _updateGrowthTabVisibility();   // Growth-Tab sichtbar sobald Aktie importiert wurde
   updateTickerBadge();
   setTimeout(initAssumptionLiveRecalc, 100);
 
-  const snapName = (mj && mj.meta && (mj.meta.company_name || mj.meta.name || mj.meta.ticker)) || s.name || s.id;
+  const _nmj = state.masterJson;
+  const snapName = (_nmj && _nmj.meta && (_nmj.meta.company_name || _nmj.meta.name || _nmj.meta.ticker)) || s.name || s.id;
   const legacyNote = isLegacy ? ' [Legacy-Snapshot]' : (isIncompatible ? ` [Engine ${s._breakingVersion}]` : '');
   const engineNote = useCurrentEngine ? ' · Mit aktueller Engine neu bewertet.' : ' · Original-Bewertung geladen.';
-  g('import-master-status').textContent = `Snapshot "${snapName}"${legacyNote} geladen.${engineNote}`;
-  g('import-master-status').className = 'import-status ' + (isLegacy || isIncompatible ? 'info' : 'ok');
+  // V1.0.45: Statuszeile defensiv schreiben (wie _renderSnapshotStoreStatus).
+  // Der Ladepfad selbst haengt nicht am DOM; ohne diese Absicherung waere er
+  // ausserhalb der fertigen Seite nicht aufrufbar und damit nicht pruefbar.
+  const _statusEl = g('import-master-status');
+  if (_statusEl) {
+    _statusEl.textContent = `Snapshot "${snapName}"${legacyNote} geladen.${engineNote}`;
+    _statusEl.className = 'import-status ' + (isLegacy || isIncompatible ? 'info' : 'ok');
+  }
 }
 
 function deleteSnapshot(id) {
@@ -32878,12 +33109,21 @@ function _testSnapshotIntegrity() {
     check('SN-4l: unerwarteter Inhalt wird abgelehnt', junk.ok === false && junk.errors.length === 1, JSON.stringify(junk.errors));
     const empty = parseSnapshotImportPayload(null);
     check('SN-4m: leere Datei wird abgelehnt', empty.ok === false && /Leere Datei/.test(empty.errors[0]), JSON.stringify(empty.errors));
-    // Ein einzelner unbrauchbarer Eintrag darf die brauchbaren nicht mitreißen.
+    // ── V1.0.45: Erwartung bewusst geaendert (Auftrag Chat 7, Fehler 3.4) ──
+    // Bis V1.0.44 wurden unbrauchbare Eintraege uebersprungen und die
+    // brauchbaren gespeichert. Dieser Teilimport veraendert den
+    // Journalbestand still und laesst offen, was tatsaechlich ankam.
+    // Neu: JEDER ungueltige Eintrag bricht den gesamten Import ab, bevor
+    // geschrieben wird — mit Eintragsnummer und konkretem Grund.
     const mixed = parseSnapshotImportPayload({ _kind: SNAPSHOT_EXPORT_KIND, _snapshotFormat: 2,
       snapshots: [wire.snapshots[0], 'kein Objekt', null] });
-    check('SN-4n: unbrauchbare Einträge werden einzeln abgelehnt, brauchbare übernommen',
-      mixed.snapshots.length === 1 && mixed.rejected === 2 && mixed.errors.length === 2,
-      mixed.snapshots.length + '/' + mixed.rejected);
+    check('SN-4n: ein unbrauchbarer Eintrag bricht den gesamten Import ab (kein Teilimport)',
+      mixed.ok === false && mixed.snapshots.length === 0 && mixed.rejected === 2,
+      mixed.snapshots.length + '/' + mixed.rejected + '/' + mixed.ok);
+    check('SN-4n2: die Meldung nennt Eintragsnummer und dass nichts importiert wurde',
+      mixed.errors.some(e => /Eintrag 2 von 3/.test(e)) &&
+      mixed.errors.some(e => /NICHTS importiert/.test(e)),
+      mixed.errors.join(' | '));
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -33154,6 +33394,551 @@ function _testSnapshotIntegrity() {
       typeof _forwardCheckBlock === 'function' && _forwardCheckBlock(rec) === block);
     check('SN-8h: Snapshot ohne Kursangabe liefert keinen Block',
       _priceComparisonBlock({ ticker: 'X', key_inputs: {}, output_signals: {} }) === '');
+  }
+
+  return results;
+}
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// V1.0.45 — _testSnapshotPathConsistency
+// ────────────────────────────────────────────────────────────────────────────
+// Reparatur der drei in Chat 7 gemeldeten Fehler:
+//   PC-1  Vergleich und Anzeige rechnen denselben vollstaendigen Ablauf
+//   PC-2  gespeicherte Datenqualitaet wird beim Laden wiederhergestellt
+//   PC-3  Import weist unbrauchbare Datensaetze und ungueltige Versionen ab
+//
+// Die Tests fahren die TATSAECHLICHEN Aufrufwege (runFullEvaluation ueber
+// state, loadSnapshot / loadSnapshotWithCurrentModel ueber den Journalbestand
+// in localStorage) — nicht zweimal denselben isolierten Helfer.
+//
+// Rein visuelle Helfer (switchTab, updateTickerBadge, renderSnapshots,
+// initAssumptionLiveRecalc, syncPiotroskiCheckboxes) werden waehrend des
+// Tests durch Attrappen ersetzt und danach wiederhergestellt: sie brauchen
+// eine fertige Seite, haben aber keinen Einfluss auf die geprueften Werte.
+// Das ist ausdruecklich KEIN Browsernachweis.
+// ════════════════════════════════════════════════════════════════════════════
+function _testSnapshotPathConsistency() {
+  const results = [];
+  let _currentSuite = '';
+  function suite(name) { _currentSuite = name; }
+  function check(label, condition, extra) {
+    results.push({ suite: _currentSuite, label, pass: !!condition,
+      extra: extra != null ? String(extra) : undefined });
+  }
+  const approx = (a, b, tol) => a != null && isFinite(a) && Math.abs(a - b) <= (tol != null ? tol : 1e-9);
+  const same = (a, b) => (a == null && b == null) ||
+    (typeof a === 'number' && typeof b === 'number' ? approx(a, b, 1e-12) : a === b);
+
+  // ── Umgebung: sichtbare Helfer betaeuben, Zustand sichern ────────────────
+  const _savedFns = {};
+  const _stub = (name, fn) => { _savedFns[name] = globalThis[name]; globalThis[name] = fn; };
+  const _restoreFns = () => { Object.keys(_savedFns).forEach(k => { globalThis[k] = _savedFns[k]; }); };
+  const _savedState = {};
+  const _stateKeys = ['masterJson', 'quality', 'valuation', 'synthesis', 'dataQuality',
+                      'baseRateWarnings', 'growth', 'qualityOverrides', 'masterJsonMode',
+                      'importedSnapshot', 'manualAssumptionFields', 'lastBuyPriceForDiff',
+                      '_loadedFromSnapshot', '_snapshotEngineVersion', '_snapshotBreakingVersion',
+                      '_snapshotIsLegacy', '_usingCurrentEngine', '_snapshotDataQualityMissing'];
+  _stateKeys.forEach(k => { _savedState[k] = state[k]; });
+  let _savedStore = null;
+  try { _savedStore = localStorage.getItem(SNAP_KEY); } catch (e) { _savedStore = null; }
+
+  const _resetState = () => {
+    state.masterJson = null; state.quality = null; state.valuation = null;
+    state.synthesis = null; state.dataQuality = null; state.baseRateWarnings = [];
+    state.growth = null; state.qualityOverrides = []; state.masterJsonMode = null;
+    state.importedSnapshot = null; state.manualAssumptionFields = new Set();
+    state.lastBuyPriceForDiff = null;
+    state._loadedFromSnapshot = false; state._snapshotEngineVersion = null;
+    state._snapshotBreakingVersion = null; state._snapshotIsLegacy = false;
+    state._usingCurrentEngine = false; state._snapshotDataQualityMissing = false;
+  };
+  const _setStore = (arr) => { try { localStorage.setItem(SNAP_KEY, JSON.stringify(arr)); } catch (e) {} };
+  const _readStore = () => { try { return JSON.parse(localStorage.getItem(SNAP_KEY) || '[]'); } catch (e) { return []; } };
+
+  try {
+    _stub('switchTab', function () {});
+    _stub('updateTickerBadge', function () {});
+    _stub('renderSnapshots', function () {});
+    _stub('initAssumptionLiveRecalc', function () {});
+    _stub('syncPiotroskiCheckboxes', function () {});
+    _stub('_updateGrowthTabVisibility', function () {});
+
+    // Signale, die Vergleich und Anzeige gemeinsam haben muessen.
+    const sigOfState = () => ({
+      buyPrice: state.synthesis && state.synthesis.buyPrice,
+      position: state.synthesis && state.synthesis.position,
+      mos:      state.synthesis && state.synthesis.mosComponents && state.synthesis.mosComponents.total,
+      cons:     state.synthesis && state.synthesis.range && state.synthesis.range.conservative,
+      base:     state.synthesis && state.synthesis.range && state.synthesis.range.base,
+      opt:      state.synthesis && state.synthesis.range && state.synthesis.range.optimistic,
+      blocked:  state.synthesis && state.synthesis._perShareSanityFailed === true,
+      verdict:  state.quality && state.quality.verdict
+    });
+    const sigOfRecomputed = (re) => ({
+      buyPrice: re.synthesis && re.synthesis.buyPrice,
+      position: re.synthesis && re.synthesis.position,
+      mos:      re.synthesis && re.synthesis.mosComponents && re.synthesis.mosComponents.total,
+      cons:     re.synthesis && re.synthesis.range && re.synthesis.range.conservative,
+      base:     re.synthesis && re.synthesis.range && re.synthesis.range.base,
+      opt:      re.synthesis && re.synthesis.range && re.synthesis.range.optimistic,
+      blocked:  re.synthesis && re.synthesis._perShareSanityFailed === true,
+      verdict:  re.quality && re.quality.verdict
+    });
+
+    // Anzeigepfad: frisch importieren und ueber runFullEvaluation rechnen.
+    const runDisplayPath = (rawMj) => {
+      _resetState();
+      const mj = _deepCopyForSnapshot(rawMj);
+      if (mj.schema_version !== SCHEMA_VERSION_APP) migrateV3toV4(mj);
+      _enrichLegacyMeta(mj);
+      state.masterJson = mj;
+      runFullEvaluation();
+      return sigOfState();
+    };
+    // Snapshot bauen und in den Journalbestand legen (wie nach dem Speichern).
+    const putSnapshot = (id, rawMj, storedOverrides) => {
+      const rec = buildSnapshotRecord({
+        masterJson: _deepCopyForSnapshot(rawMj),
+        quality: { verdict: 'gespeichert_alt', hardStops: [] },
+        valuation: { scenarios: { base: { growth_stage1: 5, terminal_growth: 2, wacc: 9, op_margin_pct: 12 } } },
+        synthesis: { buyPrice: 1.11, position: 'gespeichert', range: { base: 2.22 },
+                     mosComponents: { total: 0.11 } },
+        dataQuality: (storedOverrides && 'dataQuality' in storedOverrides) ? storedOverrides.dataQuality : { grade: 'A', score: 95 },
+        id: id, now: new Date('2026-01-01T00:00:00.000Z')
+      });
+      rec._engineVersion = '1.0.30-alt';   // damit "neu rechnen" sichtbar abweicht
+      if (storedOverrides) Object.keys(storedOverrides).forEach(k => { rec[k] = storedOverrides[k]; });
+      _setStore([rec]);
+      return rec;
+    };
+
+    // ═════════════════════════════════════════════════════════════════════
+    suite('PC-1: T-TXRH-DEBT2 — Vergleich und Anzeige stimmen ueberein');
+    {
+      const fx = (typeof REGRESSION_FIXTURES !== 'undefined')
+        ? REGRESSION_FIXTURES.find(f => f.id === 'T-TXRH-DEBT2') : null;
+      check('PC-1a: Fixture T-TXRH-DEBT2 vorhanden', !!fx);
+
+      if (fx) {
+        // Der gemeldete Fehler: Helfer 7,8270612014 statt 7,4357081414 USD,
+        // Sicherheitsabschlag 25 % statt 28,75 %. Der Anzeigewert ist der
+        // richtige — er durchlaeuft Datenqualitaets-Abschlag und
+        // Per-share-Pruefung. Beide Werte sind hier fest verankert, damit ein
+        // Rueckfall auf den Helferablauf auffliegt.
+        const disp = runDisplayPath(fx.mj);
+        check('PC-1b: Anzeigepfad liefert 7,4357081414 USD Einstiegspreis',
+          approx(disp.buyPrice, 7.435708141351823, 1e-9), disp.buyPrice);
+        check('PC-1c: Anzeigepfad liefert 28,75 % Sicherheitsabschlag',
+          approx(disp.mos, 0.2875, 1e-6), disp.mos);
+        check('PC-1c2: NICHT der fehlerhafte Helferwert 7,8270612014 / 25 %',
+          !approx(disp.buyPrice, 7.827061201422972, 1e-9) && !approx(disp.mos, 0.25, 1e-9),
+          disp.buyPrice + '/' + disp.mos);
+
+        // Tatsaechlicher Vergleichsweg: Snapshot im Bestand, dann der Knopf
+        // "Neu rechnen (aktuelles Modell)".
+        putSnapshot('txrh1', fx.mj);
+        _resetState();
+        const cmp = loadSnapshotWithCurrentModel('txrh1');
+        const shown = sigOfState();
+
+        check('PC-1d: Vergleichsweg lief ohne Fehler', cmp && !cmp.error, cmp && cmp.error);
+        check('PC-1e: Einstiegspreis — Vergleichsmeldung = Anzeige = 7,4357081414',
+          approx(cmp.deltas.buyPrice.recomputed, 7.435708141351823, 1e-9) &&
+          approx(shown.buyPrice, 7.435708141351823, 1e-9),
+          (cmp.deltas.buyPrice.recomputed) + ' / ' + shown.buyPrice);
+        check('PC-1f: Sicherheitsabschlag — Vergleichsmeldung = Anzeige = 28,75 %',
+          approx(cmp.deltas.mos_total.recomputed, 0.2875, 1e-6) && approx(shown.mos, 0.2875, 1e-6),
+          cmp.deltas.mos_total.recomputed + ' / ' + shown.mos);
+        check('PC-1g: Position stimmt ueberein',
+          same(cmp.deltas.position.recomputed, shown.position) && shown.position === disp.position,
+          cmp.deltas.position.recomputed + ' / ' + shown.position + ' / ' + disp.position);
+        check('PC-1h: Bewertungsband stimmt in allen drei Szenarien ueberein',
+          same(cmp.deltas.range_cons.recomputed, shown.cons) &&
+          same(cmp.deltas.range_base.recomputed, shown.base) &&
+          same(cmp.deltas.range_opt.recomputed, shown.opt),
+          [cmp.deltas.range_cons.recomputed, cmp.deltas.range_base.recomputed, cmp.deltas.range_opt.recomputed].join(', ')
+            + ' vs ' + [shown.cons, shown.base, shown.opt].join(', '));
+        check('PC-1i: Anzeige nach dem Vergleichsweg = frischer Anzeigepfad (alle Signale)',
+          Object.keys(disp).every(k => same(disp[k], shown[k])),
+          Object.keys(disp).filter(k => !same(disp[k], shown[k])).join(', ') || 'identisch');
+
+        // Der Snapshot selbst bleibt unangetastet.
+        const after = _readStore()[0];
+        check('PC-1j: gespeicherter Snapshot nach der Neuberechnung unveraendert',
+          approx(after.synthesis.buyPrice, 1.11) && after._engineVersion === '1.0.30-alt' &&
+          approx(after.output_signals.buyPrice, 1.11),
+          after.synthesis.buyPrice + '/' + after._engineVersion);
+        check('PC-1k: die Vergleichsmeldung nennt den gespeicherten Wert 1,11 daneben',
+          approx(cmp.deltas.buyPrice.stored, 1.11), cmp.deltas.buyPrice.stored);
+
+        // Der Vergleichsweg darf nicht zweimal rechnen: bis V1.0.44 lief
+        // compareStoredVsRecomputed einmal und _applySnapshotToState ueber
+        // runFullEvaluation ein zweites Mal — zwei unabhaengig gepflegte
+        // Ablaeufe, die auseinanderlaufen konnten. Hier wird gezaehlt.
+        const _realCore = _runFullEvaluationCore;
+        let _coreCalls = 0;
+        _runFullEvaluationCore = function (mj) { _coreCalls++; return _realCore(mj); };
+        try {
+          _resetState();
+          loadSnapshotWithCurrentModel('txrh1');
+        } finally { _runFullEvaluationCore = _realCore; }
+        check('PC-1l: der Vergleichsweg rechnet genau EINMAL (nicht zweimal)',
+          _coreCalls === 1, 'Laeufe: ' + _coreCalls);
+        check('PC-1m: und liefert dabei denselben Einstiegspreis',
+          approx(state.synthesis.buyPrice, 7.435708141351823, 1e-9), state.synthesis.buyPrice);
+      }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    suite('PC-2: nachgelagerte Sperre wirkt in beiden Wegen gleich');
+    {
+      // checkPerShareSanity ist die nachgelagerte Sperre, die der Helfer bis
+      // V1.0.44 ausliess. Fall: winzige Aktienzahl ⇒ absurder Wert je Aktie.
+      const mkSanityMj = () => ({
+        schema_version: '4.0',
+        meta: { ticker: 'SANITY', company_name: 'Sanity Test', country: 'US', currency: 'USD',
+                as_of_date: '2025-12-31', source_primary: 'SEC_EDGAR',
+                sub_classification: 'standard_nonfin' },
+        fundamentals: {
+          revenue: [50000, 45000, 40000, 35000], ebit: [15000, 13500, 12000, 10500],
+          ebitda: [18000, 16200, 14400, 12600], capex: [1000, 900, 800, 700],
+          cfo: [16000, 14400, 12800, 11200],
+          shares_diluted: [0.02, 0.02, 0.02, 0.02],   // 20.000 Aktien ⇒ Wert je Aktie explodiert
+          net_income: [11000, 9900, 8800, 7700], eps_diluted: [550000, 495000, 440000, 385000],
+          total_equity: [30000, 28000, 26000, 24000], total_assets: [60000, 56000, 52000, 48000],
+          total_liabilities: [30000, 28000, 26000, 24000],
+          total_debt: [5000, 5000, 5000, 5000], cash_and_equivalents: [2000, 2000, 2000, 2000],
+          dps: [0, 0, 0, 0]
+        },
+        valuation: { growth_stage1: 8, growth_terminal: 2, wacc_derived: 10,
+                     cost_of_equity_derived: 11,
+                     wacc_components: { risk_free: 4, equity_risk_premium: 5, beta: 1, tax_rate: 21 },
+                     fade: { enabled: false } },
+        market: { price: 100, market_cap: 2, price_currency: 'USD' },
+        quality_inputs: { piotroski: {} }
+      });
+
+      const dispS = runDisplayPath(mkSanityMj());
+      putSnapshot('sanity1', mkSanityMj());
+      _resetState();
+      const cmpS = loadSnapshotWithCurrentModel('sanity1');
+      const shownS = sigOfState();
+      const reS = recomputeSnapshotWithCurrentModel(_readStore()[0]);
+
+      check('PC-2a: die Sperre greift ueberhaupt (Anzeigepfad blockiert)',
+        dispS.blocked === true && dispS.position === 'blocked' && dispS.buyPrice === null,
+        dispS.position + '/' + dispS.buyPrice + '/' + dispS.blocked);
+      check('PC-2b: der Vergleichshelfer meldet dieselbe Sperre',
+        sigOfRecomputed(reS).blocked === true && reS.synthesis.position === 'blocked' &&
+        reS.synthesis.buyPrice === null,
+        reS.synthesis.position + '/' + reS.synthesis.buyPrice);
+      check('PC-2c: die Anzeige nach dem Vergleichsweg ist ebenfalls gesperrt',
+        shownS.blocked === true && shownS.position === 'blocked' && shownS.buyPrice === null,
+        shownS.position + '/' + shownS.buyPrice);
+      check('PC-2d: Sperrbegruendung in beiden Wegen identisch und nicht leer',
+        typeof state.synthesis.blockReason === 'string' && state.synthesis.blockReason.length > 0 &&
+        state.synthesis.blockReason === reS.synthesis.blockReason,
+        state.synthesis.blockReason);
+      check('PC-2e: die Vergleichsmeldung weist die Sperre aus (kein Preis)',
+        cmpS.deltas.buyPrice.recomputed === null, String(cmpS.deltas.buyPrice.recomputed));
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    suite('PC-3: kein Uebertrag der zuvor aktiven Aktie');
+    {
+      const fx = (typeof REGRESSION_FIXTURES !== 'undefined')
+        ? REGRESSION_FIXTURES.find(f => f.id === 'T-TXRH-DEBT2') : null;
+      if (fx) {
+        // Erst eine andere Aktie mit absichtlich schlechter Datenqualitaet
+        // aktiv machen, dann den TXRH-Snapshot neu rechnen. Das Ergebnis muss
+        // exakt dem frischen Anzeigepfad entsprechen.
+        const clean = runDisplayPath(fx.mj);
+        _resetState();
+        state.dataQuality = { grade: 'D', score: 1, label: 'fremd' };
+        state.quality = { verdict: 'fremde_aktie' };
+        state.synthesis = { buyPrice: 999, position: 'fremd' };
+        state.masterJson = { schema_version: '4.0', meta: { ticker: 'FREMD' },
+                             fundamentals: {}, valuation: {}, market: { price: 1 } };
+        putSnapshot('txrh2', fx.mj);
+        const re = recomputeSnapshotWithCurrentModel(_readStore()[0]);
+        check('PC-3a: Neuberechnung ignoriert die Datenqualitaet der zuvor aktiven Aktie',
+          approx(re.synthesis.buyPrice, clean.buyPrice, 1e-12) &&
+          approx(re.synthesis.mosComponents.total, clean.mos, 1e-12),
+          re.synthesis.buyPrice + ' vs ' + clean.buyPrice);
+        check('PC-3b: der sichtbare Zustand bleibt beim Vergleichen unberuehrt',
+          state.masterJson.meta.ticker === 'FREMD' && state.dataQuality.grade === 'D' &&
+          state.synthesis.buyPrice === 999,
+          state.masterJson.meta.ticker + '/' + state.dataQuality.grade + '/' + state.synthesis.buyPrice);
+        check('PC-3c: evaluateMasterJsonDetached stellt alle Ergebnisfelder wieder her',
+          EVALUATION_STATE_KEYS.every(k => k !== 'dataQuality' || state.dataQuality.grade === 'D') &&
+          state.quality.verdict === 'fremde_aktie');
+      }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    suite('PC-4: gespeicherte Datenqualitaet wird beim Laden wiederhergestellt');
+    {
+      const mjSmall = { schema_version: '4.0', meta: { ticker: 'DQTEST', company_name: 'DQ Test' },
+                        fundamentals: { revenue: [100, 90] }, valuation: {}, market: { price: 10 } };
+      // Aktiver Zustand D → gespeicherten Snapshot A laden → Zustand A.
+      putSnapshot('dq1', mjSmall, { dataQuality: { grade: 'A', score: 95 } });
+      _resetState();
+      state.dataQuality = { grade: 'D', score: 5 };
+      loadSnapshot('dq1');
+      check('PC-4a: Zustand D → Snapshot A geladen → Zustand A',
+        state.dataQuality && state.dataQuality.grade === 'A' && state.dataQuality.score === 95,
+        JSON.stringify(state.dataQuality));
+      check('PC-4b: der Snapshot wurde als gespeichertes Ergebnis geladen (nicht neu gerechnet)',
+        state._loadedFromSnapshot === true && state._usingCurrentEngine === false &&
+        state._snapshotDataQualityMissing === false);
+
+      // Aenderungen an der geladenen Datenqualitaet duerfen den Snapshot nicht anfassen.
+      state.dataQuality.grade = 'F';
+      state.dataQuality.score = 0;
+      const stored = _readStore()[0];
+      check('PC-4c: Aenderung am geladenen Wert veraendert den Snapshot nicht',
+        stored.dataQuality.grade === 'A' && stored.dataQuality.score === 95,
+        JSON.stringify(stored.dataQuality));
+      // und umgekehrt
+      loadSnapshot('dq1');
+      const dqRef = state.dataQuality;
+      dqRef.grade = 'X';
+      check('PC-4d: geladener Wert ist eine eigene Kopie, keine Referenz auf den Bestand',
+        _readStore()[0].dataQuality.grade === 'A', _readStore()[0].dataQuality.grade);
+
+      // Altsnapshot ohne Datenqualitaet: kein Uebertrag der vorherigen Note.
+      // Genau die Form, die saveSnapshot bis V1.0.43 erzeugte: kompatible
+      // Breaking-Version (also ohne Kompatibilitaetsdialog direkt ladbar),
+      // Ergebnisse unter den Altschluesseln, KEIN dataQuality-Feld.
+      const legacy = { id: 'dqleg', ticker: 'DQTEST', name: 'DQ Test',
+        timestamp: '2025-01-01T00:00:00.000Z',
+        _engineVersion: '1.0.43-alt', _breakingVersion: BREAKING_VERSION,
+        masterJson: JSON.parse(JSON.stringify(mjSmall)),
+        qualityV3: { verdict: 'alt' }, synthesisV3: { buyPrice: 3 }, valuationV3: {} };
+      _setStore([legacy]);
+      _resetState();
+      state.dataQuality = { grade: 'D', score: 5 };
+      loadSnapshot('dqleg');
+      check('PC-4e: Altsnapshot ohne Datenqualitaet → keine Note der vorherigen Aktie',
+        state.dataQuality === null, JSON.stringify(state.dataQuality));
+      check('PC-4f: das Fehlen wird ausdruecklich gekennzeichnet',
+        state._snapshotDataQualityMissing === true);
+      check('PC-4g: die uebrigen gespeicherten Ergebnisse kommen aus den Altschluesseln an',
+        state.quality && state.quality.verdict === 'alt' &&
+        state.synthesis && state.synthesis.buyPrice === 3,
+        JSON.stringify(state.quality));
+
+      // Beim ausdruecklichen Neuberechnen gilt die heutige Datenqualitaet.
+      const fx2 = (typeof REGRESSION_FIXTURES !== 'undefined')
+        ? REGRESSION_FIXTURES.find(f => f.id === 'T-TXRH-DEBT2') : null;
+      if (fx2) {
+        const dispDq = (function () { runDisplayPath(fx2.mj); return state.dataQuality; })();
+        putSnapshot('dq2', fx2.mj, { dataQuality: { grade: 'A', score: 95 } });
+        _resetState();
+        state.dataQuality = { grade: 'D', score: 5 };
+        loadSnapshotWithCurrentModel('dq2');
+        check('PC-4h: nach ausdruecklichem Neuberechnen gilt die heutige Datenqualitaet',
+          state.dataQuality != null && state.dataQuality !== null &&
+          JSON.stringify(state.dataQuality) === JSON.stringify(dispDq) &&
+          state._snapshotDataQualityMissing === false,
+          JSON.stringify(state.dataQuality));
+        check('PC-4i: der gespeicherte A-Wert bleibt im Snapshot erhalten',
+          _readStore()[0].dataQuality.grade === 'A', _readStore()[0].dataQuality.grade);
+      }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    suite('PC-5: Import weist unbrauchbare Datensaetze ab');
+    {
+      const mkGood = (id) => ({ id: id, ticker: 'GOOD', name: 'Gut', _snapshotFormat: 2,
+        timestamp: '2026-01-01T00:00:00.000Z',
+        masterJson: { schema_version: '4.0', meta: { ticker: 'GOOD' },
+                      fundamentals: { revenue: [1] }, valuation: {}, market: { price: 1 } } });
+
+      // Bestehenden Bestand setzen — er muss einen abgelehnten Import ueberleben.
+      const keeper = mkGood('keeper');
+      _setStore([keeper]);
+
+      const empty = parseSnapshotImportPayload([{}, {}]);
+      check('PC-5a: [{},{}] wird abgelehnt',
+        empty.ok === false && empty.snapshots.length === 0 && empty.rejected === 2,
+        empty.ok + '/' + empty.snapshots.length + '/' + empty.rejected);
+      check('PC-5b: die Meldung nennt Eintragsnummer und konkreten Grund',
+        empty.errors.some(e => /Eintrag 1 von 2/.test(e)) &&
+        empty.errors.some(e => /"timestamp"/.test(e)) &&
+        empty.errors.some(e => /Normalisierte Inputs fehlen/.test(e)),
+        empty.errors.join(' | '));
+      // Genau die Bedingung, mit der importSnapshots vor dem Schreiben abbricht.
+      check('PC-5c: importSnapshots bricht bei dieser Lage vor dem Schreiben ab',
+        (!empty.ok || empty.errors.length > 0) === true);
+      check('PC-5d: der bestehende Bestand ist unveraendert',
+        _readStore().length === 1 && _readStore()[0].id === 'keeper',
+        JSON.stringify(_readStore().map(x => x.id)));
+
+      // Der Journal-Aufrufer haette an genau diesen Eintraegen gescheitert.
+      let sortThrew = false;
+      try { [{}, {}].slice().sort((a, b) => a.timestamp.localeCompare(b.timestamp)); }
+      catch (e) { sortThrew = true; }
+      check('PC-5e: Gegenprobe — renderSnapshots-Sortierung scheitert an solchen Eintraegen',
+        sortThrew === true);
+      check('PC-5f: validateSnapshotRecordStructure faengt sie vorher ab',
+        validateSnapshotRecordStructure({}).length > 0 &&
+        validateSnapshotRecordStructure(mkGood('x')).length === 0,
+        validateSnapshotRecordStructure({}).join(' | '));
+
+      // Falsche Datentypen in tatsaechlich benoetigten Feldern.
+      const badTypes = [
+        [{ id: 1, ticker: 'T', name: 'N', timestamp: '2026-01-01T00:00:00.000Z', masterJson: {} }, 'id', 'id als Zahl'],
+        [{ id: 'a', ticker: 5, name: 'N', timestamp: '2026-01-01T00:00:00.000Z', masterJson: {} }, 'ticker', 'ticker als Zahl'],
+        [{ id: 'a', ticker: 'T', name: null, timestamp: '2026-01-01T00:00:00.000Z', masterJson: {} }, 'name', 'name null'],
+        [{ id: 'a', ticker: 'T', name: 'N', timestamp: 12345, masterJson: {} }, 'timestamp', 'timestamp als Zahl'],
+        [{ id: 'a', ticker: 'T', name: 'N', timestamp: 'kein Datum', masterJson: {} }, 'timestamp', 'timestamp unlesbar'],
+        [{ id: 'a', ticker: '   ', name: 'N', timestamp: '2026-01-01T00:00:00.000Z', masterJson: {} }, 'ticker', 'ticker nur Leerzeichen'],
+        [{ id: 'a', ticker: 'T', name: 'N', timestamp: '2026-01-01T00:00:00.000Z' }, 'Inputs', 'masterJson fehlt'],
+        [{ id: 'a', ticker: 'T', name: 'N', timestamp: '2026-01-01T00:00:00.000Z', masterJson: 'Text' }, 'Inputs', 'masterJson als Text'],
+        [{ id: 'a', ticker: 'T', name: 'N', timestamp: '2026-01-01T00:00:00.000Z', masterJson: [] }, 'Inputs', 'masterJson als Array'],
+        [{ id: 'a', ticker: 'T', name: 'N', timestamp: '2026-01-01T00:00:00.000Z', masterJson: { meta: 'x' } }, 'meta', 'meta als Text'],
+        [{ id: 'a', ticker: 'T', name: 'N', timestamp: '2026-01-01T00:00:00.000Z', masterJson: {}, output_signals: [] }, 'output_signals', 'output_signals als Array']
+      ];
+      let badOk = 0;
+      badTypes.forEach(([rec, needle, label]) => {
+        const probs = validateSnapshotRecordStructure(rec);
+        const hit = probs.length > 0 && probs.some(p => p.indexOf(needle) >= 0);
+        if (hit) badOk++;
+        check('PC-5g/' + label + ': erkannt (' + needle + ')', hit, probs.join(' | '));
+        const parsed = parseSnapshotImportPayload([rec]);
+        check('PC-5h/' + label + ': Import lehnt ab', parsed.ok === false && parsed.snapshots.length === 0);
+      });
+      check('PC-5i: alle ' + badTypes.length + ' Typfehler erkannt', badOk === badTypes.length, badOk);
+
+      // Ein gueltiger und ein ungueltiger Eintrag ⇒ kein Teilimport.
+      const mix = parseSnapshotImportPayload([mkGood('g1'), {}]);
+      check('PC-5j: gueltig + ungueltig ⇒ kein Teilimport',
+        mix.ok === false && mix.snapshots.length === 0 && mix.rejected === 1,
+        mix.ok + '/' + mix.snapshots.length + '/' + mix.rejected);
+      check('PC-5k: die Meldung sagt, dass nichts importiert wurde',
+        mix.errors.some(e => /NICHTS importiert/.test(e)) &&
+        mix.errors.some(e => /Eintrag 2 von 2/.test(e)),
+        mix.errors.join(' | '));
+      check('PC-5l: der Bestand ist danach immer noch unveraendert',
+        _readStore().length === 1 && _readStore()[0].id === 'keeper');
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    suite('PC-6: ungueltige Versionsangaben werden zurueckgewiesen');
+    {
+      const mkRec = (fmtVal) => {
+        const r = { id: 'v1', ticker: 'V', name: 'V', timestamp: '2026-01-01T00:00:00.000Z',
+          masterJson: { schema_version: '4.0', meta: { ticker: 'V' }, fundamentals: {}, valuation: {}, market: {} } };
+        if (fmtVal !== undefined) r._snapshotFormat = fmtVal;
+        return r;
+      };
+      // "999" ist der gemeldete Fall: wurde als Format 1 behandelt statt abgewiesen.
+      const badValues = [['999', 'Text "999"'], ['1', 'Text "1"'], [true, 'true'], [false, 'false'],
+                         [1.5, 'nicht ganzzahlig'], [0, 'null'], [-1, 'negativ'],
+                         [NaN, 'NaN'], [Infinity, 'Infinity'], [{}, 'Objekt'], [[2], 'Array']];
+      badValues.forEach(([val, label]) => {
+        const m = migrateSnapshotRecord(mkRec(val));
+        check('PC-6a/' + label + ': Datensatzebene abgelehnt',
+          m.ok === false && m.snapshot === null && /Formatversion|Format/.test(m.error || ''),
+          m.ok + ' · ' + m.error);
+        const h = parseSnapshotImportPayload({ _kind: SNAPSHOT_EXPORT_KIND, _snapshotFormat: val, snapshots: [] });
+        check('PC-6b/' + label + ': Huellenebene abgelehnt',
+          h.ok === false && h.errors.length > 0 && /Exporthuelle/.test(h.errors[0]),
+          h.ok + ' · ' + h.errors.join(' | '));
+      });
+      // Neueres Format weiterhin ablehnen.
+      const fut = migrateSnapshotRecord(mkRec(SNAPSHOT_FORMAT_VERSION + 1));
+      check('PC-6c: neueres Format wird weiterhin abgelehnt',
+        fut.ok === false && /neuer als das bekannte Format/.test(fut.error), fut.error);
+      const futH = parseSnapshotImportPayload({ _kind: SNAPSHOT_EXPORT_KIND,
+        _snapshotFormat: SNAPSHOT_FORMAT_VERSION + 1, snapshots: [] });
+      check('PC-6d: neueres Huellenformat wird weiterhin abgelehnt',
+        futH.ok === false && /neuer als das bekannte Format/.test(futH.errors[0]), futH.errors.join(' | '));
+
+      // FEHLENDE Angabe bleibt zulaessig (Altdaten, Format 1).
+      const miss = migrateSnapshotRecord(mkRec(undefined));
+      check('PC-6e: fehlende Angabe bleibt zulaessig und wird zu Format 1',
+        miss.ok === true && miss.fromFormat === 1 && miss.snapshot._snapshotFormat === 2,
+        miss.ok + '/' + miss.fromFormat);
+      const missNull = migrateSnapshotRecord(mkRec(null));
+      check('PC-6f: null als Angabe gilt ebenfalls als fehlend (Altdaten)',
+        missNull.ok === true && missNull.fromFormat === 1, missNull.error);
+      const missH = parseSnapshotImportPayload({ _kind: SNAPSHOT_EXPORT_KIND, snapshots: [] });
+      check('PC-6g: Huelle ohne Formatangabe wird als Format 1 gelesen und gewarnt',
+        missH.ok === true && missH.sourceFormat === 1 &&
+        missH.warnings.some(w => /ohne Formatangabe/.test(w)),
+        missH.warnings.join(' | '));
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    suite('PC-7: gueltige Importe bleiben funktionsfaehig');
+    {
+      const mjOk = { schema_version: '4.0', meta: { ticker: 'RT', company_name: 'Roundtrip' },
+                     fundamentals: { revenue: [100, 90] }, valuation: {}, market: { price: 10 } };
+      // Format-1-Altsnapshot mit Altschluesseln, ohne die neuen Zusatzfelder.
+      const legacy = { id: 'rt1', ticker: 'RT', name: 'Roundtrip',
+        timestamp: '2025-06-01T10:00:00.000Z',
+        _engineVersion: '1.0.30-alt', _breakingVersion: '11.5',
+        masterJson: JSON.parse(JSON.stringify(mjOk)),
+        qualityV3: { verdict: 'investable_low' }, synthesisV3: { buyPrice: 12.5 },
+        valuationV3: {}, qualityV3Overrides: [{ id: 'hs1' }] };
+      const l = parseSnapshotImportPayload([legacy]);
+      check('PC-7a: gueltiger Format-1-Import wird angenommen',
+        l.ok === true && l.snapshots.length === 1 && l.errors.length === 0, l.errors.join(' | '));
+      check('PC-7b: fehlende NEUE Zusatzfelder machen ihn nicht ungueltig',
+        l.snapshots[0]._snapshotFormat === 2 && l.snapshots[0].data_vintage !== undefined &&
+        l.migrations.length === 1, JSON.stringify(l.migrations[0] && l.migrations[0].steps));
+      check('PC-7c: Altschluessel bleiben erhalten und werden abgebildet',
+        l.snapshots[0].quality.verdict === 'investable_low' &&
+        approx(l.snapshots[0].synthesis.buyPrice, 12.5) &&
+        l.snapshots[0].qualityOverrides.length === 1);
+      // Anzeigbar und ladbar.
+      check('PC-7d: der migrierte Datensatz ist journaltauglich',
+        validateSnapshotRecordStructure(l.snapshots[0]).length === 0,
+        validateSnapshotRecordStructure(l.snapshots[0]).join(' | '));
+      _setStore(l.snapshots);
+      _resetState();
+      loadSnapshot('rt1');
+      check('PC-7e: er laesst sich ueber den echten Ladepfad laden',
+        state.masterJson && state.masterJson.meta.ticker === 'RT' &&
+        state.quality.verdict === 'investable_low' && state._loadedFromSnapshot === true,
+        state.masterJson && state.masterJson.meta.ticker);
+
+      // Format-2-Roundtrip.
+      _resetState();
+      const rec2 = buildSnapshotRecord({ masterJson: mjOk, quality: { verdict: 'ok', hardStops: [] },
+        valuation: { scenarios: { base: { growth_stage1: 5, terminal_growth: 2, wacc: 9, op_margin_pct: 12 } } },
+        synthesis: { buyPrice: 8.5, range: { base: 11 } }, dataQuality: { grade: 'B', score: 70 },
+        id: 'rt2', now: new Date('2026-02-02T00:00:00.000Z') });
+      const wire = JSON.parse(JSON.stringify(buildSnapshotExportBundle([rec2])));
+      const back = parseSnapshotImportPayload(wire);
+      check('PC-7f: Format-2-Export/Import-Roundtrip bleibt funktionsfaehig',
+        back.ok === true && back.snapshots.length === 1 && back.errors.length === 0 &&
+        back.sourceFormat === SNAPSHOT_FORMAT_VERSION, back.errors.join(' | '));
+      check('PC-7g: der Roundtrip-Datensatz ist journaltauglich und traegt seine Werte',
+        validateSnapshotRecordStructure(back.snapshots[0]).length === 0 &&
+        approx(back.snapshots[0].synthesis.buyPrice, 8.5) &&
+        back.snapshots[0].dataQuality.grade === 'B',
+        validateSnapshotRecordStructure(back.snapshots[0]).join(' | '));
+      _setStore(back.snapshots);
+      _resetState();
+      state.dataQuality = { grade: 'D', score: 5 };
+      loadSnapshot('rt2');
+      check('PC-7h: und laedt samt gespeicherter Datenqualitaet B',
+        state.dataQuality && state.dataQuality.grade === 'B' &&
+        approx(state.synthesis.buyPrice, 8.5), JSON.stringify(state.dataQuality));
+    }
+
+  } finally {
+    _restoreFns();
+    _stateKeys.forEach(k => { state[k] = _savedState[k]; });
+    try {
+      if (_savedStore === null) localStorage.removeItem(SNAP_KEY);
+      else localStorage.setItem(SNAP_KEY, _savedStore);
+    } catch (e) {}
   }
 
   return results;

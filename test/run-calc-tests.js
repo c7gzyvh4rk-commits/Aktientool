@@ -57,6 +57,7 @@ const PURE_TEST_FUNCTIONS = [
   '_testValuationCore',
   '_testSynthesisPrecision',
   '_testSnapshotIntegrity',
+  '_testSnapshotPathConsistency',
 ];
 
 // Test-Helper, die echte DOM-Formularfelder anlegen/auslesen
