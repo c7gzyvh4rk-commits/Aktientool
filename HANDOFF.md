@@ -234,7 +234,10 @@ Reparaturbranch: `claude/snapshot-repair-fixes` (Basis `e71a4d5` auf
 `claude/awesome-johnson-j9c246`). Tool-Datei unveraendert
 `us-aktienbewertungstool-v1036-sector-classification-patch.html`.
 Testbefehl: `npm test` — beide Suiten gruen, Exit-Code 0.
+Code-Commit dieses Schritts: `d36674f`; Ergebniscommit ist die Spitze des
+Reparaturbranches (dieser Nachtrag).
 Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/snapshot-repair-fixes
+Commit-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/commit/d36674f
 
 ## Update (Chat 12): Reproduzierbare Bewertungssnapshots, ehrliche Erfolgskontrolle (V1.0.44)
 
