@@ -131,8 +131,10 @@ S-14a und S-14c rot.
 Übergabebranch: `claude/mos-input-validation` (Basis `f7eaee9` auf
 `claude/happy-hamilton-fytsq5`). Tool-Datei unverändert.
 Testbefehl: `npm test` — beide Suiten grün, Exit-Code 0.
-Ergebniscommit: siehe Spitze des Übergabebranches.
+Code-Commit dieses Schritts: `236b4f0`; Ergebniscommit ist die Spitze des
+Übergabebranches (dieser Nachtrag).
 Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/mos-input-validation
+Commit-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/commit/236b4f0
 
 ## Update (Chat 10): Manuell gewählter Sicherheitsabschlag, Abnahme abgesichert (V1.0.42)
 
