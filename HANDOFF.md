@@ -201,7 +201,10 @@ Reparaturbranch: `claude/dcf-core-interface-fixes` (Basis `8a928d6` auf
 `us-aktienbewertungstool-v1036-sector-classification-patch.html`, Modul
 `src/dcf-core.js`.
 Testbefehl: `npm test` — beide Suiten grün, Exit-Code 0.
+Code-Commit dieses Schritts: `8de542e`; Ergebniscommit ist die Spitze des
+Reparaturbranches (dieser Nachtrag).
 Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/dcf-core-interface-fixes
+Commit-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/commit/8de542e
 
 ## Update (Chat 8): DCF-Rechenkern von Oberfläche und globalem Zustand entkoppelt (V1.0.47)
 
