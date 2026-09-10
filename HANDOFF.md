@@ -1,5 +1,229 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Update (Chat 8): DCF-Rechenkern von Oberfläche und globalem Zustand entkoppelt (V1.0.47)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
+`claude/snapshot-numeric-field-validation`, Ausgangscommit `4c1fdc4` — die
+Spitze dieses Branches und der einzige Stand, der ihn enthält; kein neuerer
+Fortsetzungsstand (`main` steht weiterhin auf `b023dc8`). Tool-Datei unverändert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Arbeitsbranch: `claude/dcf-core-extraction`. Testbefehl: `npm test`.
+Baseline auf `4c1fdc4` (ausgeführt): 1298 Rechen-Assertions · 28 SEC-Tests ·
+Exit-Code 0.
+
+Umfang: Entkopplung des bereits korrigierten DCF-Rechenkerns. Keine
+Architekturmigration, kein Framework, keine neue Build-Infrastruktur, keine
+Neustrukturierung der Quality Engine.
+
+### Befund vor der Änderung
+
+Der Kern war fachlich bereits sauber, aber nicht als Einheit greifbar:
+
+* Die Rechenfunktionen (`_resolveOwcForForecast`, `buildForecastInputs`,
+  `forecastDcfCore`, `buildCoreValuationContext`, `coreValuationDetail`,
+  `coreEquityValuePerShare`, `solveReverseDcfGrowth`,
+  `computeSensitivityMatrix`) waren **bereits frei** von DOM, `localStorage`
+  und globalem `state` — nachgemessen, nicht angenommen. Es fehlte aber jede
+  Absicherung dagegen, und sie waren nicht ohne Browser ladbar.
+* Es gab **keinen gemeinsamen Einstiegspunkt**: Aufrufer mussten vier
+  Funktionen einzeln in der richtigen Reihenfolge bedienen.
+* Es gab **keine Einheitengrenze**. Der Kern rechnet Zinssätze in
+  Prozentpunkten, das war aber nirgends festgehalten.
+* Drei Ersatzwerte waren **still**: Steuerquote 25 %, D&A-Quote 0 und
+  Working-Capital-Quote 0.
+* `dcfCore(fcf, g1, tg, wacc, fade)` war ein überholter, doppelter
+  Rechenpfad ohne Working Capital, Nettoschuldenbrücke und Aktienprojektion.
+
+### Umsetzung
+
+**1. Gemeinsame Schnittstelle (Auftragspunkt 1).**
+Zwei Einstiegspunkte im Kern:
+
+```
+normalizeDcfCoreInput(masterJson, options) → { ok, input, diagnostics }
+runDcfCoreAnalysis(input, which)           → { ok, valuation, reverseDcf,
+                                               sensitivity, diagnostics }
+analyzeDcfFromMasterJson(mj, options, which)   // dünne Zusammensetzung
+```
+
+`runDcfCoreAnalysis` liest **ausschliesslich** aus seinem Argument. Das
+Inputobjekt trägt alles: den abgeleiteten Kontext (`ctx`), Szenarien, Kurs,
+Zielkurs, Margen-Override, aktive Modelle, Einheitenbeschreibung und die
+Datenbasis. `which` steuert, ob Bewertung, Reverse DCF und/oder Matrix
+gerechnet werden.
+
+Der Einstiegspunkt **delegiert** an die vorhandenen, geprüften Funktionen und
+rechnet nichts eigenständig nach — deshalb sind die Ergebnisse bitgleich.
+
+**2. Kein DOM, kein localStorage, kein globaler Zustand (Auftragspunkt 2).**
+Der Kern liegt in einem markierten Block:
+
+```
+// ╔═ DCF-CORE-BLOCK START ═╗   …   // ╔═ DCF-CORE-BLOCK ENDE ═╗
+```
+
+`tests/dcf-core-isolation.test.mjs` prüft dauerhaft, dass der ausführbare Code
+des Blocks weder `document.`, `localStorage`, `window.`, `state.`, `alert(`,
+`confirm(`, `fetch(`, `getElementById`, `innerHTML`, `Date.now(`, `new Date(`
+noch `Math.random(` enthält, und dass er in einer **leeren** Sandbox (ohne
+jede Browser-Attrappe) vollständig durchläuft.
+
+Die stillen Ersatzwerte sind nicht mehr versteckt: sie stehen jetzt in
+`diagnostics.appliedDefaults` mit Feld, Wert, Einheit und Begründung. Ihre
+**Werte wurden nicht geändert** — das hätte Ergebnisse verschoben und den
+Abnahmepunkt „vorher/nachher identisch" verletzt.
+
+**3. Einheitengrenze (Auftragspunkt 3).** `DCF_CORE_UNITS` hält die
+Konventionen fest und wird im Ergebnis mitgeführt:
+
+| Grösse | Einheit |
+|---|---|
+| Geldbeträge | Millionen USD |
+| Werte je Aktie | USD je Aktie |
+| Aktienzahlen | Millionen Stück |
+| Zinssätze, Wachstum, Steuerquote, Margen | **Prozentpunkte** (`wacc = 10` ⇒ 10 %) |
+| Abgeleitete Quoten (`opMargin`, `capexIntensity`, `daRatio`, `owcRatio`) | **Brüche** (0,05 ⇒ 5 % vom Umsatz) |
+| Prognose | 10 Jahre, danach Gordon-Terminalwert |
+
+Die Grenze rechnet **nicht still um**. Ein Satz, der wie ein Bruch aussieht
+(0 < |x| < 1), wird als `diagnostics.unitWarnings`-Eintrag gemeldet und
+unverändert weitergereicht. Eine stille Umdeutung würde Ergebnisse
+verschieben, ohne dass es jemand bemerkt.
+
+**4. Bestehende Aufrufer über dünne Adapter (Auftragspunkt 4).**
+Die vorhandenen Aufrufer sind bereits dünn und blieben **unverändert**; sie
+sind jetzt unterhalb der Blockgrenze als Adapterschicht benannt:
+`buildSensitivityMatrix` (nur HTML), `runValuationEngine`, `runMonteCarloDcf`,
+`buildSnapshotForecastTargets`, `renderValuation`/`renderOverview`.
+
+**5. Ungenutzter doppelter Rechenpfad entfernt (Auftragspunkt 5).**
+`dcfCore()` entfernt. Nachweis **vor** dem Entfernen: genau ein Vorkommen im
+gesamten Quelltext (die Deklaration selbst), kein Aufruf, keine Testreferenz.
+Ein Regressionstest hält den Zustand fest. Sonst wurde nichts entfernt.
+
+**6. Moduldatei und separate Tests (Auftragspunkt 6).**
+Neu `src/dcf-core.js`: lädt den markierten Block samt der im Block
+deklarierten Helfer (`DCF_CORE_REQUIRED_HELPERS`) und stellt ihn als
+gewöhnliches CommonJS-Modul bereit — ohne Build-Schritt und ohne
+Abhängigkeiten.
+
+Bewusst **keine Kopie der Logik**: die HTML-Datei bleibt die einzige Quelle,
+eine zweite Fassung desselben Codes würde auseinanderlaufen. Dieselbe
+Entscheidung liegt dem vorhandenen `tests/extract-functions.mjs` zugrunde.
+Die Anwendung startet damit weiterhin alleinstehend per `file://`.
+
+**Bewusste Grenze:** acht reine Helfer bleiben bei ihrer Datenschicht statt in
+den Bewertungskern zu wandern — insbesondere `_joinPeriodKeyed` (193 Zeilen)
+gehört zur SEC-Datenaufbereitung und wäre im Kern fehl am Platz. Sie sind im
+Block **ausdrücklich deklariert**; der Isolationstest prüft, dass die Liste
+vollständig ist, keine unbenutzten Einträge trägt und alle Beteiligten selbst
+browserfrei sind.
+
+### Abnahme
+
+**Vorher/nachher identische Ergebnisse.** Ein Fingerabdruck über **alle 134**
+Regressions-Fixtures mit `mj` wurde auf `4c1fdc4` und auf diesem Stand
+erzeugt und verglichen: je Fixture die Forecast-Inputs, 72 Bewertungspunkte
+(g1 ∈ {−5, 0, 4, 8, 12, 20} × tg ∈ {0, 2, 3} × WACC ∈ {7, 9, 10, 12}) mit
+operativem Wert, Eigenkapitalwert, TV-Anteil, Terminal-FCFF, Umsatz Jahr 10
+und ΔOWC-Summe, dazu der Reverse-DCF-Status samt Nullstellen und die
+vollständige Sensitivitätsmatrix. Ergebnis: **byte-identisch**
+(1 256 993 Zeichen, 0 Abweichungen, 0 Fehler auf beiden Seiten).
+
+**Kern direkt ohne Browser testbar.** `require('./src/dcf-core.js')` →
+`loadDcfCore()` wertet in einem vm-Kontext **ohne** `document`, `window`,
+`localStorage` oder `state` aus; die volle Analyse läuft dort durch.
+
+**Bestehender Import und UI-Aufruf funktionieren weiterhin.** Im echten
+Browser geprüft (siehe Tests).
+
+**Änderungen begrenzt.** Kern (Blockmarken, Einheitengrenze,
+Einstiegspunkt, Adapter-Notiz, Entfernen von `dcfCore`), die neue Moduldatei,
+zwei Testdateien, `package.json` (ein zusätzliches Skript) und dieses Dokument.
+
+### Neue Tests
+
+* **`tests/dcf-core.test.mjs` (16 Tests)** — Modul-API ohne Browser:
+  vollständiges Inputobjekt mit Einheiten; fehlende Inputs ⇒ `ok:false` mit
+  benannten Feldern statt Ersatzwerten; Brüche werden gemeldet, **nicht**
+  umgerechnet; `0` ist kein Einheitenverdacht; stille Ersatzwerte erscheinen
+  als `appliedDefaults`; handgerechnete Prognosereihe (Jahr 1: Umsatz 1080,
+  EBIT 216, FCFF 162 · Jahr 2: 1166,40 / 174,96); Nettoschuldenbrücke
+  (1,00 USD/Aktie); fehlende Nettoschulden ⇒ kein Eigenkapitalwert;
+  WACC ≤ tg ⇒ `null`; der Einstiegspunkt liefert **dieselben Zahlen** wie die
+  Einzelbausteine (Bewertung, Reverse DCF, Matrixzellen); `which` steuert den
+  Umfang; der Kern verändert sein Inputobjekt nicht; gleiche Eingabe ⇒
+  bitgleiche Ausgabe; Mid-Cycle-Override wird durchgereicht.
+* **`tests/dcf-core-isolation.test.mjs` (7 Tests)** — Blockmarken genau einmal
+  vorhanden; keine Oberflächen-, Speicher- oder Zustandszugriffe im
+  ausführbaren Code (Kommentare werden vorher entfernt, da die Prosa diese
+  Begriffe absichtlich nennt); die deklarierten Helfer sind selbst frei davon;
+  Lauf in leerer Sandbox; Helferliste vollständig und ohne Karteileichen;
+  `dcfCore()` entfernt; Kernblock liegt inline in der HTML-Datei, damit der
+  alleinstehende Start erhalten bleibt.
+
+`npm run test:core` fährt beide gezielt; `npm test` enthält sie über
+`tests/*.test.mjs`.
+
+### Gegenproben (ausgeführt)
+
+| Rückbau | Rot |
+|---|---|
+| GP-1 `document.getElementById` in den Kernblock eingeschleust | 2 (Codeprüfung + leere Sandbox) |
+| GP-2 `state.lastCoreResult = out` im Kernblock | 2 (dieselben) |
+| GP-3 `_resolveNetDebtForDcfBridge` aus der Helferliste entfernt | 1 (leere Sandbox) |
+| GP-4 `dcfCore()` wieder eingefügt | 1 (Regressionstest) |
+
+### Tatsächlich ausgeführte Tests
+
+* `npm test` → Rechentests **1298 bestanden · 0 fehlgeschlagen ·
+  0 Fehler/Exceptions** (unverändert zur Baseline — der Kern rechnet
+  identisch), Node-Tests **51/51** (vorher 28; +23 neu), gemeinsamer
+  **Exit-Code 0**. Keine bestehende Erwartung geändert oder gelockert.
+* **Fingerabdruck-Vergleich** über 134 Fixtures gegen `4c1fdc4`:
+  byte-identisch (siehe Abnahme).
+* **Echter Browser** (Chromium 1194 headless über `playwright-core`, nur im
+  Arbeitsverzeichnis ausserhalb des Repositories installiert — das Projekt
+  bleibt abhängigkeitsfrei), Datei per `file://`, **0 JS-Fehler**:
+  alleinstehender Start gelingt; `runFullEvaluation()` liefert für
+  `T-TXRH-DEBT2` unverändert BP 7,4357081414 und FV Base 10,4360816;
+  `analyzeDcfFromMasterJson()` auf denselben Inputs stimmt mit dem
+  Einzelbaustein `coreEquityValuePerShare()` überein; der dünne UI-Adapter
+  `buildSensitivityMatrix()` rendert weiterhin.
+
+### Verbleibende Grenzen und offene Punkte
+
+* **Einheitenverdacht in den Fixtures.** Die neue Grenze meldet ihn bei
+  **125 von 134** Fixtures: `_makeBaseValuation()` setzt `wacc_derived: 0.09`,
+  `growth_terminal: 0.03`, `growth_stage1: 0.07`, `tax_rate: 0.21` — also
+  Brüche, während der Kern Prozentpunkte erwartet. Der **Produktionspfad**
+  arbeitet dagegen in Prozentpunkten (`WACC_FLOORS` = 8,5…9,5;
+  `risk_free * 100 + 4.0`). Die Fixture-Erwartungen sind auf das heutige
+  Verhalten kalibriert; eine Umstellung würde Ergebnisse verschieben und war
+  hier ausdrücklich nicht beauftragt. **Nicht behoben, bewusst gemeldet.**
+* Der Kern-Einstiegspunkt ist **additiv**. Die Oberfläche ruft weiterhin die
+  Einzelbausteine; eine Umstellung der bestehenden Aufrufer war nicht Teil des
+  Auftrags („bestehende UI-Aufrufer über dünne Adapter erhalten").
+* `src/dcf-core.js` lädt den Block über Textmarken aus der HTML-Datei. Werden
+  die Marken entfernt oder dupliziert, schlägt der Isolationstest fehl — das
+  ist die Absicherung, ersetzt aber keinen echten Build.
+* Der Browsercheck ist ein einmalig ausgeführtes Skript im Arbeitsverzeichnis,
+  **kein** Bestandteil von `npm test`; die Suiten bleiben abhängigkeitsfrei.
+* Nicht angefasst (ausserhalb des Auftrags): Quality Engine, Synthese, DDM,
+  RIM, Monte-Carlo-Korrelationen, `ENGINE_VERSION`/`DISPLAY_VERSION`
+  (mehrere Fixtures pinnen `1.0.35-base-rate-lite` exakt), index-basierte
+  Ableitung von `eps_diluted`/`book_value`/`dps` in `applyDerivedFieldsV4`.
+
+### Ausgangsstand für den nächsten Schritt
+
+Arbeitsbranch: `claude/dcf-core-extraction` (Basis `4c1fdc4` auf
+`claude/snapshot-numeric-field-validation`). Tool-Datei unverändert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Neue Dateien: `src/dcf-core.js`, `tests/dcf-core.test.mjs`,
+`tests/dcf-core-isolation.test.mjs`.
+Testbefehl: `npm test` — beide Suiten grün, Exit-Code 0.
+Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/dcf-core-extraction
+
 ## Update (Chat 7 Restfehler): Numerisch verwendete Snapshot-Felder validiert (V1.0.46)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch

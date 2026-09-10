@@ -3032,30 +3032,14 @@ function switchTab(name) {
   if (name === 'journal') renderSnapshots();
 }
 
-// ÜBERHOLT (V1.0.36): einfacher FCF-je-Aktie-DCF ohne Working Capital,
-// ohne Nettoschuldenbrücke und ohne Aktienprojektion. Wird von keinem
-// Bewertungs- oder Diagnosepfad mehr aufgerufen — Haupt-DCF, DCF Mid-Cycle,
-// Reverse DCF, Sensitivitätsmatrix und Monte Carlo laufen über
-// coreValuationDetail(). NICHT für neue Pfade verwenden: das Ergebnis ist
-// nicht definitionskonsistent zu den übrigen Modellwerten.
-function dcfCore(fcf, g1, tg, wacc, fade) {
-  if (wacc <= tg) return { pv: 0, pvTv: 0, total: 0 };
-  let pv = 0, cf = fcf;
-  const useFade = fade && fade.enabled && fade.fromYear >= 1 && fade.fromYear < 10;
-  for (let i = 1; i <= 10; i++) {
-    let gi = g1;
-    if (useFade && i >= fade.fromYear) {
-      const fadeLen = 10 - fade.fromYear + 1;
-      const step = (g1 - tg) / fadeLen;
-      gi = g1 - step * (i - fade.fromYear + 1);
-    }
-    cf *= (1 + gi / 100);
-    pv += cf / Math.pow(1 + wacc / 100, i);
-  }
-  const tv = (cf * (1 + tg / 100)) / (wacc / 100 - tg / 100);
-  const pvTv = tv / Math.pow(1 + wacc / 100, 10);
-  return { pv, pvTv, total: pv + pvTv };
-}
+// V1.0.47: Der überholte FCF-je-Aktie-DCF `dcfCore(fcf, g1, tg, wacc, fade)`
+// wurde hier entfernt. Er rechnete ohne Working Capital, ohne
+// Nettoschuldenbrücke und ohne Aktienprojektion und war damit nicht
+// definitionskonsistent zu den übrigen Modellwerten. Nachweis der
+// Ungenutztheit vor dem Entfernen: genau ein Vorkommen im gesamten
+// Quelltext (die Deklaration selbst), kein Aufruf, keine Testreferenz.
+// Haupt-DCF, DCF Mid-Cycle, Reverse DCF, Sensitivitätsmatrix und Monte Carlo
+// laufen über den gemeinsamen Bewertungskern (coreValuationDetail).
 
 function ddmCore(dps, g1, g2, coe, years) {
   if (dps <= 0 || coe <= g2) return { pv1: 0, pvTv: 0, total: 0 };
@@ -3694,6 +3678,30 @@ function checkPerShareSanity(synthesis, masterJson) {
 // `total_debt − long_term_debt` abgeleitet. Ist die Ableitung nicht möglich,
 // gilt das Jahr als unvollständig. Es wird NICHT unterstellt, dass keine
 // kurzfristigen Finanzschulden bestehen (fehlende Werte sind nicht 0).
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║ DCF-CORE-BLOCK START                                                     ║
+// ╠══════════════════════════════════════════════════════════════════════════╣
+// ║ Klar isolierter Rechenkern für DCF, Reverse-DCF-Solver und              ║
+// ║ Sensitivitätsmatrix. Dieser Block ist frei von DOM-Zugriffen,           ║
+// ║ localStorage, globalem `state` und `window` — er ist ohne Browser       ║
+// ║ ausführbar und wird von `src/dcf-core.js` als Modul geladen (kein       ║
+// ║ Build-Schritt, keine Kopie der Logik: die HTML-Datei bleibt die einzige ║
+// ║ Quelle und startet weiterhin alleinstehend).                            ║
+// ║                                                                          ║
+// ║ Schnittstelle (siehe DCF_CORE_UNITS und die beiden Einstiegspunkte):     ║
+// ║   normalizeDcfCoreInput(masterJson, options)                             ║
+// ║       → { ok, input, diagnostics }   — Einheitengrenze                   ║
+// ║   runDcfCoreAnalysis(input)                                              ║
+// ║       → { ok, valuation, reverseDcf, sensitivity, diagnostics }          ║
+// ║                                                                          ║
+// ║ Der Block benötigt eine kleine, ausdrücklich deklarierte Menge reiner    ║
+// ║ Hilfsfunktionen aus der Datenschicht (DCF_CORE_REQUIRED_HELPERS).        ║
+// ║ Sie liegen bewusst weiterhin bei ihrer Datenschicht — insbesondere       ║
+// ║ `_joinPeriodKeyed` gehört zur SEC-Datenaufbereitung und wäre im          ║
+// ║ Bewertungskern fehl am Platz. `src/dcf-core.js` lädt sie zusammen mit    ║
+// ║ diesem Block; `tests/dcf-core-isolation.test.mjs` prüft, dass die Liste  ║
+// ║ vollständig ist und alle Beteiligten browserfrei sind.                   ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
 const OWC_MIN_YEARS = 3;   // Median über ≥ 3 Jahre dämpft Bilanzstichtagseffekte
 
 // Vereinfachung des Working-Capital-Modells, ausdrücklich gekennzeichnet.
@@ -4577,6 +4585,351 @@ function computeSensitivityMatrix(mj, v) {
   out.baseValue = coreEquityValuePerShare(ctx, baseG1, tg, baseWacc, opMarginPct);
   return out;
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// EINHEITENKONVENTIONEN DES KERNS
+// ────────────────────────────────────────────────────────────────────────────
+// Innerhalb dieses Blocks gelten AUSSCHLIESSLICH die folgenden Einheiten.
+// Sie werden an der Grenze normalizeDcfCoreInput() festgestellt und im
+// Ergebnis mitgeführt, damit ein Aufrufer sie nicht raten muss.
+//
+//   Geldbeträge      Millionen USD (wie im Master-JSON: revenue, ebit,
+//                    capex, ebitda, total_debt, cash_and_equivalents …).
+//   Werte je Aktie   USD je Aktie (operatingValuePerShare,
+//                    equityValuePerShare, netDebtPerShare, Kurs).
+//   Aktienzahlen     Millionen Stück (shares_diluted).
+//   Zinssätze,       PROZENTPUNKTE, nicht Brüche: wacc = 10 bedeutet 10 %.
+//   Wachstum,        Das gilt für wacc_derived, growth_stage1,
+//   Steuerquote,     growth_terminal, tax_rate und op_margin_pct.
+//   Margen
+//   Abgeleitete      BRÜCHE, nicht Prozentpunkte: opMargin, capexIntensity,
+//   Quoten           daRatio, owcRatio (0,05 bedeutet 5 % vom Umsatz).
+//                    Diese entstehen erst im Kern und verlassen ihn nur
+//                    in Diagnosefeldern.
+//   Perioden         Prognosejahre 1..10, danach Gordon-Terminalwert.
+//
+// WICHTIG: Die Grenze rechnet NICHT still um. Ein Zinssatz, der wie ein
+// Bruch aussieht (0 < |x| < 1), wird als solcher GEMELDET, aber unverändert
+// weitergereicht — eine stille Umdeutung würde Ergebnisse verschieben, ohne
+// dass es jemand bemerkt. Die Meldung steht in diagnostics.unitWarnings.
+const DCF_CORE_UNITS = Object.freeze({
+  money:            'million_usd',
+  perShare:         'usd_per_share',
+  shares:           'million_shares',
+  rates:            'percent_points',
+  derivedRatios:    'fraction_of_revenue',
+  forecastYears:    10,
+  terminalMethod:   'gordon_growth'
+});
+
+// Reine Hilfsfunktionen aus der Datenschicht, die dieser Block benötigt.
+// Ausdrücklich deklariert, damit `src/dcf-core.js` sie mitladen kann und
+// `tests/dcf-core-isolation.test.mjs` die Vollständigkeit prüfen kann.
+// Sie sind selbst frei von DOM, localStorage und globalem `state`.
+const DCF_CORE_REQUIRED_HELPERS = Object.freeze([
+  '_median',                        // Median einer Zahlenreihe
+  '_computeOwcHistory',             // operatives Working Capital je Jahr
+  'detectAndNormalizeShareSplits',  // Split-/Restatement-Erkennung
+  '_seriesHasPeriodContext',        // Periodenkontext einer Reihe
+  '_secPeriodYear',                 // Jahr eines Periodenendes
+  '_secPeriodDaysApart',            // Abstand zweier Periodenenden
+  '_joinPeriodKeyed',               // periodengetreuer Join (SEC-Datenschicht)
+  '_resolveNetDebtForDcfBridge'     // Nettoschuldenbrücke zum Eigenkapitalwert
+]);
+
+// Rate, die wie ein Bruch statt wie Prozentpunkte aussieht.
+function _dcfCoreLooksLikeFraction(v) {
+  return typeof v === 'number' && isFinite(v) && v !== 0 && Math.abs(v) < 1;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// GRENZE: Master-JSON → vollständiges, flaches Inputobjekt
+// ────────────────────────────────────────────────────────────────────────────
+// Alles, was der Kern zum Rechnen braucht, steht danach IM Inputobjekt.
+// runDcfCoreAnalysis() greift auf nichts ausserhalb seines Arguments zu.
+//
+// options:
+//   opMarginOverridePct  Betriebsmarge in Prozentpunkten (DCF Mid-Cycle);
+//                        null = Szenariomarge verwenden.
+//   marginBasis          Freitext-Etikett für die Herkunft der Marge.
+//   targetPricePerShare  Zielkurs des Reverse DCF; null = Marktkurs.
+//   scenarios            { conservative?, base, optimistic? } mit je
+//                        { growth_stage1, terminal_growth, wacc,
+//                          op_margin_pct } — alle in Prozentpunkten.
+//                        Fehlt der Block, wird das Base-Szenario aus
+//                        mj.valuation gebildet.
+//
+// Rückgabe: { ok, input, diagnostics }. Bei ok === false nennt
+// diagnostics.missing die fehlenden Felder — es werden KEINE Ersatzwerte
+// angesetzt.
+function normalizeDcfCoreInput(masterJson, options) {
+  const opts = options || {};
+  const diagnostics = {
+    missing: [], unitWarnings: [], appliedDefaults: [], notes: []
+  };
+  if (!masterJson || typeof masterJson !== 'object') {
+    diagnostics.missing.push('master_json');
+    return { ok: false, input: null, diagnostics: diagnostics,
+             reason: 'Kein Master-JSON übergeben.' };
+  }
+
+  const val  = masterJson.valuation   || {};
+  const mkt  = masterJson.market      || {};
+  const meta = masterJson.meta        || {};
+  const fund = masterJson.fundamentals || {};
+
+  const ctx = buildCoreValuationContext(masterJson, {
+    opMarginOverridePct: opts.opMarginOverridePct,
+    marginBasis: opts.marginBasis
+  });
+  if (!ctx.ok) {
+    diagnostics.missing = (ctx.missing || []).slice();
+    return { ok: false, input: null, diagnostics: diagnostics,
+             reason: ctx.reason || 'Forecast-Inputs unvollständig.' };
+  }
+
+  // ── Versteckte Defaults sichtbar machen ───────────────────────────────
+  // Diese Ersatzwerte stecken seit jeher in buildForecastInputs bzw.
+  // _resolveOwcForForecast. Sie werden hier NICHT geändert (das würde
+  // Ergebnisse verschieben), sondern ausgewiesen.
+  const wc = val.wacc_components || {};
+  if (wc.tax_rate == null) {
+    diagnostics.appliedDefaults.push({
+      field: 'valuation.wacc_components.tax_rate', value: 25, unit: 'percent_points',
+      reason: 'Steuerquote fehlt; der Kern rechnet unverändert mit 25 %.' });
+  }
+  if (ctx.fi && ctx.fi._debug && ctx.fi._debug.daYears === 0) {
+    diagnostics.appliedDefaults.push({
+      field: 'fundamentals.ebitda', value: 0, unit: 'fraction_of_revenue',
+      reason: 'Keine vollständigen EBITDA/EBIT-Jahre; D&A-Quote wird als 0 angesetzt.' });
+  }
+  if (ctx.owc && ctx.owc.source === 'assumption_required') {
+    diagnostics.appliedDefaults.push({
+      field: 'valuation.assumptions.owc_pct_of_revenue', value: 0, unit: 'fraction_of_revenue',
+      reason: OWC_PROVISIONAL_LABEL });
+  }
+  if (!ctx.netDebt || !ctx.netDebt.available) {
+    diagnostics.notes.push('Nettoschulden nicht ermittelbar — es gibt keinen ' +
+      'Eigenkapitalwert je Aktie; der operative Wert wird nicht ersatzweise ausgegeben.');
+  }
+  if (Array.isArray(ctx.fi && ctx.fi._sharesWarnings)) {
+    ctx.fi._sharesWarnings.forEach(w => diagnostics.notes.push(w));
+  }
+
+  // ── Szenarien ─────────────────────────────────────────────────────────
+  const scOf = (sc) => (sc && typeof sc === 'object') ? {
+    growth_stage1:   (sc.growth_stage1   != null) ? sc.growth_stage1   : null,
+    terminal_growth: (sc.terminal_growth != null) ? sc.terminal_growth : null,
+    wacc:            (sc.wacc            != null) ? sc.wacc            : null,
+    op_margin_pct:   (sc.op_margin_pct   != null) ? sc.op_margin_pct   : null
+  } : null;
+
+  let scenarios = null;
+  if (opts.scenarios && typeof opts.scenarios === 'object') {
+    scenarios = {};
+    ['conservative', 'base', 'optimistic'].forEach(k => {
+      const sc = scOf(opts.scenarios[k]);
+      if (sc) scenarios[k] = sc;
+    });
+    if (!scenarios.base) scenarios.base = null;
+  } else {
+    // Base-Szenario aus dem Master-JSON — dieselben Felder, die der
+    // Haupt-DCF liest.
+    scenarios = { base: {
+      growth_stage1:   (val.growth_stage1   != null) ? val.growth_stage1   : null,
+      terminal_growth: (val.growth_terminal != null) ? val.growth_terminal : null,
+      wacc:            (val.wacc_derived    != null) ? val.wacc_derived    : null,
+      op_margin_pct:   null
+    }};
+    diagnostics.notes.push('Kein Szenarienblock übergeben — Base-Szenario aus ' +
+      'valuation.growth_stage1 / growth_terminal / wacc_derived gebildet.');
+  }
+
+  // ── Einheitenprüfung an der Grenze (meldend, nicht umrechnend) ────────
+  const rateFields = [
+    ['valuation.wacc_derived',    val.wacc_derived],
+    ['valuation.growth_terminal', val.growth_terminal],
+    ['valuation.growth_stage1',   val.growth_stage1],
+    ['valuation.wacc_components.tax_rate', wc.tax_rate]
+  ];
+  Object.keys(scenarios).forEach(k => {
+    const sc = scenarios[k]; if (!sc) return;
+    rateFields.push(['scenarios.' + k + '.wacc', sc.wacc]);
+    rateFields.push(['scenarios.' + k + '.growth_stage1', sc.growth_stage1]);
+    rateFields.push(['scenarios.' + k + '.terminal_growth', sc.terminal_growth]);
+    rateFields.push(['scenarios.' + k + '.op_margin_pct', sc.op_margin_pct]);
+  });
+  rateFields.forEach(([path, v]) => {
+    if (_dcfCoreLooksLikeFraction(v)) {
+      diagnostics.unitWarnings.push({
+        field: path, value: v, expectedUnit: 'percent_points',
+        message: 'Wert ' + v + ' sieht nach einem Bruch aus. Der Kern erwartet ' +
+                 'Prozentpunkte (' + v + ' wird als ' + v + ' % gerechnet). ' +
+                 'Es wird bewusst NICHT still umgerechnet.' });
+    }
+  });
+
+  const price = (mkt.price != null && isFinite(mkt.price)) ? mkt.price : null;
+  if (price == null) diagnostics.notes.push('Kein Kurs vorhanden — Reverse DCF ohne Zielkurs nicht lösbar.');
+
+  // ── Aktive Modelle (steuern die Sensitivitätsmatrix) ─────────────────
+  // Gehören zum Input, nicht zu einem versteckten Default: die Matrix
+  // unterscheidet Haupt-DCF und DCF Mid-Cycle. Fehlt die Angabe, wird
+  // ['dcf'] angesetzt UND das im Diagnoseteil ausgewiesen.
+  let activeModels;
+  if (Array.isArray(opts.activeModels) && opts.activeModels.length > 0) {
+    activeModels = opts.activeModels.slice();
+  } else {
+    activeModels = ['dcf'];
+    diagnostics.appliedDefaults.push({
+      field: 'options.activeModels', value: ['dcf'], unit: 'model_keys',
+      reason: 'Keine aktiven Modelle übergeben; die Sensitivitätsmatrix rechnet ' +
+              'den Haupt-DCF. Für den Mid-Cycle-Pfad ["dcf_midcycle"] übergeben.' });
+  }
+
+  const input = {
+    units: DCF_CORE_UNITS,
+    modelVersion: DCF_CORE_MODEL_VERSION,
+    definitionLabel: DCF_CORE_DEFINITION_LABEL,
+    // Unveränderliche, bereits abgeleitete Kerninputs.
+    ctx: ctx,
+    scenarios: scenarios,
+    pricePerShare: price,
+    targetPricePerShare: (opts.targetPricePerShare != null) ? opts.targetPricePerShare : price,
+    subClassification: meta.sub_classification || null,
+    activeModels: activeModels,
+    opMarginOverridePct: (ctx.marginOverridePct != null) ? ctx.marginOverridePct : null,
+    marginBasis: ctx.marginBasis,
+    // Vollständige Datenbasis für die delegierenden Kernfunktionen. Der Kern
+    // liest ausschliesslich hieraus — nichts stammt aus einem globalen Zustand.
+    source: {
+      meta:         { sub_classification: meta.sub_classification || null },
+      valuation:    val,
+      market:       mkt,
+      fundamentals: fund
+    },
+    diagnostics: diagnostics
+  };
+  return { ok: true, input: input, diagnostics: diagnostics, reason: null };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// EINSTIEGSPUNKT: vollständiges Inputobjekt → Ergebnis + Diagnosen
+// ────────────────────────────────────────────────────────────────────────────
+// Fasst DCF-Bewertung, Reverse-DCF-Solver und Sensitivitätsmatrix hinter einer
+// Schnittstelle zusammen. Deterministisch, ohne Nebenwirkungen: liest nur aus
+// `input`, schreibt nirgendwohin, ruft kein DOM und kein localStorage auf.
+//
+// which: { valuation?: bool, reverseDcf?: bool, sensitivity?: bool }
+//        Fehlt der Parameter, wird alles gerechnet.
+function runDcfCoreAnalysis(input, which) {
+  const want = which || { valuation: true, reverseDcf: true, sensitivity: true };
+  const out = {
+    ok: false,
+    modelVersion: DCF_CORE_MODEL_VERSION,
+    definitionLabel: DCF_CORE_DEFINITION_LABEL,
+    units: DCF_CORE_UNITS,
+    valuation: null,
+    reverseDcf: null,
+    sensitivity: null,
+    diagnostics: { missing: [], unitWarnings: [], appliedDefaults: [], notes: [], errors: [] }
+  };
+  if (!input || !input.ctx || !input.ctx.ok) {
+    out.diagnostics.errors.push('Unvollständiges Inputobjekt — normalizeDcfCoreInput() liefert es.');
+    return out;
+  }
+  const d = input.diagnostics || {};
+  ['missing', 'unitWarnings', 'appliedDefaults', 'notes'].forEach(k => {
+    if (Array.isArray(d[k])) out.diagnostics[k] = d[k].slice();
+  });
+
+  // ── 1) Bewertung je Szenario ─────────────────────────────────────────
+  if (want.valuation !== false) {
+    const v = { perScenario: {}, base: null };
+    Object.keys(input.scenarios || {}).forEach(name => {
+      const sc = input.scenarios[name];
+      if (!sc) { v.perScenario[name] = null; return; }
+      const detail = coreValuationDetail(
+        input.ctx, sc.growth_stage1, sc.terminal_growth, sc.wacc, sc.op_margin_pct);
+      v.perScenario[name] = detail;
+      if (detail == null) {
+        out.diagnostics.notes.push('Szenario "' + name + '" ist in dieser ' +
+          'Parametrierung nicht bewertbar — es wird kein Ersatzwert gesetzt.');
+      }
+    });
+    v.base = v.perScenario.base || null;
+    v.equityValuePerShare = v.base ? v.base.equityValuePerShare : null;
+    v.operatingValuePerShare = v.base ? v.base.operatingValuePerShare : null;
+    out.valuation = v;
+  }
+
+  // ── 2) Reverse DCF ───────────────────────────────────────────────────
+  if (want.reverseDcf !== false) {
+    out.reverseDcf = solveReverseDcfGrowth(input.source, {
+      opMarginOverridePct: input.opMarginOverridePct,
+      marginBasis: input.marginBasis,
+      targetPricePerShare: input.targetPricePerShare,
+      opMarginPct: (input.scenarios && input.scenarios.base)
+        ? input.scenarios.base.op_margin_pct : null
+    });
+  }
+
+  // ── 3) Sensitivitätsmatrix ───────────────────────────────────────────
+  if (want.sensitivity !== false) {
+    const base = (input.scenarios && input.scenarios.base) || null;
+    out.sensitivity = computeSensitivityMatrix(input.source, {
+      error: null,
+      scenarios: base ? { base: base } : null,
+      router: {
+        activeModels: (input.activeModels || []).slice(),
+        subClassification: input.subClassification
+      },
+      _coreOpts: { opMarginOverridePct: input.opMarginOverridePct,
+                   marginBasis: input.marginBasis }
+    });
+  }
+
+  out.ok = true;
+  return out;
+}
+
+// Bequemer Gesamtaufruf: Master-JSON hinein, Ergebnis plus Diagnosen heraus.
+// Dünne Zusammensetzung der beiden Schritte — kein eigener Rechenpfad.
+function analyzeDcfFromMasterJson(masterJson, options, which) {
+  const n = normalizeDcfCoreInput(masterJson, options);
+  if (!n.ok) {
+    return {
+      ok: false,
+      modelVersion: DCF_CORE_MODEL_VERSION,
+      definitionLabel: DCF_CORE_DEFINITION_LABEL,
+      units: DCF_CORE_UNITS,
+      valuation: null, reverseDcf: null, sensitivity: null,
+      diagnostics: Object.assign({ errors: [n.reason] }, n.diagnostics)
+    };
+  }
+  return runDcfCoreAnalysis(n.input, which);
+}
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║ DCF-CORE-BLOCK ENDE                                                      ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// ── Dünne Adapter zwischen Oberfläche und Kern ─────────────────────────────
+// Alles unterhalb dieser Zeile darf DOM, state und localStorage benutzen; der
+// Kern oberhalb darf es nicht. Die bestehenden Aufrufer bleiben unverändert —
+// sie sind bereits dünn und rechnen nichts selbst:
+//
+//   buildSensitivityMatrix(mj, v)     → HTML um computeSensitivityMatrix();
+//                                       formatiert nur, rechnet nicht.
+//   runValuationEngine(mj)            → baut Szenarien und ruft
+//                                       coreEquityValuePerShare() je Szenario.
+//   runMonteCarloDcf(mj, vResult)     → zieht Parameter und ruft
+//                                       coreValuationDetail() je Simulation.
+//   buildSnapshotForecastTargets(...) → liest die Prognosereihen aus
+//                                       forecastDcfCore().
+//   renderValuation / renderOverview  → lesen ausschliesslich Ergebnisfelder.
+//
+// Neue Oberflächenpfade sollen den Einstiegspunkt runDcfCoreAnalysis() bzw.
+// analyzeDcfFromMasterJson() verwenden statt die Bausteine einzeln.
 
 // V1.0.30-RIM-Fade: Spread-Fade-Konstanten
 const RIM_SPREAD_FADE = {
