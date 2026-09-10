@@ -1,5 +1,191 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Update (Chat 7 Restfehler): Numerisch verwendete Snapshot-Felder validiert (V1.0.46)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
+`claude/snapshot-repair-fixes`, Ausgangscommit `d345dea` — die Spitze dieses
+Branches und der einzige Stand, der ihn enthaelt; keine nachfolgenden Commits
+(`main` steht weiterhin auf `b023dc8`). Tool-Datei unveraendert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Arbeitsbranch: `claude/snapshot-numeric-field-validation`. Testbefehl: `npm test`.
+Baseline auf `d345dea` (ausgefuehrt): 1229 Rechen-Assertions · 28 SEC-Tests ·
+Exit-Code 0.
+
+Umfang: ausschliesslich diese Validierung, der unmittelbar betroffene
+Journal-Aufrufer, Tests und dieses Dokument. Keine Bewertungsformel geaendert,
+kein Refactoring, keine neuen Abhaengigkeiten, keine bestehende Erwartung
+gelockert.
+
+### Am Code reproduziert (Stand `d345dea`, ueber den echten Importweg)
+
+Ein ansonsten gueltiger Snapshot mit `output_signals.buyPrice: "7.43"`:
+
+```
+parseSnapshotImportPayload  → ok: true · uebernommen: 1 · Fehler: 0
+validateSnapshotRecordStructure → []            (keine Beanstandung)
+importSnapshots()           → Bestand ["keeper"] → ["keeper","bad1"]
+                              localStorage.setItem-Aufrufe: 1
+                              Dialog: "Import fehlgeschlagen:
+                              s.output_signals.buyPrice.toFixed is not a function"
+renderSnapshots()           → CRASH, Journal-HTML-Laenge 0
+```
+
+Der Datensatz stand also bereits im Browser-Speicher, als die Fehlermeldung
+erschien — und das Journal ging danach nicht mehr auf. Ursache: die Pruefung
+aus V1.0.45 validierte die **aeusseren** Objekte (`output_signals` ist ein
+Objekt — in Ordnung), aber nicht die darin **numerisch verwendeten** Felder.
+
+### Ermittelte Felder (aus den tatsaechlichen Aufrufern)
+
+`renderSnapshots()` und seine Anzeige-, Vergleichs- und Formatierungshelfer
+verarbeiten diese Snapshot-Felder als Zahl — inklusive der tatsaechlich
+verwendeten Fallbacks und des per Migration unterstuetzten Altschluessels:
+
+| Aufrufer | Felder |
+|---|---|
+| `renderSnapshots` | `output_signals.buyPrice` (`toFixed`), Fallback `synthesis.buyPrice`, `output_signals.deepValuePrice`, `key_inputs.price` |
+| `_snapDelta` + Delta-Tabelle, formatiert ueber `_fmtDiff` | `output_signals.range_conservative` / `range_base` / `range_optimistic`, `key_inputs.wacc_derived`, `key_inputs.growth_stage1` |
+| `_postMortemLine` | `key_inputs.price`, `output_signals.buyPrice`, `output_signals.range_base` (Prozentrechnung + `toFixed`) |
+| `_priceComparisonBlock` | `_fc.price`, `_fc.buyPrice`, `_fc.deepValuePrice`, `_fc.range_conservative`, `_fc.range_base`, `_fc.qceScore` |
+| Altschluessel | `synthesisV3.buyPrice` — `migrateSnapshotRecord` bildet ihn auf `synthesis.buyPrice` ab, wo derselbe Fallback greift |
+
+Nicht aufgenommen, weil in diesen Aufrufern **nicht** numerisch verarbeitet:
+`output_signals.mos_total` (nur in `compareStoredVsRecomputed`, ohne
+Formatierung), `_fc.dataQualityScore` (nur roh im CSV-Export),
+`_fc.topWarnings` (bereits per `Array.isArray` geschuetzt).
+
+### Korrektur
+
+* Neue Tabelle `SNAPSHOT_NUMERIC_FIELDS` (16 Eintraege) mit Pfad und
+  Verwendungszweck je Feld — die Fehlermeldung nennt den Zweck mit.
+* `_readSnapshotPath(rec, path)` liest defensiv; fehlt ein Zwischenglied oder
+  ist es kein Objekt, gibt es das Feld hier schlicht nicht.
+* `validateSnapshotNumericFields(rec)`: ist der Wert `undefined` oder `null`,
+  bleibt das **zulaessig** — die Anzeige prueft ueberall auf `!= null` und
+  schreibt dann „–". Ist er **vorhanden**, muss `typeof v === 'number' &&
+  isFinite(v)` gelten. `0`, `-0`, negative Werte und Extremwerte sind gueltige
+  Zahlen und werden nicht abgelehnt. **Kein `Number()`/`parseFloat()`** — eine
+  stille Umwandlung wuerde aus `"7.43"` eine Zahl machen und damit verdecken,
+  dass die Datei kaputt ist; der Quellwert wird nicht angefasst.
+* Eingehaengt in die **bestehende** `validateSnapshotRecordStructure`. Damit
+  bedient **dieselbe** Pruefstelle den Import *und* den Journal-Schutz fuer
+  bereits gespeicherte Datensaetze — es gibt keine zweite, abweichende Liste.
+* `migrateSnapshotRecord` prueft jetzt den **Rohwert** statt der Tiefkopie:
+  `_deepCopyForSnapshot` ueberfuehrt `NaN`/`Infinity` nach JSON-Semantik in
+  `null`, was sonst als „Feld fehlt" durchginge.
+* Meldung: `Eintrag 1 von 1 abgelehnt: Unbrauchbarer Datensatz — Feld
+  "output_signals.buyPrice" muss eine endliche Zahl sein (fehlend oder null ist
+  erlaubt), erhalten Text ("7.43") — verwendet fuer Journal: Einstiegspreis.`
+  Der gesamte Import bricht **vor** jedem Schreibzugriff ab (Alles-oder-nichts
+  aus V1.0.45 bleibt); bestehende Snapshots bleiben unveraendert.
+* `renderSnapshots` kennzeichnet bereits gespeicherte Fehldatensaetze mit dem
+  konkreten Grund und zeigt gueltige Eintraege samt Aktionsknoepfen weiter an.
+  **Keine automatische Loeschung oder Umschreibung** — der Hinweistext sagt
+  das jetzt ausdruecklich; die Versionsangabe darin wurde auf V1.0.46
+  nachgezogen.
+
+Nach der Korrektur, ueber denselben Weg gemessen: `ok: false`, Bestand
+`["keeper"] → ["keeper"]`, **0** `setItem`-Aufrufe, keine Erfolgsmeldung,
+`renderSnapshots()` in Ordnung (Journal-HTML 1300 Zeichen).
+
+### Neue Regressionstests — 69 Assertions in `_testSnapshotPathConsistency`
+
+* **PC-8 (8)** Der gemeldete Fall: derselbe Datensatz mit `7.43` als Zahl ist
+  gueltig (damit der Test nicht an einer anderen Ursache haengt); mit `"7.43"`
+  genau eine Beanstandung, die Feldpfad, erwarteten Datentyp und das Erhaltene
+  nennt und darauf hinweist, dass fehlend/null erlaubt bleibt; Ablehnung mit
+  Eintragsnummer; Gegenprobe, dass genau dieser Wert `.toFixed` werfen laesst.
+* **PC-9 (7)** Ueber den **tatsaechlichen** `importSnapshots()`-Aufruf
+  (FileReader-Attrappe, `localStorage.setItem` gezaehlt, `alert` abgefangen):
+  wirft nicht · **0** `setItem` · Bestand vorher/nachher zeichengleich · genau
+  ein Dialog, keine Erfolgsmeldung · Feldpfad und Eintragsnummer im Dialog ·
+  nicht mehr die alte Meldung „Import fehlgeschlagen" · Restbestand
+  journaltauglich.
+* **PC-10 (41)** Tabellengesteuert ueber **alle** 16 Felder: je 10 falsche
+  Typen (`"7.43"`, `"0"`, leerer Text, `true`, `false`, Array, leeres Array,
+  Objekt, `NaN`, `Infinity`) — jeweils genau dieses Feld beanstandet **und**
+  vom Import abgelehnt; je Feld `12,5` weiterhin gueltig; `fehlend`, `null`,
+  `0`, `-0`, `negativ`, `1e12`, `1e-9` bleiben ueberall gueltig; fehlende oder
+  `null`-Traegerobjekte sind kein Mangel; der Quellwert wird nicht umgewandelt.
+  PC-10a prueft zusaetzlich, dass die Tabelle alle fuenf Traeger abdeckt
+  (`output_signals`, `key_inputs`, `_fc`, `synthesis`, `synthesisV3`).
+* **PC-11 (9)** Kein Teilimport (gueltig + ungueltig ⇒ vollstaendiger Abbruch
+  mit Eintragsnummer und Feldpfad, Bestand unveraendert); bereits gespeicherter
+  Fehldatensatz wird vom Journal-Schutz erkannt, der gueltige Eintrag bleibt
+  erreichbar, Sortierung und Formatierung der gueltigen Eintraege werfen nicht,
+  und nichts wird geloescht oder umgeschrieben.
+* **PC-12 (7)** Gueltiger Format-1-Altsnapshot bleibt gruen (`growth_stage1: 0`
+  und `deepValuePrice: null` stoeren nicht) und laedt weiter ueber den echten
+  Ladepfad; der Altschluessel `synthesisV3.buyPrice` als Text wird erkannt;
+  Format-2-Export/Import-Roundtrip bleibt gruen; `buildSnapshotRecord` erzeugt
+  stets journaltaugliche Datensaetze.
+
+### Gegenproben (ausgefuehrt)
+
+| Rueckbau | Rot |
+|---|---|
+| GP-1 numerische Pruefung nicht eingehaengt | 35 — u. a. PC-9b mit **1** `setItem` und Bestand `["keeper","num2"]`, PC-9d mit Erfolgsmeldung, PC-11d „erkannt: 0 von 2" |
+| GP-2 nur `output_signals.buyPrice` geprueft (Teilloesung) | 2 (PC-10a, PC-12d) |
+| GP-3 stille Umwandlung via `Number(v)` | 35 (dieselben wie GP-1) |
+| GP-4 `0`/negative faelschlich abgelehnt | 4 (PC-10e, PC-12a/b/c) |
+| GP-5 Tiefkopie statt Rohwert geprueft | 17 (alle PC-10c mit „NaN → Import angenommen") |
+
+Die Assertions wurden dafuer defensiv gemacht (`probs[0] || '(keine
+Beanstandung)'` usw.), damit ein Rueckbau **sauber fehlschlaegt** statt eine
+Ausnahme zu werfen.
+
+### Tatsaechlich ausgefuehrte Tests
+
+* `npm test` (**Node-Pruefung**, DOM-frei) → Rechentests **1298 bestanden ·
+  0 fehlgeschlagen · 0 Fehler/Exceptions** (vorher 1229; +69), SEC-Tests
+  **28/28**, gemeinsamer **Exit-Code 0**.
+* **Echter Browser** (Chromium 1194 headless ueber `playwright-core`, nur im
+  Arbeitsverzeichnis ausserhalb des Repositories installiert — das Projekt
+  bleibt abhaengigkeitsfrei), Datei per `file://`, Import ueber das echte
+  Dateifeld `#snap-import-file`, **0 JS-Fehler**:
+  1. `output_signals.buyPrice: "7.43"` ⇒ Bestand `["keeper"]` unveraendert,
+     **0** `setItem`-Aufrufe, Dialog „Import abgebrochen — nichts wurde
+     gespeichert. Eintrag 1 von 1 abgelehnt: … Feld
+     \"output_signals.buyPrice\" muss eine endliche Zahl sein …", keine
+     Erfolgsmeldung, Journal weiter bedienbar.
+  2. Am Import vorbei eingeschleuster Fehldatensatz ⇒ Journal rendert, gueltiger
+     Eintrag samt BP 3,25 sichtbar und loeschbar, Hinweis mit Grund
+     (`output_signals.buyPrice`), Bestand `["keeper","stored_bad"]` unveraendert.
+  3. Gueltiger Format-2-Roundtrip ⇒ importiert, Journal gerendert, Dialog
+     „1 neue Snapshot(s) importiert".
+
+### Verbleibende Grenzen
+
+* `npm test` ist eine **Node-Pruefung** ohne DOM; die Suite bleibt bewusst
+  abhaengigkeitsfrei. Der Browsercheck ist ein einmalig ausgefuehrtes Skript im
+  Arbeitsverzeichnis und **kein** Bestandteil von `npm test` — die
+  DOM-Verdrahtung ist damit nicht dauerhaft regressionsgesichert.
+* `_testSnapshotPathConsistency` betaeubt weiterhin die rein visuellen Helfer
+  (`switchTab`, `updateTickerBadge`, `renderSnapshots`, …) und tauscht in PC-9
+  zusaetzlich `localStorage.setItem`, `alert` und `FileReader`; alles wird im
+  `finally` zurueckgesetzt. Das ist ausdruecklich kein Browsernachweis.
+* Die Feldtabelle deckt `renderSnapshots` und dessen Helfer ab. Felder, die nur
+  andere Ansichten (Overview, Valuation) numerisch verwenden, sind **nicht**
+  Gegenstand dieser Reparatur.
+* Nicht-numerische Typfehler ausserhalb der geprueften Felder (z. B.
+  `_fc.date` als Objekt) fuehren weiterhin zu „–" statt zu einer Ablehnung —
+  sie stuerzen nicht ab und waren nicht Teil des Auftrags.
+* Der Bestand im Browser-Speicher wird **nicht** automatisch bereinigt;
+  unbrauchbare Eintraege werden ausgewiesen, aber bewusst nicht geloescht.
+* Unveraendert offen aus den Vorschritten: index-basierte Ableitung von
+  `eps_diluted`, `book_value` und `dps` in `applyDerivedFieldsV4`; Korrelationen
+  der Monte-Carlo-Groessen nicht modelliert; `ENGINE_VERSION` /
+  `DISPLAY_VERSION` / `REGRESSION_TEST_VERSION` nicht angehoben (mehrere
+  Fixtures pinnen `1.0.35-base-rate-lite` exakt).
+
+### Ausgangsstand fuer Chat 8
+
+Arbeitsbranch: `claude/snapshot-numeric-field-validation` (Basis `d345dea` auf
+`claude/snapshot-repair-fixes`). Tool-Datei unveraendert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Testbefehl: `npm test` — beide Suiten gruen, Exit-Code 0.
+Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/snapshot-numeric-field-validation
+
 ## Update (Chat 7 Reparatur): Drei Pruefbefunde behoben (V1.0.45)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, geprueftes Branch

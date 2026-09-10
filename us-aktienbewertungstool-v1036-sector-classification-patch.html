@@ -19209,6 +19209,104 @@ function _resolveSnapshotFormatValue(value, whereLabel) {
   return { ok: true, format: value, error: null };
 }
 
+// ── V1.0.46: Numerisch verarbeitete Felder ───────────────────────
+// Bis V1.0.45 prueften wir nur die AEUSSEREN Objekte. Ein ansonsten
+// gueltiger Snapshot mit `output_signals.buyPrice: "7.43"` kam damit durch,
+// wurde gespeichert, und erst renderSnapshots() scheiterte an
+// `s.output_signals.buyPrice.toFixed is not a function` — der Import meldete
+// „Import fehlgeschlagen", obwohl der Datensatz bereits im Browser-Speicher
+// stand und das Journal von da an nicht mehr aufging.
+//
+// Die folgende Tabelle listet JEDES Feld, das renderSnapshots() und seine
+// Anzeige-, Vergleichs- und Formatierungshelfer als Zahl verarbeiten —
+// einschliesslich der tatsaechlich verwendeten Fallbacks und der per
+// Migration unterstuetzten Altschluessel:
+//   renderSnapshots           → output_signals.buyPrice, Fallback
+//                               synthesis.buyPrice; output_signals
+//                               .deepValuePrice; key_inputs.price
+//   _snapDelta + Delta-Tabelle → output_signals.range_conservative/_base/
+//                               _optimistic, key_inputs.wacc_derived,
+//                               key_inputs.growth_stage1 (jeweils Differenz
+//                               und toFixed, formatiert ueber _fmtDiff)
+//   _postMortemLine           → key_inputs.price, output_signals.buyPrice,
+//                               output_signals.range_base (Prozentrechnung)
+//   _priceComparisonBlock     → _fc.price, _fc.buyPrice, _fc.deepValuePrice,
+//                               _fc.range_conservative, _fc.range_base,
+//                               _fc.qceScore
+//   Altschluessel             → synthesisV3.buyPrice (wird von
+//                               migrateSnapshotRecord zu synthesis.buyPrice
+//                               und landet dann im selben Fallback)
+//
+// Regel: FEHLT das Feld oder ist es `null`, bleibt das zulaessig — die
+// Anzeige prueft ueberall auf `!= null` und schreibt dann „–". Ist es
+// VORHANDEN, muss es eine endliche Zahl sein. Text, Wahrheitswerte, Arrays
+// und Objekte sind keine Zahlen und werden NICHT still umgewandelt.
+// 0 und negative Werte sind gueltige Zahlen und werden nicht abgelehnt.
+const SNAPSHOT_NUMERIC_FIELDS = [
+  { path: ['output_signals', 'buyPrice'],           use: 'Journal: Einstiegspreis' },
+  { path: ['output_signals', 'deepValuePrice'],     use: 'Journal: Deep-Value-Preis' },
+  { path: ['output_signals', 'range_conservative'], use: 'Journal: Delta-Tabelle FV Cons' },
+  { path: ['output_signals', 'range_base'],         use: 'Journal: Delta-Tabelle FV Base und Kursvergleich' },
+  { path: ['output_signals', 'range_optimistic'],   use: 'Journal: Delta-Tabelle FV Opt' },
+  { path: ['synthesis',   'buyPrice'],              use: 'Journal: Einstiegspreis (Fallback ohne output_signals)' },
+  { path: ['synthesisV3', 'buyPrice'],              use: 'Journal: Einstiegspreis (Altschluessel, wird zu synthesis.buyPrice)' },
+  { path: ['key_inputs', 'price'],                  use: 'Journal: Kurs am Snapshot-Tag' },
+  { path: ['key_inputs', 'wacc_derived'],           use: 'Journal: Delta-Tabelle WACC' },
+  { path: ['key_inputs', 'growth_stage1'],          use: 'Journal: Delta-Tabelle Growth1' },
+  { path: ['_fc', 'price'],                         use: 'Kursvergleich: Kurs damals' },
+  { path: ['_fc', 'buyPrice'],                      use: 'Kursvergleich: BP' },
+  { path: ['_fc', 'deepValuePrice'],                use: 'Kursvergleich: DVP' },
+  { path: ['_fc', 'range_conservative'],            use: 'Kursvergleich: FV-Band Cons' },
+  { path: ['_fc', 'range_base'],                    use: 'Kursvergleich: FV-Band Base' },
+  { path: ['_fc', 'qceScore'],                      use: 'Kursvergleich: QCE Score' }
+];
+
+// Liest einen Pfad, ohne unterwegs zu werfen. `reachable: false` heisst:
+// ein Zwischenglied fehlt oder ist kein Objekt — dann gibt es das Feld hier
+// schlicht nicht, und die Anzeige kommt damit zurecht.
+function _readSnapshotPath(rec, path) {
+  let cur = rec;
+  for (let i = 0; i < path.length; i++) {
+    if (cur == null || typeof cur !== 'object' || Array.isArray(cur)) {
+      return { reachable: false, value: undefined };
+    }
+    cur = cur[path[i]];
+  }
+  return { reachable: true, value: cur };
+}
+
+function _describeNonNumber(v) {
+  if (v === null) return 'null';
+  if (Array.isArray(v)) return 'Array';
+  const t = typeof v;
+  if (t === 'number') return 'nicht endliche Zahl (' + String(v) + ')';
+  if (t === 'string') return 'Text (' + JSON.stringify(v) + ')';
+  if (t === 'boolean') return 'Wahrheitswert (' + String(v) + ')';
+  if (t === 'object') return 'Objekt';
+  return t;
+}
+
+// Prueft die Tabelle oben. Rueckgabe: Liste konkreter Maengel (leer = in Ordnung).
+// Bewusst OHNE Number()/parseFloat(): eine stillschweigende Umwandlung wuerde
+// aus "7.43" eine Zahl machen und damit verdecken, dass die Datei kaputt ist.
+function validateSnapshotNumericFields(rec) {
+  const problems = [];
+  if (!rec || typeof rec !== 'object' || Array.isArray(rec)) return problems;
+  for (let i = 0; i < SNAPSHOT_NUMERIC_FIELDS.length; i++) {
+    const f = SNAPSHOT_NUMERIC_FIELDS[i];
+    const r = _readSnapshotPath(rec, f.path);
+    if (!r.reachable) continue;
+    const v = r.value;
+    if (v === undefined || v === null) continue;   // fehlend bleibt zulaessig
+    if (typeof v !== 'number' || !isFinite(v)) {
+      problems.push('Feld "' + f.path.join('.') + '" muss eine endliche Zahl sein ' +
+        '(fehlend oder null ist erlaubt), erhalten ' + _describeNonNumber(v) +
+        ' — verwendet fuer ' + f.use + '.');
+    }
+  }
+  return problems;
+}
+
 // ── V1.0.45: Mindeststruktur pruefen ─────────────────────────────
 // Die Anforderungen sind aus den TATSAECHLICHEN Aufrufern abgeleitet:
 //   · renderSnapshots  — s.ticker als Gruppenschluessel und escapeHtml,
@@ -19255,6 +19353,10 @@ function validateSnapshotRecordStructure(rec) {
       problems.push('Feld "' + k + '" ist kein Objekt (erhalten ' + (Array.isArray(v) ? 'Array' : typeof v) + ').');
     }
   });
+  // V1.0.46: die numerisch verwendeten Felder derselben Aufrufer mitpruefen.
+  // Dieselbe Pruefstelle bedient Import UND den Journal-Schutz fuer bereits
+  // gespeicherte Datensaetze — es gibt keine zweite, abweichende Liste.
+  Array.prototype.push.apply(problems, validateSnapshotNumericFields(rec));
   return problems;
 }
 
@@ -19274,7 +19376,9 @@ function migrateSnapshotRecord(snap) {
   const from = fmt.format;
   // Struktur VOR der Migration pruefen: eine Migration macht einen
   // unbrauchbaren Datensatz nicht brauchbar, sie verdeckt den Mangel nur.
-  const structProblems = validateSnapshotRecordStructure(out);
+  // Geprueft wird der ROHWERT, nicht die Tiefkopie: diese ueberfuehrt
+  // NaN/Infinity nach JSON-Semantik in null, was als "Feld fehlt" durchginge.
+  const structProblems = validateSnapshotRecordStructure(snap);
   if (structProblems.length > 0) {
     return { ok: false, snapshot: null, steps: [],
       error: 'Unbrauchbarer Datensatz — ' + structProblems.join(' ') };
@@ -19695,13 +19799,17 @@ function _forwardCheckBlock(snap) { return _priceComparisonBlock(snap); }
 function renderSnapshots() {
   const list = g('snap-list');
   const all = loadSnapshots();
-  // ── V1.0.45: bereits vorhandener Schrott darf das Journal nicht sperren ──
+  // ── Bereits vorhandener Schrott darf das Journal nicht sperren ──────
   // Der Import laesst unbrauchbare Datensaetze nicht mehr durch (siehe
-  // validateSnapshotRecordStructure). Wer unter V1.0.44 z.B. `[{},{}]`
-  // importiert hat, traegt sie aber noch im Browser-Speicher — und
-  // `a.timestamp.localeCompare` unten warf dann bei JEDEM Rendern, sodass
-  // das Journal samt Loesch-Knopf unerreichbar war. Solche Eintraege werden
-  // hier ausgewiesen statt ausgefuehrt.
+  // validateSnapshotRecordStructure — DIESELBE Pruefstelle, damit Journal und
+  // Import nie auseinanderlaufen). Wer sie frueher importiert hat, traegt sie
+  // aber noch im Browser-Speicher:
+  //   · V1.0.44 liess `[{},{}]` durch — `a.timestamp.localeCompare` warf.
+  //   · V1.0.45 liess `output_signals.buyPrice: "7.43"` durch — `.toFixed`
+  //     warf.
+  // Beides sperrte das Journal samt Loesch-Knopf bei JEDEM Rendern. Solche
+  // Eintraege werden hier ausgewiesen statt ausgefuehrt; gespeichert bleiben
+  // sie unveraendert (kein automatisches Loeschen oder Umschreiben).
   const snaps = [];
   const broken = [];
   all.forEach((s, i) => {
@@ -19714,8 +19822,9 @@ function renderSnapshots() {
       ⛔ ${broken.length} unbrauchbare(r) Eintrag/Eintraege im Browser-Speicher werden nicht angezeigt
       (Eintrag ${broken.map(b => b.index).join(', ')}): ${escapeHtml(broken[0].problems[0])}
       ${broken.length > 1 ? ' …' : ''}
-      <div style="margin-top:4px">Sie stammen aus einem Import vor V1.0.45. Alle Snapshots exportieren,
-      Bestand bereinigen und erneut importieren — der Import weist solche Eintraege jetzt ab.</div>
+      <div style="margin-top:4px">Sie stammen aus einem Import vor V1.0.46 und bleiben unangetastet
+      gespeichert — sie werden hier nur nicht angezeigt. Alle Snapshots exportieren, Bestand bereinigen
+      und erneut importieren — der Import weist solche Eintraege jetzt ab.</div>
     </div>`;
   if (snaps.length === 0) {
     list.innerHTML = brokenNote + `<div class="muted-help">Noch keine Snapshots gespeichert.</div>`;
@@ -33930,6 +34039,324 @@ function _testSnapshotPathConsistency() {
       check('PC-7h: und laedt samt gespeicherter Datenqualitaet B',
         state.dataQuality && state.dataQuality.grade === 'B' &&
         approx(state.synthesis.buyPrice, 8.5), JSON.stringify(state.dataQuality));
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // V1.0.46 — numerisch verwendete Felder
+    // Der Restfehler aus der Pruefung: ein ansonsten gueltiger Snapshot mit
+    // output_signals.buyPrice: "7.43" wurde akzeptiert, ueber importSnapshots()
+    // gespeichert, und erst renderSnapshots() scheiterte an
+    // `.toFixed is not a function` — Meldung „Import fehlgeschlagen", waehrend
+    // der Datensatz schon im Browser-Speicher stand.
+    // ═════════════════════════════════════════════════════════════════════
+    suite('PC-8: der gemeldete Fall — output_signals.buyPrice als Text');
+    {
+      const mkValid = (over) => Object.assign({
+        id: 'num1', ticker: 'TXRH', name: 'Texas Roadhouse',
+        timestamp: '2026-01-01T00:00:00.000Z', _snapshotFormat: 2,
+        _engineVersion: ENGINE_VERSION, _breakingVersion: BREAKING_VERSION,
+        masterJson: { schema_version: '4.0', meta: { ticker: 'TXRH' },
+                      fundamentals: { revenue: [100] }, valuation: {}, market: { price: 10 } },
+        quality: { verdict: 'ok' }, synthesis: { buyPrice: 7.43 }, valuation: {},
+        output_signals: { verdict: 'ok', buyPrice: 7.43 }, key_inputs: { price: 10 }
+      }, over || {});
+
+      // Zuerst: der Datensatz ist OHNE den Textwert gueltig — der Test darf
+      // nicht versehentlich an einer anderen Ursache haengen.
+      check('PC-8a: derselbe Datensatz mit Zahl 7,43 ist gueltig',
+        validateSnapshotRecordStructure(mkValid()).length === 0,
+        validateSnapshotRecordStructure(mkValid()).join(' | '));
+
+      const bad = mkValid({ output_signals: { verdict: 'ok', buyPrice: "7.43" } });
+      const probs = validateSnapshotRecordStructure(bad);
+      // Alle Zugriffe defensiv: faellt die Pruefung weg, soll der Test sauber
+      // fehlschlagen statt eine Ausnahme zu werfen (siehe Gegenprobe).
+      const p0 = probs[0] || '(keine Beanstandung)';
+      check('PC-8b: mit "7.43" als Text wird er beanstandet', probs.length === 1, p0);
+      check('PC-8c: die Meldung nennt den konkreten Feldpfad',
+        p0.indexOf('output_signals.buyPrice') >= 0, p0);
+      check('PC-8d: die Meldung nennt den erwarteten Datentyp und das Erhaltene',
+        /endliche Zahl/.test(p0) && /Text \("7\.43"\)/.test(p0), p0);
+      check('PC-8e: die Meldung sagt, dass fehlend/null erlaubt bleibt',
+        /fehlend oder null ist erlaubt/.test(p0), p0);
+
+      const parsed = parseSnapshotImportPayload([bad]);
+      check('PC-8f: parseSnapshotImportPayload lehnt ab, uebernimmt nichts',
+        parsed.ok === false && parsed.snapshots.length === 0 && parsed.rejected === 1,
+        parsed.ok + '/' + parsed.snapshots.length);
+      check('PC-8g: die Ablehnung nennt die Eintragsnummer',
+        parsed.errors.some(e => /Eintrag 1 von 1/.test(e) && /output_signals\.buyPrice/.test(e)),
+        parsed.errors.join(' | '));
+
+      // Gegenprobe: OHNE die neue Pruefung waere genau dieser Datensatz
+      // journaltauglich gewesen — und renderSnapshots haette geworfen.
+      let renderThrew = false;
+      try { (bad.output_signals.buyPrice).toFixed(2); } catch (e) { renderThrew = true; }
+      check('PC-8h: Gegenprobe — genau dieser Wert bringt .toFixed zum Werfen', renderThrew === true);
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    suite('PC-9: tatsaechlicher Importweg importSnapshots() schreibt nicht');
+    {
+      // Der gemeldete Kern: der Datensatz stand bereits im Speicher, als die
+      // Fehlermeldung erschien. Hier wird localStorage.setItem gezaehlt.
+      const keeper = { id: 'keeper', ticker: 'KEEP', name: 'Keeper',
+        timestamp: '2025-01-01T00:00:00.000Z', _snapshotFormat: 2,
+        masterJson: { schema_version: '4.0', meta: { ticker: 'KEEP' },
+                      fundamentals: {}, valuation: {}, market: {} },
+        output_signals: { buyPrice: 3.25 } };
+      _setStore([keeper]);
+      const before = JSON.stringify(_readStore());
+
+      const badFile = [{ id: 'num2', ticker: 'TXRH', name: 'Texas Roadhouse',
+        timestamp: '2026-01-01T00:00:00.000Z', _snapshotFormat: 2,
+        masterJson: { schema_version: '4.0', meta: { ticker: 'TXRH' },
+                      fundamentals: {}, valuation: {}, market: {} },
+        output_signals: { buyPrice: "7.43" } }];
+
+      // localStorage.setItem zaehlen und alert() abfangen, dann beides zurueck.
+      const _realSet = localStorage.setItem;
+      const _realAlert = (typeof alert === 'function') ? alert : null;
+      let setCalls = 0;
+      const dialogs = [];
+      let importThrew = null;
+      try {
+        localStorage.setItem = function (k, v) { setCalls++; return _realSet.call(localStorage, k, v); };
+        globalThis.alert = function (m) { dialogs.push(String(m)); };
+        // Echter Aufrufweg: importSnapshots(event) mit FileReader-Attrappe.
+        const _realFR = globalThis.FileReader;
+        globalThis.FileReader = function () {
+          this.readAsText = (f) => { this.onload({ target: { result: f.__text } }); };
+        };
+        try {
+          importSnapshots({ target: { files: [{ __text: JSON.stringify(badFile) }], value: '' } });
+        } catch (e) { importThrew = (e && e.message) || String(e); }
+        globalThis.FileReader = _realFR;
+      } finally {
+        localStorage.setItem = _realSet;
+        if (_realAlert) globalThis.alert = _realAlert; else { try { delete globalThis.alert; } catch (e) {} }
+      }
+
+      check('PC-9a: importSnapshots wirft nicht', importThrew === null, importThrew);
+      check('PC-9b: KEIN localStorage.setItem waehrend des Imports', setCalls === 0, 'Aufrufe: ' + setCalls);
+      check('PC-9c: der Speicherbestand ist vorher/nachher identisch',
+        JSON.stringify(_readStore()) === before, JSON.stringify(_readStore().map(x => x.id)));
+      const d0 = dialogs[0] || '(kein Dialog)';
+      check('PC-9d: keine Erfolgsmeldung',
+        dialogs.length === 1 && !/importiert \(/.test(d0) && /abgebrochen/.test(d0),
+        dialogs.join(' | ') || '(kein Dialog)');
+      check('PC-9e: der Dialog nennt Feldpfad und Eintragsnummer',
+        /output_signals\.buyPrice/.test(d0) && /Eintrag 1 von 1/.test(d0), d0);
+      check('PC-9f: der Dialog nennt NICHT die alte Meldung "Import fehlgeschlagen"',
+        dialogs.length === 1 && !/Import fehlgeschlagen/.test(d0), d0);
+      // Und das Journal bleibt danach bedienbar.
+      check('PC-9g: der verbliebene Bestand ist unversehrt und journaltauglich',
+        _readStore().length === 1 && validateSnapshotRecordStructure(_readStore()[0]).length === 0);
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    suite('PC-10: alle numerisch verwendeten Felder, tabellengesteuert');
+    {
+      // Die Tabelle SNAPSHOT_NUMERIC_FIELDS ist aus renderSnapshots und seinen
+      // Helfern abgeleitet. Hier wird jedes Feld einzeln mit falschen
+      // Datentypen belegt — und einmal mit einem gueltigen Wert gegengeprueft.
+      const base = () => ({ id: 'tf', ticker: 'TF', name: 'Tabelle',
+        timestamp: '2026-01-01T00:00:00.000Z', _snapshotFormat: 2,
+        masterJson: { schema_version: '4.0', meta: { ticker: 'TF' },
+                      fundamentals: {}, valuation: {}, market: {} } });
+      const setPath = (rec, path, val) => {
+        let cur = rec;
+        for (let i = 0; i < path.length - 1; i++) {
+          if (cur[path[i]] == null) cur[path[i]] = {};
+          cur = cur[path[i]];
+        }
+        cur[path[path.length - 1]] = val;
+        return rec;
+      };
+      const badValues = [['"7.43"', "7.43"], ['"0"', "0"], ['leerer Text', ''],
+                         ['true', true], ['false', false],
+                         ['Array', [7.43]], ['leeres Array', []],
+                         ['Objekt', { value: 7.43 }], ['NaN', NaN], ['Infinity', Infinity]];
+
+      check('PC-10a: die Feldtabelle ist nicht leer und deckt alle vier Traeger ab',
+        SNAPSHOT_NUMERIC_FIELDS.length >= 16 &&
+        ['output_signals', 'key_inputs', '_fc', 'synthesis'].every(root =>
+          SNAPSHOT_NUMERIC_FIELDS.some(f => f.path[0] === root)) &&
+        SNAPSHOT_NUMERIC_FIELDS.some(f => f.path[0] === 'synthesisV3'),
+        SNAPSHOT_NUMERIC_FIELDS.length + ' Felder');
+
+      let missAll = 0, hitAll = 0;
+      SNAPSHOT_NUMERIC_FIELDS.forEach(f => {
+        const label = f.path.join('.');
+        // gueltiger Wert ⇒ keine Beanstandung
+        const okRec = setPath(base(), f.path, 12.5);
+        const okProbs = validateSnapshotRecordStructure(okRec);
+        check('PC-10b/' + label + ': Zahl 12,5 bleibt gueltig', okProbs.length === 0, okProbs.join(' | '));
+        // falsche Typen ⇒ genau dieses Feld beanstandet
+        let allBad = true, detail = '';
+        badValues.forEach(([lbl, val]) => {
+          const rec = setPath(base(), f.path, val);
+          const probs = validateSnapshotNumericFields(rec);
+          const hit = probs.length === 1 && probs[0].indexOf('"' + label + '"') >= 0;
+          if (!hit) { allBad = false; detail += lbl + ' → ' + JSON.stringify(probs) + '; '; }
+          // und der Import lehnt ab
+          const imp = parseSnapshotImportPayload([rec]);
+          if (imp.ok !== false || imp.snapshots.length !== 0) { allBad = false; detail += lbl + ' → Import angenommen; '; }
+        });
+        if (allBad) hitAll++; else missAll++;
+        check('PC-10c/' + label + ': alle ' + badValues.length + ' falschen Typen erkannt und abgelehnt',
+          allBad, detail || 'ok');
+      });
+      check('PC-10d: kein Feld der Tabelle ungeprueft durchgerutscht',
+        missAll === 0 && hitAll === SNAPSHOT_NUMERIC_FIELDS.length,
+        hitAll + ' ok / ' + missAll + ' offen');
+
+      // Zulaessige Werte je Feld: fehlend, null, 0, negativ, sehr gross/klein.
+      const okValues = [['fehlend', undefined], ['null', null], ['0', 0], ['-0', -0],
+                        ['negativ', -3.5], ['gross', 1e12], ['winzig', 1e-9]];
+      let okAll = true, okDetail = '';
+      SNAPSHOT_NUMERIC_FIELDS.forEach(f => {
+        okValues.forEach(([lbl, val]) => {
+          const rec = base();
+          if (val !== undefined) setPath(rec, f.path, val);
+          const probs = validateSnapshotNumericFields(rec);
+          if (probs.length !== 0) { okAll = false; okDetail += f.path.join('.') + '/' + lbl + ': ' + probs.join(' | ') + '; '; }
+        });
+      });
+      check('PC-10e: fehlend, null, 0, -0, negativ und Extremwerte bleiben ueberall gueltig',
+        okAll, okDetail || 'alle gueltig');
+
+      // Fehlende Zwischenobjekte duerfen nicht beanstandet werden.
+      check('PC-10f: fehlende Traegerobjekte sind kein Mangel',
+        validateSnapshotNumericFields(base()).length === 0);
+      check('PC-10g: null als Traegerobjekt ist kein Mangel',
+        validateSnapshotNumericFields(Object.assign(base(), { output_signals: null, _fc: null })).length === 0);
+      // Keine stillschweigende Umwandlung: "7.43" wird NICHT zur Zahl gemacht.
+      const conv = setPath(base(), ['output_signals', 'buyPrice'], "7.43");
+      parseSnapshotImportPayload([conv]);
+      check('PC-10h: der Quellwert wird nicht umgewandelt (kein Number()/parseFloat())',
+        conv.output_signals.buyPrice === "7.43", JSON.stringify(conv.output_signals.buyPrice));
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    suite('PC-11: kein Teilimport, Journal bleibt bedienbar');
+    {
+      const mkOk = (id, ts) => ({ id: id, ticker: 'OK', name: 'Gueltig', timestamp: ts,
+        _snapshotFormat: 2,
+        masterJson: { schema_version: '4.0', meta: { ticker: 'OK' },
+                      fundamentals: {}, valuation: {}, market: {} },
+        output_signals: { buyPrice: 5.5, verdict: 'ok' } });
+      const bad = { id: 'bx', ticker: 'BAD', name: 'Kaputt', timestamp: '2026-01-01T00:00:00.000Z',
+        _snapshotFormat: 2,
+        masterJson: { schema_version: '4.0', meta: { ticker: 'BAD' },
+                      fundamentals: {}, valuation: {}, market: {} },
+        output_signals: { buyPrice: "7.43" } };
+
+      _setStore([mkOk('keep2', '2025-01-01T00:00:00.000Z')]);
+      const mix = parseSnapshotImportPayload([mkOk('g9', '2026-01-02T00:00:00.000Z'), bad]);
+      check('PC-11a: gueltig + ungueltig ⇒ vollstaendiger Abbruch',
+        mix.ok === false && mix.snapshots.length === 0 && mix.rejected === 1,
+        mix.ok + '/' + mix.snapshots.length + '/' + mix.rejected);
+      check('PC-11b: die Meldung nennt Eintrag 2 und den Feldpfad',
+        mix.errors.some(e => /Eintrag 2 von 2/.test(e) && /output_signals\.buyPrice/.test(e)) &&
+        mix.errors.some(e => /NICHTS importiert/.test(e)),
+        mix.errors.join(' | '));
+      check('PC-11c: der bestehende Bestand ist unveraendert',
+        _readStore().length === 1 && _readStore()[0].id === 'keep2');
+
+      // Bereits gespeicherter fehlerhafter Datensatz (z.B. aus V1.0.45).
+      _setStore([mkOk('alive', '2026-01-03T00:00:00.000Z'), bad]);
+      const all = _readStore();
+      const broken = all.filter(s => validateSnapshotRecordStructure(s).length > 0);
+      const usable = all.filter(s => validateSnapshotRecordStructure(s).length === 0);
+      check('PC-11d: der Journal-Schutz erkennt den gespeicherten Fehldatensatz',
+        broken.length === 1 && broken[0] && broken[0].id === 'bx',
+        'erkannt: ' + broken.length + ' von 2');
+      check('PC-11e: der gueltige Eintrag bleibt erreichbar',
+        usable.length === 1 && usable[0] && usable[0].id === 'alive',
+        'brauchbar: ' + usable.map(x => x.id).join(', '));
+      const bReason = (broken[0] ? (validateSnapshotRecordStructure(broken[0])[0] || '') : '(nicht erkannt)');
+      check('PC-11f: der Grund ist verstaendlich und nennt den Feldpfad',
+        bReason.indexOf('output_signals.buyPrice') >= 0, bReason);
+      // Die Sortierung, an der renderSnapshots frueher scheiterte, laeuft ueber
+      // die gefilterte Liste — und die Formatierung wirft nicht mehr.
+      let renderStepThrew = false;
+      try {
+        usable.slice().sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+              .forEach(s => { if (s.output_signals.buyPrice != null) s.output_signals.buyPrice.toFixed(2); });
+      } catch (e) { renderStepThrew = true; }
+      check('PC-11g: Sortierung und Formatierung der gueltigen Eintraege werfen nicht',
+        renderStepThrew === false);
+      let brokenThrew = false;
+      try { bad.output_signals.buyPrice.toFixed(2); } catch (e) { brokenThrew = true; }
+      check('PC-11h: Gegenprobe — genau dieser Eintrag haette renderSnapshots zum Werfen gebracht',
+        brokenThrew === true);
+      check('PC-11i: nichts wurde geloescht oder umgeschrieben',
+        _readStore().length === 2 && _readStore()[1].output_signals.buyPrice === "7.43",
+        JSON.stringify(_readStore().map(x => x.id)));
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    suite('PC-12: gueltige Altsnapshots und Roundtrips bleiben unberuehrt');
+    {
+      // Format-1-Altsnapshot mit Altschluesseln und echten Zahlen.
+      const legacyOk = { id: 'lg1', ticker: 'LG', name: 'Legacy',
+        timestamp: '2025-06-01T10:00:00.000Z',
+        _engineVersion: '1.0.30-alt', _breakingVersion: BREAKING_VERSION,
+        masterJson: { schema_version: '4.0', meta: { ticker: 'LG' },
+                      fundamentals: { revenue: [100] }, valuation: {}, market: { price: 10 } },
+        qualityV3: { verdict: 'investable_low' }, synthesisV3: { buyPrice: 12.5 },
+        valuationV3: {}, key_inputs: { price: 15, wacc_derived: 9.5, growth_stage1: 0 },
+        output_signals: { buyPrice: 12.5, range_base: 18, deepValuePrice: null } };
+      const l = parseSnapshotImportPayload([legacyOk]);
+      check('PC-12a: gueltiger Format-1-Import bleibt gruen',
+        l.ok === true && l.snapshots.length === 1 && l.errors.length === 0, l.errors.join(' | '));
+      const lg = l.snapshots[0] || null;
+      check('PC-12b: 0 als growth_stage1 und null als deepValuePrice stoeren nicht',
+        !!lg && lg.key_inputs.growth_stage1 === 0 && lg.output_signals.deepValuePrice === null,
+        lg ? JSON.stringify({ g: lg.key_inputs.growth_stage1, d: lg.output_signals.deepValuePrice })
+           : 'Datensatz wurde abgelehnt: ' + l.errors.join(' | '));
+      if (lg) {
+        _setStore(l.snapshots);
+        _resetState();
+        loadSnapshot('lg1');
+      }
+      check('PC-12c: er laesst sich weiterhin ueber den echten Ladepfad laden',
+        !!lg && state.masterJson && state.masterJson.meta.ticker === 'LG' &&
+        state.quality && state.quality.verdict === 'investable_low',
+        state.masterJson && state.masterJson.meta && state.masterJson.meta.ticker);
+
+      // Der Altschluessel wird mitgeprueft: als Text muss er auffallen.
+      const legacyBad = JSON.parse(JSON.stringify(legacyOk));
+      legacyBad.synthesisV3.buyPrice = "12.5";
+      delete legacyBad.output_signals;
+      const lb = parseSnapshotImportPayload([legacyBad]);
+      check('PC-12d: Altschluessel synthesisV3.buyPrice als Text wird erkannt',
+        lb.ok === false && lb.errors.some(e => /synthesisV3\.buyPrice/.test(e)),
+        lb.errors.join(' | '));
+
+      // Format-2-Roundtrip.
+      _resetState();
+      const rec2 = buildSnapshotRecord({
+        masterJson: { schema_version: '4.0', meta: { ticker: 'RT2', company_name: 'Roundtrip 2' },
+                      fundamentals: { revenue: [100, 90] }, valuation: {}, market: { price: 10 } },
+        quality: { verdict: 'ok', hardStops: [] },
+        valuation: { scenarios: { base: { growth_stage1: 5, terminal_growth: 2, wacc: 9, op_margin_pct: 12 } } },
+        synthesis: { buyPrice: 8.5, range: { base: 11 } }, dataQuality: { grade: 'B', score: 70 },
+        id: 'rt9', now: new Date('2026-02-02T00:00:00.000Z') });
+      const wire = JSON.parse(JSON.stringify(buildSnapshotExportBundle([rec2])));
+      const back = parseSnapshotImportPayload(wire);
+      check('PC-12e: Format-2-Export/Import-Roundtrip bleibt gruen',
+        back.ok === true && back.snapshots.length === 1 && back.errors.length === 0,
+        back.errors.join(' | '));
+      check('PC-12f: der Roundtrip-Datensatz bleibt journaltauglich',
+        validateSnapshotRecordStructure(back.snapshots[0]).length === 0 &&
+        approx(back.snapshots[0].output_signals.buyPrice, 8.5),
+        validateSnapshotRecordStructure(back.snapshots[0]).join(' | '));
+      // Ein frisch gebauter Snapshot darf die eigene Pruefung nie verletzen.
+      check('PC-12g: buildSnapshotRecord erzeugt stets journaltaugliche Datensaetze',
+        validateSnapshotRecordStructure(rec2).length === 0,
+        validateSnapshotRecordStructure(rec2).join(' | '));
     }
 
   } finally {
