@@ -165,7 +165,8 @@ inhaltsleeren Existenz-Check auf die dokumentierte Prüfabsicht umgestellt
 Übergabebranch: `claude/brl1-alignment-fixes` (Basis `72d75c3` auf
 `claude/us-stock-tool-precision-og5azo`). Tool-Datei unverändert.
 Testbefehl: `npm test` — beide Suiten grün, Exit-Code 0.
-Abschlusscommit siehe Abschlussmeldung des Chats.
+Code-Commit dieses Schritts: `027d8ae`; Abschlusscommit ist die Spitze des
+Übergabebranches (dieser Nachtrag).
 Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/brl1-alignment-fixes
 
 ## Update (Chat 8): Weniger Scheinpräzision in Synthese und Monte Carlo (V1.0.40)
