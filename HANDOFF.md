@@ -129,6 +129,10 @@ mit dem gemeldeten Istwert `{"cur":60,"prior":50,"trend":null}`.
 `src/dcf-core.js`.
 Testbefehl: `npm test` — beide Suiten grün, Exit-Code 0
 (1459 Rechen-Assertions · 78 Node-Tests).
+Code-Commit dieses Schritts: `8a955b3`; Ergebniscommit ist die Spitze des
+Reparaturbranches (dieser Nachtrag).
+Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/gross-margin-period-match
+Commit-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/commit/8a955b3
 
 ## Update (Chat 9 Reparatur): Abrufsperre, Bruttomarge, Bandherkunft (V1.0.51)
 
