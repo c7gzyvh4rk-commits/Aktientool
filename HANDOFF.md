@@ -154,7 +154,10 @@ Reparaturbranch: `claude/midcycle-margin-override-fix` (Basis `7d39020` auf
 `us-aktienbewertungstool-v1036-sector-classification-patch.html`, Modul
 `src/dcf-core.js`.
 Testbefehl: `npm test` — beide Suiten grün, Exit-Code 0.
+Code-Commit dieses Schritts: `f93ffac`; Ergebniscommit ist die Spitze des
+Reparaturbranches (dieser Nachtrag).
 Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/midcycle-margin-override-fix
+Commit-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/commit/f93ffac
 
 ## Update (Chat 8 Reparatur): Drei Fehler der DCF-Schnittstelle behoben (V1.0.48)
 
