@@ -1,5 +1,208 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Chat 11: TTM-Werte aus Quartalsdaten und ausgewiesene Datenbasis (V1.0.55)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
+`claude/sec-quarterly-period-fixes`, Ausgangscommit
+`6410d52273868d48f9beb53535ad03337fc121a2` — der neueste Stand auf GitHub, der
+Chat 10 **einschliesslich** der anschliessenden Korrektur (V1.0.54) enthaelt;
+kein anderer Branch enthaelt ihn, `main` steht weiterhin auf `b023dc8`.
+Tool-Datei: `us-aktienbewertungstool-v1036-sector-classification-patch.html`
+(einzige Produktdatei; Start durch Oeffnen im Browser, Testeinstieg ueber
+`test/run-calc-tests.js`, das genau diese Datei laedt). Arbeitsbranch dieses
+Schrittes: `claude/loving-hypatia-dw0omk`. Testbefehl: `npm test`.
+Baseline auf `6410d52` (ausgefuehrt): **1459 Rechen-Assertions · 111 Node-Tests
+· Exit-Code 0**.
+
+### Was umgesetzt wurde
+
+**Neuer, markierter Baustein in der Tool-Datei: `DATENBASIS-BLOCK`.**
+Nach dem Vorbild des `DCF-CORE-BLOCK` steht die Rechnung in der
+ausgelieferten HTML-Datei (einzige Quelle) und wird von `src/sec-ttm.js`
+zum Testen als Modul ausgeschnitten — **keine zweite Fassung der Logik**.
+Der Block ist rein: kein DOM, kein `localStorage`, kein `state`, kein Zufall,
+keine Uhrzeit (durch einen Test abgesichert), und er laeuft in einer leeren
+Sandbox.
+
+1. **TTM aus vier vollstaendigen Quartalen** (`computeTtmFromQuarters`).
+   Die vier Quartale muessen unmittelbar aneinander anschliessen
+   (Ende + 1 Tag = Beginn) — damit sind Luecken **und** Ueberlappungen
+   ausgeschlossen; zusaetzlich werden die Quartalspositionen als
+   aufeinanderfolgend geprueft und der Gesamtzeitraum auf das Jahresfenster
+   (340–385 Tage) begrenzt. Unbrauchbare Quartale (fehlender Wert, Dauer
+   ausserhalb 80–100 Tagen, offener Widerspruch zur Differenz der
+   Kumulierungen) zaehlen nicht als vollstaendig und werden mit Grund
+   ausgewiesen.
+2. **Kontrollierter zweiter Weg** (`computeTtmFromFyYtdBridge`): letztes
+   Geschaeftsjahr + laufendes YTD − vergleichbares Vorjahres-YTD. Geprueft
+   werden einzeln: gleiche YTD-Stufe, Vorjahres-YTD beginnt zum
+   Geschaeftsjahr, laufendes YTD schliesst an das Geschaeftsjahr an,
+   Geschaeftsjahr ist ein volles Jahr, hergeleiteter Zeitraum liegt im
+   Jahresfenster. Faellt eine Pruefung durch, entsteht kein Wert, sondern
+   ein benannter Grund. Der zweite Weg laeuft als **Gegenprobe** zum ersten;
+   weichen Wert oder Zeitraum ab, gilt das Feld als nicht belastbar
+   (kein stiller Vorrang eines Weges).
+3. **Bilanzwerte** (`selectBalanceAsOf`): verwendet wird der Stichtag am
+   Ende des jeweiligen TTM-Fensters. Kein additiver Codepfad, keine
+   Fortschreibung, keine Mischung mit Jahreswerten; fehlt der passende
+   Stichtag, entsteht kein Wert.
+4. **Aktienzahlen und EPS gesondert.** Die gewichtete TTM-Aktienzahl ist der
+   **nach Quartalslaenge gewichtete Mittelwert** der vier
+   Quartalsdurchschnitte — ausdruecklich keine Summe. EPS entsteht aus
+   TTM-Ergebnis / gewichteter TTM-Aktienzahl; die Summe der Quartals-EPS
+   wird nur als Gegenprobe ausgewiesen (`used: false`) und bei Abweichung
+   > 1 % gewarnt. Die **aktuelle** Aktienzahl am Stichtag bleibt davon
+   getrennt gefuehrt und wird getrennt angezeigt.
+5. **Nur zueinander passende Zeitraeume.** Die TTM-Sicht besteht
+   ausschliesslich aus **ueberschneidungsfreien Zwoelfmonatsfenstern**,
+   jeweils um vier Quartale versetzt (`ttmWindowEndsFrom`). Dadurch bleiben
+   Quoten (z. B. CapEx/Umsatz) und Vorjahresvergleiche innerhalb derselben
+   Periodenart. Die **Jahresreihen des Master-JSON bleiben unveraendert** —
+   `buildValuationBasisView` erzeugt eine Kopie; Qualitaets- und
+   Datenqualitaetsdiagnostik rechnen weiterhin auf den Jahresreihen (durch
+   Test abgesichert: gleicher `fundamentalsHash`, gleiche Scores).
+6. **Auswahl in der Oberflaeche**: „Letztes Geschäftsjahr (FY)" gegen
+   „TTM (letzte vier Quartale)" im Annahmen-Reiter
+   (`_handleDataBasisChange`, gespeichert in `valuation.data_basis`).
+   Vorgabe bleibt FY. Umgestellt wird **nur bei vollstaendigen Daten**:
+   mindestens zwei ueberschneidungsfreie Fenster, alle gedeckten Feldarten
+   vorhanden, Aktienbasis vorhanden — und die **Masseinheit** des
+   Datensatzes muss zur `meta.reporting_unit` des Master-JSON passen
+   (es wird nicht umgerechnet und keine Einheit unterstellt).
+7. **Ausweis je Bewertung** (`buildDataBasisReport`, Anzeige
+   `buildDataBasisCard`): Zeitraum, verwendete Quartale,
+   Veroeffentlichungsstand (spaetestes Filing der verwendeten Angaben,
+   Formulare, Datenstichtag, Quelle), Aktienbasis (Durchschnitt **und**
+   aktuelle Aktienzahl getrennt), Warnungen, Rueckfall und Modellsperren.
+   Sichtbar im Annahmen-Reiter (mit Auswahl), im Bewertungs-Reiter und in
+   der Ersatzansicht bei gesperrter Bewertung. Im Snapshot gespeichert als
+   `data_basis` — genau der Ausweis, der in **dieser** Bewertung galt
+   (`valuation.dataBasis`), nicht mit heutigen Annahmen nachgerechnet;
+   Format-1-Snapshots erhalten ihn bei der Migration aus dem gespeicherten
+   Master-JSON.
+8. **Kein stilles Vermischen.** Unvollstaendige TTM-Daten fuehren zum
+   **sichtbaren Rueckfall** auf das Geschaeftsjahr samt Begruendung. Wird auf
+   TTM gerechnet, bleiben Felder ohne TTM-Deckung in der Bewertungssicht
+   **leer** (statt den Jahreswert einzumischen), vorgegebene Jahres-
+   Ersatzreihen (`fundamentals.derived.*.override_series`) sind ausgesetzt,
+   und Modelle mit ungedeckten Pflichtfeldern werden **gesperrt**
+   (`_blockedByDataBasis`, mit Nennung des fehlenden Feldes). Gedeckt sind
+   derzeit Umsatz, EBIT, Nettoergebnis, CFO, CapEx, die fuenf Bilanzposten,
+   Aktienzahl und EPS — DCF, Mid-Cycle-DCF und EPV laufen auf TTM, RIM,
+   RIM-Buyback, DDM, P/TBV-Gordon und Excess Return werden gesperrt
+   (`book_value`, `tangible_book_value`, `dps` liegen nicht als TTM-Groesse vor).
+
+**Erzeugerseite** in `src/sec-ttm.js` (Node, ausserhalb der Tool-Datei):
+`quarterlyPayloadFromFacts` verbindet `normalizeSecQuarters`
+(`src/sec-quarterly.js`) mit der **gesondert** erhobenen Aktienseite
+(gewichtete Quartalsdurchschnitte, Quartals-EPS als Gegenprobe, aktuelle
+Aktienzahl aus `dei:EntityCommonStockSharesOutstanding`); `datasetFromFacts`
+liefert daraus den fertigen Datensatz fuer `fundamentals._ttm`.
+
+### Geaenderte und neue Dateien
+
+* `us-aktienbewertungstool-v1036-sector-classification-patch.html` —
+  neuer `DATENBASIS-BLOCK`; `runValuationEngine` rechnet auf der
+  aufgeloesten Datenbasis und gibt `dataBasis` zurueck; Anzeige und Auswahl;
+  `buildSnapshotRecord`/`migrateSnapshotRecord`; neuer Test `_testDataBasis`.
+* `src/sec-ttm.js` (neu) — Blockauszug + Erzeugerseite.
+* `tests/sec-ttm.test.mjs` (neu) — 25 Tests.
+* `tests/sec-quarterly.test.mjs` — **eine** Erwartung geaendert (siehe unten).
+* `test/run-calc-tests.js` — `_testDataBasis` registriert.
+
+### Geaenderte Testerwartung (mit Begruendung)
+
+`tests/sec-quarterly.test.mjs`, Abschnitt 10: Der Test verlangte bisher, dass
+die Zeichenketten `sec-quarterly` und `normalizeSecQuarters` in der Tool-Datei
+**gar nicht** vorkommen. Das war die Abgrenzung „Normalisierer noch nicht
+angeschlossen". Durch diesen Auftrag verwendet die Anwendung normalisierte
+Quartalsdaten und nennt deren Herkunft ausdruecklich — die alte Erwartung
+beschreibt den gewollten Zustand nicht mehr. Der Test prueft jetzt schaerfer,
+was weiterhin gelten muss: **keine Kopie** der Normalisierungsfunktion in der
+Anwendung, **kein** Modulimport, **keine** zweite Fassung des Feldumfangs
+(`SEC_QUARTERLY_FIELDS`) — und zusaetzlich, dass die Herkunft benannt wird.
+Keine andere bestehende Erwartung wurde geaendert oder gelockert.
+
+### Tatsaechlich ausgefuehrte Tests
+
+* `npm test` → Rechentests **1541 bestanden · 0 fehlgeschlagen ·
+  0 Fehler/Exceptions** (1459 unveraendert **+ 82 neu** aus `_testDataBasis`;
+  alle 434 Fixture-Assertions unveraendert gruen), Node-Tests **136/136**
+  (111 unveraendert, **+ 25** aus `tests/sec-ttm.test.mjs`, ein umformulierter
+  Abgrenzungstest), gemeinsamer **Exit-Code 0**.
+* **Pflichttests des Auftrags** — jeweils mit von Hand nachgerechneten
+  Erwartungswerten:
+  * *Beide Rechenwege stimmen ueberein*: Summe der vier Quartale
+    (200+210+220+230 = 860) gegen FY2024 (780) + YTD2/2025 (450) −
+    YTD2/2024 (370) = 860, gleicher Zeitraum 01.07.2024–30.06.2025
+    (`tests/sec-ttm.test.mjs`); in der Anwendung zusaetzlich fuer alle fuenf
+    Zeitraumgroessen als `cross_check.status === 'uebereinstimmend'`.
+  * *Fehlendes Quartal wird erkannt*: „Quartalsreihe bricht vor FY2025-Q1 ab",
+    kein Wert, kein ersatzweise aelteres Fenster; in den Rohdaten ebenso
+    (`window_count === 0`), mit sichtbarem Rueckfall auf FY.
+  * *Stichtagsdaten bleiben unveraendert*: Schuldenreihe 1180/1120/1010 bzw.
+    560/540/520 exakt wie gemeldet, Stichtage = Fensterenden, keine Summe
+    (2195 entsteht nicht), Wert zum Geschaeftsjahresende identisch mit dem
+    Jahresabschlusswert.
+  * *FY-Ergebnisse bleiben bei FY-Auswahl reproduzierbar*: gleiche
+    Modellergebnisse ohne Auswahl, mit `data_basis: 'fy'`, bei zweitem
+    Aufruf, bei angefordertem aber fehlendem TTM, bei luecken- bzw.
+    aktienlosem TTM-Datensatz und bei abweichender Masseinheit —
+    jeweils `JSON.stringify(modelResults)` identisch.
+* **Gegenproben (ausgefuehrt).** Jede Regel einzeln entfernt, jeweils rote
+  Tests, danach wiederhergestellt (0 rot): Anschlusspruefung der Quartale
+  (3 Node-Tests) · Gegenprobe der beiden Rechenwege (1) · Bilanzwerte
+  fortgeschrieben statt ausgewaehlt (2 Rechen-/2 Node-Tests) · EPS verfaelscht
+  (1/1) · Aktienzahl addiert statt gemittelt (4/3) · Umschaltung trotz
+  unvollstaendiger Daten (2/2) · ungedeckte Reihen nicht geleert (1/1) ·
+  Modellsperre abgeschaltet (3/2) · Einheitenabgleich entfernt (2/1).
+* Diff kontrolliert: ausser dem neuen Block, dem neuen Test und den oben
+  genannten Stellen keine Aenderung an der Tool-Datei; `git diff -U0` zeigt
+  als Loeschungen ausschliesslich den Umbau in `runValuationEngine`.
+
+### Verbleibende Einschraenkungen
+
+* **Der Datensatz `fundamentals._ttm` entsteht noch nicht im SEC-Abruf der
+  Anwendung.** Die Rechnung selbst liegt in der Tool-Datei und laeuft im
+  Browser, sobald normalisierte Quartalsdaten vorliegen (z. B. aus einem
+  Master-JSON, das `_ttm` mitbringt, oder erzeugt mit
+  `src/sec-ttm.js → datasetFromFacts`). Der Weg „SEC-Abruf → `_quarterly` →
+  `_ttm`" innerhalb von `secFetchAll` ist **nicht** Teil dieses Schrittes;
+  ohne Datensatz bleibt alles unveraendert auf Jahresbasis (sichtbar
+  begruendet). Das ist der naheliegende naechste Schritt.
+* Auf TTM-Basis sind `book_value`, `tangible_book_value`, `dps`, `ebitda`,
+  `gross_profit`, `sbc` und weitere Reihen nicht gedeckt; die davon
+  abhaengigen Modelle sind gesperrt, und im DCF entfaellt die D&A-Quote
+  (keine EBITDA-TTM-Reihe) — statt sie aus Jahreswerten zu ergaenzen.
+* Fuer die Umstellung werden **mindestens zwei** ueberschneidungsfreie
+  Fenster verlangt. Mit nur einem Fenster gaebe es keinen zulaessigen
+  Vorjahreswert; die Bewertung bliebe sonst ohne Vergleichsperiode.
+* Die gewichtete TTM-Aktienzahl ist der nach Quartalslaenge gewichtete
+  Mittelwert der vier Quartalsdurchschnitte. Das ist exakt, solange sich die
+  Aktienzahl innerhalb eines Quartals nicht sprunghaft aendert; eine
+  taggenaue Gewichtung ist aus Quartalsangaben nicht herstellbar.
+* Der Anschluss der Quartale wird **exakt** verlangt (Ende + 1 Tag = Beginn).
+  Ein Filer, der Quartalsgrenzen in zwei Filings unterschiedlich datiert,
+  erhaelt dadurch keinen TTM-Wert, sondern eine Diagnose — bewusst streng.
+* Masseinheiten werden nicht umgerechnet: passt `ds.reporting_unit` nicht zu
+  `meta.reporting_unit`, bleibt es sichtbar bei FY.
+* Offen aus den Vorschritten: Einheitenverdacht in `_makeBaseValuation()`;
+  index-basierte Ableitung von `eps_diluted`, `book_value`, `dps` in
+  `applyDerivedFieldsV4`; Korrelationen der Monte-Carlo-Groessen;
+  Fachansichten ausserhalb der Hauptansicht nicht vereinfacht.
+
+### Anschlussstand fuer Chat 12
+
+* Uebergabebranch: `claude/loving-hypatia-dw0omk`
+* Ausgangscommit dieses Schrittes: `6410d52`
+* Ergebniscommit: `ERGEBNISCOMMIT`
+* Branchstand: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/loving-hypatia-dw0omk
+* Tool-Datei: `us-aktienbewertungstool-v1036-sector-classification-patch.html`
+  · TTM/Datenbasis: `DATENBASIS-BLOCK` darin, Modulzugang `src/sec-ttm.js`
+  · Normalisierer: `src/sec-quarterly.js`
+  · Tests: `tests/sec-ttm.test.mjs`, `_testDataBasis` in der Tool-Datei
+  · Testbefehl: `npm test`
+
 ## Reparatur (nach Chat 10): Drei Fehler im SEC-Quartalsnormalisierer (V1.0.54)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch

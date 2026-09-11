@@ -546,13 +546,26 @@ test('Tag-Listen stammen aus der Anwendung (keine zweite Fassung)', () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 10. Abgrenzung: die produktive Bewertung bleibt unberuehrt
+// 10. Abgrenzung: der Normalisierer bleibt ein eigenstaendiges Modul
 // ═════════════════════════════════════════════════════════════════════════════
-test('der Normalisierer ist nicht in die Anwendung eingebunden', async () => {
+// Erwartung geaendert in V1.0.55 — begruendet durch eine fachliche
+// Verhaltensaenderung: die Anwendung VERWENDET seit der TTM-Datenbasis die
+// normalisierten Quartalsdaten (fundamentals._ttm, DATENBASIS-BLOCK) und nennt
+// deren Herkunft ausdruecklich. Der Normalisierer selbst bleibt unveraendert
+// ausserhalb der HTML-Datei: keine Implementierung, kein Modulimport, keine
+// zweite Fassung seiner Tag-Listen. Genau das wird hier weiterhin geprueft.
+test('der Normalisierer selbst steht nicht in der Anwendung', async () => {
   const { readFileSync } = await import('node:fs');
   const html = readFileSync(Q.APP_FILE, 'utf8');
-  assert.equal(html.includes('sec-quarterly'), false);
-  assert.equal(html.includes('normalizeSecQuarters'), false);
+  assert.equal(/function\s+normalizeSecQuarters\s*\(/.test(html), false,
+    'keine Kopie der Normalisierungsfunktion in der Anwendung');
+  assert.equal(/require\s*\(\s*['"][^'"]*sec-quarterly/.test(html), false,
+    'kein Modulimport des Normalisierers');
+  assert.equal(html.includes('SEC_QUARTERLY_FIELDS'), false,
+    'keine zweite Fassung des Feldumfangs');
+  // Die AUSGABE des Normalisierers wird dagegen ausdruecklich als Herkunft
+  // der TTM-Datenbasis benannt.
+  assert.equal(html.includes("generated_from: 'normalizeSecQuarters'"), true);
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

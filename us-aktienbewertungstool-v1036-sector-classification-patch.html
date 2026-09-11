@@ -12575,14 +12575,1079 @@ function _testPeriodAlignment() {
 }
 */
 
+// ════════════════════════════════════════════════════════════════
+// DATENBASIS-BLOCK START — TTM aus normalisierten Quartalsdaten
+// ────────────────────────────────────────────────────────────────
+// Zweck: aus bereits normalisierten Quartalsdaten (Aufbau wie in
+// src/sec-quarterly.js beschrieben: je Feld Einzelquartale bzw.
+// Bilanzstichtage samt Herkunft) belastbare TTM-Werte bilden und die
+// verwendete Datenbasis ausdruecklich ausweisen.
+//
+// Grundsaetze
+//  1. TTM entsteht aus VIER vollstaendigen, unmittelbar aufeinander
+//     folgenden, nicht ueberlappenden Quartalen. Fehlt eines, entsteht
+//     kein TTM-Wert — es wird nichts geschaetzt und nichts ergaenzt.
+//  2. Kontrollierter zweiter Rechenweg: letztes Geschaeftsjahr
+//     + laufendes YTD − vergleichbares Vorjahres-YTD. Die Voraussetzungen
+//     (gleiche YTD-Stufe, gleicher Kumulierungsbeginn, lueckenloser
+//     Anschluss, Jahreslaenge) werden einzeln geprueft. Stimmen beide
+//     Wege nicht ueberein, gilt der Wert als nicht belastbar.
+//  3. Bilanzwerte (Stichtagsgroessen) werden NIE summiert. Es wird der
+//     Stichtag zum Ende des jeweiligen TTM-Fensters verwendet.
+//  4. Durchschnittliche Aktienzahlen werden gesondert behandelt: die
+//     gewichteten Quartalsdurchschnitte werden gemittelt (nicht addiert),
+//     EPS entsteht aus TTM-Ergebnis / TTM-Aktienzahl (nicht aus der Summe
+//     der Quartals-EPS — diese dient nur als Gegenprobe). Die aktuelle
+//     Aktienzahl bleibt davon getrennt ausgewiesen.
+//  5. Kennzahlen entstehen nur aus zueinander passenden Zeitraeumen:
+//     die TTM-Sicht enthaelt AUSSCHLIESSLICH TTM-Fenster (jeweils um vier
+//     Quartale versetzt, ueberschneidungsfrei). Felder ohne TTM-Deckung
+//     werden in dieser Sicht geleert statt mit Jahreswerten gemischt.
+//     Die Jahresreihen des Master-JSON bleiben unveraendert erhalten und
+//     tragen weiterhin die Qualitaetsdiagnostik.
+//  6. Fehlende TTM-Daten fuehren zum sichtbaren Rueckfall auf das letzte
+//     Geschaeftsjahr oder zur Sperre des betroffenen Modells.
+//
+// Reine Rechen- und Auswahlfunktionen: kein DOM, kein localStorage,
+// kein globaler Zustand, keine Zufallswerte, keine Uhrzeit.
+// ════════════════════════════════════════════════════════════════
+
+// Der Block kommt ohne Helfer aus der Datenschicht aus (Gegenstueck zu
+// DCF_CORE_REQUIRED_HELPERS; die leere Liste ist ausdruecklich gewollt).
+const DATA_BASIS_REQUIRED_HELPERS = Object.freeze([]);
+const DATA_BASIS_BLOCK_VERSION = '1.0.55';
+
+// Zulaessige Datenbasen der Bewertung.
+const DATA_BASIS_OPTIONS = Object.freeze(['fy', 'ttm']);
+const DATA_BASIS_LABELS = Object.freeze({
+  fy:  'Letztes Geschäftsjahr (FY)',
+  ttm: 'TTM (letzte vier Quartale)'
+});
+
+// Zeitraumgroessen: Schluessel der Quartalsnormalisierung → Feld im Master-JSON.
+const TTM_FLOW_FIELDS = Object.freeze({
+  revenue:          'revenue',
+  operating_income: 'ebit',
+  net_income:       'net_income',
+  cfo:              'cfo',
+  capex:            'capex'
+});
+// Stichtagsgroessen: nie summiert, immer der Stichtag am Fensterende.
+const TTM_INSTANT_FIELDS = Object.freeze({
+  total_debt:           'total_debt',
+  long_term_debt:       'long_term_debt',
+  cash_and_equivalents: 'cash_and_equivalents',
+  current_assets:       'current_assets',
+  current_liabilities:  'current_liabilities'
+});
+
+// Dauerfenster in EINSCHLIESSLICH gezaehlten Tagen — identisch zu den
+// Fenstern der Quartalsnormalisierung (src/sec-quarterly.js).
+const TTM_QUARTER_MIN_DAYS = 80;
+const TTM_QUARTER_MAX_DAYS = 100;
+const TTM_YEAR_MIN_DAYS    = 340;
+const TTM_YEAR_MAX_DAYS    = 385;
+// Relative Toleranz beim Vergleich zweier Rechenwege.
+const TTM_VALUE_EPS_REL = 1e-9;
+// Mindestzahl ueberschneidungsfreier TTM-Fenster, damit die Bewertung auf
+// TTM umgestellt werden darf: eines fuer den Stand, eines fuer den
+// Vorjahresvergleich. Mit nur einem Fenster gaebe es keinen zulaessigen
+// Vorjahreswert — der Vergleich mit einem Geschaeftsjahr waere eine
+// Vermischung.
+const TTM_MIN_WINDOWS = 2;
+// Mehr Fenster werden ausgewertet, solange die Quartalsreihe traegt.
+const TTM_MAX_WINDOWS = 12;
+
+// Welche Master-JSON-Felder ein Bewertungsmodell braucht. Ist ein Feld auf
+// der TTM-Basis nicht gedeckt, wird das Modell gesperrt statt mit
+// Jahreswerten aufgefuellt.
+const TTM_MODEL_REQUIRED_FIELDS = Object.freeze({
+  dcf:           ['revenue', 'ebit', 'capex', 'cfo', 'total_debt', 'cash_and_equivalents'],
+  dcf_midcycle:  ['revenue', 'ebit', 'capex', 'cfo', 'total_debt', 'cash_and_equivalents'],
+  epv_floor:     ['revenue', 'ebit'],
+  rim:           ['net_income', 'book_value', 'shares_diluted'],
+  rim_buyback:   ['net_income', 'book_value', 'shares_diluted'],
+  ddm:           ['dps'],
+  p_tbv_gordon:  ['tangible_book_value', 'net_income'],
+  excess_return: ['book_value', 'net_income']
+});
+
+// ── Datums- und Zahlenhilfen (UTC, damit das Ergebnis zeitzonenunabhaengig
+//    und reproduzierbar ist) ──────────────────────────────────────────────
+const TTM_DAY_MS = 86400000;
+
+function _ttmParseIso(s) {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const y = +s.slice(0, 4), m = +s.slice(5, 7), d = +s.slice(8, 10);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+  const ms = Date.UTC(y, m - 1, d);
+  const back = new Date(ms);
+  if (back.getUTCFullYear() !== y || back.getUTCMonth() !== m - 1 || back.getUTCDate() !== d) return null;
+  return ms;
+}
+
+function _ttmIso(ms) { return new Date(ms).toISOString().slice(0, 10); }
+
+// Einschliesslich gezaehlte Tage: 01.01.–31.03. = 90.
+function _ttmInclusiveDays(startMs, endMs) {
+  return Math.round((endMs - startMs) / TTM_DAY_MS) + 1;
+}
+
+function _ttmNextDay(iso) {
+  const ms = _ttmParseIso(iso);
+  return ms == null ? null : _ttmIso(ms + TTM_DAY_MS);
+}
+
+function _ttmNum(v) {
+  return (typeof v === 'number' && isFinite(v)) ? v : null;
+}
+
+// Wertgleichheit mit relativer Toleranz — fuer den Vergleich zweier
+// Rechenwege, die sich nur in der Rundung unterscheiden duerfen.
+function _ttmSameValue(a, b) {
+  if (a === b) return true;
+  if (a == null || b == null) return false;
+  const scale = Math.max(Math.abs(a), Math.abs(b));
+  return Math.abs(a - b) <= TTM_VALUE_EPS_REL * (scale > 0 ? scale : 1);
+}
+
+function _ttmQuarterOrdinal(fiscalYear, fiscalQuarter) {
+  return fiscalYear * 4 + fiscalQuarter;
+}
+
+// Spaetestes Veroeffentlichungsdatum einer Menge von Quellen. Fehlt an
+// einer Stelle das Datum, ist der Veroeffentlichungsstand unbekannt (null)
+// — er wird NICHT auf das aelteste bekannte Datum verkuerzt.
+function _ttmLatestFiled(list) {
+  let latest = null;
+  for (let i = 0; i < list.length; i++) {
+    const f = list[i];
+    if (f == null || _ttmParseIso(f) == null) return null;
+    if (latest == null || f > latest) latest = f;
+  }
+  return latest;
+}
+
+// ── Verwertbare Einzelquartale ─────────────────────────────────────────
+// Verworfen wird, was nicht als vollstaendiges Quartal gelten kann:
+// fehlender Wert, unbrauchbares Datum, Dauer ausserhalb des
+// Quartalsfensters oder ein offener Widerspruch zwischen gemeldetem und
+// abgeleitetem Wert.
+function ttmUsableQuarters(quarters) {
+  const usable = [], rejected = [];
+  const list = Array.isArray(quarters) ? quarters : [];
+  for (let i = 0; i < list.length; i++) {
+    const q = list[i] || {};
+    const key = q.periodKey || ((q.fiscalYear != null && q.fiscalQuarter != null)
+      ? ('FY' + q.fiscalYear + '-Q' + q.fiscalQuarter) : '(ohne Periodenschluessel)');
+    const val = _ttmNum(q.value);
+    const sMs = _ttmParseIso(q.start), eMs = _ttmParseIso(q.end);
+    if (val == null) { rejected.push({ periodKey: key, reason: 'kein verwertbarer Wert' }); continue; }
+    if (sMs == null || eMs == null || eMs < sMs) {
+      rejected.push({ periodKey: key, reason: 'Zeitraum fehlt oder ist unbrauchbar' }); continue;
+    }
+    const days = _ttmInclusiveDays(sMs, eMs);
+    if (days < TTM_QUARTER_MIN_DAYS || days > TTM_QUARTER_MAX_DAYS) {
+      rejected.push({ periodKey: key, reason: 'Dauer ' + days + ' Tage ausserhalb des Quartalsfensters ('
+        + TTM_QUARTER_MIN_DAYS + '–' + TTM_QUARTER_MAX_DAYS + ' Tage)' });
+      continue;
+    }
+    if (q.conflict) {
+      rejected.push({ periodKey: key, reason: 'Quartal steht im Widerspruch zur Differenz der Kumulierungen '
+        + '— als TTM-Bestandteil nicht belastbar' });
+      continue;
+    }
+    usable.push({
+      periodKey: key,
+      fiscalYear: q.fiscalYear, fiscalQuarter: q.fiscalQuarter,
+      ordinal: (q.fiscalYear != null && q.fiscalQuarter != null)
+        ? _ttmQuarterOrdinal(q.fiscalYear, q.fiscalQuarter) : null,
+      start: q.start, end: q.end, durationDays: days,
+      value: val, basis: q.basis || null,
+      form: (q.source && q.source.form) || null,
+      filed: (q.source && q.source.filed) || null
+    });
+  }
+  usable.sort((a, b) => b.end.localeCompare(a.end));
+  return { usable, rejected };
+}
+
+// ── Rechenweg 1: vier vollstaendige, aufeinanderfolgende Quartale ──────
+// opts.anchorEnd  Ende des gewuenschten Fensters (sonst das juengste Quartal)
+function computeTtmFromQuarters(quarters, opts) {
+  const o = opts || {};
+  const { usable, rejected } = ttmUsableQuarters(quarters);
+  const base = { method: 'four_quarters', rejected };
+  if (usable.length === 0) {
+    return Object.assign({ ok: false, reason: 'keine verwertbaren Quartale vorhanden' }, base);
+  }
+  let anchor = null;
+  if (o.anchorEnd) {
+    for (let i = 0; i < usable.length; i++) if (usable[i].end === o.anchorEnd) { anchor = usable[i]; break; }
+    if (!anchor) {
+      return Object.assign({ ok: false,
+        reason: 'kein verwertbares Quartal mit Ende ' + o.anchorEnd }, base);
+    }
+  } else {
+    anchor = usable[0];
+  }
+
+  // Rueckwaerts anschliessen: das jeweils vorangehende Quartal muss
+  // unmittelbar (Ende + 1 Tag = Beginn) anschliessen. Damit ist zugleich
+  // ausgeschlossen, dass sich zwei Quartale ueberlappen.
+  const chain = [anchor];
+  for (let step = 1; step < 4; step++) {
+    const need = chain[chain.length - 1];
+    let prev = null;
+    for (let i = 0; i < usable.length; i++) {
+      if (_ttmNextDay(usable[i].end) === need.start) { prev = usable[i]; break; }
+    }
+    if (!prev) {
+      return Object.assign({ ok: false,
+        reason: 'Quartalsreihe bricht vor ' + need.periodKey + ' ab — kein Quartal endet am '
+          + _ttmIso(_ttmParseIso(need.start) - TTM_DAY_MS),
+        have: chain.map(c => c.periodKey), missingBefore: need.periodKey }, base);
+    }
+    if (prev.ordinal != null && need.ordinal != null && prev.ordinal !== need.ordinal - 1) {
+      return Object.assign({ ok: false,
+        reason: 'Quartalspositionen nicht aufeinanderfolgend (' + prev.periodKey + ' vor ' + need.periodKey + ')',
+        have: chain.map(c => c.periodKey) }, base);
+    }
+    chain.push(prev);
+  }
+
+  const ordered = chain.slice().reverse();         // aeltestes zuerst
+  const start = ordered[0].start, end = anchor.end;
+  const days = _ttmInclusiveDays(_ttmParseIso(start), _ttmParseIso(end));
+  if (days < TTM_YEAR_MIN_DAYS || days > TTM_YEAR_MAX_DAYS) {
+    return Object.assign({ ok: false,
+      reason: 'Gesamtzeitraum ' + days + ' Tage ausserhalb des Jahresfensters ('
+        + TTM_YEAR_MIN_DAYS + '–' + TTM_YEAR_MAX_DAYS + ' Tage)' }, base);
+  }
+  let value = 0;
+  for (let i = 0; i < ordered.length; i++) value += ordered[i].value;
+  const derivedCount = ordered.filter(q => q.basis === 'derived').length;
+  return Object.assign({
+    ok: true, value, start, end, durationDays: days,
+    quarters: ordered.map(q => ({ periodKey: q.periodKey, start: q.start, end: q.end,
+      value: q.value, basis: q.basis, form: q.form, filed: q.filed })),
+    filed: _ttmLatestFiled(ordered.map(q => q.filed)),
+    basisCounts: { reported: ordered.length - derivedCount, derived: derivedCount }
+  }, base);
+}
+
+// ── Rechenweg 2: letztes Geschaeftsjahr + laufendes YTD − Vorjahres-YTD ─
+// Kontrollierter zweiter Weg. Jede Voraussetzung wird einzeln geprueft;
+// faellt eine durch, entsteht KEIN Wert, sondern ein benannter Grund.
+function computeTtmFromFyYtdBridge(cumulatives, opts) {
+  const o = opts || {};
+  const base = { method: 'fy_plus_ytd_minus_prior_ytd' };
+  const list = (Array.isArray(cumulatives) ? cumulatives : []).filter(c =>
+    c && _ttmNum(c.value) != null && _ttmParseIso(c.start) != null && _ttmParseIso(c.end) != null);
+  if (list.length === 0) {
+    return Object.assign({ ok: false, reason: 'keine verwertbaren Kumulierungen vorhanden' }, base);
+  }
+  const sorted = list.slice().sort((a, b) => b.end.localeCompare(a.end));
+
+  let ytdCur = null;
+  if (o.anchorEnd) {
+    for (let i = 0; i < sorted.length; i++) if (sorted[i].end === o.anchorEnd) { ytdCur = sorted[i]; break; }
+    if (!ytdCur) {
+      return Object.assign({ ok: false,
+        reason: 'keine Kumulierung mit Ende ' + o.anchorEnd + ' (laufendes YTD fehlt)' }, base);
+    }
+  } else {
+    ytdCur = sorted[0];
+  }
+  const n = ytdCur.throughQuarter;
+  if (!(n >= 1 && n <= 4)) {
+    return Object.assign({ ok: false, reason: 'YTD-Stufe des laufenden Zeitraums unbekannt' }, base);
+  }
+  const fyYear = ytdCur.fiscalYear - 1;
+  const pick = (year, through) => {
+    for (let i = 0; i < sorted.length; i++) {
+      if (sorted[i].fiscalYear === year && sorted[i].throughQuarter === through) return sorted[i];
+    }
+    return null;
+  };
+  const fy = pick(fyYear, 4);
+  if (!fy) {
+    return Object.assign({ ok: false,
+      reason: 'letztes vollstaendiges Geschaeftsjahr (FY' + fyYear + ') fehlt' }, base);
+  }
+  const ytdPrior = pick(fyYear, n);
+  if (!ytdPrior) {
+    return Object.assign({ ok: false,
+      reason: 'vergleichbares Vorjahres-YTD (FY' + fyYear + '-YTD' + n + ') fehlt' }, base);
+  }
+
+  // Voraussetzungen
+  const fyDays = _ttmInclusiveDays(_ttmParseIso(fy.start), _ttmParseIso(fy.end));
+  if (fyDays < TTM_YEAR_MIN_DAYS || fyDays > TTM_YEAR_MAX_DAYS) {
+    return Object.assign({ ok: false,
+      reason: 'FY' + fyYear + ' umfasst ' + fyDays + ' Tage und ist damit kein volles Geschaeftsjahr' }, base);
+  }
+  if (ytdPrior.start !== fy.start) {
+    return Object.assign({ ok: false,
+      reason: 'Vorjahres-YTD beginnt nicht zum Geschaeftsjahr (' + ytdPrior.start + ' statt ' + fy.start + ')' }, base);
+  }
+  if (ytdCur.start !== _ttmNextDay(fy.end)) {
+    return Object.assign({ ok: false,
+      reason: 'laufendes YTD schliesst nicht an das Geschaeftsjahr an (' + ytdCur.start
+        + ' statt ' + _ttmNextDay(fy.end) + ')' }, base);
+  }
+  if (!(ytdPrior.end <= fy.end)) {
+    return Object.assign({ ok: false,
+      reason: 'Vorjahres-YTD endet nach dem Geschaeftsjahr (' + ytdPrior.end + ' nach ' + fy.end + ')' }, base);
+  }
+  const start = _ttmNextDay(ytdPrior.end), end = ytdCur.end;
+  const days = _ttmInclusiveDays(_ttmParseIso(start), _ttmParseIso(end));
+  if (days < TTM_YEAR_MIN_DAYS || days > TTM_YEAR_MAX_DAYS) {
+    return Object.assign({ ok: false,
+      reason: 'hergeleiteter Zeitraum ' + start + '…' + end + ' umfasst ' + days
+        + ' Tage und liegt ausserhalb des Jahresfensters' }, base);
+  }
+
+  const value = fy.value + ytdCur.value - ytdPrior.value;
+  const filedList = [fy, ytdCur, ytdPrior].map(c => (c.source && c.source.filed) || null);
+  return Object.assign({
+    ok: true, value, start, end, durationDays: days,
+    components: {
+      fiscal_year:   { periodKey: fy.periodKey, start: fy.start, end: fy.end, value: fy.value },
+      ytd_current:   { periodKey: ytdCur.periodKey, start: ytdCur.start, end: ytdCur.end, value: ytdCur.value },
+      ytd_prior:     { periodKey: ytdPrior.periodKey, start: ytdPrior.start, end: ytdPrior.end, value: ytdPrior.value }
+    },
+    throughQuarter: n,
+    filed: _ttmLatestFiled(filedList),
+    // n = 4 heisst: das laufende YTD ist selbst ein volles Geschaeftsjahr.
+    // Der Weg ist dann rechnerisch gueltig, TTM und FY fallen zusammen.
+    degenerate: n === 4
+  }, base);
+}
+
+// ── Fensterraster: ueberschneidungsfreie TTM-Fenster ───────────────────
+// Ausgehend vom juengsten vollstaendigen Fenster wird jeweils um vier
+// Quartale zurueckgesetzt. Ein Fenster entsteht nur, wenn seine vier
+// Quartale lueckenlos vorliegen; das erste unvollstaendige beendet die
+// Reihe (es wird nichts uebersprungen — eine Luecke duerfte sonst
+// unbemerkt uebergangen werden).
+function ttmWindowEndsFrom(quarters, maxWindows) {
+  const limit = maxWindows || TTM_MAX_WINDOWS;
+  const ends = [];
+  const windows = [];
+  let anchorEnd = null;
+  for (let k = 0; k < limit; k++) {
+    const w = computeTtmFromQuarters(quarters, anchorEnd ? { anchorEnd } : {});
+    if (!w.ok) return { ends, windows, stopReason: w.reason };
+    ends.push(w.end);
+    windows.push(w);
+    const prevEnd = _ttmIso(_ttmParseIso(w.start) - TTM_DAY_MS);
+    anchorEnd = prevEnd;
+  }
+  return { ends, windows, stopReason: 'Hoechstzahl ausgewerteter Fenster erreicht (' + limit + ')' };
+}
+
+// ── Zeitraumgroesse ueber alle Fenster ─────────────────────────────────
+// Der zweite Rechenweg wird fuer das juengste Fenster mitgerechnet und
+// gegengeprueft. Widersprechen sich beide Wege, gilt das Feld als nicht
+// belastbar (kein stiller Vorrang eines Weges).
+function buildTtmFlowSeries(fieldKey, fieldData, windowEnds) {
+  const out = {
+    field: fieldKey, app_field: TTM_FLOW_FIELDS[fieldKey] || fieldKey,
+    kind: 'flow', ok: false, values: [], ends: [], starts: [], windows: [],
+    unit: (fieldData && fieldData.unit) || null,
+    used_tag: (fieldData && fieldData.usedTag) || null,
+    method: null, filed: null, cross_check: null, warnings: [], reason: null
+  };
+  const quarters = (fieldData && fieldData.quarters) || [];
+  const cumulatives = (fieldData && fieldData.cumulatives) || [];
+  const ends = Array.isArray(windowEnds) ? windowEnds : [];
+  if (ends.length === 0) { out.reason = 'kein TTM-Fensterraster vorhanden'; return out; }
+
+  for (let i = 0; i < ends.length; i++) {
+    const w = computeTtmFromQuarters(quarters, { anchorEnd: ends[i] });
+    if (!w.ok) {
+      out.reason = 'Fenster bis ' + ends[i] + ' nicht bildbar: ' + w.reason;
+      out.values = []; out.ends = []; out.starts = []; out.windows = [];
+      return out;
+    }
+    out.values.push(w.value);
+    out.ends.push(w.end);
+    out.starts.push(w.start);
+    out.windows.push({ start: w.start, end: w.end, value: w.value, durationDays: w.durationDays,
+      quarters: w.quarters.map(q => q.periodKey), filed: w.filed, basisCounts: w.basisCounts });
+  }
+
+  out.ok = true;
+  out.method = 'four_quarters';
+  out.filed = out.windows[0].filed;
+  if (out.filed == null) {
+    out.warnings.push(fieldKey + ': Veroeffentlichungsstand des juengsten TTM-Fensters unbekannt '
+      + '(mindestens ein Quartal ohne Veroeffentlichungsdatum).');
+  }
+
+  // Gegenprobe mit dem zweiten Rechenweg (juengstes Fenster)
+  const bridge = computeTtmFromFyYtdBridge(cumulatives, { anchorEnd: out.ends[0] });
+  if (!bridge.ok) {
+    out.cross_check = { status: 'nur_ein_weg', reason: bridge.reason, alternative: null };
+    out.warnings.push(fieldKey + ': zweiter Rechenweg (Geschaeftsjahr + YTD − Vorjahres-YTD) nicht pruefbar — '
+      + bridge.reason + '.');
+  } else if (bridge.start !== out.starts[0] || bridge.end !== out.ends[0]) {
+    out.ok = false;
+    out.reason = 'die beiden Rechenwege decken verschiedene Zeitraeume ab ('
+      + out.starts[0] + '…' + out.ends[0] + ' gegen ' + bridge.start + '…' + bridge.end + ')';
+    out.cross_check = { status: 'zeitraum_abweichend', alternative: bridge };
+  } else if (!_ttmSameValue(bridge.value, out.values[0])) {
+    out.ok = false;
+    out.reason = 'die beiden Rechenwege widersprechen sich (' + out.values[0] + ' gegen ' + bridge.value + ')';
+    out.cross_check = { status: 'abweichend', alternative: bridge,
+      deltaAbs: out.values[0] - bridge.value,
+      deltaRel: bridge.value !== 0 ? (out.values[0] - bridge.value) / Math.abs(bridge.value) : null };
+  } else {
+    out.cross_check = { status: 'uebereinstimmend', alternative: bridge, deltaAbs: 0, deltaRel: 0 };
+  }
+  if (!out.ok) { out.values = []; out.ends = []; out.starts = []; out.windows = []; }
+  return out;
+}
+
+// ── Stichtagsgroesse: Bilanzwert zum Fensterende ───────────────────────
+// Es wird NICHT summiert und NICHT mit Jahreswerten gemischt: verwendet
+// wird der Stichtag, der genau auf das Fensterende faellt. Ein anderer
+// Stichtag wird nur mit ausdruecklicher Angabe des Abstands und einer
+// Warnung verwendet, und nur wenn er nicht nach dem Fensterende liegt.
+function selectBalanceAsOf(instants, asOfIso, opts) {
+  const o = opts || {};
+  const maxLag = o.maxLagDays != null ? o.maxLagDays : 0;
+  const asOfMs = _ttmParseIso(asOfIso);
+  if (asOfMs == null) return { ok: false, reason: 'ungueltiger Stichtag ' + String(asOfIso) };
+  const list = (Array.isArray(instants) ? instants : []).filter(x =>
+    x && _ttmNum(x.value) != null && _ttmParseIso(x.date) != null);
+  if (list.length === 0) return { ok: false, reason: 'keine verwertbaren Bilanzstichtage vorhanden' };
+  const candidates = list.filter(x => _ttmParseIso(x.date) <= asOfMs)
+    .sort((a, b) => b.date.localeCompare(a.date));
+  if (candidates.length === 0) {
+    return { ok: false, reason: 'kein Bilanzstichtag am oder vor dem ' + asOfIso };
+  }
+  const pick = candidates[0];
+  const lag = Math.round((asOfMs - _ttmParseIso(pick.date)) / TTM_DAY_MS);
+  if (lag > maxLag) {
+    return { ok: false, lagDays: lag, date: pick.date,
+      reason: 'juengster Bilanzstichtag ' + pick.date + ' liegt ' + lag + ' Tage vor dem Fensterende '
+        + asOfIso + ' — kein passender Stichtag' };
+  }
+  return {
+    ok: true, value: _ttmNum(pick.value), date: pick.date, lagDays: lag, exact: lag === 0,
+    periodKey: pick.periodKey || null,
+    source: pick.source || null,
+    filed: (pick.source && pick.source.filed) || null
+  };
+}
+
+function buildTtmInstantSeries(fieldKey, fieldData, windowEnds) {
+  const out = {
+    field: fieldKey, app_field: TTM_INSTANT_FIELDS[fieldKey] || fieldKey,
+    kind: 'instant', ok: false, values: [], dates: [],
+    unit: (fieldData && fieldData.unit) || null,
+    used_tag: (fieldData && fieldData.usedTag) || null,
+    method: 'balance_sheet_as_of_window_end', filed: null, warnings: [], reason: null
+  };
+  const instants = (fieldData && fieldData.instants) || [];
+  const ends = Array.isArray(windowEnds) ? windowEnds : [];
+  if (ends.length === 0) { out.reason = 'kein TTM-Fensterraster vorhanden'; return out; }
+  for (let i = 0; i < ends.length; i++) {
+    const sel = selectBalanceAsOf(instants, ends[i], {});
+    if (!sel.ok) {
+      out.reason = 'Bilanzstichtag zum ' + ends[i] + ' fehlt: ' + sel.reason;
+      out.values = []; out.dates = [];
+      return out;
+    }
+    out.values.push(sel.value);
+    out.dates.push(sel.date);
+    if (i === 0) out.filed = sel.filed;
+  }
+  out.ok = true;
+  return out;
+}
+
+// ── Aktienzahlen: gesondert, niemals addiert ───────────────────────────
+// Die gewichtete Aktienzahl eines Jahres ist ein Durchschnitt, keine
+// Summe. Aus den vier Quartalsdurchschnitten entsteht deshalb ein nach
+// Quartalslaenge gewichteter Mittelwert. Die AKTUELLE Aktienzahl (Stichtag)
+// bleibt davon getrennt: sie ist die Bezugsgroesse der Bewertung je Aktie,
+// nicht der historische Durchschnitt.
+function buildTtmShareBasis(sharesInput, windows) {
+  const si = sharesInput || {};
+  const out = {
+    ok: false, method: 'day_weighted_mean_of_quarterly_weighted_average',
+    values: [], ends: [], unit: si.unit || null,
+    quarters_used: [], warnings: [], reason: null,
+    current: {
+      value: _ttmNum(si.current && si.current.value),
+      as_of: (si.current && si.current.as_of) || null,
+      source: (si.current && si.current.source) || null
+    },
+    note: 'Gewichtete Durchschnittsaktienzahl je TTM-Fenster (nach Quartalslaenge gewichteter '
+        + 'Mittelwert der vier Quartalsdurchschnitte) — ausdruecklich KEINE Summe. Die aktuelle '
+        + 'Aktienzahl am Stichtag wird davon getrennt ausgewiesen.'
+  };
+  const wq = Array.isArray(si.weighted_diluted_quarters) ? si.weighted_diluted_quarters : [];
+  if (wq.length === 0) {
+    out.reason = 'keine gewichteten Quartalsaktienzahlen uebergeben';
+    return out;
+  }
+  const byEnd = {};
+  for (let i = 0; i < wq.length; i++) {
+    const e = wq[i] && wq[i].end;
+    if (typeof e === 'string' && _ttmNum(wq[i].value) != null) byEnd[e] = wq[i];
+  }
+  const list = Array.isArray(windows) ? windows : [];
+  for (let i = 0; i < list.length; i++) {
+    const w = list[i];
+    const qEnds = w.quarterEnds || [];
+    const qDays = w.quarterDays || [];
+    if (qEnds.length !== 4) {
+      out.reason = 'TTM-Fenster bis ' + w.end + ' ist nicht durch vier Quartale belegt';
+      out.values = []; out.ends = []; out.quarters_used = [];
+      return out;
+    }
+    let sumW = 0, sumWV = 0;
+    const used = [];
+    for (let k = 0; k < 4; k++) {
+      const rec = byEnd[qEnds[k]];
+      if (!rec) {
+        out.reason = 'gewichtete Aktienzahl fuer das Quartal bis ' + qEnds[k] + ' fehlt';
+        out.values = []; out.ends = []; out.quarters_used = [];
+        return out;
+      }
+      const weight = _ttmNum(qDays[k]) != null ? qDays[k] : 1;
+      sumW += weight;
+      sumWV += weight * rec.value;
+      used.push({ end: qEnds[k], value: rec.value, days: weight });
+    }
+    if (!(sumW > 0)) {
+      out.reason = 'Quartalslaengen des Fensters bis ' + w.end + ' sind unbrauchbar';
+      out.values = []; out.ends = []; out.quarters_used = [];
+      return out;
+    }
+    out.values.push(sumWV / sumW);
+    out.ends.push(w.end);
+    out.quarters_used.push(used);
+  }
+  out.ok = out.values.length > 0;
+  if (!out.ok && !out.reason) out.reason = 'kein TTM-Fenster vorhanden';
+  if (out.ok && out.current.value == null) {
+    out.warnings.push('Aktuelle Aktienzahl (Stichtag) nicht uebergeben — die Bewertung je Aktie beruht '
+      + 'damit auf dem gewichteten TTM-Durchschnitt. Beide Groessen bleiben getrennt ausgewiesen.');
+  }
+  return out;
+}
+
+// ── EPS: aus TTM-Ergebnis und TTM-Aktienzahl, nicht aus Quartals-EPS ───
+// Die Summe der Quartals-EPS ist nur eine Gegenprobe. Sie ist bei
+// veraenderlicher Aktienzahl rechnerisch nicht gleich dem TTM-EPS und wird
+// deshalb nie als Wert verwendet.
+function buildTtmEpsSeries(netIncomeValues, shareValues, quarterlyEpsByEnd, windows) {
+  const out = {
+    ok: false, method: 'ttm_net_income_div_ttm_weighted_shares', values: [], ends: [],
+    cross_check: null, warnings: [], reason: null,
+    note: 'EPS entsteht aus TTM-Ergebnis / gewichteter TTM-Aktienzahl. Eine Addition der '
+        + 'Quartals-EPS waere bei veraenderlicher Aktienzahl unzulaessig und dient hoechstens '
+        + 'als Gegenprobe.'
+  };
+  const ni = Array.isArray(netIncomeValues) ? netIncomeValues : [];
+  const sh = Array.isArray(shareValues) ? shareValues : [];
+  const list = Array.isArray(windows) ? windows : [];
+  if (ni.length === 0 || sh.length === 0) {
+    out.reason = 'TTM-Ergebnis oder gewichtete TTM-Aktienzahl fehlt';
+    return out;
+  }
+  const n = Math.min(ni.length, sh.length, list.length);
+  for (let i = 0; i < n; i++) {
+    if (!(sh[i] > 0)) { out.reason = 'gewichtete Aktienzahl im Fenster bis ' + list[i].end + ' ist nicht positiv';
+      out.values = []; out.ends = []; return out; }
+    out.values.push(ni[i] / sh[i]);
+    out.ends.push(list[i].end);
+  }
+  out.ok = out.values.length > 0;
+
+  // Gegenprobe: Summe der Quartals-EPS im juengsten Fenster
+  const qEps = quarterlyEpsByEnd || null;
+  if (out.ok && qEps && list.length > 0) {
+    const qEnds = list[0].quarterEnds || [];
+    let sum = 0, complete = qEnds.length === 4;
+    for (let k = 0; k < qEnds.length; k++) {
+      const v = _ttmNum(qEps[qEnds[k]]);
+      if (v == null) { complete = false; break; }
+      sum += v;
+    }
+    if (complete) {
+      const diff = out.values[0] - sum;
+      const rel = sum !== 0 ? diff / Math.abs(sum) : null;
+      out.cross_check = { sum_of_quarterly_eps: sum, ttm_eps: out.values[0], deltaAbs: diff, deltaRel: rel,
+        used: false };
+      if (rel != null && Math.abs(rel) > 0.01) {
+        out.warnings.push('TTM-EPS weicht um ' + (rel * 100).toFixed(1) + ' % von der Summe der '
+          + 'Quartals-EPS ab (veraenderliche Aktienzahl). Verwendet wird ausschliesslich '
+          + 'TTM-Ergebnis / TTM-Aktienzahl.');
+      }
+    } else {
+      out.cross_check = { sum_of_quarterly_eps: null, ttm_eps: out.values[0], used: false,
+        reason: 'nicht alle vier Quartals-EPS vorhanden' };
+    }
+  }
+  return out;
+}
+
+// ── Gesamtdatensatz der TTM-Datenbasis ─────────────────────────────────
+// Eingabe: Ergebnis der Quartalsnormalisierung (src/sec-quarterly.js),
+// erweitert um den gesondert erhobenen Aktien-Teil:
+//   { ok, fiscalYearEnd, asOfDate, fields: {...},
+//     shares: { weighted_diluted_quarters: [{end, value, source}],
+//               eps_diluted_quarters: { '<Quartalsende>': Wert },
+//               current: { value, as_of, source }, unit } }
+function buildTtmDataset(payload, opts) {
+  const o = opts || {};
+  const out = {
+    ok: false, complete: false, block_version: DATA_BASIS_BLOCK_VERSION,
+    generated_from: 'normalizeSecQuarters',
+    // Masseinheit, in der die Werte dieses Datensatzes stehen (z. B.
+    // 'millions'). Sie wird NICHT erraten und nicht umgerechnet: passt sie
+    // nicht zum Master-JSON, bleibt die Umstellung aus (siehe resolveDataBasis).
+    reporting_unit: (o.reportingUnit != null) ? o.reportingUnit
+      : ((payload && payload.reporting_unit != null) ? payload.reporting_unit : null),
+    fiscal_year_end: null, as_of_date: null,
+    windows: [], window_count: 0,
+    flows: {}, instants: {}, shares: null, eps: null,
+    covered_fields: [], missing: [], reasons: [], warnings: [],
+    period: null, period_label: null, publication: null
+  };
+  if (!payload || typeof payload !== 'object' || payload.ok === false || !payload.fields) {
+    out.reasons.push('keine normalisierten Quartalsdaten vorhanden'
+      + (payload && payload.reason ? ' (' + payload.reason + ')' : ''));
+    return out;
+  }
+  out.fiscal_year_end = payload.fiscalYearEnd
+    ? (payload.fiscalYearEnd.label || null) : null;
+  out.as_of_date = payload.asOfDate || null;
+
+  // Leitreihe: Umsatz. Ohne sie gibt es kein Fensterraster — es wird
+  // ausdruecklich KEIN Raster aus einem anderen Feld geraten, sonst
+  // koennten Felder verschiedene Zeitraeume abdecken.
+  const lead = payload.fields.revenue;
+  if (!lead || !Array.isArray(lead.quarters) || lead.quarters.length === 0) {
+    out.reasons.push('Umsatz liegt nicht als Quartalsreihe vor — ohne Leitreihe kein TTM-Fensterraster');
+    return out;
+  }
+  const raster = ttmWindowEndsFrom(lead.quarters, o.maxWindows || TTM_MAX_WINDOWS);
+  if (raster.ends.length === 0) {
+    out.reasons.push('kein vollstaendiges TTM-Fenster aus der Umsatzreihe: ' + raster.stopReason);
+    return out;
+  }
+  out.windows = raster.windows.map((w, i) => ({
+    index: i, start: w.start, end: w.end, durationDays: w.durationDays,
+    quarters: w.quarters.map(q => q.periodKey),
+    quarterEnds: w.quarters.map(q => q.end),
+    quarterDays: w.quarters.map(q => _ttmInclusiveDays(_ttmParseIso(q.start), _ttmParseIso(q.end))),
+    label: 'TTM ' + w.start + '…' + w.end
+  }));
+  out.window_count = out.windows.length;
+  out.ok = true;
+  const ends = out.windows.map(w => w.end);
+  if (out.window_count < TTM_MIN_WINDOWS) {
+    out.reasons.push('nur ' + out.window_count + ' ueberschneidungsfreies TTM-Fenster vorhanden ('
+      + TTM_MIN_WINDOWS + ' erforderlich, damit ein zulaessiger Vorjahresvergleich moeglich ist): '
+      + raster.stopReason);
+  }
+
+  const flowKeys = Object.keys(TTM_FLOW_FIELDS);
+  for (let i = 0; i < flowKeys.length; i++) {
+    const key = flowKeys[i];
+    const fd = payload.fields[key];
+    if (!fd) {
+      out.missing.push({ field: key, app_field: TTM_FLOW_FIELDS[key], reason: 'Feld nicht in den Quartalsdaten enthalten' });
+      continue;
+    }
+    const series = buildTtmFlowSeries(key, fd, ends);
+    out.flows[key] = series;
+    Array.prototype.push.apply(out.warnings, series.warnings);
+    if (series.ok) out.covered_fields.push(TTM_FLOW_FIELDS[key]);
+    else out.missing.push({ field: key, app_field: TTM_FLOW_FIELDS[key], reason: series.reason });
+  }
+
+  const instKeys = Object.keys(TTM_INSTANT_FIELDS);
+  for (let i = 0; i < instKeys.length; i++) {
+    const key = instKeys[i];
+    const fd = payload.fields[key];
+    if (!fd) {
+      out.missing.push({ field: key, app_field: TTM_INSTANT_FIELDS[key], reason: 'Feld nicht in den Quartalsdaten enthalten' });
+      continue;
+    }
+    const series = buildTtmInstantSeries(key, fd, ends);
+    out.instants[key] = series;
+    Array.prototype.push.apply(out.warnings, series.warnings);
+    if (series.ok) out.covered_fields.push(TTM_INSTANT_FIELDS[key]);
+    else out.missing.push({ field: key, app_field: TTM_INSTANT_FIELDS[key], reason: series.reason });
+  }
+
+  out.shares = buildTtmShareBasis(payload.shares, out.windows);
+  Array.prototype.push.apply(out.warnings, out.shares.warnings);
+  if (out.shares.ok) out.covered_fields.push('shares_diluted');
+  else out.missing.push({ field: 'shares_diluted', app_field: 'shares_diluted', reason: out.shares.reason });
+
+  const niSeries = out.flows.net_income && out.flows.net_income.ok ? out.flows.net_income.values : [];
+  out.eps = buildTtmEpsSeries(niSeries, out.shares.ok ? out.shares.values : [],
+    (payload.shares && payload.shares.eps_diluted_quarters) || null, out.windows);
+  Array.prototype.push.apply(out.warnings, out.eps.warnings);
+  if (out.eps.ok) out.covered_fields.push('eps_diluted');
+  else out.missing.push({ field: 'eps_diluted', app_field: 'eps_diluted', reason: out.eps.reason });
+
+  // Veroeffentlichungsstand: spaetestes Veroeffentlichungsdatum der im
+  // juengsten Fenster verwendeten Angaben. Unbekannt bleibt unbekannt.
+  const filedList = [];
+  const formList = [];
+  flowKeys.forEach(k => {
+    const s = out.flows[k];
+    if (s && s.ok && s.windows[0]) {
+      filedList.push(s.windows[0].filed);
+      (payload.fields[k].quarters || []).forEach(q => {
+        if (s.windows[0].quarters.indexOf(q.periodKey) >= 0 && q.source && q.source.form) formList.push(q.source.form);
+      });
+    }
+  });
+  instKeys.forEach(k => { const s = out.instants[k]; if (s && s.ok) filedList.push(s.filed); });
+  const uniqueForms = formList.filter((v, i) => formList.indexOf(v) === i).sort();
+  out.publication = {
+    latest_filed: filedList.length > 0 ? _ttmLatestFiled(filedList) : null,
+    as_of_date: out.as_of_date,
+    forms: uniqueForms
+  };
+  out.period = { start: out.windows[0].start, end: out.windows[0].end,
+                 durationDays: out.windows[0].durationDays, window_count: out.window_count };
+  out.period_label = out.windows[0].label;
+
+  out.complete = out.missing.length === 0 && out.window_count >= TTM_MIN_WINDOWS;
+  if (!out.complete && out.missing.length > 0) {
+    out.reasons.push('unvollstaendig: ' + out.missing.map(m => m.app_field + ' (' + m.reason + ')').join('; '));
+  }
+  return out;
+}
+
+// ── Auswahl der Datenbasis ─────────────────────────────────────────────
+// Gewuenscht wird in mj.valuation.data_basis ('fy' | 'ttm'). Umgestellt
+// wird NUR bei vollstaendigen TTM-Daten; sonst bleibt es beim letzten
+// Geschaeftsjahr, und der Grund wird benannt (kein stiller Rueckfall).
+function resolveDataBasis(mj, requestedRaw) {
+  const v = (mj && mj.valuation) || {};
+  const f = (mj && mj.fundamentals) || {};
+  let requested = requestedRaw != null ? requestedRaw : v.data_basis;
+  const reasons = [];
+  if (requested == null) {
+    requested = 'fy';
+  } else if (DATA_BASIS_OPTIONS.indexOf(requested) < 0) {
+    reasons.push('Unbekannte Datenbasis "' + String(requested) + '" — es gilt das letzte Geschaeftsjahr.');
+    requested = 'fy';
+  }
+  const ds = (f._ttm && typeof f._ttm === 'object' && !Array.isArray(f._ttm)) ? f._ttm : null;
+  const datasetOk = !!(ds && ds.ok);
+  const availableBeforeUnit = !!(datasetOk && ds.complete);
+
+  if (!ds) {
+    reasons.push('Keine TTM-Datenbasis im Master-JSON hinterlegt (fundamentals._ttm fehlt).');
+  } else if (!datasetOk) {
+    Array.prototype.push.apply(reasons,
+      (Array.isArray(ds.reasons) && ds.reasons.length > 0) ? ds.reasons
+        : ['TTM-Datenbasis konnte nicht gebildet werden.']);
+  } else if (!ds.complete) {
+    Array.prototype.push.apply(reasons,
+      (Array.isArray(ds.reasons) && ds.reasons.length > 0) ? ds.reasons
+        : ['TTM-Datenbasis ist unvollstaendig.']);
+  }
+
+  // Masseinheit: TTM-Werte und Jahresreihen muessen in derselben Einheit
+  // stehen. Es wird weder umgerechnet noch eine Einheit unterstellt.
+  let unitOk = true;
+  if (datasetOk) {
+    const mjUnit = (mj && mj.meta && mj.meta.reporting_unit != null) ? mj.meta.reporting_unit : null;
+    const dsUnit = (ds.reporting_unit != null) ? ds.reporting_unit : null;
+    if (mjUnit !== dsUnit) {
+      unitOk = false;
+      reasons.push('Masseinheit der TTM-Datenbasis (' + (dsUnit == null ? 'nicht angegeben' : dsUnit)
+        + ') stimmt nicht mit der des Master-JSON (' + (mjUnit == null ? 'nicht angegeben' : mjUnit)
+        + ') ueberein — es wird nicht umgerechnet.');
+    }
+  }
+  const available = availableBeforeUnit && unitOk;
+
+  const basis = (requested === 'ttm' && available) ? 'ttm' : 'fy';
+  const fallback = (requested === 'ttm' && basis !== 'ttm');
+
+  // Modellsperren: ein Modell, dessen Pflichtfelder auf der TTM-Basis
+  // nicht gedeckt sind, wird gesperrt — nicht mit Jahreswerten aufgefuellt.
+  const blockedModels = {};
+  if (basis === 'ttm') {
+    const covered = {};
+    (ds.covered_fields || []).forEach(k => { covered[k] = true; });
+    Object.keys(TTM_MODEL_REQUIRED_FIELDS).forEach(model => {
+      const missing = TTM_MODEL_REQUIRED_FIELDS[model].filter(fld => !covered[fld]);
+      if (missing.length > 0) {
+        blockedModels[model] = 'Datenbasis TTM: ' + missing.join(', ')
+          + ' liegt nicht als TTM-Groesse vor. Das Modell wird gesperrt, statt TTM- und '
+          + 'Jahreswerte zu vermischen. Mit der Datenbasis "Letztes Geschäftsjahr" ist es wieder verfuegbar.';
+      }
+    });
+  }
+
+  return {
+    requested, basis, available, complete: !!(ds && ds.complete), dataset: ds,
+    fallback, reasons, blockedModels,
+    label: DATA_BASIS_LABELS[basis] || basis
+  };
+}
+
+// ── Bewertungssicht auf das Master-JSON ────────────────────────────────
+// Bei 'fy' unveraendert. Bei 'ttm' entsteht eine KOPIE, in der die
+// gedeckten Felder ausschliesslich TTM-Fenster tragen; alle uebrigen
+// Reihen werden geleert und als nicht verfuegbar gekennzeichnet, damit
+// keine Kennzahl aus Zeitraeumen verschiedener Art entsteht. Das
+// uebergebene Master-JSON bleibt unangetastet — die Jahresreihen und
+// damit die Qualitaetsdiagnostik bleiben vollstaendig erhalten.
+function buildValuationBasisView(mj, resolved) {
+  if (!mj || !resolved || resolved.basis !== 'ttm' || !resolved.dataset) return mj;
+  const ds = resolved.dataset;
+  const src = mj.fundamentals || {};
+  const f = {};
+  Object.keys(src).forEach(k => { f[k] = src[k]; });
+  const meta = {};
+  Object.keys(src._v4_meta || {}).forEach(k => { meta[k] = src._v4_meta[k]; });
+  f._v4_meta = meta;
+
+  const covered = {};
+  const setSeries = (appField, values, periods, periodType, note, extra) => {
+    f[appField] = values.slice();
+    meta[appField] = Object.assign({
+      source_type: 'derived',
+      source_reference: 'TTM aus normalisierten Quartalsdaten (' + ds.generated_from + ')',
+      confidence: 'medium',
+      period_type: periodType,
+      periods: periods.slice(),
+      periodLocked: true,
+      notes: note
+    }, extra || {});
+    covered[appField] = true;
+  };
+
+  Object.keys(TTM_FLOW_FIELDS).forEach(key => {
+    const s = ds.flows && ds.flows[key];
+    if (!s || !s.ok) return;
+    setSeries(s.app_field, s.values, s.ends, 'TTM',
+      'Summe von vier vollstaendigen, aufeinanderfolgenden Quartalen je Fenster; '
+      + 'Gegenprobe ueber Geschaeftsjahr + YTD − Vorjahres-YTD: ' + (s.cross_check ? s.cross_check.status : 'nicht gelaufen') + '.',
+      { ttm_method: s.method, ttm_cross_check: s.cross_check ? s.cross_check.status : null });
+  });
+  Object.keys(TTM_INSTANT_FIELDS).forEach(key => {
+    const s = ds.instants && ds.instants[key];
+    if (!s || !s.ok) return;
+    setSeries(s.app_field, s.values, s.dates, 'Stichtag',
+      'Bilanzwert zum Stichtag am Ende des jeweiligen TTM-Fensters — nicht summiert, '
+      + 'nicht mit Jahreswerten gemischt.', { ttm_method: s.method });
+  });
+  if (ds.shares && ds.shares.ok) {
+    setSeries('shares_diluted', ds.shares.values, ds.shares.ends, 'TTM (Durchschnitt)',
+      ds.shares.note, { ttm_method: ds.shares.method });
+  }
+  if (ds.eps && ds.eps.ok) {
+    setSeries('eps_diluted', ds.eps.values, ds.eps.ends, 'TTM', ds.eps.note,
+      { ttm_method: ds.eps.method });
+  }
+
+  // Abgeleitete Groessen mit derselben Formel wie in der Jahressicht,
+  // aber ausschliesslich aus TTM-Fenstern.
+  const pairwise = (aField, bField, target, label) => {
+    const a = f[aField], b = f[bField];
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || b.length === 0) return;
+    if (!covered[aField] || !covered[bField]) return;
+    const n = Math.min(a.length, b.length);
+    const vals = [];
+    for (let i = 0; i < n; i++) {
+      vals.push((_ttmNum(a[i]) != null && _ttmNum(b[i]) != null) ? a[i] - b[i] : null);
+    }
+    const periods = (meta[aField] && meta[aField].periods) ? meta[aField].periods.slice(0, n) : [];
+    setSeries(target, vals, periods, meta[aField] ? meta[aField].period_type : 'TTM', label, {});
+  };
+  pairwise('cfo', 'capex', 'fcf', 'Freier Cashflow je TTM-Fenster (cfo − capex), gleiche Formel wie in der Jahressicht.');
+  pairwise('total_debt', 'cash_and_equivalents', 'net_debt',
+    'Nettoverschuldung zum Stichtag am Fensterende (total_debt − cash_and_equivalents).');
+
+  // Alles Uebrige wird geleert statt gemischt.
+  const cleared = [];
+  Object.keys(f).forEach(k => {
+    if (k === '_v4_meta' || covered[k]) return;
+    if (!Array.isArray(f[k])) return;
+    if (f[k].length === 0) return;
+    f[k] = [];
+    meta[k] = {
+      source_type: 'unavailable',
+      source_reference: 'Datenbasis TTM',
+      confidence: 'none',
+      period_type: 'TTM',
+      periods: null,
+      periodLocked: true,
+      notes: k + ' liegt nicht als TTM-Groesse vor. In der TTM-Bewertungssicht bleibt das Feld leer; '
+        + 'der Jahreswert wird NICHT eingemischt. Die Jahresreihe bleibt im Master-JSON erhalten.'
+    };
+    cleared.push(k);
+  });
+
+  // Vorgegebene Jahres-Ersatzreihen duerfen in der TTM-Sicht nicht greifen.
+  if (src.derived && typeof src.derived === 'object') {
+    const d = {};
+    Object.keys(src.derived).forEach(k => {
+      const entry = src.derived[k];
+      d[k] = (entry && typeof entry === 'object' && !Array.isArray(entry))
+        ? Object.assign({}, entry, {
+            override_series: null,
+            override_notes: 'In der TTM-Sicht ausgesetzt: eine auf Jahreswerten beruhende Ersatzreihe '
+              + 'wuerde die Zeitraeume vermischen.'
+          })
+        : entry;
+    });
+    f.derived = d;
+  }
+
+  const view = {};
+  Object.keys(mj).forEach(k => { view[k] = mj[k]; });
+  view.fundamentals = f;
+  view._data_basis_view = {
+    basis: 'ttm', period: ds.period, period_label: ds.period_label,
+    covered_fields: Object.keys(covered), cleared_fields: cleared
+  };
+  return view;
+}
+
+// ── Ausweis der Datenbasis je Bewertung ───────────────────────────────
+// Eine Darstellung fuer Anzeige UND Snapshot: Zeitraum,
+// Veroeffentlichungsstand, Aktienbasis, Warnungen, Rueckfall und
+// Modellsperren. Es gibt keine zweite, abweichende Zusammenstellung.
+function buildDataBasisReport(mj, resolved) {
+  const r = resolved || resolveDataBasis(mj);
+  const f = (mj && mj.fundamentals) || {};
+  const meta = (mj && mj.meta) || {};
+  const v4 = f._v4_meta || {};
+  const ds = r.dataset;
+
+  const rep = {
+    selected: r.basis,
+    requested: r.requested,
+    label: DATA_BASIS_LABELS[r.basis] || r.basis,
+    ttm_available: !!r.available,
+    fallback: { active: !!r.fallback, reasons: (r.reasons || []).slice() },
+    period: null,
+    publication: null,
+    share_basis: null,
+    blocked_models: Object.keys(r.blockedModels || {}).map(k => ({ model: k, reason: r.blockedModels[k] })),
+    warnings: [],
+    covered_fields: [],
+    missing_fields: []
+  };
+
+  if (r.basis === 'ttm' && ds) {
+    rep.period = {
+      type: 'TTM',
+      start: ds.period ? ds.period.start : null,
+      end: ds.period ? ds.period.end : null,
+      duration_days: ds.period ? ds.period.durationDays : null,
+      label: ds.period_label,
+      window_count: ds.window_count,
+      quarters: ds.windows && ds.windows[0] ? ds.windows[0].quarters.slice() : []
+    };
+    rep.publication = {
+      latest_filed: ds.publication ? ds.publication.latest_filed : null,
+      as_of_date: ds.as_of_date || meta.data_cutoff_date || meta.as_of_date || null,
+      forms: ds.publication ? (ds.publication.forms || []).slice() : [],
+      source_primary: meta.source_primary || null
+    };
+    rep.share_basis = {
+      weighted_average_ttm: (ds.shares && ds.shares.ok) ? ds.shares.values[0] : null,
+      weighted_average_method: ds.shares ? ds.shares.method : null,
+      weighted_average_series: (ds.shares && ds.shares.ok) ? ds.shares.values.slice(0, 10) : [],
+      current_shares: ds.shares && ds.shares.current ? ds.shares.current.value : null,
+      current_shares_as_of: ds.shares && ds.shares.current ? ds.shares.current.as_of : null,
+      current_shares_source: ds.shares && ds.shares.current ? ds.shares.current.source : null,
+      unit: (ds.shares && ds.shares.unit) || 'wie im Master-JSON',
+      note: ds.shares ? ds.shares.note : null,
+      eps_method: ds.eps ? ds.eps.method : null,
+      eps_ttm: (ds.eps && ds.eps.ok) ? ds.eps.values[0] : null,
+      eps_cross_check: ds.eps ? ds.eps.cross_check : null
+    };
+    rep.covered_fields = (ds.covered_fields || []).slice();
+    rep.missing_fields = (ds.missing || []).slice();
+    rep.warnings = (ds.warnings || []).slice();
+  } else {
+    const revMeta = v4.revenue || {};
+    const periods = Array.isArray(revMeta.periods) ? revMeta.periods : null;
+    rep.period = {
+      type: revMeta.period_type || 'FY',
+      start: null,
+      end: (periods && periods[0]) || null,
+      duration_days: null,
+      label: (periods && periods[0]) ? ('Letztes Geschäftsjahr bis ' + periods[0]) : 'Letztes Geschäftsjahr',
+      window_count: periods ? periods.length : null,
+      quarters: []
+    };
+    rep.publication = {
+      latest_filed: null,
+      as_of_date: meta.data_cutoff_date || meta.as_of_date || null,
+      forms: null,
+      source_primary: meta.source_primary || null
+    };
+    const sd = Array.isArray(f.shares_diluted) ? f.shares_diluted : [];
+    const sdMeta = v4.shares_diluted || {};
+    rep.share_basis = {
+      weighted_average_fy: (sd.length > 0 && sd[0] != null) ? sd[0] : null,
+      weighted_average_method: 'gewichteter Jahresdurchschnitt wie gemeldet',
+      weighted_average_series: sd.slice(0, 10),
+      current_shares: (mj && mj.market && _ttmNum(mj.market.shares_outstanding_derived) != null)
+        ? mj.market.shares_outstanding_derived : null,
+      current_shares_as_of: (mj && mj.market && mj.market.price_as_of_date) || meta.as_of_date || null,
+      current_shares_source: sdMeta.source_reference || null,
+      unit: 'wie im Master-JSON',
+      note: 'Jahresbasis: verwendet wird der gewichtete Durchschnitt des letzten Geschaeftsjahres. '
+          + 'Die aktuelle Aktienzahl am Stichtag ist davon getrennt ausgewiesen.',
+      eps_method: null, eps_ttm: null, eps_cross_check: null
+    };
+    if (ds && ds.ok) {
+      rep.covered_fields = (ds.covered_fields || []).slice();
+      rep.missing_fields = (ds.missing || []).slice();
+    }
+  }
+  if (rep.fallback.active) {
+    rep.warnings = rep.warnings.concat(['Angefordert war die TTM-Datenbasis; gerechnet wird mit dem '
+      + 'letzten Geschaeftsjahr, weil die TTM-Daten nicht vollstaendig sind.']);
+  }
+  return rep;
+}
+// ── DATENBASIS-BLOCK ENDE ───────────────────────────────────────
+
 function runValuationEngine(mj) {
   if (!mj) return { error: 'Kein Master-JSON.' };
   const router = sectorRouter(mj);
   if (!router) return { error: 'Sector Router fehlgeschlagen.' };
 
+  // ── Datenbasis (V1.0.55) ────────────────────────────────────
+  // Gerechnet wird entweder auf dem letzten Geschäftsjahr oder auf TTM.
+  // `_basisView` ist bei FY dasselbe Objekt wie mj; bei TTM eine Kopie, die
+  // ausschließlich TTM-Fenster trägt. Das übergebene mj bleibt in beiden
+  // Fällen unverändert — die Jahresreihen tragen weiterhin Qualitäts- und
+  // Datenqualitätsdiagnostik. Ein unvollständiger TTM-Stand führt zum
+  // sichtbaren Rückfall (siehe _dataBasis.fallback), nie zur Vermischung.
+  const _dataBasis     = resolveDataBasis(mj);
+  const _basisView     = buildValuationBasisView(mj, _dataBasis);
+  const _dataBasisRep  = buildDataBasisReport(mj, _dataBasis);
+
   // ── V1.0.4: Period-Alignment-Gate ───────────────────────────
   // Läuft vor YoY-Gate — ein Perioden-Mismatch ist oft die Ursache scheinbarer YoY-Anomalien.
-  const _periodCheck = validatePeriodAlignment(mj);
+  // Geprüft wird die tatsächlich verwendete Sicht (FY oder TTM).
+  const _periodCheck = validatePeriodAlignment(_basisView);
   if (!_periodCheck.ok) {
     const _mFields = _periodCheck.mismatch.map(m => `${m.field}=${m.year}(${m.period})`).join(', ');
     const _warnMissing = _periodCheck.missing && _periodCheck.missing.length > 0
@@ -12593,6 +13658,7 @@ function runValuationEngine(mj) {
         + `Anchor: ${_periodCheck.anchorField}=${_periodCheck.anchorYear} | Abweichend: ${_mFields}${_warnMissing}. `
         + `Bitte SEC-Daten neu importieren oder betroffene Felder im JSON prüfen.`,
       _periodMismatch: true,
+      dataBasis: _dataBasisRep,
       _periodMismatchDebug: {
         anchorField:   _periodCheck.anchorField,
         anchorYear:    _periodCheck.anchorYear,
@@ -12627,6 +13693,7 @@ function runValuationEngine(mj) {
       : `${_aLabel}: +${_yoyWorstPct.toFixed(0)}% — Datenfehler-Verdacht (YTD/FY-Mischung oder falsche Unit). Valuation gesperrt. Bitte Revenue-Serie im SEC-Diagnoseblock prüfen.`;
     return {
       error: _errBody + _debugLine,
+      dataBasis: _dataBasisRep,
       _revenueYoyAnomaly: true,
       _revenueYoyWorstPct: _yoyWorstPct,
       _revenueYoyAnomalyDebug: _yoyDebug
@@ -12646,7 +13713,7 @@ function runValuationEngine(mj) {
   const _waccIsHeuristic = _waccMissingComponents.length > 0;
   const _waccDerivedOk = (mj.valuation && mj.valuation.wacc_derived != null);
 
-  const scenariosRaw = buildScenarios(mj);
+  const scenariosRaw = buildScenarios(_basisView);
   const scenariosError = scenariosRaw.error || null;
   const scenarios = scenariosError ? null : scenariosRaw;
 
@@ -12662,32 +13729,32 @@ function runValuationEngine(mj) {
   };
 
   const results = {};
+  // Modellsperre aus der Datenbasis: fehlt einem Modell auf der gewählten
+  // Basis ein Pflichtfeld, wird es gesperrt — es wird NICHT mit Werten der
+  // anderen Periodenart aufgefüllt.
+  const _runModel = (key) => {
+    const blocked = _dataBasis.blockedModels[key];
+    if (blocked) {
+      results[key] = { applicable: false, reason: blocked, modelName: key, _blockedByDataBasis: true };
+      return;
+    }
+    const fn = modelMap[key];
+    if (!fn) {
+      results[key] = { applicable: false, reason: 'Modell nicht implementiert', modelName: key };
+      return;
+    }
+    try {
+      results[key] = fn(_basisView, scenarios);
+    } catch (e) {
+      results[key] = { applicable: false, reason: 'Berechnungsfehler: ' + e.message, modelName: key };
+    }
+  };
   if (scenarios) {
-    router.activeModels.forEach(key => {
-      const fn = modelMap[key];
-      if (!fn) {
-        results[key] = { applicable: false, reason: 'Modell nicht implementiert', modelName: key };
-        return;
-      }
-      try {
-        results[key] = fn(mj, scenarios);
-      } catch (e) {
-        results[key] = { applicable: false, reason: 'Berechnungsfehler: ' + e.message, modelName: key };
-      }
-    });
+    router.activeModels.forEach(_runModel);
     // V1.0.6: diagnosticModels auch berechnen (für UI-Karte sichtbar, aber nicht gewichtet)
     (router.diagnosticModels || []).forEach(key => {
       if (results[key]) return; // bereits berechnet
-      const fn = modelMap[key];
-      if (!fn) {
-        results[key] = { applicable: false, reason: 'Modell nicht implementiert', modelName: key };
-        return;
-      }
-      try {
-        results[key] = fn(mj, scenarios);
-      } catch (e) {
-        results[key] = { applicable: false, reason: 'Berechnungsfehler: ' + e.message, modelName: key };
-      }
+      _runModel(key);
     });
   } else {
     router.activeModels.forEach(key => {
@@ -12708,18 +13775,21 @@ function runValuationEngine(mj) {
   }
 
   const applicableCount = Object.values(results).filter(r => r.applicable).length;
-  const dataMode = detectMode(mj);
+  const dataMode = detectMode(_basisView);
   const valuationMode = scenariosError ? 'minimal'
     : applicableCount >= 2 ? 'full'
     : applicableCount >= 1 ? 'lite'
     : 'minimal';
 
-  const reverseG = computeReverseDcf(mj);
+  const reverseG = computeReverseDcf(_basisView);
 
   return {
     timestamp: new Date().toISOString(),
     valuationMode,
     dataMode,
+    // Ausdrücklich ausgewiesene Datenbasis dieser Bewertung (Zeitraum,
+    // Veröffentlichungsstand, Aktienbasis, Warnungen, Modellsperren).
+    dataBasis: _dataBasisRep,
     router,
     scenarios,
     scenariosError,
@@ -15251,6 +16321,9 @@ function _applyValuationResult(mj, valuation, quality) {
         }])
       ),
       reverseDcfImpliedGrowth: null,
+      // Die Datenbasis bleibt auch im Fehlerzustand sichtbar (V1.0.55) —
+      // gerade dann ist die Frage "welche Periode?" wichtig.
+      dataBasis: valuation.dataBasis || buildDataBasisReport(mj),
       _errorState: true
     };
     const rel = computeRelativeMultiplesFV(mj);
@@ -15941,6 +17014,138 @@ function _applySubClassificationOverride(mj, newValue) {
 
   applyConservativeHeuristics(mj);
   return { changed: true, resetHeuristicFields };
+}
+
+// ── Anzeige der Datenbasis (V1.0.55) ──────────────────────────────
+// Eine Darstellung fuer Annahmen- und Bewertungsansicht. Gezeigt wird genau
+// das, was buildDataBasisReport liefert — keine zweite Herleitung.
+function _dbFmtNum(x, digits) {
+  if (x == null || typeof x !== 'number' || !isFinite(x)) return '–';
+  return x.toLocaleString('de-DE', { minimumFractionDigits: digits || 0, maximumFractionDigits: digits || 0 });
+}
+
+function buildDataBasisCard(mj, valuation, opts) {
+  if (!mj) return '';
+  const o = opts || {};
+  // Vorrang hat der Ausweis, der TATSAECHLICH in der Bewertung galt.
+  const rep = (valuation && valuation.dataBasis) ? valuation.dataBasis : buildDataBasisReport(mj);
+  const istTtm = rep.selected === 'ttm';
+  const farbe = rep.fallback.active ? 'var(--warn)' : (istTtm ? 'var(--info)' : 'var(--accent2)');
+
+  const auswahl = o.withSelector
+    ? `<div class="assumption-row">
+        <span class="alabel">✎ Datenbasis der Bewertung</span>
+        <select id="as-data-basis" onchange="_handleDataBasisChange(this.value)">
+          ${DATA_BASIS_OPTIONS.map(k => `<option value="${k}" ${k === rep.requested ? 'selected' : ''}>${escapeHtml(DATA_BASIS_LABELS[k])}</option>`).join('')}
+        </select>
+      </div>
+      ${rep.ttm_available ? '' : `<div class="txt-caption" style="color:var(--muted);margin-top:4px">TTM ist derzeit nicht wählbar wirksam — es fehlen vollständige Quartalsdaten (siehe unten).</div>`}`
+    : '';
+
+  const zeile = (label, wert, hinweis) => `<div class="assumption-row">
+      <span class="alabel">${escapeHtml(label)}</span>
+      <span style="text-align:right">${wert}${hinweis ? `<div class="txt-caption" style="color:var(--muted)">${escapeHtml(hinweis)}</div>` : ''}</span>
+    </div>`;
+
+  const p = rep.period || {};
+  const pub = rep.publication || {};
+  const sb = rep.share_basis || {};
+  const zeitraum = istTtm
+    ? `${escapeHtml(p.start || '?')} – ${escapeHtml(p.end || '?')}`
+    : escapeHtml(p.end || 'unbekannt');
+  const quartale = (p.quarters && p.quarters.length > 0)
+    ? escapeHtml(p.quarters.join(' · ')) : '–';
+
+  const aktienZeile = istTtm
+    ? zeile('Aktienbasis (gewichteter TTM-Durchschnitt)', _dbFmtNum(sb.weighted_average_ttm, 1),
+        'Gewichteter Mittelwert der vier Quartalsdurchschnitte — keine Summe.')
+    : zeile('Aktienbasis (gewichteter Jahresdurchschnitt)', _dbFmtNum(sb.weighted_average_fy, 1),
+        'Gemeldeter Durchschnitt des letzten Geschäftsjahres.');
+
+  const fallbackBox = rep.fallback.active
+    ? `<div class="txt-diagnostic" style="margin-top:8px;padding:6px 8px;background:rgba(251,191,36,.10);border-left:3px solid var(--warn);border-radius:4px">
+        ⚠ TTM war angefordert, gerechnet wurde mit dem letzten Geschäftsjahr:<br>
+        ${rep.fallback.reasons.map(r => escapeHtml(r)).join('<br>')}
+      </div>` : '';
+
+  const sperrBox = (rep.blocked_models && rep.blocked_models.length > 0)
+    ? `<div class="txt-diagnostic" style="margin-top:8px;padding:6px 8px;background:rgba(167,139,250,.08);border-left:3px solid var(--purple);border-radius:4px">
+        🔒 Auf dieser Datenbasis gesperrte Modelle:<br>
+        ${rep.blocked_models.map(b => '<strong>' + escapeHtml(b.model) + '</strong>: ' + escapeHtml(b.reason)).join('<br>')}
+      </div>` : '';
+
+  const warnBox = (rep.warnings && rep.warnings.length > 0)
+    ? `<div class="txt-diagnostic" style="margin-top:8px;padding:6px 8px;background:rgba(251,191,36,.08);border-left:3px solid var(--warn);border-radius:4px">
+        ${rep.warnings.slice(0, 8).map(w => '⚠ ' + escapeHtml(w)).join('<br>')}
+      </div>` : '';
+
+  const fehlend = (istTtm || !rep.missing_fields || rep.missing_fields.length === 0) ? ''
+    : `<div class="txt-caption" style="color:var(--muted);margin-top:6px">Für TTM fehlen: ${
+        rep.missing_fields.map(m => escapeHtml(m.app_field)).join(', ')}</div>`;
+
+  return `<div class="card" style="border-left:3px solid ${farbe}">
+    <div class="card-title" style="cursor:default">🗓️ Datenbasis der Bewertung
+      <span style="margin-left:auto" class="src-badge txt-caption">${escapeHtml(rep.label)}</span>
+    </div>
+    <div class="txt-diagnostic" style="margin-bottom:8px">
+      Alle Bewertungsmodelle rechnen auf dieser Periodenart. Ein Wechsel mischt keine Perioden:
+      auf TTM-Basis bleiben Felder ohne TTM-Deckung leer, die betroffenen Modelle werden gesperrt.
+      Die Jahresreihen bleiben für die Qualitätsdiagnostik unverändert erhalten.
+    </div>
+    ${auswahl}
+    ${zeile(istTtm ? 'Zeitraum (TTM)' : 'Zeitraum (letztes Geschäftsjahr)', zeitraum,
+       istTtm && p.duration_days ? p.duration_days + ' Tage · ' + (p.window_count || 0) + ' überschneidungsfreie Fenster' : null)}
+    ${istTtm ? zeile('Verwendete Quartale', quartale) : ''}
+    ${zeile('Veröffentlichungsstand', pub.latest_filed ? escapeHtml(pub.latest_filed) : '<span style="color:var(--muted)">unbekannt</span>',
+       (pub.forms && pub.forms.length > 0) ? 'Formulare: ' + pub.forms.join(', ') : null)}
+    ${zeile('Datenstichtag', pub.as_of_date ? escapeHtml(pub.as_of_date) : '<span style="color:var(--muted)">–</span>',
+       pub.source_primary ? 'Quelle: ' + pub.source_primary : null)}
+    ${aktienZeile}
+    ${zeile('Aktuelle Aktienzahl (Stichtag)', _dbFmtNum(sb.current_shares, 1),
+       sb.current_shares_as_of ? 'Stand ' + sb.current_shares_as_of + ' — getrennt vom Durchschnitt geführt' : 'getrennt vom Durchschnitt geführt')}
+    ${istTtm && sb.eps_ttm != null ? zeile('EPS (TTM)', _dbFmtNum(sb.eps_ttm, 2),
+       'TTM-Ergebnis / gewichtete TTM-Aktienzahl — nicht die Summe der Quartals-EPS.') : ''}
+    ${fallbackBox}
+    ${sperrBox}
+    ${warnBox}
+    ${fehlend}
+  </div>`;
+}
+
+// ── Datenbasis der Bewertung umschalten (V1.0.55) ─────────────────
+// Die Auswahl steht im Master-JSON (valuation.data_basis) und wird mit
+// gespeichert. Umgestellt wird nur, was die Daten hergeben: resolveDataBasis
+// faellt bei unvollstaendigen TTM-Daten sichtbar auf das Geschaeftsjahr
+// zurueck — hier wird nichts erzwungen und nichts verschwiegen.
+function _handleDataBasisChange(newValue) {
+  const mj = state.masterJson;
+  if (!mj) return;
+  if (DATA_BASIS_OPTIONS.indexOf(newValue) < 0) return;
+  if (!mj.valuation) mj.valuation = {};
+  if (mj.valuation.data_basis === newValue) return;
+  mj.valuation.data_basis = newValue;
+  if (mj.audit) mj.audit.last_modified = new Date().toISOString();
+
+  state.quality = runQualityEngine(mj);
+  const valuation = runValuationEngine(mj);
+  state.dataQuality = computeDataQualityScore(mj);
+  _applyValuationResult(mj, valuation, state.quality);
+  const _sanityDb = checkPerShareSanity(state.synthesis, mj);
+  if (_sanityDb.blocked && state.synthesis) {
+    state.synthesis = Object.assign({}, state.synthesis, {
+      position: 'blocked', buyPrice: null,
+      blockReason: _sanityDb.reason, _perShareSanityFailed: true, range: null
+    });
+  }
+  state.baseRateWarnings = evaluateBaseRateWarnings(mj, state.quality, state.valuation);
+  _runGrowthLayer(mj);
+
+  renderAssumptions(true);
+  if (g('panel-overview').classList.contains('active')) renderOverview();
+  if (g('panel-valuation').classList.contains('active')) renderValuation();
+  if (g('panel-market').classList.contains('active')) renderMarket();
+  if (g('panel-growth').classList.contains('active')) renderGrowth();
+  flashLiveBadge();
 }
 
 function _handleSubClassificationChange(newValue) {
@@ -18660,6 +19865,7 @@ function buildQceOverviewSummary(qce) {
 
 
 function buildValuationFallback(mj, syn, valResult) {
+  const dataBasisCard = buildDataBasisCard(mj, valResult, {});
   const modeLabel = { full:'FULL', lite:'LITE', minimal:'MINIMAL' };
   const dataMode  = (valResult && valResult.dataMode) || detectMode(mj) || 'unbekannt';
   const modeStr   = modeLabel[dataMode] || dataMode;
@@ -18734,6 +19940,7 @@ function buildValuationFallback(mj, syn, valResult) {
       </div>`;
   }
   return `
+    ${dataBasisCard}
     <div class="card" style="border-left:3px solid var(--warn)">
       <div class="card-title" style="cursor:default">
         Valuation-Modus
@@ -18829,6 +20036,8 @@ function renderValuation() {
   const r = v.router;
 
   let html = '';
+  // Ausdruecklicher Ausweis der Datenbasis dieser Bewertung (V1.0.55).
+  html += buildDataBasisCard(state.masterJson, v, {});
 
   const disabledList = Object.entries(r.disabledModels || {}).map(([k, why]) => `${k}: ${why}`).join(' · ');
   // V11.9.21/22/23: Dividend-Klassifikations-Diagnostik
@@ -19367,6 +20576,7 @@ function renderAssumptions(keepValues) {
         ${sugHtml}
       </div>`;
     })()}
+    ${buildDataBasisCard(mj, state.valuation, { withSelector: true })}
     ${(() => {
       // ── V1.0.21: Market Data & WACC Inputs Diagnosekarte ────────────────
       const diag = computeMarketDataDiagnostics(mj);
@@ -20141,6 +21351,15 @@ function buildSnapshotRecord(ctx) {
     // ── Aktienbasis ───────────────────────────────────────────
     share_basis: buildSnapshotShareBasis(mj, fi),
 
+    // ── Datenbasis der Bewertung (V1.0.55) ────────────────────
+    // Zeitraum, Veroeffentlichungsstand, Aktienbasis, Warnungen und
+    // Modellsperren genau so, wie sie in DIESER Bewertung galten. Vorrang
+    // hat der im Bewertungsergebnis mitgefuehrte Ausweis; nur wenn er fehlt
+    // (z. B. aelterer Aufruf ohne Bewertung), wird er aus dem Master-JSON
+    // abgeleitet — nie mit heutigen Annahmen nachgerechnet.
+    data_basis: _deepCopyForSnapshot(
+      (valuation && valuation.dataBasis) ? valuation.dataBasis : buildDataBasisReport(mj)),
+
     // ── Regelwerk und Zufallsstartwert ────────────────────────
     rule_version:     SYNTHESIS_CONFIG.rule_version,
     synthesis_config: _deepCopyForSnapshot(SYNTHESIS_CONFIG),
@@ -20532,6 +21751,13 @@ function migrateSnapshotRecord(snap) {
       out.share_basis = out.masterJson ? buildSnapshotShareBasis(out.masterJson, fi) : null;
       steps.push(out.share_basis ? 'share_basis aus gespeichertem Master-JSON nachgetragen'
                                  : 'share_basis nicht ableitbar — bleibt null');
+    }
+    if (out.data_basis == null) {
+      // Aus dem GESPEICHERTEN Master-JSON abgeleitet, nicht mit dem heutigen
+      // Modell nachgerechnet: die Auswahl steckt im Master-JSON selbst.
+      out.data_basis = out.masterJson ? buildDataBasisReport(out.masterJson) : null;
+      steps.push(out.data_basis ? 'data_basis aus gespeichertem Master-JSON nachgetragen'
+                                : 'data_basis nicht ableitbar — bleibt null');
     }
     if (out.forecast_targets == null) {
       // Bewusst NICHT mit dem heutigen Modell nachgerechnet: das waeren
@@ -37212,6 +38438,410 @@ function _testGrossMarginPeriodMatch() {
       _grossMarginPeriodsMatchAt({}, 0) === true);
     check('fehlende Angabe an diesem Index ⇒ passend',
       _grossMarginPeriodsMatchAt(mkMj(P24, [null, '2023-12-31', '2022-12-31']), 0) === true);
+  }
+
+  return results;
+}
+
+// ════════════════════════════════════════════════════════════════
+// REGRESSIONSTESTS — Datenbasis der Bewertung (V1.0.55)
+// ────────────────────────────────────────────────────────────────
+// DB-1  FY bleibt Vorgabe und reproduzierbar (auch bei angefordertem,
+//       aber unvollständigem TTM)
+// DB-2  Ausweis je Bewertung: Zeitraum, Veröffentlichungsstand,
+//       Aktienbasis, Warnungen
+// DB-3  TTM-Umschaltung nur bei vollständigen Daten; Modellsperre statt
+//       Vermischung; Jahresreihen bleiben unangetastet
+// DB-4  Snapshot speichert die Datenbasis der gespeicherten Bewertung
+//
+// Reine Funktionen, keine Oberfläche, kein Zufall. Die Quartalsdaten sind
+// synthetisch; alle Erwartungswerte sind von Hand nachgerechnet und stehen
+// als Rechnung im Test.
+// ════════════════════════════════════════════════════════════════
+function _testDataBasis() {
+  const results = [];
+  let _suite = '';
+  function suite(name) { _suite = name; }
+  function check(label, condition, extra) {
+    results.push({ suite: _suite, label, pass: !!condition,
+      extra: extra != null ? String(extra) : undefined });
+  }
+  const nah = (a, b, tol) => a != null && b != null && Math.abs(a - b) <= (tol || 1e-9);
+
+  // ── Synthetische Quartalsdaten (Aufbau der Quartalsnormalisierung) ──
+  const QS = { 1: '-01-01', 2: '-04-01', 3: '-07-01', 4: '-10-01' };
+  const QE = { 1: '-03-31', 2: '-06-30', 3: '-09-30', 4: '-12-31' };
+  const _tage = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000) + 1;
+  const _quelle = (y, n) => ({ form: n === 4 ? '10-K' : '10-Q', accn: 'acc-' + y + '-' + n,
+    filed: n === 4 ? (y + 1) + '-02-15' : y + '-' + String(n * 3 + 2).padStart(2, '0') + '-01',
+    frame: null, tag: 'Test' });
+  // Zeitraumgröße: Einzelquartale UND die dazugehörigen Kumulierungen,
+  // damit beide zulässigen Rechenwege geprüft werden können.
+  const flow = (perYear) => {
+    const quarters = [], cumulatives = [];
+    Object.keys(perYear).forEach(y => {
+      let cum = 0;
+      perYear[y].forEach((val, i) => {
+        const n = i + 1, start = y + QS[n], end = y + QE[n];
+        cum += val;
+        quarters.push({ fiscalYear: +y, fiscalQuarter: n, periodKey: 'FY' + y + '-Q' + n,
+          start, end, durationDays: _tage(start, end), fiscalYearEnd: '12-31',
+          value: val, unit: 'USD', basis: 'reported', source: _quelle(+y, n),
+          derivation: null, restatement: { restated: false, supersedes: [] }, conflict: null });
+        cumulatives.push({ fiscalYear: +y, throughQuarter: n, periodKey: 'FY' + y + '-YTD' + n,
+          start: y + '-01-01', end, durationDays: _tage(y + '-01-01', end),
+          periodType: n === 4 ? 'fiscal_year' : (n === 1 ? 'quarter' : (n === 2 ? 'half_year' : 'nine_months')),
+          value: cum, unit: 'USD', source: _quelle(+y, n),
+          restatement: { restated: false, supersedes: [] } });
+      });
+    });
+    return { field: 'x', kind: 'flow', usedTag: 'Test', unit: 'USD',
+             quarters, cumulatives, gaps: [], conflicts: [], rejectedDerivations: [], notes: [] };
+  };
+  // Stichtagsgröße: je Quartalsende genau ein Wert.
+  const instant = (perYear) => {
+    const instants = [];
+    Object.keys(perYear).forEach(y => {
+      perYear[y].forEach((val, i) => {
+        const n = i + 1;
+        instants.push({ fiscalYear: +y, fiscalQuarter: n, periodKey: 'FY' + y + '-Q' + n,
+          date: y + QE[n], fiscalYearEnd: '12-31', value: val, unit: 'USD',
+          basis: 'reported', source: _quelle(+y, n), restatement: { restated: false, supersedes: [] } });
+      });
+    });
+    return { field: 'x', kind: 'instant', usedTag: 'Test', unit: 'USD',
+             instants, conflicts: [], notes: [] };
+  };
+
+  // Quartalsreihen; die Jahressummen entsprechen den Jahreswerten des
+  // Standarddatensatzes (_makeBaseFundamentals): 4400 / 4700 / 5000.
+  const REV  = { 2022: [1000, 1100, 1100, 1200], 2023: [1100, 1150, 1200, 1250],
+                 2024: [1175, 1225, 1275, 1325], 2025: [1300, 1350] };
+  const EBIT = { 2022: [150, 160, 160, 170], 2023: [160, 165, 175, 180],
+                 2024: [170, 175, 185, 190], 2025: [195, 200] };
+  const NI   = { 2022: [120, 130, 130, 140], 2023: [135, 138, 142, 145],
+                 2024: [145, 148, 152, 155], 2025: [160, 165] };
+  const CFO  = { 2022: [200, 200, 210, 210], 2023: [210, 215, 215, 220],
+                 2024: [220, 225, 225, 230], 2025: [235, 240] };
+  const CPX  = { 2022: [70, 70, 70, 70], 2023: [72, 72, 73, 73],
+                 2024: [75, 75, 75, 75], 2025: [78, 78] };
+  const DEBT = { 2022: [900, 910, 920, 900], 2023: [1000, 1010, 1020, 1050],
+                 2024: [1100, 1120, 1150, 1200], 2025: [1170, 1180] };
+  const LTD  = { 2022: [700, 710, 720, 700], 2023: [800, 810, 820, 850],
+                 2024: [900, 920, 950, 1000], 2025: [970, 980] };
+  const CASH = { 2022: [600, 610, 620, 600], 2023: [650, 660, 670, 700],
+                 2024: [740, 750, 760, 800], 2025: [810, 820] };
+  const CA   = { 2022: [1800, 1810, 1820, 1800], 2023: [1900, 1910, 1920, 1950],
+                 2024: [2000, 2020, 2050, 2100], 2025: [2110, 2120] };
+  const CL   = { 2022: [1200, 1210, 1220, 1200], 2023: [1250, 1260, 1270, 1300],
+                 2024: [1320, 1330, 1340, 1350], 2025: [1360, 1370] };
+  const SHQ  = { 2022: [1010, 1009, 1008, 1007], 2023: [1006, 1005, 1004, 1003],
+                 2024: [1004, 1003, 1002, 1000], 2025: [998, 996] };
+
+  const _shareQuarters = [];
+  Object.keys(SHQ).forEach(y => SHQ[y].forEach((val, i) => {
+    _shareQuarters.push({ end: y + QE[i + 1], start: y + QS[i + 1], value: val,
+      filed: _quelle(+y, i + 1).filed, form: _quelle(+y, i + 1).form, source: _quelle(+y, i + 1) });
+  }));
+
+  const _payload = {
+    ok: true, fiscalYearEnd: { month: 12, day: 31, label: '12-31', source: 'test', observedEnds: [] },
+    asOfDate: '2025-08-10',
+    fields: {
+      revenue: flow(REV), operating_income: flow(EBIT), net_income: flow(NI),
+      cfo: flow(CFO), capex: flow(CPX),
+      total_debt: instant(DEBT), long_term_debt: instant(LTD),
+      cash_and_equivalents: instant(CASH), current_assets: instant(CA),
+      current_liabilities: instant(CL)
+    },
+    warnings: [],
+    shares: { weighted_diluted_quarters: _shareQuarters, eps_diluted_quarters: null,
+              current: { value: 995, as_of: '2025-07-20', source: { tag: 'dei:EntityCommonStockSharesOutstanding' } },
+              unit: 'Mio. Aktien' }
+  };
+  const _ds = buildTtmDataset(_payload, { reportingUnit: 'millions' });
+
+  const _per = (arr) => ({ source_type: 'reported', source_reference: 'SEC EDGAR XBRL: test',
+                           confidence: 'high', period_type: 'FY', periods: arr });
+  const _P = ['2024-12-31', '2023-12-31', '2022-12-31', '2021-12-31',
+              '2020-12-31', '2019-12-31', '2018-12-31', '2017-12-31'];
+  const _mk = (basis, withTtm) => {
+    const f = _makeBaseFundamentals({});
+    f._v4_meta = Object.assign({}, f._v4_meta);
+    ['revenue', 'ebit', 'net_income', 'cfo', 'capex', 'eps_diluted', 'shares_diluted',
+     'total_assets', 'total_debt', 'cash_and_equivalents'].forEach(k => { f._v4_meta[k] = _per(_P); });
+    if (withTtm) f._ttm = _ds;
+    const mj = {
+      schema_version: '4.0',
+      meta: { ticker: 'DBAS', company_name: 'Datenbasis Test', country: 'US', currency: 'USD',
+              reporting_unit: 'millions',
+              as_of_date: '2025-08-10', data_cutoff_date: '2025-08-10',
+              source_primary: 'SEC_EDGAR', cik: '0000123', sub_classification: 'standard_nonfin' },
+      fundamentals: f,
+      valuation: Object.assign(_makeBaseValuation(), basis !== undefined ? { data_basis: basis } : {}),
+      market: { price: 45.00, market_cap: 4500, price_currency: 'USD' },
+      quality_inputs: { piotroski: {} }
+    };
+    applyDerivedFieldsV4(mj);
+    applyDerivedFieldsV4(mj);
+    return mj;
+  };
+
+  // ── DB-0: der Datensatz selbst ───────────────────────────────────
+  suite('DB-0 TTM-Datensatz aus Quartalsdaten');
+  {
+    // Fenster bis 30.06.2025: Q3/24 1275 + Q4/24 1325 + Q1/25 1300 + Q2/25 1350 = 5250
+    check('Datensatz ist vollständig', _ds.complete === true, _ds.reasons.join(' | '));
+    check('Zeitraum 01.07.2024–30.06.2025',
+      _ds.period.start === '2024-07-01' && _ds.period.end === '2025-06-30',
+      _ds.period_label);
+    check('drei überschneidungsfreie Fenster', _ds.window_count === 3, _ds.window_count);
+    check('Umsatz TTM = 5250', _ds.flows.revenue.values[0] === 5250, _ds.flows.revenue.values[0]);
+    // Vorjahresfenster 01.07.2023–30.06.2024: 1200+1250+1175+1225 = 4850
+    // Drittes Fenster 01.07.2022–30.06.2023: 1100+1200+1100+1150 = 4550
+    check('Umsatzreihe der Fenster = 5250 / 4850 / 4550',
+      JSON.stringify(_ds.flows.revenue.values) === JSON.stringify([5250, 4850, 4550]),
+      JSON.stringify(_ds.flows.revenue.values));
+    check('beide Rechenwege stimmen überein',
+      _ds.flows.revenue.cross_check.status === 'uebereinstimmend', _ds.flows.revenue.cross_check.status);
+    // EBIT 185+190+195+200 = 770; CFO 225+230+235+240 = 930; CapEx 75+75+78+78 = 306
+    check('EBIT TTM = 770', _ds.flows.operating_income.values[0] === 770, _ds.flows.operating_income.values[0]);
+    check('CFO TTM = 930', _ds.flows.cfo.values[0] === 930, _ds.flows.cfo.values[0]);
+    check('CapEx TTM = 306', _ds.flows.capex.values[0] === 306, _ds.flows.capex.values[0]);
+    // Nettoergebnis 152+155+160+165 = 632
+    check('Nettoergebnis TTM = 632', _ds.flows.net_income.values[0] === 632, _ds.flows.net_income.values[0]);
+    // Bilanz: Stichtag 30.06.2025, unverändert übernommen
+    check('Schulden = Stichtagswert 1180 (nicht summiert)',
+      _ds.instants.total_debt.values[0] === 1180, _ds.instants.total_debt.values[0]);
+    check('Liquidität = Stichtagswert 820', _ds.instants.cash_and_equivalents.values[0] === 820,
+      _ds.instants.cash_and_equivalents.values[0]);
+    check('Stichtag ist das Fensterende', _ds.instants.total_debt.dates[0] === '2025-06-30',
+      _ds.instants.total_debt.dates[0]);
+    // Jeder Stichtag steht fuer sich: 30.06.2025 = 1180, 30.06.2024 = 1120,
+    // 30.06.2023 = 1010 — unveraendert wie gemeldet, ohne Fortschreibung.
+    check('Schuldenreihe = reine Stichtagswerte 1180 / 1120 / 1010',
+      JSON.stringify(_ds.instants.total_debt.values) === JSON.stringify([1180, 1120, 1010]),
+      JSON.stringify(_ds.instants.total_debt.values));
+    check('Stichtage der Reihe sind die Fensterenden',
+      JSON.stringify(_ds.instants.total_debt.dates) === JSON.stringify(['2025-06-30', '2024-06-30', '2023-06-30']),
+      JSON.stringify(_ds.instants.total_debt.dates));
+    check('Liquiditaetsreihe = 820 / 750 / 660',
+      JSON.stringify(_ds.instants.cash_and_equivalents.values) === JSON.stringify([820, 750, 660]),
+      JSON.stringify(_ds.instants.cash_and_equivalents.values));
+    // Aktienzahl: (92·1002 + 92·1000 + 90·998 + 91·996) / 365 = 364640/365
+    check('gewichtete TTM-Aktienzahl = 364640/365',
+      nah(_ds.shares.values[0], 364640 / 365, 1e-9), _ds.shares.values[0]);
+    check('Aktienzahl ist keine Summe (3996)', _ds.shares.values[0] !== 3996, _ds.shares.values[0]);
+    check('aktuelle Aktienzahl bleibt getrennt', _ds.shares.current.value === 995, _ds.shares.current.value);
+    // EPS = 632 / (364640/365)
+    check('EPS TTM = 632 / gewichtete Aktienzahl',
+      nah(_ds.eps.values[0], 632 / (364640 / 365), 1e-12), _ds.eps.values[0]);
+  }
+
+  // ── DB-1: FY bleibt Vorgabe und reproduzierbar ───────────────────
+  suite('DB-1 FY-Auswahl reproduzierbar');
+  {
+    const mjOhne = _mk(undefined, true);
+    const mjFy   = _mk('fy', true);
+    const mjTtmLeer = _mk('ttm', false);     // TTM angefordert, aber keine Daten
+    const vOhne = runValuationEngine(mjOhne);
+    const vFy   = runValuationEngine(mjFy);
+    const vLeer = runValuationEngine(mjTtmLeer);
+
+    check('ohne Auswahl gilt das letzte Geschäftsjahr', vOhne.dataBasis.selected === 'fy',
+      vOhne.dataBasis.selected);
+    check('vorhandene TTM-Daten werden nicht ungefragt verwendet',
+      vOhne.dataBasis.ttm_available === true && vOhne.dataBasis.selected === 'fy');
+    check('FY-Auswahl liefert dieselben Modellergebnisse wie keine Auswahl',
+      JSON.stringify(vOhne.modelResults) === JSON.stringify(vFy.modelResults));
+    check('unvollständiges TTM ändert die FY-Ergebnisse nicht',
+      JSON.stringify(vLeer.modelResults) === JSON.stringify(vFy.modelResults));
+    check('der Rückfall ist sichtbar ausgewiesen',
+      vLeer.dataBasis.fallback.active === true && vLeer.dataBasis.fallback.reasons.length > 0,
+      JSON.stringify(vLeer.dataBasis.fallback.reasons));
+    check('kein Modell wird auf FY-Basis durch die Datenbasis gesperrt',
+      vFy.dataBasis.blocked_models.length === 0);
+    check('zweimaliger Aufruf liefert dasselbe Ergebnis',
+      JSON.stringify(runValuationEngine(_mk('fy', true)).modelResults) === JSON.stringify(vFy.modelResults));
+    // DCF rechnet unverändert auf dem Jahreswert
+    check('DCF verwendet den Jahresumsatz 5000',
+      buildForecastInputs(mjFy).revenue0 === 5000, buildForecastInputs(mjFy).revenue0);
+
+    // Lückenhafte Quartalsreihe: Q4/2024 fehlt. Es darf weder ein TTM-Wert
+    // entstehen noch ein anderes Fenster ersatzweise verwendet werden.
+    const _payloadLuecke = JSON.parse(JSON.stringify(_payload));
+    _payloadLuecke.fields.revenue.quarters =
+      _payloadLuecke.fields.revenue.quarters.filter(q => q.periodKey !== 'FY2024-Q4');
+    const _dsLuecke = buildTtmDataset(_payloadLuecke, { reportingUnit: 'millions' });
+    check('fehlendes Quartal verhindert den TTM-Datensatz', _dsLuecke.complete === false);
+    check('kein ersatzweise älteres Fenster', _dsLuecke.window_count === 0, _dsLuecke.window_count);
+    const mjLuecke = _mk('ttm', true);
+    mjLuecke.fundamentals._ttm = _dsLuecke;
+    const vLuecke = runValuationEngine(mjLuecke);
+    check('bei fehlendem Quartal wird sichtbar auf FY zurückgefallen',
+      vLuecke.dataBasis.selected === 'fy' && vLuecke.dataBasis.fallback.active === true,
+      JSON.stringify(vLuecke.dataBasis.fallback.reasons));
+    check('die FY-Ergebnisse bleiben dabei unverändert',
+      JSON.stringify(vLuecke.modelResults) === JSON.stringify(vFy.modelResults));
+
+    // Gebildeter, aber unvollständiger Datensatz: die Zeitraumreihen stehen,
+    // die Aktienbasis fehlt. Auch das reicht nicht zum Umschalten.
+    const _payloadOhneAktien = JSON.parse(JSON.stringify(_payload));
+    _payloadOhneAktien.shares.weighted_diluted_quarters = [];
+    const _dsOhneAktien = buildTtmDataset(_payloadOhneAktien, { reportingUnit: 'millions' });
+    check('unvollständiger Datensatz ist gebildet, aber nicht vollständig',
+      _dsOhneAktien.ok === true && _dsOhneAktien.complete === false,
+      _dsOhneAktien.reasons.join(' | '));
+    check('die Umsatzfenster stehen trotzdem', _dsOhneAktien.flows.revenue.values[0] === 5250);
+    const mjOhneAktien = _mk('ttm', true);
+    mjOhneAktien.fundamentals._ttm = _dsOhneAktien;
+    const vOhneAktien = runValuationEngine(mjOhneAktien);
+    check('ohne Aktienbasis bleibt es sichtbar bei FY',
+      vOhneAktien.dataBasis.selected === 'fy' && vOhneAktien.dataBasis.fallback.active === true,
+      JSON.stringify(vOhneAktien.dataBasis.fallback.reasons));
+    check('der Grund nennt die fehlende Aktienbasis',
+      vOhneAktien.dataBasis.fallback.reasons.join(' ').indexOf('shares_diluted') >= 0,
+      JSON.stringify(vOhneAktien.dataBasis.fallback.reasons));
+    check('auch dabei bleiben die FY-Ergebnisse unverändert',
+      JSON.stringify(vOhneAktien.modelResults) === JSON.stringify(vFy.modelResults));
+
+    // Maßeinheit: TTM-Werte in einer anderen Einheit werden nicht umgerechnet
+    // und nicht verwendet — das wäre ein stiller Faktor 10⁶.
+    const _dsEinheit = buildTtmDataset(_payload, { reportingUnit: 'units' });
+    check('Datensatz in abweichender Einheit ist vollständig', _dsEinheit.complete === true);
+    const mjEinheit = _mk('ttm', true);
+    mjEinheit.fundamentals._ttm = _dsEinheit;
+    const vEinheit = runValuationEngine(mjEinheit);
+    check('abweichende Maßeinheit verhindert die Umstellung',
+      vEinheit.dataBasis.selected === 'fy' && vEinheit.dataBasis.fallback.active === true);
+    check('der Grund nennt die Maßeinheit',
+      vEinheit.dataBasis.fallback.reasons.join(' ').indexOf('Masseinheit') >= 0,
+      JSON.stringify(vEinheit.dataBasis.fallback.reasons));
+    check('und die FY-Ergebnisse bleiben unverändert',
+      JSON.stringify(vEinheit.modelResults) === JSON.stringify(vFy.modelResults));
+  }
+
+  // ── DB-2: Ausweis je Bewertung ───────────────────────────────────
+  suite('DB-2 Ausweis der Datenbasis');
+  {
+    const mjFy = _mk('fy', true);
+    const rep = runValuationEngine(mjFy).dataBasis;
+    check('Bezeichnung genannt', rep.label === 'Letztes Geschäftsjahr (FY)', rep.label);
+    check('Zeitraumende ist das letzte Geschäftsjahr', rep.period.end === '2024-12-31', rep.period.end);
+    check('Datenstichtag ausgewiesen', rep.publication.as_of_date === '2025-08-10', rep.publication.as_of_date);
+    check('Quelle ausgewiesen', rep.publication.source_primary === 'SEC_EDGAR', rep.publication.source_primary);
+    check('Aktienbasis (Jahresdurchschnitt) ausgewiesen',
+      rep.share_basis.weighted_average_fy === 1000, rep.share_basis.weighted_average_fy);
+    check('fehlende TTM-Felder werden nicht behauptet', Array.isArray(rep.missing_fields));
+    const html = buildDataBasisCard(mjFy, { dataBasis: rep }, { withSelector: true });
+    check('Anzeige nennt die Datenbasis', html.indexOf('Datenbasis der Bewertung') >= 0);
+    check('Anzeige enthält die Auswahl', html.indexOf('as-data-basis') >= 0);
+    check('Anzeige nennt den Zeitraum', html.indexOf('2024-12-31') >= 0);
+
+    // Auch wenn die Bewertung gesperrt ist, bleibt die Datenbasis ausgewiesen:
+    // gerade dann ist die Frage nach der Periode wichtig.
+    const mjMismatch = _mk('fy', true);
+    mjMismatch.fundamentals._v4_meta.net_income =
+      { source_type: 'reported', source_reference: 'test', confidence: 'high',
+        period_type: 'FY', periods: ['2021-12-31'] };
+    const vErr = runValuationEngine(mjMismatch);
+    check('gesperrte Bewertung meldet einen Fehler', !!vErr.error, vErr.error);
+    check('auch im Fehlerfall ist die Datenbasis ausgewiesen',
+      !!vErr.dataBasis && vErr.dataBasis.selected === 'fy');
+    check('Ersatzansicht zeigt die Datenbasis',
+      buildValuationFallback(mjMismatch, null, vErr).indexOf('Datenbasis der Bewertung') >= 0);
+  }
+
+  // ── DB-3: TTM-Umschaltung, Sperre statt Vermischung ──────────────
+  suite('DB-3 TTM-Umschaltung');
+  {
+    const mjTtm = _mk('ttm', true);
+    const revVorher = mjTtm.fundamentals.revenue.slice();
+    const v = runValuationEngine(mjTtm);
+    check('Datenbasis ist TTM', v.dataBasis.selected === 'ttm', v.dataBasis.selected);
+    check('Zeitraum 01.07.2024–30.06.2025',
+      v.dataBasis.period.start === '2024-07-01' && v.dataBasis.period.end === '2025-06-30');
+    check('verwendete Quartale benannt',
+      v.dataBasis.period.quarters.join(',') === 'FY2024-Q3,FY2024-Q4,FY2025-Q1,FY2025-Q2',
+      v.dataBasis.period.quarters.join(','));
+    check('Veröffentlichungsstand benannt', v.dataBasis.publication.latest_filed === '2025-08-01',
+      v.dataBasis.publication.latest_filed);
+    check('Aktienbasis TTM ausgewiesen',
+      nah(v.dataBasis.share_basis.weighted_average_ttm, 364640 / 365, 1e-9),
+      v.dataBasis.share_basis.weighted_average_ttm);
+    check('aktuelle Aktienzahl getrennt ausgewiesen',
+      v.dataBasis.share_basis.current_shares === 995, v.dataBasis.share_basis.current_shares);
+
+    // Bewertungssicht: TTM-Werte, keine Jahreswerte
+    const sicht = buildValuationBasisView(mjTtm, resolveDataBasis(mjTtm));
+    check('Umsatz der Sicht ist TTM (5250)', sicht.fundamentals.revenue[0] === 5250,
+      sicht.fundamentals.revenue[0]);
+    check('Vorjahresfenster ist ebenfalls TTM (1200+1250+1175+1225 = 4850)',
+      sicht.fundamentals.revenue[1] === 4850, sicht.fundamentals.revenue[1]);
+    check('FCF der Sicht = 930 − 306 = 624', sicht.fundamentals.fcf[0] === 624, sicht.fundamentals.fcf[0]);
+    check('Nettoschulden der Sicht = 1180 − 820 = 360',
+      sicht.fundamentals.net_debt[0] === 360, sicht.fundamentals.net_debt[0]);
+    check('ungedecktes Feld bleibt leer statt Jahreswert',
+      Array.isArray(sicht.fundamentals.ebitda) && sicht.fundamentals.ebitda.length === 0,
+      JSON.stringify(sicht.fundamentals.ebitda));
+    check('Prognose rechnet auf dem TTM-Umsatz',
+      buildForecastInputs(sicht).revenue0 === 5250, buildForecastInputs(sicht).revenue0);
+
+    // Modellsperre statt Vermischung
+    const rim = v.modelResults.rim || null;
+    check('RIM wird auf TTM-Basis gesperrt',
+      !rim || (rim.applicable === false && rim._blockedByDataBasis === true),
+      rim ? rim.reason : 'nicht im Router');
+    check('die Sperre nennt das fehlende Feld',
+      v.dataBasis.blocked_models.some(b => b.model === 'rim' && /book_value/.test(b.reason)),
+      JSON.stringify(v.dataBasis.blocked_models.map(b => b.model)));
+    check('DCF bleibt auf TTM-Basis verfügbar',
+      !v.dataBasis.blocked_models.some(b => b.model === 'dcf'));
+
+    // Jahresreihen bleiben unangetastet — Qualitätsdiagnostik behält sie
+    check('Master-JSON bleibt unverändert',
+      JSON.stringify(mjTtm.fundamentals.revenue) === JSON.stringify(revVorher),
+      JSON.stringify(mjTtm.fundamentals.revenue));
+    check('Jahresreihe weiterhin achtjährig', mjTtm.fundamentals.revenue.length === 8);
+    // Die Qualitätsdiagnostik rechnet unverändert auf dem Master-JSON und
+    // damit auf den Jahresreihen — die Datenbasis der Bewertung ändert sie nicht.
+    const qTtm = runQualityEngine(mjTtm);
+    const qFy  = runQualityEngine(_mk('fy', true));
+    check('Qualitätsdiagnostik liefert ein Ergebnis', !!qTtm && !!qTtm.scores);
+    check('Qualitätsdiagnostik ist von der Datenbasis unabhängig',
+      JSON.stringify(qTtm.scores) === JSON.stringify(qFy.scores));
+    check('Qualitätsdiagnostik sieht dieselben Jahresdaten',
+      qTtm.fundamentalsHash === qFy.fundamentalsHash, qTtm.fundamentalsHash);
+  }
+
+  // ── DB-4: Snapshot ──────────────────────────────────────────────
+  suite('DB-4 Snapshot speichert die Datenbasis');
+  {
+    const mjTtm = _mk('ttm', true);
+    const v = runValuationEngine(mjTtm);
+    const rec = buildSnapshotRecord({ masterJson: mjTtm, valuation: v,
+      quality: null, synthesis: null, dataQuality: null,
+      now: new Date('2025-08-11T00:00:00Z'), id: 'db-test' });
+    check('Snapshot enthält die Datenbasis', !!rec.data_basis);
+    check('gespeichert ist die tatsächlich verwendete Basis',
+      rec.data_basis.selected === 'ttm', rec.data_basis.selected);
+    check('Zeitraum gespeichert',
+      rec.data_basis.period.start === '2024-07-01' && rec.data_basis.period.end === '2025-06-30');
+    check('Veröffentlichungsstand gespeichert',
+      rec.data_basis.publication.latest_filed === '2025-08-01', rec.data_basis.publication.latest_filed);
+    check('Aktienbasis gespeichert',
+      nah(rec.data_basis.share_basis.weighted_average_ttm, 364640 / 365, 1e-9));
+    check('Modellsperren gespeichert', rec.data_basis.blocked_models.length > 0);
+    check('Snapshot bleibt strukturell gültig',
+      validateSnapshotRecordStructure(rec).length === 0,
+      validateSnapshotRecordStructure(rec).join(' | '));
+
+    const mjFy = _mk('fy', true);
+    const recFy = buildSnapshotRecord({ masterJson: mjFy, valuation: runValuationEngine(mjFy),
+      quality: null, synthesis: null, dataQuality: null,
+      now: new Date('2025-08-11T00:00:00Z'), id: 'db-test-fy' });
+    check('FY-Snapshot weist die Jahresbasis aus', recFy.data_basis.selected === 'fy');
+    check('FY-Snapshot ohne Rückfallmeldung', recFy.data_basis.fallback.active === false);
   }
 
   return results;
