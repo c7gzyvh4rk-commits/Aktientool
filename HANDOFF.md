@@ -1,5 +1,151 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Schritt: Isolierte Normalisierung von SEC-Quartalsdaten (V1.0.53)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
+`claude/gross-margin-period-match`, Ausgangscommit `e15b05a` — der neueste auf
+GitHub gespeicherte Stand (Chat 9 `efe14c9` **einschliesslich** der
+anschliessenden Korrektur `8a955b3`; `main` steht weiterhin auf `b023dc8`).
+Aktuelle Tool-Datei unveraendert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html` (einzige
+HTML-Datei des Repositories, von `tests/extract-functions.mjs`, `src/dcf-core.js`
+und `test/run-calc-tests.js` geladen — damit als tatsaechlich verwendete Datei
+belegt). Uebergabebranch: `claude/tender-galileo-wc31j5`. Testbefehl: `npm test`.
+Baseline auf `e15b05a` (ausgefuehrt): **1459 Rechen-Assertions · 78 Node-Tests ·
+Exit-Code 0**.
+
+**Abgrenzung.** Die produktive Bewertung bleibt in diesem Schritt vollstaendig
+auf der bisherigen Jahresbasis (10-K/FY). Die HTML-Datei ist **unveraendert**
+(`git diff` gegen `e15b05a` zeigt keinerlei Aenderung an ihr), es gibt keine
+Oberflaechenaenderung, keinen neuen Anbieter und keinen Aufruf des neuen Moduls
+aus der Anwendung. Ein Test sichert diese Abgrenzung ausdruecklich ab.
+
+### Neu: `src/sec-quarterly.js` — isolierter Normalisierer
+
+Reines Node-Modul (CommonJS), ohne DOM, ohne globalen Zustand, ohne
+Abhaengigkeiten, deterministisch. Eingabe ist eine companyfacts-artige Struktur
+(`{ "us-gaap": { <Tag>: { units: { USD: [ facts ] } } } }`).
+
+**Umfang.** Zeitraumgroessen: `revenue`, `operating_income`, `net_income`,
+`cfo`, `capex`. Stichtagsgroessen: `total_debt`, `long_term_debt`,
+`cash_and_equivalents`, `current_assets`, `current_liabilities` (Schulden,
+Liquiditaet und die Bestandteile des operativen Working Capital gemaess der
+bestehenden Definition `(CA − Cash) − (CL − kurzfr. Finanzschulden)`; berechnet
+wird das OWC hier bewusst **nicht**).
+
+**Umsetzung der Anforderungen**
+
+1. Ausgewertet werden `10-K`, `10-Q` sowie die Berichtigungen `10-K/A` und
+   `10-Q/A`. Der Jahreswert aus dem 10-K ist fuer die Q4-Ableitung zwingend;
+   andere Formulare (z. B. 8-K) werden verworfen.
+2. Einzelquartal oder kumulierter Geschaeftsjahreswert wird an **Start, Ende und
+   Periodendauer** entschieden (einschliesslich gezaehlte Tage: Quartal 80–100,
+   Halbjahr 160–200, Neunmonatswert 250–290, Jahr 340–385) — nicht am
+   Formulartyp und nicht am `frame`-Feld. Rollierende Zwoelfmonatswerte und
+   Mehrquartalsbloecke ohne Bezug zum Geschaeftsjahresbeginn werden verworfen
+   und in `notes` begruendet.
+3. Abgeleitet wird nur aus zwei kompatiblen Kumulierungen **desselben**
+   Geschaeftsjahres: Q2 = YTD6 − YTD3, Q3 = YTD9 − YTD6, **Q4 = Jahreswert −
+   Neunmonatswert** (`method: fiscal_year_minus_nine_months`). Ein ausdruecklich
+   gemeldetes Einzelquartal geht einer Ableitung vor; weicht es von der Differenz
+   ab, bleibt der gemeldete Wert stehen und die Abweichung wird als `conflict`
+   ausgewiesen (keine stille Aufloesung).
+4. Stichtagsgroessen laufen ueber einen eigenen Pfad ohne jede Addition oder
+   Differenzbildung — je Bilanzstichtag wird ausgewaehlt, nie gerechnet.
+   Zeitraum- und Stichtagsangaben werden nicht vermischt (beide Richtungen
+   werden verworfen und protokolliert).
+5. Periodenschluessel ist das **Geschaeftsjahr** (`FY2025-Q1`), bestimmt aus dem
+   beobachteten Geschaeftsjahresende (gestuft: Jahresperiode aus 10-K, sonst
+   10-K-Stichtag, sonst Jahresperiode aus 10-Q). Vom Kalenderjahr abweichende
+   Geschaeftsjahre und 52/53-Wochen-Jahre werden unterstuetzt; ohne bestimmbares
+   Geschaeftsjahresende liefert das Modul `ok:false` statt einer Vermutung.
+   `options.fiscalYearEnd` erlaubt eine ausdrueckliche Vorgabe.
+6. An jedem Wert bleiben Formular, Filing-ID (`accn`), Veroeffentlichungsdatum
+   (`filed`) und `frame` erhalten; abgeleitete Werte fuehren den vollstaendigen
+   Ableitungsweg (Minuend, Subtrahend mit je eigener Herkunft, Formel) und als
+   `filed` die **spaetere** der beiden Veroffentlichungen — vorher war der Wert
+   nicht bekannt.
+7. Berichtigungsregel: je Periode gewinnt die zuletzt veroeffentlichte Angabe;
+   verdraengte abweichende Angaben bleiben unter `restatement.supersedes`
+   sichtbar. Mit `options.asOfDate` werden spaeter veroeffentlichte Angaben —
+   und Angaben ohne `filed`, die sich dem Stichtag nicht zuordnen lassen — nicht
+   uebernommen; der Stichtag gilt auch fuer die Bestimmung des
+   Geschaeftsjahresendes. Zwei abweichende Werte mit **demselben** `filed` sind
+   ein Widerspruch: dann wird kein Wert gewaehlt.
+8. Luecken und Widersprueche werden benannt (`gaps`, `conflicts`, `warnings`),
+   nie gefuellt. `gaps` meldet nur fehlende Quartale **innerhalb** der belegten
+   Spanne; es entsteht keine vollstaendige Reihe.
+
+Die Tag-Listen werden nicht kopiert, sondern ueber `appTagMap()` aus der
+`SEC_TAG_MAP` der ausgelieferten HTML-Datei gelesen (gleiche Entscheidung wie
+`src/dcf-core.js` und `tests/extract-functions.mjs`).
+
+### Neue Tests — `tests/sec-quarterly.test.mjs`, 24 Tests
+
+Rein synthetische Facts, Erwartungswerte unabhaengig von Hand gerechnet und als
+Kommentar an der Assertion, kein Netzwerk, kein DOM, kein Zufall. Vom
+gemeinsamen Lauf (`test/run-all.js` sammelt `tests/*.test.mjs`) automatisch
+erfasst — keine Konfigurationsaenderung noetig.
+
+Abgedeckt: Periodendauer-Klassifikation · Periodenschluessel bei Kalender-,
+abweichendem (31.01.) und 52/53-Wochen-Geschaeftsjahr · **gemeldete
+Einzelquartale** · **kumulierter CFO** (50/120/200/300 ⇒ 50/70/80/100) ·
+**Q4-Ableitung** (460 − 330 = 130, auch je Feld einzeln nachgerechnet) ·
+**abweichendes Geschaeftsjahr** (drei Quartalsenden im Kalenderjahr 2024, alle
+FY2025) · **fehlendes Quartal** (Luecke statt Ersatzwert) · **berichtigter
+Abschluss** (10-Q/A gewinnt; mit `asOfDate` gewinnt der Vorwert und der spaetere
+Wert taucht nirgends auf) · Widerspruch bei gleichem `filed` · Abweichung
+gemeldet/abgeleitet · keine Ableitung ueber Geschaeftsjahresgrenzen · TTM-
+und Mehrquartalsperioden · Stichtage ohne Summierung (doppelt gemeldeter
+Stichtag bleibt einfach) · Stichtagsberichtigung · Formularfilter ·
+Eingabepruefungen · Nichteinbindung in die Anwendung.
+
+### Gegenproben (ausgefuehrt)
+
+Jede Regel einzeln entfernt, jeweils rote Tests: Stichtagsregel ausgeschaltet
+→ 2 Fehlschlaege · Ableitung ueber Jahresgrenzen erlaubt → 1 · Kalenderjahr als
+Periodenschluessel → 2 · Mehrquartalsperiode als Quartal akzeptiert → 2 ·
+Stichtage nicht je Datum zusammengefuehrt → 2 · Widerspruch gemeldet/abgeleitet
+verschwiegen → 1.
+
+### Tatsaechlich ausgefuehrte Tests
+
+* `npm test` → Rechentests **1459 bestanden · 0 fehlgeschlagen ·
+  0 Fehler/Exceptions** (unveraendert zur Baseline, die HTML-Datei wurde nicht
+  angefasst), Node-Tests **102/102** (78 unveraendert **+24 neue**), gemeinsamer
+  **Exit-Code 0**. Alle 434 Fixture-Assertions unveraendert gruen.
+* Keine bestehende Testerwartung geaendert oder gelockert.
+
+### Verbleibende Grenzen
+
+* Der Normalisierer ist **nicht** angeschlossen: keine Quartalsdaten in der
+  Bewertung, in der Oberflaeche oder im Master-JSON. Das ist der beauftragte
+  Zustand dieses Schrittes.
+* Werte bleiben in der gemeldeten Einheit (USD, nicht Millionen) und mit dem
+  gemeldeten Vorzeichen (CapEx ist ein positiver Abfluss). Die Skalierung auf
+  die Einheiten des Bewertungskerns ist Sache eines spaeteren Schrittes.
+* Je Feld wird genau eine Tag-Kette verwendet (erste Kette mit verwertbaren
+  Angaben); innerhalb eines Feldes werden Tags **nicht** gemischt. Wechselt ein
+  Unternehmen den Tag, entstehen Luecken — sie werden gemeldet, nicht
+  ueberbrueckt.
+* Das Geschaeftsjahr wird mit dem Kalenderjahr seines **Endes** benannt
+  (FY2025 endet am 31.01.2025); die abweichende Eigenbezeichnung mancher
+  Unternehmen wird nicht uebernommen.
+* Nur `us-gaap`; unternehmenseigene Namensraeume bleiben aussen vor.
+* Die Konsistenzbedingung „abgedeckte Quartale passen zur Endposition" ist bei
+  in sich stimmigen Datumsangaben rechnerisch redundant (nicht ueberlappende
+  Dauerfenster) und bleibt als Absicherung stehen — die Gegenprobe dazu bleibt
+  gruen.
+* Weiter offen aus den Vorschritten: Einheitenverdacht in `_makeBaseValuation()`;
+  index-basierte Ableitung von `eps_diluted`, `book_value`, `dps` in
+  `applyDerivedFieldsV4`; Korrelationen der Monte-Carlo-Groessen; Fachansichten
+  ausserhalb der Hauptansicht nicht vereinfacht.
+
+### Ergebnis dieses Schrittes
+
+* Uebergabebranch: `claude/tender-galileo-wc31j5`
+* Ergebniscommit: *(unten nachgetragen)*
+
 ## Update (Restfehler): Bruttomarge nur aus passenden Perioden (V1.0.52)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, geprüfter Branch
