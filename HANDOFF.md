@@ -1,5 +1,209 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Update (Chat 9): Einstieg und Hauptansicht vereinfacht (V1.0.50)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, geprüfter Branch
+`claude/midcycle-margin-override-fix`, geprüfter Commit `a71b1f1` — die Spitze
+dieses Branches und der jüngste Stand aller Branches (Prüfung: Commitdatum
+aller Remote-Branches; `main` steht weiterhin auf `b023dc8`). Tool-Datei
+unverändert `us-aktienbewertungstool-v1036-sector-classification-patch.html`
+(einzige HTML-Datei des Repositories und Ziel von `test/run-calc-tests.js`),
+Modul `src/dcf-core.js`. Übergabebranch: `claude/beautiful-carson-t5eqpi`.
+Testbefehl: `npm test`. Baseline auf `a71b1f1` (ausgeführt):
+1298 Rechen-Assertions · 78 Node-Tests · Exit-Code 0.
+
+Umfang: ausschliesslich Einstieg und Hauptansicht (Overview) samt der dafür
+nötigen Anzeigehilfen, Tests und dieses Dokument. **Keine Bewertungsformel,
+keine Abschlagsregel, keine Modell- oder Routerlogik geändert.**
+
+### 1. Ticker-Suche als primärer Einstieg
+
+* Neue Karte **„Aktie suchen"** ganz oben: Ticker-Feld, Abrufknopf,
+  Yahoo-Option, Statusmeldung und die Import-Bestätigungsleiste.
+  Ticker-Feld, Abrufknopf und Yahoo-Option wurden aus dem SEC-Panel
+  **verschoben** (nicht dupliziert) — geprüft: jede betroffene Element-ID
+  kommt im Dokument genau einmal vor.
+* Neue Karte **„Daten und Einstellungen"** (eingeklappt) mit zwei benannten
+  Abschnitten: *1. Datenverbindung (Proxy-Adresse)* und *2. Daten als
+  JSON-Datei importieren*. Die bisherige Karte „Master-JSON Import" und das
+  Proxy-Feld aus dem SEC-Panel sind dorthin gewandert.
+* Das SEC-Panel bleibt als Expertenansicht bestehen (Mapping-Diagnose,
+  Evidenz-Hierarchie, Worker-Beispiel) und verweist auf Einstieg und
+  Einstellungen.
+
+### 2. Ehrliche Statusmeldung statt vorgetäuschter Verbindung
+
+* Neu `entrySetupState(proxyUrl, hasData)` (rein) und `renderEntryStatus()`:
+  ohne Adresse bzw. ohne `http(s)://` bleibt der Abrufknopf **gesperrt**, die
+  Meldung nennt den Grund, sagt, dass **kein automatischer Abruf möglich** ist,
+  nennt den JSON-Import als Alternative und führt per Knopf in die
+  Einstellungen (`openDataSettings()`).
+* Der Leerzustand der Hauptansicht nennt denselben Einrichtungsstand (die
+  Ansicht wird beim Laden einmal gerendert, statt einen statischen Platzhalter
+  stehen zu lassen).
+* Fehlgeschlagener Abruf: deutsche Einordnung vor der technischen Meldung
+  („Abruf fehlgeschlagen: … — die Datenverbindung ist nicht erreichbar.").
+
+### 3. Hauptansicht in fünf Bereichen
+
+Reihenfolge: Kopf · Einordnung auf einen Blick · **max. 3 Kernaussagen** ·
+Warnhinweise · Legende · **Geschäftsmodell** · **Qualität und Wachstum** ·
+**Finanzielle Risiken** · **Bewertung und Erwartungen** ·
+**Datenverlässlichkeit** · „Details und Fachansichten".
+
+### 4. Nur vorhandene Informationen
+
+* `ovBusinessModelFacts(mj)` (rein) liefert ausschliesslich Angaben aus dem
+  Datensatz (Branche, Einordnung, Börse, Währung, Umsatz, Dividende, dazu
+  moat_rating/These, wenn gesetzt). Fehlt eine Angabe, steht dort
+  „nicht im Datensatz enthalten" + Markierung **Datenlücke** — **kein**
+  erfundener Beschreibungstext. Ein Hinweis sagt ausdrücklich, dass
+  SEC-XBRL keine Geschäfts- oder Segmentbeschreibung enthält und hier nichts
+  ergänzt wird.
+* `_ovMetricRow()` zeigt eine nicht berechenbare Kennzahl als Datenlücke samt
+  Grund — nie als `0`.
+
+### 5. Höchstens drei Kernaussagen mit Kennzahlenbezug
+
+`ovKeyStatements(mj, q, s, dq)` (rein, deterministisch, feste Prüfreihenfolge,
+keine Zeit-/Zufallsabhängigkeit) prüft in dieser Reihenfolge: aktive
+Ausschlusskriterien → gesperrte Bewertung → keine rechnerische Bewertung →
+negativer Modellwert → Kurs vs. Einstiegszone (ersatzweise Basisszenario) →
+Qualitätsurteil → eingeschränkte Datenlage → Modell-Divergenz. Jede Aussage
+führt ihre Grundlage mit („Grundlage: Kurs: 45,00 · Einstiegszone: 3,84").
+Ein Prozentabstand wird **nur** zu einem positiven Vergleichswert gebildet.
+
+### 6. Kurs und Szenariowerte gegenübergestellt
+
+`ovScenarioRows(mj, s)` (rein) liefert eine Tabelle
+*Größe · Wert · Abstand zum Kurs · Herkunft* mit Kurs, Einstiegszone,
+Basis-, vorsichtigem und günstigem Szenario sowie P25/P75. Fehlende Werte
+bleiben `null` (Datenlücke), ohne Kurs wird **kein** Abstand behauptet.
+
+### 7. Einheitliche Kennzeichnung, deutsche Beschriftung
+
+* `ovMark(kind)` mit fünf Markierungen, jede mit **ausgeschriebenem Text**
+  (nicht nur Farbe): **Historie · Prognose · manuelle Annahme · Datenlücke ·
+  Marktdaten**; Legende oberhalb der Bereiche.
+* Warnhinweise tragen das Wort „Blockierend"/„Warnung"/„Hinweis" statt eines
+  reinen Farbsymbols; die Einordnung nennt neben der Ampelfarbe immer den
+  Klartext (z. B. „KEIN SIGNAL — Bewertung gesperrt").
+* Fachbegriffe werden erklärt (Piotroski, Kapitalrendite minus Kapitalkosten,
+  Nettoverschuldung/EBITDA, Zinsdeckung, P25/P75, Sicherheitsabschlag).
+* Navigation und Kopfzeile jetzt durchgehend deutsch (Übersicht, Qualität,
+  Bewertung, Wachstum, Annahmen, Snapshots, SEC-Daten). Die Schlüssel in
+  `switchTab(...)` sind unverändert.
+
+### 8. Expertenfunktionen bleiben erreichbar
+
+Alle bisherigen Tabs bestehen weiter. Die Diagnoseinhalte der alten Übersicht
+(Kennzahlenübersicht, Range-Box, Verdict-/Buy-Price-Box, Schema-Prüfung,
+Warnliste, Herkunft des risikofreien Zinses) liegen in der eingeklappten Karte
+**„Details und Fachansichten"** mit Sprungknöpfen in alle Fachbereiche.
+
+### Neue Regressionstests — `_testOverviewSimplification()`, 59 Assertions
+
+In der Tool-Datei ergänzt und in `test/run-calc-tests.js` als reine
+Testfunktion registriert (kein DOM, kein globaler Zustand).
+
+* **OV-1** Einrichtungsstatus: leer/Leerzeichen/ohne Schema/`https`/`http`/`null`.
+* **OV-2** Geschäftsmodell: leerer Datensatz ⇒ jeder Wert `null` und jede Zeile
+  Datenlücke; Klartext der Einordnung; Umsatz „12.345 Mio. USD"; Dividende
+  `0` ⇒ „nein" (keine Lücke); unbekannte Einordnung wird unverändert gezeigt;
+  eigene Einschätzungen als manuelle Annahme.
+* **OV-3** Szenariozeilen mit unabhängig nachgerechneten Abständen
+  (80/100 ⇒ −20 %, 120 ⇒ +20 %, 90 ⇒ −10 %, 150 ⇒ +50 %, 95 ⇒ −5 %,
+  140 ⇒ +40 %); fehlender Wert bleibt `null`, nicht `0`; ohne Kurs kein Abstand.
+* **OV-4** Kernaussagen: höchstens drei; „Der Kurs liegt 25,0 % über der
+  Einstiegszone." (100/80); Grundlage nennt Kurs 100,00 und Einstiegszone
+  80,00; Sperre steht an erster Stelle; überschriebene Kriterien sperren nicht;
+  Datenstufe D wird genannt; ohne Grundlage keine Aussage; wiederholte
+  Ableitung identisch; ohne Einstiegszone Vergleich mit dem Basisszenario
+  (100/120 ⇒ 16,7 % unter).
+* **OV-5** Kennzeichnung trägt immer Text; unbekannte Markierung erzeugt keine
+  leere Farbfläche; nicht berechenbare Kennzahl wird nicht zu `0` und nennt
+  den Grund.
+
+### Gegenproben (ausgeführt)
+
+| Rückbau | Rot |
+|---|---|
+| GP-1 Proxy-Adresse ohne Schemaprüfung akzeptiert | 2 (`invalid_proxy` → `ready`) |
+| GP-2 fehlender Szenariowert als `0` statt Datenlücke | 2 |
+| GP-3 erfundene Branche („Mischkonzern") statt Datenlücke | 2 |
+
+### Tatsächlich ausgeführte Tests
+
+* `npm test` → Rechentests **1357 bestanden · 0 fehlgeschlagen ·
+  0 Fehler/Exceptions** (1298 unverändert zur Baseline **+59 neue**),
+  Node-Tests **78/78** unverändert, gemeinsamer **Exit-Code 0**.
+  Keine bestehende Erwartung geändert oder gelockert; alle 434
+  Fixture-Assertions unverändert grün — die Bewertungsergebnisse sind
+  unberührt.
+* **Echter Browser** (Chromium 1194 headless über `playwright-core`, nur im
+  Arbeitsverzeichnis ausserhalb des Repositories installiert — das Projekt
+  bleibt abhängigkeitsfrei), Datei per `file://`, **0 JS-Fehler
+  (`pageerror`)**. Geprüfte Zustände:
+  1. **Leerer Zustand** (1280×900): Ticker-Suche sichtbar, Abrufknopf
+     gesperrt, Statusmeldung „Einrichtung unvollständig — kein automatischer
+     Abruf", Knopf öffnet die Einstellungen; unvollständige Adresse hält den
+     Abruf gesperrt und nennt den Grund; vollständige Adresse schaltet frei.
+  2. **Erfolgreicher Import** (Fixture `T-01` aus der Datei selbst): genau die
+     fünf Bereiche in der beauftragten Reihenfolge, 3 Kernaussagen je mit
+     Grundlage, 7 Szenariozeilen, Legende, Kennzeichnungen
+     (Historie 15 · Prognose 8 · manuelle Annahme 1 · Datenlücke 7 ·
+     Marktdaten 3), Details eingeklappt mit 7 Sprungknöpfen; Wechsel in die
+     Fachansicht und zurück.
+  3. **Fehlende Daten** (T-01 ohne EBITDA, Zinsaufwand, Schulden, Sektor,
+     Börse): 9 Angaben als Datenlücke gekennzeichnet, Grund jeweils genannt,
+     keine `0,00`-Ersatzwerte in der Szenariotabelle.
+  4. **Blockierte Bewertung** (`auditor_opinion_status = going_concern_doubt`):
+     Position `blocked`, erste Kernaussage „Die Bewertung ist gesperrt: Going
+     Concern.", Risikobereich nennt das aktive Kriterium, Bewertungsbereich
+     erklärt, warum keine belastbaren Szenariowerte vorliegen.
+     Zusätzlich blockierter Import (Fixture `T-03`, kein Kurs): Import wird
+     abgewiesen, Meldung nennt `B-08`, die Hauptansicht bleibt im Leerzustand
+     und zeigt keine erfundene Bewertung.
+  5. **Schmale Breite** (390×844): waagerechter Überlauf **0 px**, alle fünf
+     Bereiche vorhanden, Szenariotabelle mit eigenem Scrollbereich.
+  6. **Fehlgeschlagener Abruf** (nicht erreichbare Adresse): deutsche Meldung,
+     Abrufknopf wieder bedienbar, keine vorgetäuschte Bewertung, 0 JS-Fehler.
+
+### Verbleibende Grenzen
+
+* Der einzige Konsolenfehler im Browsercheck ist eine blockierte Anfrage an
+  `fonts.googleapis.com` (Netzwerksperre der Prüfumgebung). Gegen den
+  Ausgangsstand `a71b1f1` gemessen: **identisch** (dort ebenfalls genau diese
+  eine fehlgeschlagene Anfrage, 0 `pageerror`) — nicht durch diese Änderung
+  verursacht.
+* Der Browsercheck ist ein einmalig ausgeführtes Skript im Arbeitsverzeichnis,
+  **kein** Bestandteil von `npm test`; die Suiten bleiben abhängigkeitsfrei und
+  DOM-frei. Node-Prüfungen sind ausdrücklich **kein** Browsernachweis.
+* Die Fachansichten (Qualität, Bewertung, Markt-Vergleich, Annahmen, SEC-Daten,
+  Snapshots) wurden **nicht** vereinfacht — der Auftrag betraf ausdrücklich nur
+  Einstieg und Hauptansicht. Ihre Beschriftungen sind daher weiterhin
+  teilweise englisch.
+* Es gibt keine Geschäftsmodell- oder Segmentdaten im Schema; der Bereich
+  „Geschäftsmodell" zeigt deshalb die vorhandenen Stammdaten und weist die
+  Lücke aus. Eine Erweiterung des Schemas war nicht beauftragt.
+* `ENGINE_VERSION` / `DISPLAY_VERSION` bleiben unverändert
+  (`1.0.35-base-rate-lite`) — mehrere Fixtures pinnen den Wert exakt; die
+  Bezeichnung V1.0.50 gilt nur für diesen Dokumentationsabschnitt.
+* Weiter offen aus den Vorschritten: Einheitenverdacht in
+  `_makeBaseValuation()`; index-basierte Ableitung von `eps_diluted`,
+  `book_value`, `dps` in `applyDerivedFieldsV4`; Korrelationen der
+  Monte-Carlo-Größen nicht modelliert; `buildCoreValuationContext()` wandelt
+  bei direktem Aufruf weiterhin `'15'` um.
+
+### Ausgangsstand für Chat 10
+
+Übergabebranch: `claude/beautiful-carson-t5eqpi` (Basis `a71b1f1` auf
+`claude/midcycle-margin-override-fix`). Tool-Datei unverändert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`, Modul
+`src/dcf-core.js`.
+Testbefehl: `npm test` — beide Suiten grün, Exit-Code 0
+(1357 Rechen-Assertions · 78 Node-Tests).
+
 ## Update (Chat 8 Restfehler): Mid-Cycle mit manuellem Margen-Override (V1.0.49)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, geprüfter Branch

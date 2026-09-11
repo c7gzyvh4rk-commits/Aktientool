@@ -2264,6 +2264,144 @@ body { font-size: 0.92rem; }
   .val-range-marker .lbl { font-size: 0.64rem; }
 }
 
+/* ══════════════════════════════════════════════════════════════
+   Vereinfachter Einstieg und Hauptansicht
+   Farbe steht nie allein: jede farbige Markierung traegt Text.
+   ══════════════════════════════════════════════════════════════ */
+
+.entry-card { border-left: 3px solid var(--accent); }
+.entry-row {
+  display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;
+}
+.entry-field { flex: 1 1 240px; min-width: 0; }
+.entry-label {
+  display: block; font-size: .72rem; color: var(--text-sub);
+  margin-bottom: 4px; letter-spacing: .03em;
+}
+.entry-btn { flex: 0 0 auto; }
+.entry-sub {
+  font-size: .74rem; color: var(--muted); line-height: 1.6; margin-top: 8px;
+}
+.entry-check {
+  display: flex; align-items: center; gap: 7px;
+  font-size: .74rem; color: var(--text-sub); margin-top: 8px;
+}
+.entry-status { margin-top: 10px; }
+.entry-status:empty { display: none; }
+.entry-status-box {
+  border: 1px solid var(--border2); border-left-width: 3px;
+  border-radius: var(--radius-sm); padding: 10px 13px;
+  background: var(--surface2); line-height: 1.6;
+}
+.entry-status-box.is-missing { border-left-color: var(--warn); }
+.entry-status-box.is-ready   { border-left-color: var(--accent); }
+.entry-status-title {
+  font-size: .78rem; font-weight: 600; color: var(--text); margin-bottom: 3px;
+}
+.entry-status-text { font-size: .74rem; color: var(--text-sub); }
+.entry-status-actions { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+
+.linklike {
+  color: var(--info); text-decoration: underline; cursor: pointer;
+}
+
+.settings-section { margin-bottom: 18px; }
+.settings-section:last-child { margin-bottom: 0; }
+.settings-section-title {
+  font-size: .8rem; font-weight: 600; color: var(--text); margin-bottom: 5px;
+}
+.settings-section-text {
+  font-size: .74rem; color: var(--text-sub); line-height: 1.65; margin-bottom: 10px;
+}
+.settings-proxy-row {
+  display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;
+}
+
+/* ── Hauptansicht: fuenf Bereiche ───────────────────────────── */
+.ovs-section {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); margin-bottom: 12px; overflow: hidden;
+}
+.ovs-head {
+  padding: 11px 15px; border-bottom: 1px solid var(--border);
+  background: var(--surface2);
+}
+.ovs-title { font-size: .92rem; font-weight: 600; color: var(--text); }
+.ovs-hint { font-size: .72rem; color: var(--muted); margin-top: 2px; line-height: 1.55; }
+.ovs-body { padding: 13px 15px; }
+
+.ovs-key-list { margin-bottom: 12px; }
+.ovs-key-item {
+  display: flex; gap: 10px; align-items: flex-start;
+  background: var(--surface); border: 1px solid var(--border);
+  border-left: 3px solid var(--info);
+  border-radius: var(--radius-sm); padding: 10px 13px; margin-bottom: 7px;
+}
+.ovs-key-item.k-warn   { border-left-color: var(--warn); }
+.ovs-key-item.k-danger { border-left-color: var(--danger); }
+.ovs-key-item.k-ok     { border-left-color: var(--accent); }
+.ovs-key-no { font-size: .7rem; color: var(--muted); font-family: var(--font-mono); flex: 0 0 auto; padding-top: 2px; }
+.ovs-key-text { font-size: .84rem; color: var(--text); line-height: 1.55; }
+.ovs-key-basis { font-size: .71rem; color: var(--muted); margin-top: 4px; line-height: 1.6; }
+.ovs-key-basis strong { color: var(--text-sub); font-weight: 500; }
+
+.ovs-facts { display: grid; grid-template-columns: minmax(130px, auto) 1fr; gap: 6px 14px; }
+.ovs-fact-k { font-size: .74rem; color: var(--muted); }
+.ovs-fact-v { font-size: .78rem; color: var(--text); line-height: 1.55; }
+
+.ovs-note {
+  font-size: .73rem; color: var(--text-sub); line-height: 1.6;
+  background: var(--dim); border-left: 2px solid var(--border2);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  padding: 8px 11px; margin-top: 10px;
+}
+.ovs-empty { font-size: .76rem; color: var(--muted); font-style: italic; }
+
+.ovs-item { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.ovs-item:last-child { border-bottom: none; }
+.ovs-item-title { font-size: .78rem; color: var(--text); line-height: 1.55; }
+.ovs-item-sub { font-size: .72rem; color: var(--muted); line-height: 1.55; margin-top: 2px; }
+
+/* Kennzeichnung: Historie / Prognose / manuelle Annahme / Datenluecke.
+   Jede Markierung ist ausgeschriebener Text, nicht nur Farbe. */
+.ovs-mark {
+  display: inline-block; font-size: .63rem; padding: 1px 6px;
+  border-radius: 3px; border: 1px solid var(--border2);
+  background: var(--surface3); color: var(--text-sub);
+  font-family: var(--font-mono); white-space: nowrap; vertical-align: middle;
+}
+.ovs-mark.m-hist   { border-color: rgba(126,232,162,.35); color: var(--accent); background: rgba(126,232,162,.07); }
+.ovs-mark.m-fc     { border-color: rgba(91,163,217,.35);  color: var(--info);   background: rgba(91,163,217,.07); }
+.ovs-mark.m-manual { border-color: rgba(240,184,85,.35);  color: var(--warn);   background: rgba(240,184,85,.07); }
+.ovs-mark.m-gap    { border-color: rgba(224,90,90,.35);   color: var(--danger); background: rgba(224,90,90,.07); }
+
+.ovs-scen { width: 100%; border-collapse: collapse; }
+.ovs-scen th, .ovs-scen td {
+  text-align: left; padding: 7px 8px; font-size: .76rem;
+  border-bottom: 1px solid var(--border); vertical-align: top;
+}
+.ovs-scen th { font-size: .7rem; color: var(--muted); font-weight: 500; letter-spacing: .04em; text-transform: uppercase; }
+.ovs-scen td.num { font-family: var(--font-mono); color: var(--text); white-space: nowrap; }
+.ovs-scen tr.is-price td { background: var(--surface2); }
+.ovs-scen tr:last-child td { border-bottom: none; }
+.ovs-scen-wrap { overflow-x: auto; }
+
+.ovs-legend {
+  display: flex; flex-wrap: wrap; gap: 8px 14px;
+  font-size: .71rem; color: var(--muted); line-height: 1.6;
+  padding: 9px 13px; background: var(--dim);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  margin-bottom: 12px;
+}
+
+@media (max-width: 640px) {
+  .entry-row, .settings-proxy-row { flex-direction: column; align-items: stretch; }
+  .entry-btn { width: 100%; }
+  .ovs-facts { grid-template-columns: 1fr; gap: 2px 0; }
+  .ovs-fact-k { margin-top: 6px; }
+  .ovs-scen th, .ovs-scen td { padding: 6px 5px; font-size: .72rem; }
+}
+
 </style>
 
 
@@ -2276,47 +2414,121 @@ body { font-size: 0.92rem; }
     <span class="header-version" id="header-version-badge">V1.0.35-base-rate-lite</span>
     <span id="header-build-stamp" style="font-size:.62rem;color:var(--muted);font-family:var(--font-mono);letter-spacing:.04em;opacity:.5"></span>
   </div>
-  <div class="sub">SEC · Quality · Valuation · USD-only</div>
+  <div class="sub">Geschäftszahlen der SEC · Qualität · Bewertung · nur US-Dollar</div>
 </div>
 
-<!-- IMPORT -->
+<!-- EINSTIEG: Ticker-Suche (primaerer Einstieg) -->
 
-<div class="card" id="import-card">
-  <div class="card-title" onclick="toggleCard(this)">Master-JSON Import <span id="import-ticker-badge" style="margin-left:auto;display:none;font-size:.72rem;color:var(--accent2);font-family:var(--font-mono);font-weight:500;letter-spacing:.04em"></span><span class="chev"></span></div>
+<div class="card entry-card" id="entry-card">
+  <div class="card-title" style="cursor:default">Aktie suchen
+    <span id="import-ticker-badge" style="margin-left:auto;display:none;font-size:.72rem;color:var(--accent2);font-family:var(--font-mono);font-weight:500;letter-spacing:.04em"></span>
+  </div>
   <div class="card-body">
-    <div class="drop-zone" id="drop-zone" onclick="document.getElementById('json-file-input').click()">
-      <input type="file" id="json-file-input" accept=".json,application/json" style="position:absolute;inset:0;opacity:0;cursor:pointer" onchange="handleFileSelect(event)">
-      <div class="dz-icon">📂</div>
-      <div class="dz-title" id="dz-title">JSON-Datei ablegen oder klicken</div>
-      <div class="dz-sub" id="dz-sub">Unterstützt Schema v3 und v4 · automatische Migration</div>
+    <div class="entry-row">
+      <div class="entry-field">
+        <label class="entry-label" for="sec-ticker">US-Börsenkürzel (Ticker)</label>
+        <input type="text" id="sec-ticker" placeholder="z. B. AAPL, MSFT, JNJ"
+               style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()"
+               onkeydown="if(event.key==='Enter')secFetchAll()">
+      </div>
+      <button class="btn entry-btn" onclick="secFetchAll()" id="sec-fetch-btn" disabled
+              title="Zuerst die Datenverbindung unter „Daten und Einstellungen“ einrichten">
+        Daten abrufen
+      </button>
     </div>
-    <div style="display:flex;align-items:center;gap:8px;margin:10px 0 6px">
-      <div style="flex:1;height:1px;background:var(--border)"></div>
-      <span style="font-size:.66rem;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;font-family:var(--font-mono)">oder JSON einfügen</span>
-      <div style="flex:1;height:1px;background:var(--border)"></div>
+    <div class="entry-sub">
+      Abruf der Geschäftszahlen aus der US-Börsenaufsicht SEC (EDGAR). Nur US-Aktien, nur US-Dollar.
     </div>
-    <textarea id="import-master-json" rows="3" placeholder='{"schema_version":"4.0","meta":{...},"fundamentals":{...},...}'></textarea>
-    <div class="btn-row" style="margin-top:10px">
-      <button class="btn" onclick="importMasterJsonFromTextarea()">Importieren &amp; berechnen</button>
-      <button class="btn ghost" onclick="exportMasterJsonToTextarea()">State exportieren</button>
-      <button class="btn ghost" onclick="downloadMasterJson()">JSON herunterladen</button>
+    <label class="sec-checkbox-label entry-check">
+      <input type="checkbox" id="sec-yahoo-enabled" checked style="width:auto;accent-color:var(--accent)">
+      Kurs und Beta zusätzlich über Yahoo laden <span class="muted-help">(inoffizielle Quelle, mittlere Verlässlichkeit)</span>
+    </label>
+
+    <!-- Statusmeldung zur Einrichtung: fehlt die Datenverbindung, führt sie dorthin. -->
+    <div id="entry-setup-status" class="entry-status"></div>
+
+    <div id="sec-fetch-status" class="import-status" style="display:none"></div>
+
+    <!-- Nach erfolgreichem Abruf sichtbar: Import bestätigen, ohne zu scrollen. -->
+    <div id="sec-pending-import-actions" class="sec-diag-actions-top" style="display:none;margin-top:10px">
+      <button class="btn" id="sec-import-btn" onclick="secConfirmImport()">Daten übernehmen &amp; berechnen</button>
+      <button class="btn ghost" onclick="secCancelImport()">Abbrechen</button>
+      <button class="btn ghost" onclick="switchTab('sec')">Zuordnung der Daten prüfen</button>
     </div>
-    <div class="import-status" id="import-master-status"></div>
-    <div id="master-mode-indicator" style="font-size:.72rem;color:var(--muted);margin-top:8px;display:none;white-space:pre-wrap;font-family:var(--font-mono);line-height:1.5"></div>
+  </div>
+</div>
+
+<!-- DATEN UND EINSTELLUNGEN (Datenverbindung + JSON-Import) -->
+
+<div class="card collapsed" id="settings-card">
+  <div class="card-title" onclick="toggleCard(this)">Daten und Einstellungen
+    <span class="muted-help" style="margin-left:auto">Datenverbindung einrichten · Daten als Datei importieren</span>
+    <span class="chev"></span>
+  </div>
+  <div class="card-body">
+
+    <div class="settings-section">
+      <div class="settings-section-title">1. Datenverbindung (Proxy-Adresse)</div>
+      <div class="settings-section-text">
+        Die SEC erlaubt keinen direkten Abruf aus dem Browser. Der Abruf läuft deshalb über eine
+        eigene Zwischenstelle („Proxy“), deren Adresse hier eingetragen wird. Ohne diese Adresse
+        ist <strong>kein automatischer Abruf möglich</strong> — Daten lassen sich dann nur als
+        JSON-Datei importieren (Abschnitt 2). Ein Einrichtungsbeispiel steht im Bereich
+        <span class="linklike" onclick="switchTab('sec')">SEC-Daten</span>.
+      </div>
+      <div class="settings-proxy-row">
+        <div class="entry-field">
+          <label class="entry-label" for="sec-proxy-url">Proxy-Adresse</label>
+          <input type="text" id="sec-proxy-url" placeholder="https://mein-worker.workers.dev/sec"
+                 oninput="secProxyConfigChanged()" style="margin-bottom:0">
+        </div>
+        <button class="btn ghost" onclick="secSaveProxyUrl()">Adresse speichern</button>
+      </div>
+      <div id="sec-proxy-status" style="font-size:.72rem;color:var(--muted);margin-top:8px;line-height:1.5;font-family:var(--font-mono)"></div>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">2. Daten als JSON-Datei importieren</div>
+      <div class="settings-section-text">
+        Alternative ohne Datenverbindung: einen bereits vorhandenen Datensatz (Master-JSON)
+        einlesen. Schema v3 und v4 werden unterstützt, ältere Datensätze werden automatisch
+        umgestellt.
+      </div>
+      <div class="drop-zone" id="drop-zone" onclick="document.getElementById('json-file-input').click()">
+        <input type="file" id="json-file-input" accept=".json,application/json" style="position:absolute;inset:0;opacity:0;cursor:pointer" onchange="handleFileSelect(event)">
+        <div class="dz-icon">📂</div>
+        <div class="dz-title" id="dz-title">JSON-Datei ablegen oder klicken</div>
+        <div class="dz-sub" id="dz-sub">Unterstützt Schema v3 und v4 · automatische Migration</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin:10px 0 6px">
+        <div style="flex:1;height:1px;background:var(--border)"></div>
+        <span style="font-size:.66rem;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;font-family:var(--font-mono)">oder JSON einfügen</span>
+        <div style="flex:1;height:1px;background:var(--border)"></div>
+      </div>
+      <textarea id="import-master-json" rows="3" placeholder='{"schema_version":"4.0","meta":{...},"fundamentals":{...},...}'></textarea>
+      <div class="btn-row" style="margin-top:10px">
+        <button class="btn" onclick="importMasterJsonFromTextarea()">Importieren &amp; berechnen</button>
+        <button class="btn ghost" onclick="exportMasterJsonToTextarea()">Aktuellen Stand exportieren</button>
+        <button class="btn ghost" onclick="downloadMasterJson()">JSON herunterladen</button>
+      </div>
+      <div class="import-status" id="import-master-status"></div>
+      <div id="master-mode-indicator" style="font-size:.72rem;color:var(--muted);margin-top:8px;display:none;white-space:pre-wrap;font-family:var(--font-mono);line-height:1.5"></div>
+    </div>
+
   </div>
 </div>
 
 <!-- TABS -->
 
 <div class="tabs" id="tabs">
-  <button class="tab" onclick="switchTab('sec')" id="tab-sec" style="border:1px solid rgba(126,232,162,.25);color:var(--accent2)">🏛 SEC Fetch</button>
-  <button class="tab active" onclick="switchTab('overview')">Overview</button>
-  <button class="tab" onclick="switchTab('quality')">Quality</button>
-  <button class="tab" onclick="switchTab('valuation')">Valuation</button>
-  <button class="tab" id="tab-growth" onclick="switchTab('growth')" style="display:none">Growth</button>
+  <button class="tab" onclick="switchTab('sec')" id="tab-sec" style="border:1px solid rgba(126,232,162,.25);color:var(--accent2)">SEC-Daten</button>
+  <button class="tab active" onclick="switchTab('overview')">Übersicht</button>
+  <button class="tab" onclick="switchTab('quality')">Qualität</button>
+  <button class="tab" onclick="switchTab('valuation')">Bewertung</button>
+  <button class="tab" id="tab-growth" onclick="switchTab('growth')" style="display:none">Wachstum</button>
   <button class="tab" onclick="switchTab('market')">Markt-Vergleich</button>
-  <button class="tab" onclick="switchTab('assumptions')">Assumptions</button>
-  <button class="tab" onclick="switchTab('journal')">Journal</button>
+  <button class="tab" onclick="switchTab('assumptions')">Annahmen</button>
+  <button class="tab" onclick="switchTab('journal')">Snapshots</button>
   <button class="tab" id="tab-tests" onclick="switchTab('tests')" style="display:none;border-color:rgba(126,232,162,.25);color:var(--accent2)">🧪 Tests</button>
   <span class="tabs-ticker" id="tabs-ticker"></span>
 </div>
@@ -2326,8 +2538,8 @@ body { font-size: 0.92rem; }
 <div class="panel active" id="panel-overview">
   <div id="overview-content">
     <div class="empty-hero">
-      <h2>Noch keine Bewertung</h2>
-      <p>Master-JSON oben einfügen und auf „Importieren &amp; berechnen" klicken.<br>Die Übersicht erscheint hier automatisch.</p>
+      <h2>Noch keine Aktie ausgewählt</h2>
+      <p>Oben unter <strong>Aktie suchen</strong> ein Börsenkürzel eingeben.<br>Alternativ lässt sich unter <strong>Daten und Einstellungen</strong> ein vorhandener Datensatz importieren.</p>
     </div>
   </div>
 </div>
@@ -2400,53 +2612,22 @@ body { font-size: 0.92rem; }
 
   <div class="card sec-fetch-quick">
     <div class="card-title" style="cursor:default;color:var(--accent2)">
-      SEC Fetch
+      SEC-Daten — Herkunft und Zuordnung
       <span class="tag" style="margin-left:8px;background:var(--accent2);color:var(--bg)">SEC EDGAR</span>
-      <span class="muted-help" style="margin-left:auto">Ticker abrufen → Diagnose prüfen → importieren</span>
+      <span class="muted-help" style="margin-left:auto">Expertenansicht zum Abruf oben</span>
     </div>
 
-    <div class="sec-workflow-grid">
-      <div>
-        <div class="sec-field-label">Proxy-URL</div>
-        <input type="text" id="sec-proxy-url" placeholder="https://mein-worker.workers.dev/sec"
-               oninput="secProxyConfigChanged()" style="margin-bottom:0">
-      </div>
-      <button class="btn ghost" onclick="secSaveProxyUrl()">Proxy speichern</button>
-
-      <div>
-        <div class="sec-field-label">US-Ticker</div>
-        <input type="text" id="sec-ticker" placeholder="AAPL, MSFT, JNJ"
-               style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()"
-               onkeydown="if(event.key==='Enter')secFetchAll()">
-      </div>
-
-      <div>
-        <div class="sec-field-label">Marktdaten</div>
-        <label class="sec-checkbox-label">
-          <input type="checkbox" id="sec-yahoo-enabled" checked style="width:auto;accent-color:var(--accent)"> Yahoo Kurs + Beta
-        </label>
-      </div>
-
-      <button class="btn" onclick="secFetchAll()" id="sec-fetch-btn" disabled title="Proxy-URL konfigurieren">
-        Daten abrufen
-      </button>
+    <div style="font-size:.76rem;color:var(--text-sub);line-height:1.7;padding:2px 0 4px">
+      Der Abruf selbst startet oben unter <span class="linklike" onclick="focusTickerSearch()">Aktie suchen</span>,
+      die Datenverbindung wird unter <span class="linklike" onclick="openDataSettings()">Daten und Einstellungen</span>
+      eingerichtet. Hier steht, welche Kennzahl aus welcher SEC-Angabe stammt — vor dem Übernehmen prüfbar.
     </div>
-
-    <!-- Persistente Import-Aktionsleiste: nach erfolgreichem Fetch sichtbar, Button bleibt ohne Scrollen erreichbar -->
-    <div id="sec-pending-import-actions" class="sec-diag-actions-top" style="display:none;margin-top:10px">
-      <button class="btn" id="sec-import-btn" onclick="secConfirmImport()">✓ Importieren &amp; berechnen</button>
-      <button class="btn ghost" onclick="secCancelImport()">✗ Abbrechen</button>
-      <span class="muted-help" style="margin-left:8px">Mapping-Diagnose unten prüfen, dann importieren.</span>
-    </div>
-
-    <div id="sec-proxy-status" style="font-size:.72rem;color:var(--muted);margin-top:8px;line-height:1.5;font-family:var(--font-mono)"></div>
-    <div id="sec-fetch-status" class="import-status" style="display:none"></div>
 
     <div class="sec-scope-line">
-      🇺🇸 <strong style="color:var(--text)">US-listed securities only</strong> ·
-      💵 <strong style="color:var(--text)">USD only</strong> ·
-      🏛 <strong style="color:var(--text)">SEC EDGAR primary source</strong> ·
-      📊 Yahoo optional (<code>medium confidence</code>)
+      🇺🇸 <strong style="color:var(--text)">Nur in den USA gelistete Aktien</strong> ·
+      💵 <strong style="color:var(--text)">nur US-Dollar</strong> ·
+      🏛 <strong style="color:var(--text)">SEC EDGAR als Hauptquelle</strong> ·
+      📊 Yahoo optional (<code>mittlere Verlässlichkeit</code>)
     </div>
   </div>
 
@@ -15366,6 +15547,7 @@ function importMasterJsonFromTextarea() {
 
   switchTab('overview');
   updateTickerBadge();
+  renderEntryStatus();
   // V11.9.9: Alle Panels nach Import rendern, unabhängig vom aktiven Panel
   renderOverview();
   renderQuality();
@@ -16487,35 +16669,271 @@ function buildReverseDcfOverviewCard(mj) {
   </div>`;
 }
 
-// renderOverview — V11 Hauptfunktion
+// ════════════════════════════════════════════════════════════════
+// HAUPTANSICHT — fünf Bereiche, einheitliche Kennzeichnung
+// ────────────────────────────────────────────────────────────────
+// Die folgenden Funktionen leiten ausschliesslich ab, was in den
+// vorliegenden Daten steht. Fehlt eine Angabe, wird sie als
+// Datenlücke ausgewiesen und NICHT durch erfundenen Text ersetzt.
+// Keine Bewertungsformel, kein Einfluss auf Synthese, Range, MoS
+// oder Einstiegszone — reine Anzeige.
+// ════════════════════════════════════════════════════════════════
+
+// Kennzeichnung von Werten. Farbe steht nie allein: jede Markierung
+// trägt ihren ausgeschriebenen Text.
+const OV_MARK_DEFS = {
+  hist:   { cls: 'm-hist',   label: 'Historie',         title: 'aus berichteten Geschäftszahlen' },
+  fc:     { cls: 'm-fc',     label: 'Prognose',         title: 'aus Modellannahmen gerechnet, keine berichtete Zahl' },
+  manual: { cls: 'm-manual', label: 'manuelle Annahme', title: 'von Hand gesetzt, nicht aus den Daten abgeleitet' },
+  gap:    { cls: 'm-gap',    label: 'Datenlücke',       title: 'im vorliegenden Datensatz nicht enthalten' },
+  market: { cls: '',         label: 'Marktdaten',       title: 'Kursquelle, weder Historie noch Prognose' }
+};
+
+function ovMark(kind) {
+  const d = OV_MARK_DEFS[kind];
+  if (!d) return '';
+  return '<span class="ovs-mark ' + d.cls + '" title="' + escapeHtml(d.title) + '">' + escapeHtml(d.label) + '</span>';
+}
+
+// Klartext für die Sektor-Einordnung (Schlüsselwörter des Datensatzes).
+const OV_SUBCLASS_LABELS = {
+  standard_nonfin:          'Industrie-/Dienstleistungsunternehmen (Standardfall)',
+  financial:               'Finanzunternehmen (Bank/Versicherer)',
+  cyclical:                'konjunkturabhängiges Geschäft',
+  buyback_compounder:      'Unternehmen mit starkem Aktienrückkaufprogramm',
+  asset_light:             'kapitalarmes Geschäft (wenig Anlagevermögen)',
+  dividend_aristocrat:     'langjähriger Dividendenzahler (veraltete Einordnung)',
+  high_growth:             'starkes Wachstum, hohes Risiko',
+  retail:                  'Einzelhandel',
+  semiconductor_compounder:'Halbleiterunternehmen'
+};
+
+const OV_VERDICT_LABELS = {
+  investable_high: { text: 'Qualitätsprüfung bestanden (hoch)',      note: 'Fundamentaldaten und Kapitaleffizienz genügen den geprüften Kriterien.' },
+  investable_mid:  { text: 'Qualitätsprüfung bestanden (mittel)',    note: 'Kriterien erfüllt, aber mit Abstrichen bei einzelnen Kennzahlen.' },
+  investable:      { text: 'Qualitätsprüfung bestanden',             note: 'Kriterien erfüllt (Einstufung aus einem älteren Datensatz).' },
+  caution_quality: { text: 'Qualitätsprüfung nicht bestanden',       note: 'Mindestens ein Qualitätskriterium ist nicht erfüllt.' },
+  caution_data:    { text: 'Qualitätsprüfung wegen Datenlage offen', note: 'Es fehlen Daten, um die Qualität abschliessend zu beurteilen.' },
+  caution:         { text: 'Qualitätsprüfung nicht bestanden',       note: 'Einstufung aus einem älteren Datensatz.' },
+  reject:          { text: 'Ausschluss',                             note: 'Ein Ausschlusskriterium ist aktiv.' }
+};
+
+function ovVerdictLabel(verdict) {
+  return OV_VERDICT_LABELS[verdict] || { text: 'kein Qualitätsurteil', note: 'Die Qualitätsprüfung wurde nicht ausgeführt.' };
+}
+
+// Einheitliche Zahlendarstellung für die Hauptansicht.
+function ovNum(x, digits) {
+  if (x == null || typeof x !== 'number' || !isFinite(x)) return null;
+  const d = digits == null ? 2 : digits;
+  return x.toLocaleString('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+function ovPct(x, digits) {
+  const n = ovNum(x, digits == null ? 1 : digits);
+  return n == null ? null : n + ' %';
+}
+
+// ── Bereich 1: Geschäftsmodell — nur vorhandene Angaben ──────────
+// Liefert Zeilen mit Wert ODER ausgewiesener Datenlücke. Es wird kein
+// beschreibender Text erfunden: fehlt eine Angabe, steht das auch so da.
+function ovBusinessModelFacts(mj) {
+  const rows = [];
+  const meta = (mj && mj.meta) || {};
+  const qual = (mj && mj.qualitative) || {};
+  const f    = (mj && mj.fundamentals) || {};
+  const add = (label, value, mark, hint) =>
+    rows.push({ label, value: value == null ? null : String(value), mark: value == null ? 'gap' : mark, hint: hint || null });
+
+  add('Branche', meta.sector || null, 'hist', 'Zuordnung aus der SEC-Branchenkennziffer (SIC)');
+  const sub = meta.sub_classification || null;
+  add('Einordnung für die Bewertung',
+      sub ? (OV_SUBCLASS_LABELS[sub] || sub) : null,
+      meta.sub_classification_source === 'manual' ? 'manual' : 'hist',
+      'steuert, welche Bewertungsmodelle verwendet werden');
+  add('Börse', meta.exchange || null, 'hist', null);
+  add('Berichtswährung', meta.currency || null, 'hist', null);
+
+  const rev = Array.isArray(f.revenue) ? f.revenue[0] : null;
+  const unit = meta.reporting_unit === 'millions' ? ' Mio.'
+             : meta.reporting_unit === 'thousands' ? ' Tsd.'
+             : meta.reporting_unit === 'billions' ? ' Mrd.' : '';
+  add('Umsatz letztes Geschäftsjahr',
+      (typeof rev === 'number' && isFinite(rev)) ? (ovNum(rev, 0) + unit + (meta.currency ? ' ' + meta.currency : '')) : null,
+      'hist', 'jüngstes berichtetes Geschäftsjahr');
+
+  // Dividende: nur aussagen, was die Reihen hergeben.
+  const dps  = Array.isArray(f.dps) ? f.dps[0] : null;
+  const divP = Array.isArray(f.dividends_paid) ? f.dividends_paid[0] : null;
+  let divTxt = null;
+  if (typeof dps === 'number' && isFinite(dps)) {
+    divTxt = dps > 0 ? ('ja — ' + ovNum(dps, 2) + (meta.currency ? ' ' + meta.currency : '') + ' je Aktie') : 'nein — keine Dividende ausgewiesen';
+  } else if (typeof divP === 'number' && isFinite(divP)) {
+    divTxt = Math.abs(divP) > 0 ? 'ja — Dividendenzahlung in der Kapitalflussrechnung' : 'nein — keine Dividendenzahlung ausgewiesen';
+  }
+  add('Dividende', divTxt, 'hist', null);
+
+  if (qual.moat_rating != null && qual.moat_rating !== '')
+    add('Wettbewerbsvorteil (eigene Einschätzung)', String(qual.moat_rating), 'manual', null);
+  if (qual.analyst_thesis != null && String(qual.analyst_thesis).trim() !== '')
+    add('Eigene These', String(qual.analyst_thesis), 'manual', null);
+
+  return rows;
+}
+
+// ── Bereich 4: Kurs und Szenariowerte gegenübergestellt ──────────
+// Jede Zeile nennt Wert, Abstand zum Kurs und Herkunft der Zahl.
+function ovScenarioRows(mj, s) {
+  const rows = [];
+  const cur = (s && typeof s.currentPrice === 'number' && isFinite(s.currentPrice)) ? s.currentPrice : null;
+  const dist = (x) => (cur != null && cur > 0 && typeof x === 'number' && isFinite(x))
+    ? ((x / cur - 1) * 100) : null;
+  const push = (key, label, value, mark, note) => rows.push({
+    key, label,
+    value: (typeof value === 'number' && isFinite(value)) ? value : null,
+    distancePct: dist(value),
+    mark: (typeof value === 'number' && isFinite(value)) ? mark : 'gap',
+    note: note || null
+  });
+
+  push('price', 'Aktueller Kurs', cur, 'market', 'Marktkurs zum ausgewiesenen Kursstand');
+  if (!s) return rows;
+
+  const r = s.range || {};
+  push('buy', 'Einstiegszone (nach Sicherheitsabschlag)', s.buyPrice, 'fc',
+       'Modellwert abzüglich Sicherheitsabschlag');
+  push('base', 'Basisszenario', r.base, 'fc', 'mittlere Annahmen der verwendeten Modelle');
+  push('conservative', 'Vorsichtiges Szenario', r.conservative, 'fc', 'ungünstigere Annahmen');
+  push('optimistic', 'Günstiges Szenario', r.optimistic, 'fc', 'günstigere Annahmen');
+  if (s.decisionRangeLow != null && s.decisionRangeHigh != null) {
+    push('p25', 'Entscheidungsband, unteres Ende (P25)', s.decisionRangeLow, 'fc',
+         'ein Viertel der simulierten Ergebnisse liegt darunter');
+    push('p75', 'Entscheidungsband, oberes Ende (P75)', s.decisionRangeHigh, 'fc',
+         'ein Viertel der simulierten Ergebnisse liegt darüber');
+  }
+  return rows;
+}
+
+// ── Kernaussagen: höchstens drei, deterministisch abgeleitet ─────
+// Feste Prüfreihenfolge, keine Zufalls- oder Zeitabhängigkeit. Jede
+// Aussage nennt die Kennzahlen, auf denen sie beruht.
+function ovKeyStatements(mj, q, s, dq) {
+  const out = [];
+  const add = (level, text, basis) => { if (out.length < 3) out.push({ level, text, basis: basis || [] }); };
+  const num = (x, d) => ovNum(x, d);
+
+  const activeHs = (q && Array.isArray(q.hardStops))
+    ? q.hardStops.filter(x => x.triggered && !x.overridden) : [];
+
+  // 1. Bewertung gesperrt
+  if (activeHs.length > 0) {
+    add('danger',
+      'Die Bewertung ist gesperrt: ' + activeHs.map(h => h.name).join(', ') + '.',
+      [['Ausschlusskriterien aktiv', String(activeHs.length)]]);
+  } else if (s && s.position === 'blocked') {
+    add('danger',
+      'Die Bewertung ist gesperrt — es liegt kein belastbarer Eigenkapitalwert vor.',
+      [['Einordnung der Synthese', 'gesperrt'],
+       ['Status der Bewertung', String(s.status || 'blocked')]]);
+  }
+
+  // Negativer Modellwert: kein Prozentabstand, sondern klare Ansage.
+  if (s && s.range && typeof s.range.base === 'number' && isFinite(s.range.base) && s.range.base <= 0) {
+    add('danger',
+      'Die Modelle ergeben keinen positiven Unternehmenswert; ein Vergleich mit dem Kurs ist damit nicht sinnvoll.',
+      [['Basisszenario', ovNum(s.range.base, 2)]]);
+  }
+
+  // 2. Keine rechnerische Bewertung möglich
+  if (s && (s._noIntrinsicValuation || s.status === 'no_models_applicable')) {
+    add('warn',
+      'Für dieses Unternehmen ist mit den vorliegenden Daten keine rechnerische Bewertung möglich; es bleibt nur der Marktvergleich.',
+      [['Status der Synthese', String(s.status || 'no_models_applicable')]]);
+  }
+
+  // 3. Kurs gegenüber Einstiegszone bzw. Basiswert
+  const cur = (s && typeof s.currentPrice === 'number' && isFinite(s.currentPrice)) ? s.currentPrice : null;
+  const buy = (s && typeof s.buyPrice === 'number' && isFinite(s.buyPrice)) ? s.buyPrice : null;
+  const base = (s && s.range && typeof s.range.base === 'number' && isFinite(s.range.base)) ? s.range.base : null;
+  if (cur != null && cur > 0 && buy != null && buy > 0) {
+    const diff = (cur / buy - 1) * 100;
+    const richtung = diff > 0 ? 'über' : diff < 0 ? 'unter' : 'genau auf';
+    add(diff <= 0 ? 'ok' : 'warn',
+      'Der Kurs liegt ' + num(Math.abs(diff), 1) + ' % ' + richtung + ' der Einstiegszone.',
+      [['Kurs', num(cur, 2)], ['Einstiegszone', num(buy, 2)]]);
+  } else if (cur != null && cur > 0 && base != null && base > 0) {
+    const diff = (cur / base - 1) * 100;
+    const richtung = diff > 0 ? 'über' : diff < 0 ? 'unter' : 'genau auf';
+    add(diff <= 0 ? 'ok' : 'warn',
+      'Der Kurs liegt ' + num(Math.abs(diff), 1) + ' % ' + richtung + ' dem Basisszenario; eine Einstiegszone wurde nicht ausgewiesen.',
+      [['Kurs', num(cur, 2)], ['Basisszenario', num(base, 2)]]);
+  }
+
+  // 4. Qualitätsurteil
+  if (q && q.verdict) {
+    const lbl = ovVerdictLabel(q.verdict);
+    const basis = [];
+    const pio = q.scores && q.scores.piotroski;
+    if (pio && pio.status === 'ok' && pio.value != null) basis.push(['Piotroski F-Score', num(pio.value, 0) + ' von 9']);
+    const qce = q.qceScore;
+    if (qce && qce.total != null) basis.push(['Qualitäts- und Kapitaleffizienzwert', num(qce.total, 1) + ' von 10']);
+    add(q.verdict === 'reject' ? 'danger'
+        : (String(q.verdict).indexOf('investable') === 0 ? 'ok' : 'warn'),
+      lbl.text + ' — ' + lbl.note, basis);
+  }
+
+  // 5. Datenqualität eingeschränkt
+  if (dq && (dq.grade === 'C' || dq.grade === 'D')) {
+    add('warn',
+      'Die Datenbasis ist eingeschränkt (Stufe ' + dq.grade + '); die Ergebnisse sind entsprechend unsicher.',
+      [['Datenqualität', String(dq.grade)],
+       ['Grund', (dq.reasons && dq.reasons[0]) ? String(dq.reasons[0]) : 'siehe Bereich Datenverlässlichkeit']]);
+  }
+
+  // 6. Modelle weichen stark voneinander ab
+  if (s && s._divergenceRatio != null &&
+      (s._modelDivergenceSevere || s._modelDivergenceHigh || s._modelDivergenceRangeOnly)) {
+    add('warn',
+      'Die Bewertungsmodelle weichen um das ' + num(s._divergenceRatio, 1) + '-Fache voneinander ab; der Punktwert ist dadurch unsicher.',
+      [['Verhältnis höchster zu niedrigster Modellwert', num(s._divergenceRatio, 1)]]);
+  }
+
+  return out;
+}
+
+// renderOverview — Hauptansicht in fünf Bereichen
+// Reihenfolge: Kopf · Einordnung · max. 3 Kernaussagen · Hinweise ·
+// Geschäftsmodell · Qualität und Wachstum · finanzielle Risiken ·
+// Bewertung und Erwartungen · Datenverlässlichkeit · Details.
+// Die Expertenfunktionen der übrigen Tabs bleiben unverändert und sind
+// über den Bereich „Details und Fachansichten" erreichbar.
 function renderOverview() {
   const c = g('overview-content');
+  if (!c) return;
+
   if (!state.masterJson) {
-    c.innerHTML = '<div class="empty-hero"><h2>Noch keine Bewertung</h2><p>Master-JSON oben einf\u00fcgen und auf \u201eImportieren &amp; berechnen\u201c klicken.</p></div>';
+    c.innerHTML = _ovEmptyState();
     return;
   }
 
   const mj  = state.masterJson;
   const q   = state.quality;
   const s   = state.synthesis;
-  const v   = state.valuation;
 
   const name      = (mj.meta && (mj.meta.company_name || mj.meta.name || mj.meta.ticker)) || 'Unbenannt';
   const ticker    = (mj.meta && mj.meta.ticker) || '';
   const currency  = (mj.meta && mj.meta.currency) || '';
-  const subClass  = (mj.meta && mj.meta.sub_classification) || '\u2013';
-  const asOf      = (mj.meta && mj.meta.as_of_date) || '\u2013';
+  const asOf      = (mj.meta && mj.meta.as_of_date) || '–';
   const signalPos = s ? s.position : null;
   const vClass    = q ? (q.verdict || 'caution_quality') : null;
 
   const ampel = (() => {
-    if (signalPos === 'buy')       return { label:'HOHE PRIORITÄT', c:'var(--accent2)', bg:'#0a1f0e', border:'var(--accent2)' };
-    if (signalPos === 'watchlist') return { label:'PRÜFZONE',  c:'#c084fc',        bg:'#130d20', border:'#6b21a8' };
+    if (signalPos === 'buy')       return { label:'HOHE PRIORITÄT', erklaerung:'Kurs in der Einstiegszone und Qualitätsprüfung bestanden', c:'var(--accent2)', bg:'#0a1f0e', border:'var(--accent2)' };
+    if (signalPos === 'watchlist') return { label:'PRÜFZONE',       erklaerung:'beobachten — für ein Kaufsignal fehlt noch etwas', c:'#c084fc', bg:'#130d20', border:'#6b21a8' };
     if (signalPos === 'blocked' || signalPos === 'overvalued')
-                                   return { label:'KEIN SIGNAL', c:'var(--danger)',  bg:'#1f0a0a', border:'var(--danger)' };
+                                   return { label:'KEIN SIGNAL',    erklaerung: signalPos === 'blocked' ? 'Bewertung gesperrt' : 'Kurs deutlich über dem fairen Wert', c:'var(--danger)', bg:'#1f0a0a', border:'var(--danger)' };
     if (signalPos === 'wait' || signalPos === 'expensive')
-                                   return { label:'BEOBACHTEN', c:'var(--warn)',    bg:'#1f170a', border:'var(--warn)' };
-    return                                { label:'\u2013',      c:'var(--muted)',   bg:'var(--dim)', border:'var(--border)' };
+                                   return { label:'BEOBACHTEN',     erklaerung:'Kurs noch über dem Kaufbereich', c:'var(--warn)', bg:'#1f170a', border:'var(--warn)' };
+    return                                { label:'KEINE EINORDNUNG', erklaerung:'die Synthese wurde nicht ausgeführt', c:'var(--muted)', bg:'var(--dim)', border:'var(--border)' };
   })();
 
   const qualityColor = (vClass === 'investable' || vClass === 'investable_high' || vClass === 'investable_mid')
@@ -16525,475 +16943,612 @@ function renderOverview() {
   const topRisks     = _ovTopRisks(q, s);
   const mainReasons  = _ovMainReasons(q, s);
   const warnings     = _ovWarnings(q, s, mj);
-  const miniWhy      = _ovMiniWhy(q, s);
-
-  const buyPriceStr = s && s.buyPrice != null ? s.buyPrice.toFixed(2) : null;
-  const currentStr  = s && s.currentPrice != null ? s.currentPrice.toFixed(2) : null;
-  const upsideStr   = s && s.upsideToBuy != null ? fmtPct(s.upsideToBuy) : null;
-  const mosPct      = s && s.mosComponents ? (s.mosComponents.total * 100).toFixed(0) : null;
-  const dvpStr      = s && s.deepValuePrice != null ? s.deepValuePrice.toFixed(2) : null;
-
-  // ── RF-Diagnostic für Overview ──────────────────────────────────
-  const _rfDiagBlock = (() => {
-    const wc = mj.valuation && mj.valuation.wacc_components || {};
-    const df = mj.valuation && mj.valuation._derivationFlags || {};
-    const hd = mj.valuation && mj.valuation._heuristicDetails || {};
-    const rfVal = wc.risk_free_rate ?? wc.risk_free;
-    if (rfVal == null) return '';
-    const rfPct = (rfVal < 1 ? rfVal * 100 : rfVal);
-    const rfFlag = df.risk_free_rate || 'unknown';
-    const rfBadgeColor = rfFlag === 'manual' ? 'src-manual'
-      : rfFlag === 'global_manual' ? 'src-manual'
-      : rfFlag === 'heuristic' ? 'src-heuristic'
-      : 'src-derived';
-    const rfSource = rfFlag === 'global_manual'
-      ? 'globale Einstellung'
-      : rfFlag === 'manual' ? 'manuell (Override)'
-      : rfFlag === 'heuristic' ? ((hd.risk_free_rate && hd.risk_free_rate.source) || 'currency default')
-      : rfFlag;
-    const grf = state.globalRfrSettings;
-    const grfDate = grf && grf.updated_date ? grf.updated_date : null;
-    const stale = isGlobalRfrStale();
-    const staleWarning = stale
-      ? `<span style="color:var(--danger);font-size:.56rem">⚠ Letztes Update ${grfDate} — älter als 90 Tage. Bitte aktualisieren.</span>`
-      : '';
-    const dateDisplay = grfDate ? `<span style="color:var(--muted);font-size:.56rem"> · Stand: ${grfDate}</span>` : '';
-    return `<div style="margin:6px 0 0 0;padding:5px 8px;background:var(--bg2);border-left:2px solid var(--info);border-radius:3px;font-size:.6rem;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
-      <span style="color:var(--muted)">Risk-Free Rate:</span>
-      <strong style="color:var(--fg)">${rfPct.toFixed(2)}%</strong>
-      <span class="src-badge ${rfBadgeColor}">${rfSource}</span>
-      ${dateDisplay}
-      ${staleWarning}
-    </div>`;
-  })();
+  const miniWhy      = _ovMiniWhy(q, s, mj);
+  const verdictLbl   = ovVerdictLabel(vClass);
 
   let html = '';
 
   // ── Snapshot-Reproducibility Banner ────────────────────────────
-  if (state._loadedFromSnapshot) {
-    const isLegacy      = state._snapshotIsLegacy;
-    const bv            = state._snapshotBreakingVersion;
-    const isIncompat    = !isLegacy && bv && !COMPATIBLE_BREAKING_VERSIONS.includes(bv);
-    const usingCurrent  = state._usingCurrentEngine;
+  html += _ovSnapshotBanner();
 
-    if (isLegacy || isIncompat || usingCurrent) {
-      let bannerColor = 'var(--info)';
-      let bannerBg    = '#1a232e';
-      let bannerMsg   = '';
-
-      if (usingCurrent) {
-        if (isLegacy) {
-          bannerColor = 'var(--warn)';
-          bannerBg    = '#2a1e0a';
-          bannerMsg   = '⚡ Snapshot ursprünglich <strong>Legacy</strong> (keine Engine-Version); nach Änderung <strong>mit aktueller Engine (v' + ENGINE_VERSION + ') neu bewertet</strong>. Reproduzierbarkeit nicht garantiert.';
-        } else if (isIncompat) {
-          bannerColor = 'var(--warn)';
-          bannerBg    = '#2a1e0a';
-          bannerMsg   = '⚡ Snapshot ursprünglich <strong>Engine ' + escapeHtml(bv) + '</strong>; nach Änderung <strong>mit aktueller Engine (v' + ENGINE_VERSION + ') neu bewertet</strong>.';
-        } else {
-          bannerMsg   = '✓ Snapshot mit kompatibler Engine (v' + ENGINE_VERSION + ') neu bewertet.';
-        }
-      } else if (isLegacy) {
-        bannerMsg   = '⚠ <strong>Legacy-Snapshot</strong>: Keine Engine-Version gespeichert. Original-Bewertung angezeigt. Manuelle Änderung aktiviert aktuelle Engine (v' + ENGINE_VERSION + ').';
-      } else if (isIncompat) {
-        bannerColor = 'var(--warn)';
-        bannerBg    = '#2a1e0a';
-        bannerMsg   = '⚠ Snapshot mit Engine <strong>' + escapeHtml(bv) + '</strong> — inkompatibel mit aktueller Engine (v' + ENGINE_VERSION + '). Original-Bewertung angezeigt.';
-      } else if (bv === '11.5') {
-        // V1.0.6: Split-Korrektur ändert Quality-Diagnosen materiell
-        bannerColor = 'var(--info)';
-        bannerBg    = '#1a232e';
-        bannerMsg   = 'ℹ Quality logic changed in V1.0.6: split-adjusted share issuance fixed — recompute old snapshots.';
-      }
-
-      if (bannerMsg) {
-        html += '<div style="background:' + bannerBg + ';border:1px solid ' + bannerColor + ';border-radius:8px;padding:9px 13px;margin-bottom:10px;color:' + bannerColor + ';line-height:1.6" class="txt-warning">' + bannerMsg + '</div>';
-      }
-    }
-  }
-
-  // ── Scope Soft Warnings Banner (nicht blockierend, aber sichtbar) ──
+  // ── Scope-Warnungen (nicht blockierend) ────────────────────────
   const _scopeRes = state.scopeResult;
   if (_scopeRes && _scopeRes.softs && _scopeRes.softs.length > 0) {
     html += '<div style="background:#2a1e0a;border:1px solid var(--warn);border-left:3px solid var(--warn);border-radius:8px;padding:9px 13px;margin-bottom:10px" class="txt-warning">'
-      + '<span class="txt-caption" style="letter-spacing:.1em;text-transform:uppercase;display:block;margin-bottom:4px;opacity:.8">⚠ Scope-Warnungen (nicht blockierend)</span>'
-      + _scopeRes.softs.map(s => escapeHtml(s)).join('<br>')
+      + '<span class="txt-caption" style="letter-spacing:.1em;text-transform:uppercase;display:block;margin-bottom:4px;opacity:.8">⚠ Hinweise zum Anwendungsbereich (nicht blockierend)</span>'
+      + _scopeRes.softs.map(x => escapeHtml(x)).join('<br>')
       + '</div>';
   }
 
-  // BLOCK 1: Hero
-  const dataCutoff   = (mj.meta && (mj.meta.data_cutoff_date || mj.meta.as_of_date)) || null;
-  const priceAsOf    = (mj.market && mj.market.price_as_of_date) || (mj.meta && mj.meta.as_of_date) || null;
+  // ── Kopf ───────────────────────────────────────────────────────
+  const dataCutoff = (mj.meta && (mj.meta.data_cutoff_date || mj.meta.as_of_date)) || null;
+  const priceAsOf  = (mj.market && mj.market.price_as_of_date) || (mj.meta && mj.meta.as_of_date) || null;
   html += '<div class="hero" style="margin-bottom:10px">'
     + '<div class="label">Bewertung</div>'
     + '<div class="name">' + escapeHtml(name)
-    + (ticker && ticker !== name ? ' <span style="color:var(--muted);font-size:1rem">\u00b7 ' + escapeHtml(ticker) + '</span>' : '')
+    + (ticker && ticker !== name ? ' <span style="color:var(--muted);font-size:1rem">· ' + escapeHtml(ticker) + '</span>' : '')
     + '</div>'
-    + '<div class="meta" style="margin-top:4px"><strong>' + escapeHtml(subClass) + '</strong>'
+    + '<div class="meta" style="margin-top:4px">' + escapeHtml(_ovSubclassText(mj))
     + ' ' + _subclassProvenanceBadge(mj)
-    + (asOf !== '\u2013' ? ' \u00b7 Daten per ' + escapeHtml(asOf) : '')
-    + (currency ? ' \u00b7 ' + escapeHtml(currency) : '')
-    + '</div>'
-    + (Array.isArray(mj.meta && mj.meta.sub_classification_caveats) && mj.meta.sub_classification_caveats.length > 0
-        ? '<div style="margin-top:3px;font-size:.62rem;color:var(--warn)">\u26a0 ' + escapeHtml(mj.meta.sub_classification_caveats.join(' ')) + '</div>'
-        : '')
-    + '<div style="margin-top:8px;font-size:.72rem;color:var(--muted);line-height:1.8;display:grid;grid-template-columns:auto 1fr;gap:0 10px;max-width:380px">'
-    + '<span style="text-transform:uppercase;letter-spacing:.06em">Datenstand</span><span style="color:var(--text)">' + escapeHtml(dataCutoff || 'unbekannt') + '</span>'
-    + '<span style="text-transform:uppercase;letter-spacing:.06em">Kursstand</span><span style="color:var(--text)">' + escapeHtml(priceAsOf || 'unbekannt') + '</span>'
-    + '<span style="text-transform:uppercase;letter-spacing:.06em">Engine</span><span style="color:var(--muted)">' + ENGINE_VERSION + '</span>'
+    + (asOf !== '–' ? ' · Daten per ' + escapeHtml(asOf) : '')
+    + (currency ? ' · ' + escapeHtml(currency) : '')
     + '</div>'
     + '</div>';
 
-  // BLOCK 2: Entscheid-Panel
-  html += '<div class="ov-decision-panel" style="border:2px solid ' + ampel.border + '">';
-
-  html += '<div class="ov-decision-head" style="background:' + ampel.bg + ';border-bottom-color:' + ampel.border + '60">'
-    + '<div style="flex:0 0 auto">'
-    + '<div class="ov-kicker" style="color:' + ampel.c + ';opacity:.85">Research-Priorität</div>'
+  // ── Einordnung auf einen Blick (Farbe immer mit Text) ──────────
+  html += '<div class="ov-decision-panel" style="border:2px solid ' + ampel.border + '">'
+    + '<div class="ov-decision-head" style="background:' + ampel.bg + ';border-bottom-color:' + ampel.border + '60">'
+    + '<div style="flex:1 1 180px;min-width:0">'
+    + '<div class="ov-kicker" style="color:' + ampel.c + ';opacity:.85">Einordnung</div>'
     + '<div class="ov-signal" style="color:' + ampel.c + '">' + ampel.label + '</div>'
+    + '<div class="ov-info-sub">' + escapeHtml(ampel.erklaerung) + '</div>'
     + '</div>'
-    + '<div style="width:1px;height:44px;background:' + ampel.border + '60;flex-shrink:0"></div>'
-    + '<div style="flex:0 0 auto">'
-    + '<div class="ov-kicker">Research-Qualität</div>'
-    + '<div class="ov-quality-pill" style="background:' + qualityColor + '20;border:1.5px solid ' + qualityColor + ';color:' + qualityColor + '">' + (vClass ? vClass.toUpperCase() : '\u2013') + '</div>'
+    + '<div style="flex:1 1 180px;min-width:0">'
+    + '<div class="ov-kicker">Qualitätsprüfung</div>'
+    + '<div class="ov-quality-pill" style="background:' + qualityColor + '20;border:1.5px solid ' + qualityColor + ';color:' + qualityColor + '">' + escapeHtml(verdictLbl.text) + '</div>'
     + '</div>'
-    + '<div style="width:1px;height:44px;background:var(--border);flex-shrink:0"></div>'
-    + '<div style="flex:0 0 auto">'
-    + '<div class="ov-kicker">Datenqualit\u00e4t</div>'
-    + '<div class="ov-dq-value" style="color:' + dq.color + '">' + dq.icon + ' ' + dq.label + '</div>'
+    + '<div style="flex:1 1 160px;min-width:0">'
+    + '<div class="ov-kicker">Datenverlässlichkeit</div>'
+    + '<div class="ov-dq-value" style="color:' + dq.color + '">' + dq.label + '</div>'
     + '</div>'
+    + '</div>'
+    + '<div style="padding:10px 15px;font-size:.8rem;color:var(--text);line-height:1.6">' + escapeHtml(miniWhy) + '</div>'
     + '</div>';
 
-  // FV-Band: P25/P75 primär; Base-FV als Kontext-Pill statt Bull-Case
-  let fvBandHtml = '\u2013';
-  if (s && s.range) {
-    const _rimBO  = !!s._rimBullCaseOnly;
-    const _hasP2575 = s.decisionRangeLow != null && s.decisionRangeHigh != null;
-    let _mainTxt, _subTxt;
-    const _baseTxt = s.range.base != null ? 'Base: ' + currency + '\u00a0' + s.range.base.toFixed(0) : null;
-
-    if (_hasP2575) {
-      // Primär: P25–P75 Entscheidungsrange
-      _mainTxt = currency + '\u00a0' + s.decisionRangeLow.toFixed(0) + '\u2013' + s.decisionRangeHigh.toFixed(0);
-      _subTxt  = 'P25\u2013P75 Entscheidungsrange';
-    } else {
-      // Fallback: conservative–optimistic (legacy); bei RIM-Bull-Only nur Kons–Base
-      const c2 = s.range.conservative, b2 = s.range.base, o2 = s.range.optimistic;
-      const _lo = c2 != null ? c2.toFixed(0) : '\u2013';
-      const _hi = _rimBO ? (b2 != null ? b2.toFixed(0) : '\u2013') : (o2 != null ? o2.toFixed(0) : '\u2013');
-      _mainTxt = currency + '\u00a0' + _lo + '\u2013' + _hi;
-      _subTxt  = _rimBO ? 'Kons\u2013Base (RIM gecappt)' : 'Kons\u2013Opt';
-    }
-
-    fvBandHtml = '<div class="ov-fv-compact">'
-      + '<div class="ov-fv-main">' + _mainTxt + '</div>'
-      + '<div class="ov-fv-sub">' + _subTxt + '</div>'
-      + (_baseTxt ? '<div class="ov-fv-base">' + _baseTxt + '</div>' : '')
-      + '</div>';
-  }
-
-  const buyStr   = signalPos === 'blocked' ? 'BLOCKIERT' : (buyPriceStr ? currency + '\u00a0' + buyPriceStr : '\u2013');
-  const buyColor = signalPos === 'blocked' ? 'var(--danger)' : ampel.c;
-
-  const infoCell = (lbl, val, sub, color, emphasis) =>
-    '<div class="ov-info-cell">'
-    + '<div class="ov-info-label">' + lbl + '</div>'
-    + '<div class="ov-info-value' + (emphasis ? ' buy' : '') + '" style="color:' + (color || 'var(--text)') + '">' + val + '</div>'
-    + (sub ? '<div class="ov-info-sub">' + sub + '</div>' : '')
-    + '</div>';
-
-  html += '<div class="ov-info-grid">'
-    + '<div class="ov-info-cell">'
-    + '<div class="ov-info-label">Fair Value Bandbreite</div>'
-    + fvBandHtml
-    + '</div>'
-    + infoCell('Aktueller Kurs', currentStr ? currency + '\u00a0' + currentStr : '\u2013',
-        s && s.upsideToBase != null ? 'vs.\u00a0Basis:\u00a0' + fmtPct(s.upsideToBase) : null, null)
-    + '<div class="ov-info-cell">'
-    + '<div class="ov-info-label" style="font-size:.65rem;color:var(--muted)">Konservative Einstiegszone</div>'
-    + '<div class="ov-info-value" style="color:' + buyColor + '">' + buyStr + '</div>'
-    + (mosPct ? '<div class="ov-info-sub">MoS\u00a0' + mosPct + '%' + (upsideStr ? '\u00a0·\u00a0' + upsideStr : '') + '</div>' : '')
-    + (dvpStr && signalPos !== 'blocked' ? '<div style="font-size:.65rem;color:var(--muted);margin-top:4px;border-top:1px dashed var(--border);padding-top:3px">Tiefer Prüfpreis:\u00a0' + currency + '\u00a0' + dvpStr + '</div>' : '')
-    + '</div>'
-    + '</div>';
-
-  html += '</div>'; // Entscheid-Panel
-
-  // DQ CAP INFO — Cap-Grund(e) getrennt anzeigen wenn aktiv
-  {
-    const dqScore  = state.dataQuality;
-    const heuF     = mj ? getHeuristicInputsUsed(mj) : [];
-    const hasHeuCap = (s && s._hasHeuristicInputs && (signalPos === 'watchlist' || signalPos === 'blocked'));
-    const hasDqCap  = dqScore && dqScore.cap && (s && s._dataQualityCapApplied);
-    if (hasHeuCap || hasDqCap || (dqScore && (dqScore.grade === 'C' || dqScore.grade === 'D'))) {
-      html += '<div style="background:var(--dim);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:.62rem">';
-      html += '<div style="font-size:.72rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin-bottom:6px">Cap-Analyse</div>';
-      // Heuristik-Cap
-      if (hasHeuCap) {
-        html += '<div style="display:flex;gap:8px;align-items:baseline;padding:4px 0;border-bottom:1px dashed var(--border)">'
-          + '<span style="color:var(--warn);flex-shrink:0">🔮</span>'
-          + '<span style="color:var(--warn)"><strong>Cap: Heuristische Kerninputs</strong> — geschätzte Annahmen verhindern Kaufsignal (maximal Watchlist)</span></div>';
-      }
-      // DQ-Cap
-      if (dqScore) {
-        const dqColor = _dqGradeColor(dqScore.grade);
-        const capText = dqScore.grade === 'D' ? 'blockiert (Datenqualität D — Bewertung nicht belastbar)'
-                      : dqScore.grade === 'C' ? 'maximal Watchlist (Datenqualität C — eingeschränkte Belastbarkeit)'
-                      : null;
-        if (capText) {
-          html += '<div style="display:flex;gap:8px;align-items:baseline;padding:4px 0;border-bottom:1px dashed var(--border)">'
-            + '<span style="color:' + dqColor + ';flex-shrink:0">📊</span>'
-            + '<span style="color:' + dqColor + '"><strong>Cap: Datenqualität ' + dqScore.grade + '</strong> — ' + escapeHtml(capText) + '</span></div>';
-        }
-        // Hauptgrund
-        if (dqScore.reasons && dqScore.reasons.length > 0) {
-          html += '<div style="padding:4px 0;color:var(--muted)"><span style="color:var(--muted)">Hauptgrund: </span>'
-            + escapeHtml(dqScore.reasons[0])
-            + (dqScore.reasons.length > 1 ? ' <span style="opacity:.6">+' + (dqScore.reasons.length-1) + ' weitere</span>' : '')
-            + '</div>';
-        }
-        if (!hasHeuCap && !hasDqCap && dqScore.cap === null) {
-          html += '<div style="color:var(--accent2);padding:4px 0">✓ Kein Datenqualitäts-Cap aktiv (Grad ' + dqScore.grade + ')</div>';
-        }
-      }
-      if (!hasHeuCap && !hasDqCap && (!dqScore || dqScore.cap === null)) {
-        html += '<div style="color:var(--accent2);padding:4px 0">✓ Kein Cap aktiv</div>';
-      }
-      html += '</div>';
-    }
-  }
-
-  // BLOCK 2b: Quality & Capital Efficiency Score (Diagnostic Only — kompakt)
-  if (q && q.qceScore) {
-    html += buildQceOverviewSummary(q.qceScore);
-  }
-
-  // BLOCK 3: Hauptgruende & Hauptrisiken
-  html += '<div class="grid2" style="margin-bottom:10px">';
-
-  html += '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px 16px">'
-    + '<div style="font-size:.72rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Top-3-Gründe für das Verdict</div>';
-  if (mainReasons.length === 0) {
-    html += '<div class="txt-label" style="color:var(--muted);font-style:italic">Keine Begr\u00fcndung verf\u00fcgbar</div>';
+  // ── Kernaussagen: höchstens drei, mit Kennzahlenbezug ──────────
+  const keyStatements = ovKeyStatements(mj, q, s, state.dataQuality);
+  html += '<div class="ovs-key-list">';
+  if (keyStatements.length === 0) {
+    html += '<div class="ovs-key-item"><div class="ovs-key-text">Aus den vorliegenden Daten lässt sich keine Kernaussage ableiten.</div></div>';
   } else {
-    mainReasons.forEach((r, i) => {
-      html += '<div style="display:flex;gap:8px;align-items:baseline;padding:5px 0;' + (i < mainReasons.length-1 ? 'border-bottom:1px solid var(--border)' : '') + '">'
-        + '<span style="color:var(--accent2);flex-shrink:0;font-size:.7rem">\u2192</span>'
-        + '<span style="font-size:.8rem;color:var(--text);line-height:1.5">' + escapeHtml(r) + '</span>'
-        + '</div>';
+    keyStatements.forEach((k, i) => {
+      const cls = k.level === 'danger' ? 'k-danger' : k.level === 'warn' ? 'k-warn' : k.level === 'ok' ? 'k-ok' : '';
+      html += '<div class="ovs-key-item ' + cls + '">'
+        + '<div class="ovs-key-no">' + (i + 1) + '.</div>'
+        + '<div style="flex:1;min-width:0">'
+        + '<div class="ovs-key-text">' + escapeHtml(k.text) + '</div>'
+        + (k.basis && k.basis.length
+            ? '<div class="ovs-key-basis">Grundlage: '
+              + k.basis.map(b => '<strong>' + escapeHtml(b[0]) + ':</strong> ' + escapeHtml(b[1] == null ? '–' : String(b[1]))).join(' · ')
+              + '</div>'
+            : '')
+        + '</div></div>';
     });
   }
   html += '</div>';
 
-  html += '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px 16px">'
-    + '<div style="font-size:.72rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Aktive Risikosignale</div>';
-  if (topRisks.length === 0) {
-    html += '<div class="txt-label" style="color:var(--accent2)">\u2713 Keine aktiven Warnungen</div>';
-  } else {
-    topRisks.forEach((r, i) => {
-      const rc = r.level === 'danger' ? 'var(--danger)' : 'var(--warn)';
-      html += '<div style="display:flex;gap:8px;align-items:baseline;padding:5px 0;' + (i < topRisks.length-1 ? 'border-bottom:1px solid var(--border)' : '') + '">'
-        + '<span style="color:' + rc + ';flex-shrink:0">' + r.icon + '</span>'
-        + '<span style="font-size:.8rem;color:var(--text);line-height:1.5">' + escapeHtml(r.text) + '</span>'
-        + '</div>';
-    });
-    const brs      = state.baseRateWarnings || [];
-    const heuF2    = mj ? getHeuristicInputsUsed(mj) : [];
-    const misF2    = mj ? getMissingInputs(mj) : [];
-    const activeHs2= q ? (q.hardStops || []).filter(x => x.triggered && !x.overridden) : [];
-    const crits2   = state.v4criticals || [];
-    const total    = activeHs2.length + brs.length + (heuF2.length>0?1:0) + (misF2.length>0?1:0) + (crits2.length>0?1:0);
-    if (total > topRisks.length)
-      html += '<div style="font-size:.72rem;color:var(--muted);padding-top:6px">+' + (total-topRisks.length) + ' weitere \u2192 <span style="cursor:pointer;text-decoration:underline;color:var(--info)" onclick="switchTab(\'quality\')">Quality</span></div>';
-  }
-  html += '</div>';
-
-  html += '</div>'; // grid2
-
-  // BLOCK 3b: "Was kann diese Einordnung kippen?" — max. 3 Sensitivitäten
-  {
-    const _kippenItems = [];
-    const _addK = (icon, titel, text) => { if (_kippenItems.length < 3) _kippenItems.push({icon, titel, text}); };
-
-    // 1. Modell-Divergenz
-    if (s && s._modelDivergenceSevere && s._divergenceRatio != null)
-      _addK('⚡', 'Modell-Divergenz (severe)', `Modelle divergieren ${s._divergenceRatio.toFixed(1)}x — Einstiegszone gesperrt. Annahmen prüfen.`);
-    else if (s && s._modelDivergenceHigh && s._divergenceRatio != null)
-      _addK('⚠', 'Modell-Divergenz (hoch)', `Modelle weichen ${s._divergenceRatio.toFixed(1)}x ab — erhöhte Unsicherheit im Fair-Value-Band.`);
-    else if (s && s._modelDivergenceRangeOnly && s._divergenceRatio != null)
-      _addK('⚡', 'Modell-Divergenz (>5x)', `Extreme Streuung ${s._divergenceRatio.toFixed(1)}x — nur Range verwendbar, kein Punktwert.`);
-
-    // 2. QCE-Schwäche
-    if (q && q.qceScore && q.qceScore.total != null && q.qceScore.total <= 4)
-      _addK('🔍', 'QCE-Qualität schwach', `Capital Efficiency Score: ${q.qceScore.total.toFixed(1)}/10 — Kapitaleffizienz nicht ausreichend nachgewiesen.`);
-
-    // 3. Heuristische WACC-Annahmen
-    const _heuF = mj ? getHeuristicInputsUsed(mj) : [];
-    if (_heuF.length > 0)
-      _addK('🔮', 'WACC / Heuristische Inputs', `${_heuF.length} Kernannahmen geschätzt (${_heuF.slice(0,2).join(', ')}${_heuF.length>2?'…':''}) — WACC-Änderung kann Einordnung verschieben.`);
-
-    // 4. Risk-Free Rate Stale
-    if (isGlobalRfrStale && isGlobalRfrStale())
-      _addK('⚠', 'Risk-Free Rate veraltet', 'RFR-Daten älter als 90 Tage — aktualisieren für valide WACC-Basis.');
-
-    // 5. Datenqualität
-    const _dqK = state.dataQuality;
-    if (_dqK && (_dqK.grade === 'C' || _dqK.grade === 'D'))
-      _addK('📊', `Datenqualität ${_dqK.grade}`, `Eingeschränkte Datenbasis — ${_dqK.reasons && _dqK.reasons[0] ? _dqK.reasons[0] : 'Details im Quality-Tab'}.`);
-
-    // 6. Terminal Growth Assumption
-    const _tg = mj && mj.valuation && mj.valuation.terminal_growth_rate;
-    if (_tg != null) {
-      const _tgPct = (_tg < 1 ? _tg * 100 : _tg);
-      if (_tgPct > 3.5)
-        _addK('📈', 'Terminal Growth ambitioniert', `Terminal Growth: ${_tgPct.toFixed(1)}% — über langfristiger Norm. Reverse DCF prüfen.`);
-    }
-
-    // 7. Reverse DCF impliziert sehr hohes Wachstum
-    if (_kippenItems.length < 3) {
-      const _rdcf = (typeof computeReverseDcfFull !== 'undefined') ? computeReverseDcfFull(mj) : null;
-      // Kernkonsistenter Wert (Stage-1-Umsatzwachstum), nicht die FCF-Diagnosezahl.
-      if (_rdcf && _rdcf.coreReverseDcf && _rdcf.coreReverseDcf.ok
-          && _rdcf.coreReverseDcf.impliedGrowthPct != null) {
-        const _rdcfG = _rdcf.coreReverseDcf.impliedGrowthPct;
-        const _gp2 = (typeof computeGrowthProfile !== 'undefined') ? computeGrowthProfile(mj) : null;
-        const _bench2 = _gp2 ? _gp2.revCagr5y : null;
-        if (_bench2 != null && _rdcfG > _bench2 + 6)
-          _addK('📈', 'Reverse-DCF-Annahme sehr hoch', `Markt preist ${_rdcfG.toFixed(1)}% Stage-1-Umsatzwachstum — weit über historischer CAGR (${_bench2.toFixed(1)}%).`);
-      }
-    }
-
-    if (_kippenItems.length > 0) {
-      html += '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:10px">'
-        + '<div style="font-size:.72rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Was kann diese Einordnung kippen?</div>';
-      _kippenItems.forEach((item, i) => {
-        html += '<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;'
-          + (i < _kippenItems.length-1 ? 'border-bottom:1px solid var(--border)' : '') + '">'
-          + '<span style="flex-shrink:0;font-size:.85rem">' + item.icon + '</span>'
-          + '<div style="flex:1;min-width:0">'
-          + '<div style="font-size:.78rem;font-weight:600;color:var(--text)">' + escapeHtml(item.titel) + '</div>'
-          + '<div style="font-size:.73rem;color:var(--muted);line-height:1.5;margin-top:2px">' + escapeHtml(item.text) + '</div>'
-          + '</div></div>';
-      });
-      html += '</div>';
-    }
-  }
-
-  // BLOCK 4: Warnhinweise (max. 2)
+  // ── Wichtige Hinweise (lesbar, Farbe stets mit Text) ───────────
   warnings.forEach(w => {
     const bg     = w.level === 'danger' ? '#2e1a1a' : w.level === 'info' ? '#1a232e' : '#2e261a';
     const border = w.level === 'danger' ? 'var(--danger)' : w.level === 'info' ? 'var(--info)' : 'var(--warn)';
     const color  = w.level === 'danger' ? 'var(--danger)' : w.level === 'info' ? 'var(--info)' : 'var(--warn)';
-    const icon   = w.level === 'danger' ? '\u26D4' : w.level === 'info' ? '\u2139' : '\u26A0';
+    const wort   = w.level === 'danger' ? 'Blockierend' : w.level === 'info' ? 'Hinweis' : 'Warnung';
     html += '<div style="background:' + bg + ';border:1px solid ' + border + ';border-radius:8px;padding:9px 14px;margin-bottom:8px;display:flex;gap:10px;align-items:flex-start">'
-      + '<span style="color:' + color + ';flex-shrink:0">' + icon + '</span>'
+      + '<span style="color:' + color + ';flex-shrink:0;font-size:.72rem;text-transform:uppercase;letter-spacing:.06em">' + wort + '</span>'
       + '<span style="font-size:.8rem;color:' + color + ';line-height:1.55">' + escapeHtml(w.text) + '</span>'
       + '</div>';
   });
 
-  // BLOCK 5: Mini-Why
-  html += '<div style="background:var(--dim);border-left:3px solid ' + ampel.border + ';border-radius:0 6px 6px 0;padding:10px 14px;margin-bottom:14px;font-size:.68rem;color:var(--text);line-height:1.6">'
-    + escapeHtml(miniWhy)
+  // ── Legende der Kennzeichnung ──────────────────────────────────
+  html += '<div class="ovs-legend">'
+    + '<span>' + ovMark('hist')   + ' aus berichteten Geschäftszahlen</span>'
+    + '<span>' + ovMark('fc')     + ' aus Modellannahmen gerechnet</span>'
+    + '<span>' + ovMark('manual') + ' von Hand gesetzt</span>'
+    + '<span>' + ovMark('gap')    + ' im Datensatz nicht enthalten</span>'
+    + '<span>' + ovMark('market') + ' Kursquelle</span>'
     + '</div>';
 
-  // BLOCK 5b: Reverse DCF Overview Card (Diagnose)
-  html += buildReverseDcfOverviewCard(mj);
-
-  // BLOCK 5c: Base-Rate-Lite Overview Card (V1.0.35 — nur Diagnose)
-  html += buildBaseRateLiteOverviewCard(mj, state.quality, state.valuation);
-
-  // BLOCK 6: Details & Diagnose (standardmäßig offen)
+  // ══ Bereich 1: Geschäftsmodell ═══════════════════════════════
   {
-    const crits   = state.v4criticals || [];
-    const softs   = state.v4softs || [];
-    const brs     = state.baseRateWarnings || [];
-    const heuF    = mj ? getHeuristicInputsUsed(mj) : [];
-    const misF    = mj ? getMissingInputs(mj) : [];
-    const manual  = state.manualAssumptionFields ? state.manualAssumptionFields.size : 0;
-    const overr   = q ? (q.hardStops || []).filter(x => x.triggered && x.overridden) : [];
-    const vBox    = buildVerdictBox(q);
-    const bpBox   = buildBuyPriceBox(s);
+    const rows = ovBusinessModelFacts(mj);
+    let body = '<div class="ovs-facts">';
+    rows.forEach(r => {
+      body += '<div class="ovs-fact-k">' + escapeHtml(r.label) + '</div>'
+        + '<div class="ovs-fact-v">'
+        + (r.value != null ? escapeHtml(r.value) : '<span style="color:var(--muted)">nicht im Datensatz enthalten</span>')
+        + ' ' + ovMark(r.mark)
+        + (r.hint ? '<div class="ovs-item-sub">' + escapeHtml(r.hint) + '</div>' : '')
+        + '</div>';
+    });
+    body += '</div>';
+    body += '<div class="ovs-note">Der Datensatz stammt aus den Zahlenangaben der SEC-Berichte (XBRL). '
+      + 'Eine Beschreibung des Geschäfts oder eine Aufteilung nach Segmenten ist darin nicht enthalten und wird hier '
+      + 'bewusst <strong>nicht ergänzt</strong>. Eigene Einschätzungen können im Bereich '
+      + '<span class="linklike" onclick="switchTab(\'assumptions\')">Annahmen</span> hinterlegt werden.</div>';
+    html += _ovSection('Geschäftsmodell', 'Was das Unternehmen ist und wie es für die Bewertung eingeordnet wird.', body);
+  }
+
+  // ══ Bereich 2: Qualität und Wachstum ═════════════════════════
+  {
+    let body = '';
+    body += '<div class="ovs-facts">';
+    body += _ovFactRow('Qualitätsurteil', q ? verdictLbl.text : null, 'hist', q ? verdictLbl.note : 'Die Qualitätsprüfung wurde nicht ausgeführt.');
+    body += _ovMetricRow('Piotroski F-Score', q && q.scores && q.scores.piotroski, 'hist',
+      'neun Ja/Nein-Prüfungen zu Ertrag, Verschuldung und Effizienz; je höher, desto solider', 0, ' von 9');
+    if (q && q.qceScore && q.qceScore.total != null)
+      body += _ovFactRow('Qualität und Kapitaleffizienz', ovNum(q.qceScore.total, 1) + ' von 10', 'hist',
+        'zusammengefasster Wert aus Rendite, Verschuldung und Cash-Umwandlung — nur Diagnose');
+    body += _ovMetricRow('Kapitalrendite minus Kapitalkosten', q && q.descriptive && q.descriptive.roicMinusWacc, 'hist',
+      'verdient das Unternehmen mehr als seine Finanzierung kostet? Positiv ist gut', 1, ' Prozentpunkte');
+    body += _ovMetricRow('Umwandlung Gewinn in Cash (operativ)', q && q.descriptive && q.descriptive.cfoConversion, 'hist',
+      'wie viel des Gewinns tatsächlich als operativer Cashflow ankommt', 2, '');
+
+    const gp = (typeof computeGrowthProfile !== 'undefined') ? computeGrowthProfile(mj) : null;
+    body += _ovFactRow('Umsatzwachstum 5 Jahre (jährlich)', gp && gp.revCagr5y != null ? ovPct(gp.revCagr5y, 1) : null, 'hist',
+      'durchschnittliches jährliches Wachstum der letzten fünf Geschäftsjahre');
+    body += _ovFactRow('Bruttomarge letztes Jahr', gp && gp.grossMarginCurrent != null ? ovPct(gp.grossMarginCurrent, 1) : null, 'hist',
+      gp && gp.grossMarginTrend != null
+        ? ('Veränderung zum Vorjahr: ' + (gp.grossMarginTrend >= 0 ? '+' : '−') + ovNum(Math.abs(gp.grossMarginTrend), 1) + ' Prozentpunkte')
+        : 'Anteil des Umsatzes, der nach den direkten Kosten übrig bleibt');
+    body += _ovFactRow('Operative Marge letztes Jahr', gp && gp.opMarginCurrent != null ? ovPct(gp.opMarginCurrent, 1) : null, 'hist',
+      'Betriebsergebnis im Verhältnis zum Umsatz');
+    body += '</div>';
+
+    body += '<div style="margin-top:12px"><div class="ovs-item-title" style="color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-size:.72rem;margin-bottom:4px">Gründe für das Qualitätsurteil</div>';
+    if (mainReasons.length === 0) {
+      body += '<div class="ovs-empty">Keine Begründung verfügbar.</div>';
+    } else {
+      mainReasons.forEach(r => { body += '<div class="ovs-item"><div class="ovs-item-title">' + escapeHtml(r) + '</div></div>'; });
+    }
+    body += '</div>';
+
+    if (q && q.qceScore) body += buildQceOverviewSummary(q.qceScore);
+
+    html += _ovSection('Qualität und Wachstum',
+      'Wie solide das Unternehmen wirtschaftet und wie es sich entwickelt hat. Alle Werte stammen aus abgeschlossenen Geschäftsjahren.', body);
+  }
+
+  // ══ Bereich 3: Finanzielle Risiken ═══════════════════════════
+  {
     const activeHs = q ? (q.hardStops || []).filter(x => x.triggered && !x.overridden) : [];
-    const diagRiskCount = activeHs.length + brs.length + (heuF.length > 0 ? 1 : 0) + (misF.length > 0 ? 1 : 0) + crits.length;
-    const _fvBand = (s && s.range) ? (function(){
-      // V1.0.30: P25/P75 bevorzugt, kein Emoji, kein Bull in Hauptwert
-      const _rimBullOnly2 = !!s._rimBullCaseOnly;
-      const _hasP2575 = s.decisionRangeLow != null && s.decisionRangeHigh != null;
-      if (_hasP2575) {
-        const _base = currency + '\u00a0' + s.decisionRangeLow.toFixed(0) + '\u2013' + s.decisionRangeHigh.toFixed(0) + ' (P25\u2013P75)';
-        if (_rimBullOnly2 && s.decisionRangeBullCase != null) {
-          return _base + ' / Bull: ' + currency + '\u00a0' + s.decisionRangeBullCase.toFixed(0);
-        }
-        return _base;
-      }
-      const _c = s.range.conservative, _b = s.range.base, _o = s.range.optimistic;
-      const _rangeHigh = _rimBullOnly2 ? _b : _o;
-      const _p = [_c, _rangeHigh].filter(function(v){return v!=null;}).map(function(v){return v.toFixed(0);});
-      const _suffix = (_rimBullOnly2 && _o != null) ? ' / Bull: ' + currency + '\u00a0' + _o.toFixed(0) : '';
-      return _p.length ? currency + '\u00a0' + _p.join('\u2013') + _suffix : '\u2013';
-    })() : '\u2013';
-    const _hsActive = activeHs.length;
-    const detailSummary = [
-      ['Research-Signal', ampel.label, ampel.c],
-      ['Einstiegszone (konservativ)', buyStr, buyColor],
-      ['Kurs', currentStr ? currency + '\u00a0' + currentStr : '\u2013', 'var(--text)'],
-      ['Fair Value Band', _fvBand, 'var(--text)'],
-      ['Margin of Safety', mosPct ? mosPct + '%' : '\u2013', mosPct && Number(mosPct)>0 ? 'var(--accent2)' : mosPct && Number(mosPct)<0 ? 'var(--danger)' : 'var(--text)'],
-      ['Datenqualität', dq.label, dq.color],
-      ['Hard Stops', _hsActive > 0 ? String(_hsActive) + ' aktiv' : '\u2013', _hsActive > 0 ? 'var(--danger)' : 'var(--muted)'],
-      ['Warnungen', diagRiskCount > 0 ? String(diagRiskCount) : '\u2013', diagRiskCount > 0 ? 'var(--warn)' : 'var(--muted)']
-    ];
+    const overr    = q ? (q.hardStops || []).filter(x => x.triggered && x.overridden) : [];
+    const brs      = state.baseRateWarnings || [];
+    let body = '';
 
-    let det = '<div class="ov-diagnose-summary">' + detailSummary.map(x =>
-      '<div class="ov-diagnose-card"><div class="k">' + x[0] + '</div><div class="v" style="color:' + x[2] + '">' + x[1] + '</div></div>'
-    ).join('') + '</div>';
-    if (s && s.range) det += buildRangeBoxFull(s);
-    det += '<div class="grid2" style="margin-top:10px">' + vBox + bpBox + '</div>';
+    body += '<div style="margin-bottom:10px"><div class="ovs-item-title" style="color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-size:.72rem;margin-bottom:4px">Ausschlusskriterien</div>';
+    if (activeHs.length === 0) {
+      body += '<div class="ovs-item"><div class="ovs-item-title" style="color:var(--accent2)">Kein Ausschlusskriterium aktiv.</div></div>';
+    } else {
+      activeHs.forEach(h => {
+        body += '<div class="ovs-item"><div class="ovs-item-title" style="color:var(--danger)">Aktiv: ' + escapeHtml(h.name) + '</div>'
+          + (h.detail ? '<div class="ovs-item-sub">' + escapeHtml(h.detail) + '</div>' : '') + '</div>';
+      });
+    }
+    if (overr.length > 0) {
+      body += '<div class="ovs-item"><div class="ovs-item-title" style="color:var(--warn)">Manuell überschrieben: '
+        + escapeHtml(overr.map(h => h.name).join(', ')) + '</div>'
+        + '<div class="ovs-item-sub">Die Sperre wurde bewusst aufgehoben — die Aussagekraft ist dadurch eingeschränkt.</div></div>';
+    }
+    body += '</div>';
 
-    if (crits.length > 0 || softs.length > 0) {
-      det += '<div style="margin-top:10px;background:var(--surface);border:1px solid var(--warn)66;border-radius:8px;padding:12px 14px">'
-        + '<div style="font-size:.72rem;letter-spacing:.09em;text-transform:uppercase;color:var(--warn);margin-bottom:6px">Schema-Validierung</div>'
-        + crits.map(w => '<div style="font-size:.76rem;color:var(--warn);padding:3px 0">\u26A0 ' + escapeHtml(w.replace(/^C-\d+\w*:\s*/, '')) + '</div>').join('')
-        + softs.map(w => '<div style="font-size:.74rem;color:var(--muted);padding:3px 0">\u00b7 ' + escapeHtml(w.replace(/^[SE]-\d+\w*:\s*/, '')) + '</div>').join('')
+    body += '<div class="ovs-facts">';
+    body += _ovMetricRow('Insolvenzrisiko (Altman Z′′)', q && q.scores && q.scores.altman, 'hist',
+      'Kennzahl zur Einschätzung der Insolvenzgefahr; höher ist sicherer', 2, '');
+    body += _ovMetricRow('Nettoverschuldung zu EBITDA', q && q.descriptive && q.descriptive.netDebtToEbitda, 'hist',
+      'wie viele Jahresergebnisse nötig wären, um die Nettoschulden zu tilgen; niedriger ist sicherer', 2, '');
+    body += _ovMetricRow('Zinsdeckung', q && q.descriptive && q.descriptive.interestCoverage, 'hist',
+      'wie oft das Betriebsergebnis die Zinslast deckt; höher ist sicherer', 2, '');
+    body += _ovMetricRow('Verwässerung durch neue Aktien', q && q.descriptive && q.descriptive.netShareIssuance, 'hist',
+      'Veränderung der Aktienzahl; positiv bedeutet mehr Aktien und damit geringeren Anteil je Aktie', 2, '');
+    body += '</div>';
+
+    body += '<div style="margin-top:12px"><div class="ovs-item-title" style="color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-size:.72rem;margin-bottom:4px">Weitere Risikosignale</div>';
+    if (topRisks.length === 0 && brs.length === 0) {
+      body += '<div class="ovs-item"><div class="ovs-item-title" style="color:var(--accent2)">Keine weiteren Risikosignale aus den vorliegenden Daten.</div></div>';
+    } else {
+      topRisks.forEach(r => {
+        const wort = r.level === 'danger' ? 'Kritisch' : 'Warnung';
+        const rc   = r.level === 'danger' ? 'var(--danger)' : 'var(--warn)';
+        body += '<div class="ovs-item"><div class="ovs-item-title"><span style="color:' + rc + ';font-size:.72rem;text-transform:uppercase;letter-spacing:.06em">' + wort + '</span> · ' + escapeHtml(r.text) + '</div></div>';
+      });
+      brs.filter(w => w.level === 'severe').forEach(w => {
+        body += '<div class="ovs-item"><div class="ovs-item-title"><span style="color:var(--danger);font-size:.72rem;text-transform:uppercase;letter-spacing:.06em">Kritisch</span> · ' + escapeHtml(w.msg) + '</div></div>';
+      });
+    }
+    body += '</div>';
+
+    html += _ovSection('Finanzielle Risiken',
+      'Was gegen das Unternehmen spricht: Sperren, Verschuldung und Warnsignale aus den Geschäftszahlen.', body);
+  }
+
+  // ══ Bereich 4: Bewertung und Erwartungen ═════════════════════
+  {
+    let body = '';
+    const rows = ovScenarioRows(mj, s);
+    const blocked = !s || s.position === 'blocked' || s._noIntrinsicValuation || s.status === 'no_models_applicable';
+
+    if (blocked) {
+      const grund = !s ? 'Die Bewertung wurde nicht ausgeführt.'
+        : (s.position === 'blocked'
+            ? 'Die Bewertung ist gesperrt, weil mindestens ein Ausschlusskriterium aktiv ist oder Pflichtangaben fehlen.'
+            : 'Mit den vorliegenden Daten lässt sich kein rechnerischer Unternehmenswert bestimmen.');
+      body += '<div class="ovs-note" style="border-left-color:var(--danger);color:var(--text)">'
+        + '<strong>Keine belastbaren Szenariowerte.</strong> ' + escapeHtml(grund)
+        + ' Es werden deshalb nur die Werte gezeigt, die tatsächlich vorliegen; die übrigen Zeilen sind als Datenlücke gekennzeichnet.'
+        + (s && s.valuationError ? ' Meldung der Bewertung: ' + escapeHtml(String(s.valuationError).substring(0, 160)) : '')
         + '</div>';
     }
 
-    if (brs.length > 0 || heuF.length > 0 || misF.length > 0 || manual > 0 || overr.length > 0) {
-      const severe = brs.some(w => w.level === 'severe');
-      det += '<div style="margin-top:10px;background:var(--surface);border:1px solid ' + (severe ? 'var(--danger)' : 'var(--warn)') + '66;border-radius:8px;padding:12px 14px">'
-        + '<div style="font-size:.72rem;letter-spacing:.09em;text-transform:uppercase;color:' + (severe ? 'var(--danger)' : 'var(--warn)') + ';margin-bottom:6px">Warnungen &amp; Datenhinweise</div>';
-      if (misF.length > 0)
-        det += '<div class="br-severe" style="margin-bottom:6px"><div class="br-label">\u2717 Fehlende Inputs</div><div style="font-size:.76rem;margin-top:4px">' + misF.join(', ') + '</div></div>';
-      if (brs.length > 0) {
-        det += '<div class="' + (severe ? 'br-severe' : 'br-warn') + '" style="margin-bottom:6px"><div class="br-label">' + (severe ? '\u26D4' : '\u26A0') + ' Base-Rate Warnungen</div>';
-        brs.forEach(w => { det += '<div style="margin-top:4px;font-size:.76rem">' + (w.level === 'severe' ? '\u26D4' : '\u00b7') + ' ' + escapeHtml(w.msg) + '</div>'; });
-        det += '</div>';
-      }
-      if (heuF.length > 0)
-        det += '<div class="heuristic-warning" style="margin-bottom:6px"><div class="hw-label">\uD83D\uDD2E Heuristische Inputs (' + heuF.length + ')</div><div style="font-size:.76rem;margin-top:4px">' + heuF.join(', ') + '</div></div>';
-      if (overr.length > 0)
-        det += '<div class="br-warn" style="margin-bottom:6px"><div class="br-label">\u26A0 \u00dcberschriebene Hard Stops</div><div style="font-size:.76rem;margin-top:4px">' + overr.map(h => h.name).join(', ') + '</div></div>';
-      if (manual > 0)
-        det += '<div class="br-warn" style="margin-bottom:6px"><div class="br-label">\u270e Manuelle Annahmen-Overrides (' + manual + ')</div><div style="font-size:.76rem;margin-top:4px"><span style="cursor:pointer;text-decoration:underline" onclick="switchTab(\'assumptions\')">Assumptions-Tab \u00f6ffnen</span></div></div>';
-      det += '</div>';
-    }
+    body += '<div class="ovs-scen-wrap"><table class="ovs-scen">'
+      + '<thead><tr><th>Größe</th><th>Wert' + (currency ? ' (' + escapeHtml(currency) + ')' : '') + '</th><th>Abstand zum Kurs</th><th>Herkunft</th></tr></thead><tbody>';
+    rows.forEach(r => {
+      const isPrice = r.key === 'price';
+      body += '<tr' + (isPrice ? ' class="is-price"' : '') + '>'
+        + '<td>' + escapeHtml(r.label) + (r.note ? '<div class="ovs-item-sub">' + escapeHtml(r.note) + '</div>' : '') + '</td>'
+        + '<td class="num">' + (r.value != null ? ovNum(r.value, 2) : '<span style="color:var(--muted)">nicht verfügbar</span>') + '</td>'
+        + '<td class="num">' + (r.distancePct != null && !isPrice
+            ? ((r.distancePct >= 0 ? '+' : '−') + ovNum(Math.abs(r.distancePct), 1) + ' %')
+            : '<span style="color:var(--muted)">–</span>') + '</td>'
+        + '<td>' + ovMark(r.mark) + '</td>'
+        + '</tr>';
+    });
+    body += '</tbody></table></div>';
 
-    html += '<div class="card ov-details-card" style="margin-bottom:10px">'
-      + '<div class="card-title" style="cursor:default">Details &amp; Diagnose</div>'
-      + '<div class="card-body">' + det + _rfDiagBlock + '</div>'
-      + '</div>';
+    const mosPct = s && s.mosComponents ? (s.mosComponents.total * 100) : null;
+    body += '<div class="ovs-facts" style="margin-top:12px">';
+    body += _ovFactRow('Sicherheitsabschlag', mosPct != null ? ovPct(mosPct, 0) : null, 'fc',
+      'Abschlag auf den Modellwert, um Unsicherheit abzufedern; daraus ergibt sich die Einstiegszone');
+    body += _ovFactRow('Kursstand', (mj.market && mj.market.price_as_of_date) || (mj.meta && mj.meta.as_of_date) || null, 'market',
+      'Stichtag des verwendeten Kurses');
+    body += '</div>';
+
+    body += '<div class="ovs-note">Szenariowerte sind <strong>gerechnete Erwartungen</strong>, keine berichteten Zahlen. '
+      + 'Sie hängen an den Annahmen im Bereich <span class="linklike" onclick="switchTab(\'assumptions\')">Annahmen</span> '
+      + 'und ändern sich mit ihnen.</div>';
+
+    body += _ovKippenBlock(mj, q, s);
+    body += buildReverseDcfOverviewCard(mj);
+    body += buildBaseRateLiteOverviewCard(mj, state.quality, state.valuation);
+
+    html += _ovSection('Bewertung und Erwartungen',
+      'Kurs und gerechnete Szenariowerte nebeneinander — und was die Einordnung kippen könnte.', body);
   }
 
-  html += '<div class="btn-row" style="margin-top:4px">'
-    + '<button class="btn ghost" onclick="switchTab(\'quality\')">Quality</button>'
-    + '<button class="btn ghost" onclick="switchTab(\'valuation\')">Valuation</button>'
-    + '<button class="btn ghost" onclick="switchTab(\'market\')">Markt-Vergleich</button>'
-    + '<button class="btn ghost" onclick="switchTab(\'assumptions\')">Assumptions</button>'
-    + '<button class="btn ghost" onclick="window.print()">Drucken</button>'
-    + '</div>';
+  // ══ Bereich 5: Datenverlässlichkeit ══════════════════════════
+  {
+    const crits   = state.v4criticals || [];
+    const heuF    = mj ? getHeuristicInputsUsed(mj) : [];
+    const misF    = mj ? getMissingInputs(mj) : [];
+    const manual  = state.manualAssumptionFields ? state.manualAssumptionFields.size : 0;
+    const dqScore = state.dataQuality;
+    let body = '';
+
+    body += '<div class="ovs-facts">';
+    body += _ovFactRow('Gesamturteil zur Datenlage', dq.label, 'hist',
+      dqScore && dqScore.reasons && dqScore.reasons.length ? String(dqScore.reasons[0]) : 'aus Vollständigkeit, Perioden- und Quellenprüfung abgeleitet');
+    body += _ovFactRow('Datenstand', (mj.meta && (mj.meta.data_cutoff_date || mj.meta.as_of_date)) || null, 'hist', 'Stichtag der Geschäftszahlen');
+    body += _ovFactRow('Rechenkern (Version)', ENGINE_VERSION, 'hist', 'Version, mit der diese Bewertung gerechnet wurde');
+    body += '</div>';
+
+    body += '<div style="margin-top:12px"><div class="ovs-item-title" style="color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-size:.72rem;margin-bottom:4px">Woher die Zahlen kommen</div>';
+    body += '<div class="ovs-item"><div class="ovs-item-title">'
+      + (misF.length > 0
+          ? ('Fehlende Pflichtangaben ' + ovMark('gap') + '<div class="ovs-item-sub">' + escapeHtml(misF.join(', ')) + '</div>')
+          : 'Keine fehlenden Pflichtangaben.')
+      + '</div></div>';
+    body += '<div class="ovs-item"><div class="ovs-item-title">'
+      + (heuF.length > 0
+          ? ('Geschätzte Kernannahmen (' + heuF.length + ') ' + ovMark('fc') + '<div class="ovs-item-sub">' + escapeHtml(heuF.join(', ')) + ' — nicht aus den Daten abgeleitet, sondern branchenüblich angesetzt.</div>')
+          : 'Keine geschätzten Kernannahmen.')
+      + '</div></div>';
+    body += '<div class="ovs-item"><div class="ovs-item-title">'
+      + (manual > 0
+          ? ('Von Hand gesetzte Annahmen (' + manual + ') ' + ovMark('manual')
+             + '<div class="ovs-item-sub"><span class="linklike" onclick="switchTab(\'assumptions\')">Im Bereich Annahmen ansehen</span></div>')
+          : 'Keine von Hand gesetzten Annahmen.')
+      + '</div></div>';
+    body += '<div class="ovs-item"><div class="ovs-item-title">'
+      + (crits.length > 0
+          ? ('Kritische Schema-Befunde (' + crits.length + ')<div class="ovs-item-sub">' + escapeHtml(crits.map(w => String(w).replace(/^C-\d+\w*:\s*/, '')).join(' · ')) + '</div>')
+          : 'Keine kritischen Schema-Befunde.')
+      + '</div></div>';
+    body += '<div class="ovs-item"><div class="ovs-item-title">Einordnung des Sektors: '
+      + _subclassProvenanceBadge(mj) + '</div>'
+      + '<div class="ovs-item-sub">Sie bestimmt die verwendeten Modelle und Standardannahmen.</div></div>';
+    body += '</div>';
+
+    body += _ovCapBlock(mj, s, signalPos);
+
+    html += _ovSection('Datenverlässlichkeit',
+      'Wie belastbar die Grundlage ist: was gemessen, was geschätzt und was von Hand gesetzt wurde.', body);
+  }
+
+  // ══ Details und Fachansichten (Expertenfunktionen) ════════════
+  html += _ovDetailsCard(mj, q, s, dq, ampel, currency);
 
   c.innerHTML = html;
 }
+
+// ── Leerer Zustand: führt zum primären Einstieg ─────────────────
+function _ovEmptyState() {
+  const st = entrySetupState(_secProxyUrl, false);
+  let hinweis;
+  if (st.canFetch) {
+    hinweis = 'Geben Sie oben unter <strong>Aktie suchen</strong> ein Börsenkürzel ein und wählen Sie „Daten abrufen“.';
+  } else {
+    hinweis = 'Für den automatischen Abruf fehlt noch die Einrichtung der Datenverbindung. '
+      + 'Sie können sie unter <strong>Daten und Einstellungen</strong> eintragen oder dort einen vorhandenen Datensatz als JSON-Datei importieren.';
+  }
+  return '<div class="empty-hero">'
+    + '<h2>Noch keine Aktie ausgewählt</h2>'
+    + '<p>' + hinweis + '</p>'
+    + '<div class="btn-row" style="justify-content:center;margin-top:12px">'
+    + '<button class="btn" onclick="focusTickerSearch()">Zur Ticker-Suche</button>'
+    + '<button class="btn ghost" onclick="openDataSettings()">Daten und Einstellungen</button>'
+    + '</div></div>';
+}
+
+// ── Bausteine der Hauptansicht ─────────────────────────────────
+function _ovSection(titel, hinweis, bodyHtml) {
+  return '<div class="ovs-section">'
+    + '<div class="ovs-head"><div class="ovs-title">' + escapeHtml(titel) + '</div>'
+    + (hinweis ? '<div class="ovs-hint">' + escapeHtml(hinweis) + '</div>' : '')
+    + '</div>'
+    + '<div class="ovs-body">' + bodyHtml + '</div>'
+    + '</div>';
+}
+
+function _ovFactRow(label, value, mark, hint) {
+  const vorhanden = value != null && value !== '';
+  return '<div class="ovs-fact-k">' + escapeHtml(label) + '</div>'
+    + '<div class="ovs-fact-v">'
+    + (vorhanden ? escapeHtml(String(value)) : '<span style="color:var(--muted)">nicht verfügbar</span>')
+    + ' ' + ovMark(vorhanden ? mark : 'gap')
+    + (hint ? '<div class="ovs-item-sub">' + escapeHtml(hint) + '</div>' : '')
+    + '</div>';
+}
+
+// Zeile für eine Kennzahl im Format { status, value, detail }.
+// Ein nicht berechenbarer Wert wird als Datenlücke ausgewiesen —
+// nie als 0 und nie als geschätzte Ersatzzahl.
+function _ovMetricRow(label, metric, mark, erklaerung, digits, suffix) {
+  if (metric && metric.status === 'ok' && metric.value != null) {
+    return _ovFactRow(label, ovNum(metric.value, digits == null ? 2 : digits) + (suffix || ''), mark, erklaerung);
+  }
+  const grund = metric && metric.detail ? String(metric.detail) : 'nicht berechenbar';
+  return '<div class="ovs-fact-k">' + escapeHtml(label) + '</div>'
+    + '<div class="ovs-fact-v"><span style="color:var(--muted)">nicht verfügbar</span> ' + ovMark('gap')
+    + '<div class="ovs-item-sub">' + escapeHtml(grund) + (erklaerung ? ' · ' + escapeHtml(erklaerung) : '') + '</div></div>';
+}
+
+function _ovSubclassText(mj) {
+  const sub = (mj && mj.meta && mj.meta.sub_classification) || null;
+  if (!sub) return 'Einordnung nicht gesetzt';
+  return OV_SUBCLASS_LABELS[sub] || sub;
+}
+
+// ── Banner zu geladenen Snapshots (unverändert übernommen) ──────
+function _ovSnapshotBanner() {
+  if (!state._loadedFromSnapshot) return '';
+  const isLegacy     = state._snapshotIsLegacy;
+  const bv           = state._snapshotBreakingVersion;
+  const isIncompat   = !isLegacy && bv && !COMPATIBLE_BREAKING_VERSIONS.includes(bv);
+  const usingCurrent = state._usingCurrentEngine;
+  if (!(isLegacy || isIncompat || usingCurrent)) return '';
+
+  let bannerColor = 'var(--info)', bannerBg = '#1a232e', bannerMsg = '';
+  if (usingCurrent) {
+    if (isLegacy) {
+      bannerColor = 'var(--warn)'; bannerBg = '#2a1e0a';
+      bannerMsg = 'Hinweis: Der Snapshot enthielt keine Angabe zum Rechenkern und wurde nach einer Änderung mit dem aktuellen Rechenkern (v' + ENGINE_VERSION + ') neu bewertet. Eine exakte Reproduktion ist nicht garantiert.';
+    } else if (isIncompat) {
+      bannerColor = 'var(--warn)'; bannerBg = '#2a1e0a';
+      bannerMsg = 'Hinweis: Der Snapshot stammt aus Rechenkern ' + escapeHtml(bv) + ' und wurde nach einer Änderung mit dem aktuellen Rechenkern (v' + ENGINE_VERSION + ') neu bewertet.';
+    } else {
+      bannerMsg = 'Hinweis: Der Snapshot wurde mit einem kompatiblen Rechenkern (v' + ENGINE_VERSION + ') neu bewertet.';
+    }
+  } else if (isLegacy) {
+    bannerMsg = 'Hinweis: Der Snapshot enthält keine Angabe zum Rechenkern. Angezeigt wird die ursprüngliche Bewertung; eine Änderung aktiviert den aktuellen Rechenkern (v' + ENGINE_VERSION + ').';
+  } else if (isIncompat) {
+    bannerColor = 'var(--warn)'; bannerBg = '#2a1e0a';
+    bannerMsg = 'Warnung: Der Snapshot stammt aus Rechenkern ' + escapeHtml(bv) + ' und ist mit dem aktuellen Rechenkern (v' + ENGINE_VERSION + ') nicht vergleichbar. Angezeigt wird die ursprüngliche Bewertung.';
+  } else if (bv === '11.5') {
+    bannerMsg = 'Hinweis: Die Qualitätslogik wurde in V1.0.6 geändert (Korrektur bei Aktiensplits) — ältere Snapshots neu berechnen.';
+  }
+  if (!bannerMsg) return '';
+  return '<div style="background:' + bannerBg + ';border:1px solid ' + bannerColor + ';border-radius:8px;padding:9px 13px;margin-bottom:10px;color:' + bannerColor + ';line-height:1.6" class="txt-warning">' + bannerMsg + '</div>';
+}
+
+// ── „Was kann diese Einordnung kippen?" — höchstens drei Punkte ──
+function _ovKippenBlock(mj, q, s) {
+  const items = [];
+  const add = (titel, text) => { if (items.length < 3) items.push({ titel, text }); };
+
+  if (s && s._modelDivergenceSevere && s._divergenceRatio != null)
+    add('Modelle weichen stark ab', 'Die Modelle liegen um das ' + ovNum(s._divergenceRatio, 1) + '-Fache auseinander — die Einstiegszone ist gesperrt.');
+  else if (s && s._modelDivergenceHigh && s._divergenceRatio != null)
+    add('Modelle weichen ab', 'Die Modelle liegen um das ' + ovNum(s._divergenceRatio, 1) + '-Fache auseinander — erhöhte Unsicherheit im Wertband.');
+  else if (s && s._modelDivergenceRangeOnly && s._divergenceRatio != null)
+    add('Nur Bandbreite verwendbar', 'Streuung um das ' + ovNum(s._divergenceRatio, 1) + '-Fache — ein einzelner Punktwert ist nicht belastbar.');
+
+  if (q && q.qceScore && q.qceScore.total != null && q.qceScore.total <= 4)
+    add('Kapitaleffizienz schwach', 'Wert ' + ovNum(q.qceScore.total, 1) + ' von 10 — die Kapitaleffizienz ist nicht ausreichend belegt.');
+
+  const heuF = mj ? getHeuristicInputsUsed(mj) : [];
+  if (heuF.length > 0)
+    add('Geschätzte Kernannahmen', heuF.length + ' Annahme(n) geschätzt (' + heuF.slice(0, 2).join(', ') + (heuF.length > 2 ? ' …' : '') + ') — eine andere Kapitalkostenannahme verschiebt die Einordnung.');
+
+  if (typeof isGlobalRfrStale === 'function' && isGlobalRfrStale())
+    add('Basiszins veraltet', 'Der hinterlegte risikofreie Zins ist älter als 90 Tage und sollte aktualisiert werden.');
+
+  const dqK = state.dataQuality;
+  if (dqK && (dqK.grade === 'C' || dqK.grade === 'D'))
+    add('Datenlage eingeschränkt (Stufe ' + dqK.grade + ')', (dqK.reasons && dqK.reasons[0]) ? String(dqK.reasons[0]) : 'Einzelheiten im Bereich Datenverlässlichkeit.');
+
+  const tg = mj && mj.valuation && mj.valuation.terminal_growth_rate;
+  if (tg != null) {
+    const tgPct = (tg < 1 ? tg * 100 : tg);
+    if (tgPct > 3.5)
+      add('Langfristwachstum hoch angesetzt', 'Angenommenes Wachstum nach der Prognosephase: ' + ovPct(tgPct, 1) + ' — über der langfristigen Norm.');
+  }
+
+  if (items.length === 0) return '';
+  let out = '<div style="margin-top:12px"><div class="ovs-item-title" style="color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-size:.72rem;margin-bottom:4px">Was diese Einordnung kippen kann</div>';
+  items.forEach(it => {
+    out += '<div class="ovs-item"><div class="ovs-item-title">' + escapeHtml(it.titel) + '</div>'
+      + '<div class="ovs-item-sub">' + escapeHtml(it.text) + '</div></div>';
+  });
+  return out + '</div>';
+}
+
+// ── Begrenzungen der Einordnung (vormals „Cap-Analyse") ─────────
+function _ovCapBlock(mj, s, signalPos) {
+  const dqScore   = state.dataQuality;
+  const hasHeuCap = (s && s._hasHeuristicInputs && (signalPos === 'watchlist' || signalPos === 'blocked'));
+  const hasDqCap  = dqScore && dqScore.cap && (s && s._dataQualityCapApplied);
+  if (!(hasHeuCap || hasDqCap || (dqScore && (dqScore.grade === 'C' || dqScore.grade === 'D')))) return '';
+
+  let out = '<div style="margin-top:12px"><div class="ovs-item-title" style="color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-size:.72rem;margin-bottom:4px">Begrenzungen der Einordnung</div>';
+  if (hasHeuCap) {
+    out += '<div class="ovs-item"><div class="ovs-item-title" style="color:var(--warn)">Begrenzt durch geschätzte Kernannahmen</div>'
+      + '<div class="ovs-item-sub">Geschätzte Annahmen verhindern ein Kaufsignal — höchstens Prüfzone.</div></div>';
+  }
+  if (dqScore) {
+    const capText = dqScore.grade === 'D' ? 'Datenqualität D — die Bewertung ist nicht belastbar; es wird kein Signal ausgewiesen.'
+                  : dqScore.grade === 'C' ? 'Datenqualität C — höchstens Prüfzone; eingeschränkte Belastbarkeit.'
+                  : null;
+    if (capText) {
+      out += '<div class="ovs-item"><div class="ovs-item-title" style="color:' + _dqGradeColor(dqScore.grade) + '">Begrenzt durch die Datenlage</div>'
+        + '<div class="ovs-item-sub">' + escapeHtml(capText) + '</div></div>';
+    }
+    if (dqScore.reasons && dqScore.reasons.length > 0) {
+      out += '<div class="ovs-item"><div class="ovs-item-title">Hauptgrund</div><div class="ovs-item-sub">'
+        + escapeHtml(dqScore.reasons[0])
+        + (dqScore.reasons.length > 1 ? ' (+' + (dqScore.reasons.length - 1) + ' weitere)' : '')
+        + '</div></div>';
+    }
+  }
+  if (!hasHeuCap && !hasDqCap && (!dqScore || dqScore.cap === null)) {
+    out += '<div class="ovs-item"><div class="ovs-item-title" style="color:var(--accent2)">Keine Begrenzung aktiv.</div></div>';
+  }
+  return out + '</div>';
+}
+
+// ── Details und Fachansichten: Expertenfunktionen bleiben erreichbar ──
+function _ovDetailsCard(mj, q, s, dq, ampel, currency) {
+  const crits   = state.v4criticals || [];
+  const softs   = state.v4softs || [];
+  const brs     = state.baseRateWarnings || [];
+  const heuF    = mj ? getHeuristicInputsUsed(mj) : [];
+  const misF    = mj ? getMissingInputs(mj) : [];
+  const manual  = state.manualAssumptionFields ? state.manualAssumptionFields.size : 0;
+  const overr   = q ? (q.hardStops || []).filter(x => x.triggered && x.overridden) : [];
+  const activeHs= q ? (q.hardStops || []).filter(x => x.triggered && !x.overridden) : [];
+  const vBox    = buildVerdictBox(q);
+  const bpBox   = buildBuyPriceBox(s);
+  const diagRiskCount = activeHs.length + brs.length + (heuF.length > 0 ? 1 : 0) + (misF.length > 0 ? 1 : 0) + crits.length;
+
+  const buyPriceStr = s && s.buyPrice != null ? s.buyPrice.toFixed(2) : null;
+  const currentStr  = s && s.currentPrice != null ? s.currentPrice.toFixed(2) : null;
+  const mosPct      = s && s.mosComponents ? (s.mosComponents.total * 100).toFixed(0) : null;
+  const buyStr      = (s && s.position === 'blocked') ? 'gesperrt' : (buyPriceStr ? currency + ' ' + buyPriceStr : '–');
+
+  const _fvBand = (s && s.range) ? (function () {
+    const rimBullOnly = !!s._rimBullCaseOnly;
+    if (s.decisionRangeLow != null && s.decisionRangeHigh != null) {
+      const base = currency + ' ' + s.decisionRangeLow.toFixed(0) + '–' + s.decisionRangeHigh.toFixed(0) + ' (P25–P75)';
+      return (rimBullOnly && s.decisionRangeBullCase != null)
+        ? base + ' / günstiger Fall: ' + currency + ' ' + s.decisionRangeBullCase.toFixed(0) : base;
+    }
+    const cons = s.range.conservative, base = s.range.base, opt = s.range.optimistic;
+    const high = rimBullOnly ? base : opt;
+    const parts = [cons, high].filter(x => x != null).map(x => x.toFixed(0));
+    const suffix = (rimBullOnly && opt != null) ? ' / günstiger Fall: ' + currency + ' ' + opt.toFixed(0) : '';
+    return parts.length ? currency + ' ' + parts.join('–') + suffix : '–';
+  })() : '–';
+
+  const detailSummary = [
+    ['Einordnung', ampel.label, ampel.c],
+    ['Einstiegszone', buyStr, (s && s.position === 'blocked') ? 'var(--danger)' : ampel.c],
+    ['Kurs', currentStr ? currency + ' ' + currentStr : '–', 'var(--text)'],
+    ['Wertband', _fvBand, 'var(--text)'],
+    ['Sicherheitsabschlag', mosPct ? mosPct + '%' : '–', 'var(--text)'],
+    ['Datenverlässlichkeit', dq.label, dq.color],
+    ['Ausschlusskriterien', activeHs.length > 0 ? String(activeHs.length) + ' aktiv' : 'keine', activeHs.length > 0 ? 'var(--danger)' : 'var(--muted)'],
+    ['Warnungen', diagRiskCount > 0 ? String(diagRiskCount) : 'keine', diagRiskCount > 0 ? 'var(--warn)' : 'var(--muted)']
+  ];
+
+  let det = '<div class="ov-diagnose-summary">' + detailSummary.map(x =>
+    '<div class="ov-diagnose-card"><div class="k">' + x[0] + '</div><div class="v" style="color:' + x[2] + '">' + x[1] + '</div></div>'
+  ).join('') + '</div>';
+  if (s && s.range) det += buildRangeBoxFull(s);
+  det += '<div class="grid2" style="margin-top:10px">' + vBox + bpBox + '</div>';
+
+  if (crits.length > 0 || softs.length > 0) {
+    det += '<div style="margin-top:10px;background:var(--surface);border:1px solid var(--warn)66;border-radius:8px;padding:12px 14px">'
+      + '<div style="font-size:.72rem;letter-spacing:.09em;text-transform:uppercase;color:var(--warn);margin-bottom:6px">Prüfung des Datenschemas</div>'
+      + crits.map(w => '<div style="font-size:.76rem;color:var(--warn);padding:3px 0">' + escapeHtml(w.replace(/^C-\d+\w*:\s*/, '')) + '</div>').join('')
+      + softs.map(w => '<div style="font-size:.74rem;color:var(--muted);padding:3px 0">' + escapeHtml(w.replace(/^[SE]-\d+\w*:\s*/, '')) + '</div>').join('')
+      + '</div>';
+  }
+
+  if (brs.length > 0 || heuF.length > 0 || misF.length > 0 || manual > 0 || overr.length > 0) {
+    const severe = brs.some(w => w.level === 'severe');
+    det += '<div style="margin-top:10px;background:var(--surface);border:1px solid ' + (severe ? 'var(--danger)' : 'var(--warn)') + '66;border-radius:8px;padding:12px 14px">'
+      + '<div style="font-size:.72rem;letter-spacing:.09em;text-transform:uppercase;color:' + (severe ? 'var(--danger)' : 'var(--warn)') + ';margin-bottom:6px">Warnungen und Datenhinweise</div>';
+    if (misF.length > 0)
+      det += '<div class="br-severe" style="margin-bottom:6px"><div class="br-label">Fehlende Pflichtangaben</div><div style="font-size:.76rem;margin-top:4px">' + escapeHtml(misF.join(', ')) + '</div></div>';
+    if (brs.length > 0) {
+      det += '<div class="' + (severe ? 'br-severe' : 'br-warn') + '" style="margin-bottom:6px"><div class="br-label">Abgleich mit Erfahrungswerten</div>';
+      brs.forEach(w => { det += '<div style="margin-top:4px;font-size:.76rem">' + escapeHtml(w.msg) + '</div>'; });
+      det += '</div>';
+    }
+    if (heuF.length > 0)
+      det += '<div class="heuristic-warning" style="margin-bottom:6px"><div class="hw-label">Geschätzte Annahmen (' + heuF.length + ')</div><div style="font-size:.76rem;margin-top:4px">' + escapeHtml(heuF.join(', ')) + '</div></div>';
+    if (overr.length > 0)
+      det += '<div class="br-warn" style="margin-bottom:6px"><div class="br-label">Überschriebene Ausschlusskriterien</div><div style="font-size:.76rem;margin-top:4px">' + escapeHtml(overr.map(h => h.name).join(', ')) + '</div></div>';
+    if (manual > 0)
+      det += '<div class="br-warn" style="margin-bottom:6px"><div class="br-label">Von Hand gesetzte Annahmen (' + manual + ')</div><div style="font-size:.76rem;margin-top:4px"><span class="linklike" onclick="switchTab(\'assumptions\')">Bereich Annahmen öffnen</span></div></div>';
+    det += '</div>';
+  }
+
+  det += _ovRfDiagBlock(mj);
+
+  det += '<div class="btn-row" style="margin-top:12px">'
+    + '<button class="btn ghost" onclick="switchTab(\'quality\')">Qualität</button>'
+    + '<button class="btn ghost" onclick="switchTab(\'valuation\')">Bewertung</button>'
+    + '<button class="btn ghost" onclick="switchTab(\'market\')">Markt-Vergleich</button>'
+    + '<button class="btn ghost" onclick="switchTab(\'assumptions\')">Annahmen</button>'
+    + '<button class="btn ghost" onclick="switchTab(\'sec\')">SEC-Daten</button>'
+    + '<button class="btn ghost" onclick="switchTab(\'journal\')">Snapshots</button>'
+    + '<button class="btn ghost" onclick="window.print()">Drucken</button>'
+    + '</div>';
+
+  return '<div class="card collapsed ov-details-card" style="margin-bottom:10px">'
+    + '<div class="card-title" onclick="toggleCard(this)">Details und Fachansichten'
+    + '<span class="muted-help" style="margin-left:auto">Diagnose, Kennzahlenboxen und die bisherigen Fachbereiche</span>'
+    + '<span class="chev"></span></div>'
+    + '<div class="card-body">' + det + '</div>'
+    + '</div>';
+}
+
+// ── Herkunft des risikofreien Zinses (unverändert in der Sache) ──
+function _ovRfDiagBlock(mj) {
+  const wc = (mj.valuation && mj.valuation.wacc_components) || {};
+  const df = (mj.valuation && mj.valuation._derivationFlags) || {};
+  const hd = (mj.valuation && mj.valuation._heuristicDetails) || {};
+  const rfVal = wc.risk_free_rate != null ? wc.risk_free_rate : wc.risk_free;
+  if (rfVal == null) return '';
+  const rfPct = (rfVal < 1 ? rfVal * 100 : rfVal);
+  const rfFlag = df.risk_free_rate || 'unknown';
+  const rfBadgeColor = (rfFlag === 'manual' || rfFlag === 'global_manual') ? 'src-manual'
+    : rfFlag === 'heuristic' ? 'src-heuristic' : 'src-derived';
+  const rfSource = rfFlag === 'global_manual' ? 'globale Einstellung'
+    : rfFlag === 'manual' ? 'von Hand gesetzt'
+    : rfFlag === 'heuristic' ? ((hd.risk_free_rate && hd.risk_free_rate.source) || 'Standardwert der Währung')
+    : rfFlag;
+  const grf = state.globalRfrSettings;
+  const grfDate = grf && grf.updated_date ? grf.updated_date : null;
+  const stale = isGlobalRfrStale();
+  return '<div style="margin:10px 0 0 0;padding:6px 9px;background:var(--bg2);border-left:2px solid var(--info);border-radius:3px;font-size:.68rem;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">'
+    + '<span style="color:var(--muted)">Risikofreier Zins:</span>'
+    + '<strong style="color:var(--text)">' + ovPct(rfPct, 2) + '</strong>'
+    + '<span class="src-badge ' + rfBadgeColor + '">' + escapeHtml(rfSource) + '</span>'
+    + (grfDate ? '<span style="color:var(--muted)">Stand: ' + escapeHtml(grfDate) + '</span>' : '')
+    + (stale ? '<span style="color:var(--danger)">Warnung: Letzte Aktualisierung ' + escapeHtml(String(grfDate)) + ' — älter als 90 Tage.</span>' : '')
+    + '</div>';
+}
+
 function buildVerdictBox(q) {
   if (!q) {
     return `<div class="box"><div class="box-title">Quality Verdict <span class="box-tag na">n/a</span></div><div class="big-value" style="color:var(--muted);font-size:1rem">Engine nicht ausgeführt</div></div>`;
@@ -20941,15 +21496,76 @@ function secProxyConfigChanged() {
   _secProxyUrl = url; // UI/UX: current input is usable immediately; Speichern persists to localStorage.
   const btn = g('sec-fetch-btn');
   if (url.startsWith('http')) {
-    if (statusEl) { statusEl.textContent = '✓ Proxy-URL gesetzt — bereit.'; statusEl.style.color = 'var(--accent2)'; }
-    if (btn) btn.disabled = false;
+    if (statusEl) { statusEl.textContent = 'Adresse eingetragen — der Abruf ist freigeschaltet.'; statusEl.style.color = 'var(--accent2)'; }
+    if (btn) { btn.disabled = false; btn.title = 'Geschäftszahlen zu diesem Ticker abrufen'; }
   } else if (url.length > 0) {
-    if (statusEl) { statusEl.textContent = 'URL muss mit http(s):// beginnen.'; statusEl.style.color = 'var(--danger)'; }
-    if (btn) btn.disabled = true;
+    if (statusEl) { statusEl.textContent = 'Die Adresse muss mit http:// oder https:// beginnen.'; statusEl.style.color = 'var(--danger)'; }
+    if (btn) { btn.disabled = true; btn.title = 'Adresse der Datenverbindung ist unvollständig'; }
   } else {
-    if (statusEl) { statusEl.textContent = 'Proxy-URL eingeben um Abruf zu aktivieren.'; statusEl.style.color = 'var(--muted)'; }
-    if (btn) btn.disabled = true;
+    if (statusEl) { statusEl.textContent = 'Noch keine Adresse eingetragen — ohne sie ist kein automatischer Abruf möglich.'; statusEl.style.color = 'var(--muted)'; }
+    if (btn) { btn.disabled = true; btn.title = 'Zuerst die Datenverbindung unter „Daten und Einstellungen“ einrichten'; }
   }
+  renderEntryStatus();
+}
+
+// ── Einstieg: Statusmeldung zur Einrichtung ──────────────────────
+// Zeigt ehrlich an, ob ein automatischer Abruf ueberhaupt moeglich ist.
+// Es wird keine funktionierende Datenverbindung vorgetaeuscht: ohne
+// eingetragene Proxy-Adresse bleibt der Abrufknopf gesperrt und die
+// Meldung fuehrt in den Bereich "Daten und Einstellungen".
+// Rein anzeigend — keine Rueckwirkung auf Berechnungen.
+function entrySetupState(proxyUrl, hasData) {
+  const url = (proxyUrl || '').trim();
+  if (!url)                    return { level: 'missing', canFetch: false, key: 'no_proxy',      hasData: !!hasData };
+  if (!/^https?:\/\//i.test(url)) return { level: 'missing', canFetch: false, key: 'invalid_proxy', hasData: !!hasData };
+  return { level: 'ready', canFetch: true, key: 'ready', hasData: !!hasData };
+}
+
+function renderEntryStatus() {
+  const box = g('entry-setup-status');
+  if (!box) return;
+  const st = entrySetupState(_secProxyUrl, !!(state && state.masterJson));
+
+  if (st.key === 'ready') {
+    box.innerHTML = '<div class="entry-status-box is-ready">'
+      + '<div class="entry-status-title">Datenverbindung eingerichtet</div>'
+      + '<div class="entry-status-text">Ticker eingeben und „Daten abrufen“ wählen. '
+      + 'Die abgerufenen Daten werden erst nach Ihrer Bestätigung übernommen.</div>'
+      + '</div>';
+    return;
+  }
+
+  const detail = st.key === 'invalid_proxy'
+    ? 'Die eingetragene Adresse der Datenverbindung ist unvollständig (sie muss mit http:// oder https:// beginnen). Der automatische Abruf ist deshalb gesperrt.'
+    : 'Für den automatischen Abruf bei der US-Börsenaufsicht (SEC) fehlt noch die Adresse einer eigenen Zwischenstelle. Solange sie fehlt, ist kein Abruf möglich.';
+  const alt = st.hasData
+    ? 'Die derzeit angezeigte Bewertung stammt aus zuvor importierten Daten.'
+    : 'Ohne Einrichtung lassen sich Daten weiterhin als JSON-Datei importieren.';
+
+  box.innerHTML = '<div class="entry-status-box is-missing">'
+    + '<div class="entry-status-title">Einrichtung unvollständig — kein automatischer Abruf</div>'
+    + '<div class="entry-status-text">' + detail + ' ' + alt + '</div>'
+    + '<div class="entry-status-actions">'
+    + '<button class="btn ghost" onclick="openDataSettings()">Daten und Einstellungen öffnen</button>'
+    + '</div></div>';
+}
+
+// Oeffnet den Bereich "Daten und Einstellungen" und springt dorthin.
+function openDataSettings() {
+  const card = g('settings-card');
+  if (!card) return;
+  card.classList.remove('collapsed');
+  if (card.scrollIntoView) card.scrollIntoView({ block: 'start' });
+  const inp = g('sec-proxy-url');
+  if (inp && inp.focus) inp.focus();
+}
+
+// Springt zurueck zum primaeren Einstieg (Ticker-Suche).
+function focusTickerSearch() {
+  const card = g('entry-card');
+  if (card && card.scrollIntoView) card.scrollIntoView({ block: 'start' });
+  const inp = g('sec-ticker');
+  if (inp && inp.focus) inp.focus();
 }
 
 function secSaveProxyUrl() {
@@ -23722,7 +24338,11 @@ async function secFetchAll() {
   } catch(err) {
     // Fehler nur anzeigen wenn dieser Request noch aktuell ist
     if (!_isCurrent()) return;
-    _secStatus('Fehler: ' + err.message, 'err');
+    // Verstaendliche Einordnung vor der technischen Meldung; es wird keine
+    // funktionierende Datenverbindung vorgetaeuscht.
+    const _netz = /failed to fetch|networkerror|load failed/i.test(String(err && err.message));
+    _secStatus('Abruf fehlgeschlagen: ' + err.message
+      + (_netz ? ' — die Datenverbindung ist nicht erreichbar. Adresse unter „Daten und Einstellungen“ prüfen.' : ''), 'err');
     console.error('[SEC Fetch]', err);
   } finally {
     // Button-Freigabe: immer btn.disabled=false (verhindert dauerhaftes Einfrieren),
@@ -23922,6 +24542,11 @@ document.addEventListener('DOMContentLoaded', () => {
       secProxyConfigChanged();
     }
   } catch(e) {}
+  // Einstiegs-Statusmeldung in jedem Fall aufbauen — auch ohne gespeicherte Adresse.
+  renderEntryStatus();
+  // Hauptansicht einmal rendern: der Leerzustand nennt den tatsächlichen
+  // Einrichtungsstand statt eines statischen Platzhalters.
+  renderOverview();
 
   // Debug-Tab nur bei ?debug=1 einblenden
   if (new URLSearchParams(window.location.search).get('debug') === '1') {
@@ -36369,6 +36994,227 @@ function _testGoldenCases() {
 // state.manualAssumptionFields wieder her, um versteckte Kopplung von
 // applyConservativeHeuristics() an den globalen State abzufangen.
 // ════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════
+// REGRESSIONSTESTS — Vereinfachter Einstieg und Hauptansicht
+// ────────────────────────────────────────────────────────────────
+// Deckt die deterministischen Ableitungen der Hauptansicht ab:
+// Einrichtungsstatus, Geschäftsmodell-Angaben, Kurs/Szenario-
+// Gegenüberstellung, Kernaussagen und die Kennzeichnung.
+// Reine Funktionen — kein DOM, kein globaler Zustand, kein Zufall.
+// Erwartungswerte sind unabhängig von Bounds nachgerechnet.
+// ════════════════════════════════════════════════════════════════
+function _testOverviewSimplification() {
+  const results = [];
+  let _suite = '';
+  function suite(name) { _suite = name; }
+  function check(label, condition, extra) {
+    results.push({ suite: _suite, label, pass: !!condition,
+      extra: extra != null ? String(extra) : undefined });
+  }
+  const row = (rows, label) => rows.filter(r => r.label === label)[0] || null;
+  const scen = (rows, key) => rows.filter(r => r.key === key)[0] || null;
+
+  // ── OV-1: Einrichtungsstatus ────────────────────────────────
+  suite('OV-1 Einrichtungsstatus des Einstiegs');
+  {
+    const leer = entrySetupState('', false);
+    check('ohne Adresse: kein Abruf möglich', leer.canFetch === false, leer.canFetch);
+    check('ohne Adresse: Schlüssel no_proxy', leer.key === 'no_proxy', leer.key);
+    check('ohne Adresse: Stufe missing', leer.level === 'missing', leer.level);
+
+    const blank = entrySetupState('    ', false);
+    check('nur Leerzeichen zählen als fehlend', blank.key === 'no_proxy' && blank.canFetch === false, blank.key);
+
+    const ohneSchema = entrySetupState('mein-worker.dev/sec', false);
+    check('Adresse ohne http(s): kein Abruf', ohneSchema.canFetch === false, ohneSchema.canFetch);
+    check('Adresse ohne http(s): Schlüssel invalid_proxy', ohneSchema.key === 'invalid_proxy', ohneSchema.key);
+
+    const ok = entrySetupState('https://x.workers.dev/sec', false);
+    check('vollständige https-Adresse schaltet Abruf frei', ok.canFetch === true && ok.key === 'ready', ok.key);
+    const okHttp = entrySetupState('http://x/sec', true);
+    check('http wird akzeptiert, Datenbestand wird durchgereicht',
+      okHttp.canFetch === true && okHttp.hasData === true, okHttp.key + '/' + okHttp.hasData);
+    check('null-Eingabe wird nicht als eingerichtet gewertet',
+      entrySetupState(null, false).canFetch === false);
+  }
+
+  // ── OV-2: Geschäftsmodell — nur vorhandene Angaben ──────────
+  suite('OV-2 Geschäftsmodell ohne erfundene Texte');
+  {
+    const leer = ovBusinessModelFacts({});
+    check('leerer Datensatz liefert Zeilen', leer.length >= 6, leer.length);
+    check('ohne Angaben ist jeder Wert null', leer.every(r => r.value === null), JSON.stringify(leer.map(r => r.value)));
+    check('ohne Angaben ist jede Zeile als Datenlücke markiert', leer.every(r => r.mark === 'gap'),
+      JSON.stringify(leer.map(r => r.mark)));
+
+    const mj = {
+      meta: { sector: 'Technology', sub_classification: 'asset_light', exchange: 'NASDAQ',
+              currency: 'USD', reporting_unit: 'millions' },
+      fundamentals: { revenue: [12345, 11000], dps: [1.5] }
+    };
+    const r = ovBusinessModelFacts(mj);
+    check('Branche wird übernommen', row(r, 'Branche').value === 'Technology', row(r, 'Branche').value);
+    check('Branche als Historie markiert', row(r, 'Branche').mark === 'hist', row(r, 'Branche').mark);
+    check('Einordnung in Klartext übersetzt',
+      row(r, 'Einordnung für die Bewertung').value === 'kapitalarmes Geschäft (wenig Anlagevermögen)',
+      row(r, 'Einordnung für die Bewertung').value);
+    check('Umsatz mit Einheit und Währung: 12.345 Mio. USD',
+      row(r, 'Umsatz letztes Geschäftsjahr').value === '12.345 Mio. USD',
+      row(r, 'Umsatz letztes Geschäftsjahr').value);
+    check('Dividende > 0 wird bejaht',
+      row(r, 'Dividende').value.indexOf('ja — 1,50 USD je Aktie') === 0,
+      row(r, 'Dividende').value);
+
+    const rNoDiv = ovBusinessModelFacts({ meta: {}, fundamentals: { dps: [0] } });
+    check('Dividende 0 wird verneint, nicht als Lücke gezeigt',
+      row(rNoDiv, 'Dividende').value === 'nein — keine Dividende ausgewiesen' && row(rNoDiv, 'Dividende').mark === 'hist',
+      row(rNoDiv, 'Dividende').value);
+
+    const rUnknown = ovBusinessModelFacts({ meta: { sub_classification: 'foo_bar' } });
+    check('unbekannte Einordnung wird unverändert gezeigt, nicht erfunden',
+      row(rUnknown, 'Einordnung für die Bewertung').value === 'foo_bar',
+      row(rUnknown, 'Einordnung für die Bewertung').value);
+
+    const rManual = ovBusinessModelFacts({ meta: {}, qualitative: { moat_rating: 'wide', analyst_thesis: 'eigene Notiz' } });
+    check('eigene Einschätzung als manuelle Annahme markiert',
+      row(rManual, 'Wettbewerbsvorteil (eigene Einschätzung)').mark === 'manual',
+      row(rManual, 'Wettbewerbsvorteil (eigene Einschätzung)').mark);
+    check('eigene These als manuelle Annahme markiert',
+      row(rManual, 'Eigene These').mark === 'manual');
+    check('ohne eigene Einschätzung entsteht keine Zeile',
+      row(ovBusinessModelFacts({ meta: {} }), 'Eigene These') === null);
+  }
+
+  // ── OV-3: Kurs und Szenariowerte ────────────────────────────
+  suite('OV-3 Gegenüberstellung Kurs und Szenarien');
+  {
+    const s = { currentPrice: 100, buyPrice: 80,
+                range: { base: 120, conservative: 90, optimistic: 150 },
+                decisionRangeLow: 95, decisionRangeHigh: 140 };
+    const r = ovScenarioRows({}, s);
+    check('Kurszeile trägt die Marktkennzeichnung',
+      scen(r, 'price').mark === 'market' && scen(r, 'price').value === 100, scen(r, 'price').mark);
+    // Abstände unabhängig nachgerechnet: (Wert / 100 − 1) · 100
+    check('Einstiegszone 80 ⇒ −20,0 %', Math.abs(scen(r, 'buy').distancePct - (-20)) < 1e-9, scen(r, 'buy').distancePct);
+    check('Basisszenario 120 ⇒ +20,0 %', Math.abs(scen(r, 'base').distancePct - 20) < 1e-9, scen(r, 'base').distancePct);
+    check('vorsichtiges Szenario 90 ⇒ −10,0 %', Math.abs(scen(r, 'conservative').distancePct - (-10)) < 1e-9, scen(r, 'conservative').distancePct);
+    check('günstiges Szenario 150 ⇒ +50,0 %', Math.abs(scen(r, 'optimistic').distancePct - 50) < 1e-9, scen(r, 'optimistic').distancePct);
+    check('P25 95 ⇒ −5,0 %', Math.abs(scen(r, 'p25').distancePct - (-5)) < 1e-9, scen(r, 'p25').distancePct);
+    check('P75 140 ⇒ +40,0 %', Math.abs(scen(r, 'p75').distancePct - 40) < 1e-9, scen(r, 'p75').distancePct);
+    check('Szenariowerte sind als Prognose gekennzeichnet',
+      ['buy', 'base', 'conservative', 'optimistic', 'p25', 'p75'].every(k => scen(r, k).mark === 'fc'));
+
+    const sOhneBand = { currentPrice: 100, buyPrice: 80, range: { base: 120 } };
+    const r2 = ovScenarioRows({}, sOhneBand);
+    check('fehlendes Szenario bleibt null und wird nicht zu 0',
+      scen(r2, 'conservative').value === null && scen(r2, 'conservative').mark === 'gap',
+      JSON.stringify(scen(r2, 'conservative')));
+    check('fehlendes Szenario hat keinen Abstandswert', scen(r2, 'conservative').distancePct === null);
+    check('ohne Entscheidungsband entstehen keine P25/P75-Zeilen',
+      scen(r2, 'p25') === null && scen(r2, 'p75') === null);
+
+    const rOhneKurs = ovScenarioRows({}, { buyPrice: 80, range: { base: 120 } });
+    check('ohne Kurs ist die Kurszeile eine Datenlücke',
+      scen(rOhneKurs, 'price').value === null && scen(rOhneKurs, 'price').mark === 'gap');
+    check('ohne Kurs wird kein Abstand behauptet',
+      rOhneKurs.every(x => x.distancePct === null));
+
+    const rOhneSynthese = ovScenarioRows({}, null);
+    check('ohne Synthese bleibt nur die Kurszeile', rOhneSynthese.length === 1, rOhneSynthese.length);
+  }
+
+  // ── OV-4: Kernaussagen ──────────────────────────────────────
+  suite('OV-4 Kernaussagen: höchstens drei, mit Kennzahlenbezug');
+  {
+    const qOk = { verdict: 'investable_high', hardStops: [], scores: { piotroski: { status: 'ok', value: 7 } },
+                  qceScore: { total: 7.5 } };
+    const sOk = { position: 'buy', currentPrice: 100, buyPrice: 80, range: { base: 120 } };
+    const k = ovKeyStatements({}, qOk, sOk, { grade: 'A', reasons: [] });
+    check('höchstens drei Kernaussagen', k.length <= 3, k.length);
+    // (100 / 80 − 1) · 100 = 25 %
+    check('Kursaussage nennt den nachgerechneten Abstand von 25,0 %',
+      k.some(x => x.text === 'Der Kurs liegt 25,0 % über der Einstiegszone.'),
+      JSON.stringify(k.map(x => x.text)));
+    const kurs = k.filter(x => x.text.indexOf('Der Kurs liegt') === 0)[0];
+    check('Kursaussage verweist auf Kurs und Einstiegszone',
+      kurs && kurs.basis.length === 2 && kurs.basis[0][0] === 'Kurs' && kurs.basis[1][0] === 'Einstiegszone',
+      kurs && JSON.stringify(kurs.basis));
+    check('Kursaussage nennt die Werte 100,00 und 80,00',
+      kurs && kurs.basis[0][1] === '100,00' && kurs.basis[1][1] === '80,00',
+      kurs && JSON.stringify(kurs.basis));
+    const qualitaet = k.filter(x => x.text.indexOf('Qualitätsprüfung bestanden (hoch)') === 0)[0];
+    check('Qualitätsaussage vorhanden und positiv eingestuft', !!qualitaet && qualitaet.level === 'ok',
+      qualitaet && qualitaet.level);
+    check('Qualitätsaussage verweist auf Piotroski und Kapitaleffizienz',
+      qualitaet && qualitaet.basis.some(b => b[0] === 'Piotroski F-Score' && b[1] === '7 von 9')
+                && qualitaet.basis.some(b => b[0] === 'Qualitäts- und Kapitaleffizienzwert' && b[1] === '7,5 von 10'),
+      qualitaet && JSON.stringify(qualitaet.basis));
+
+    const qStop = { verdict: 'reject',
+                    hardStops: [{ id: 'x', name: 'Going Concern', triggered: true, overridden: false }] };
+    const kStop = ovKeyStatements({}, qStop, { position: 'blocked', status: 'blocked' }, null);
+    check('gesperrte Bewertung steht an erster Stelle',
+      kStop[0].level === 'danger' && kStop[0].text.indexOf('Die Bewertung ist gesperrt: Going Concern') === 0,
+      kStop[0].text);
+    check('überschriebene Ausschlusskriterien sperren nicht',
+      ovKeyStatements({}, { verdict: 'caution_quality',
+        hardStops: [{ id: 'x', name: 'Going Concern', triggered: true, overridden: true }] },
+        { position: 'wait', currentPrice: 100, range: { base: 120 } }, null)
+        .every(x => x.text.indexOf('Die Bewertung ist gesperrt') !== 0));
+
+    const kDq = ovKeyStatements({}, null, null, { grade: 'D', reasons: ['Fehlende Pflichtfelder: revenue'] });
+    check('eingeschränkte Datenlage wird als Kernaussage genannt',
+      kDq.some(x => x.text === 'Die Datenbasis ist eingeschränkt (Stufe D); die Ergebnisse sind entsprechend unsicher.'),
+      JSON.stringify(kDq.map(x => x.text)));
+    check('Datenaussage nennt Stufe und Grund',
+      kDq[0].basis.some(b => b[0] === 'Datenqualität' && b[1] === 'D')
+      && kDq[0].basis.some(b => b[0] === 'Grund' && b[1] === 'Fehlende Pflichtfelder: revenue'),
+      JSON.stringify(kDq[0].basis));
+
+    check('ohne jede Grundlage entsteht keine Kernaussage',
+      ovKeyStatements({}, null, null, null).length === 0);
+
+    // Determinismus: gleiche Eingabe ⇒ identisches Ergebnis
+    const a = JSON.stringify(ovKeyStatements({}, qOk, sOk, { grade: 'C', reasons: ['x'] }));
+    const b = JSON.stringify(ovKeyStatements({}, qOk, sOk, { grade: 'C', reasons: ['x'] }));
+    check('wiederholte Ableitung liefert dasselbe Ergebnis', a === b);
+
+    // Ohne Einstiegszone wird auf das Basisszenario verwiesen — (100/120−1)·100 = −16,666…
+    const kBase = ovKeyStatements({}, null, { position: 'wait', currentPrice: 100, range: { base: 120 } }, null);
+    check('ohne Einstiegszone Vergleich mit dem Basisszenario',
+      kBase.some(x => x.text === 'Der Kurs liegt 16,7 % unter dem Basisszenario; eine Einstiegszone wurde nicht ausgewiesen.'),
+      JSON.stringify(kBase.map(x => x.text)));
+  }
+
+  // ── OV-5: Kennzeichnung trägt immer Text ────────────────────
+  suite('OV-5 Kennzeichnung: Farbe nie ohne Text');
+  {
+    check('Historie', ovMark('hist').indexOf('Historie') > -1, ovMark('hist'));
+    check('Prognose', ovMark('fc').indexOf('Prognose') > -1, ovMark('fc'));
+    check('manuelle Annahme', ovMark('manual').indexOf('manuelle Annahme') > -1, ovMark('manual'));
+    check('Datenlücke', ovMark('gap').indexOf('Datenlücke') > -1, ovMark('gap'));
+    check('Marktdaten', ovMark('market').indexOf('Marktdaten') > -1, ovMark('market'));
+    check('unbekannte Kennzeichnung erzeugt keine leere Farbfläche', ovMark('gibtesnicht') === '');
+
+    const lueckeZeile = _ovFactRow('Beispiel', null, 'hist', null);
+    check('fehlender Wert wird als Datenlücke ausgewiesen',
+      lueckeZeile.indexOf('nicht verfügbar') > -1 && lueckeZeile.indexOf('Datenlücke') > -1, lueckeZeile);
+
+    const metrikLuecke = _ovMetricRow('Zinsdeckung',
+      { status: 'insufficient_data', value: null, detail: 'Daten unzureichend (0 von 1 Jahren, fehlt: ebit)' },
+      'hist', 'Erklärung', 2, '');
+    check('nicht berechenbare Kennzahl wird nicht zu 0',
+      metrikLuecke.indexOf('nicht verfügbar') > -1 && metrikLuecke.indexOf('>0,00<') === -1, metrikLuecke);
+    check('Grund der Nichtverfügbarkeit wird genannt',
+      metrikLuecke.indexOf('fehlt: ebit') > -1, metrikLuecke);
+    const metrikOk = _ovMetricRow('Zinsdeckung', { status: 'ok', value: 12.5 }, 'hist', 'Erklärung', 2, '');
+    check('berechenbare Kennzahl erscheint mit Wert und Historie-Marke',
+      metrikOk.indexOf('12,50') > -1 && metrikOk.indexOf('Historie') > -1, metrikOk);
+  }
+
+  return results;
+}
+
 function _testSectorClassificationPatch() {
   const results = [];
   let _currentSuite = '';
