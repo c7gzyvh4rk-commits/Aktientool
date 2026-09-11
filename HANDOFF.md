@@ -1,5 +1,135 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Update (Restfehler): Bruttomarge nur aus passenden Perioden (V1.0.52)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, geprüfter Branch
+`claude/entry-gate-and-band-provenance`, geprüfter Commit `376c276` — der
+einzige Branch, der ihn enthält; keine nachträglichen Korrekturen (`main` steht
+weiterhin auf `b023dc8`). Tool-Datei unverändert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`, Modul
+`src/dcf-core.js`. Reparaturbranch: `claude/gross-margin-period-match`.
+Testbefehl: `npm test`. Baseline auf `376c276` (ausgeführt, bestätigt die
+gemeldete Angabe): **1433 Rechen-Assertions · 78 Node-Tests · Exit-Code 0**.
+
+Umfang: ausschliesslich dieser Restfehler und seine unmittelbaren Folgen,
+Tests und dieses Dokument. Bewertungsformeln, Abrufsperre, P25/P75-Berechnung
+und alle übrigen Kennzahlen sind **unberührt**.
+
+### Am Code reproduziert (Stand `376c276`)
+
+`revenue [100,80,60]`, `gross_profit [60,40,24]`:
+
+| Periodenangaben | vorher | nachher | erwartet |
+|---|---|---|---|
+| rev 2024/23/22 · gp **2023/22/21** | 60 / 50 / – | **– / – / –** | – / – / – |
+| nur Index 0 widersprüchlich | 60 / 50 / – | **– / 50 / –** | – / 50 / – |
+| nur Index 1 widersprüchlich | 60 / 50 / – | **60 / – / –** | 60 / – / – |
+| passend 2024/23/22 | 60 / 50 / +10 | 60 / 50 / +10 | unverändert |
+| passend mit Jahressprung 2024/2022 | 60 / 50 / – | 60 / 50 / – | unverändert |
+
+**Ursache.** Die Einzelmargen entstanden weiterhin rein über gleiche
+Array-Indizes. `_grossMarginPeriodsAdjacent()` wertete die Periodenangaben erst
+für `grossMarginTrend` aus; eine bereits falsch gerechnete
+`grossMarginCurrent` (Bruttogewinn 2023 geteilt durch Umsatz 2024) blieb stehen
+und wurde als „Bruttomarge letztes Jahr" angezeigt.
+
+### Korrektur (klein gehalten)
+
+* Neu `_grossMarginPeriodsMatchAt(mj, i)`: beziehen sich `gross_profit` und
+  `revenue` an **dieser** Indexposition auf dieselbe Periode? Nur ein
+  ausdrücklicher Widerspruch (beide Angaben vorhanden und verschieden) ergibt
+  `false`.
+* `computeGrowthProfile()` prüft das **bei jeder Einzelmarge**: bei einem
+  Widerspruch am Index bleibt die Marge `null`. **Keine** Suche über andere
+  Indizes, **keine** Periodennormalisierung.
+* `_grossMarginPeriodsAdjacent()` nutzt dieselbe Funktion (statt eigener
+  Vergleichsschleife) und prüft zusätzlich wie bisher, ob Index 0 und 1
+  unmittelbar aufeinanderfolgende Geschäftsjahre sind. `grossMarginTrend`
+  entsteht weiterhin nur bei zwei gültigen Margen **und** bestätigter
+  Nachbarschaft.
+* Fehlen Periodenangaben ganz oder an der geprüften Position, bleibt es beim
+  bisherigen positionsbasierten Verhalten. Ein **erkennbarer** Widerspruch wird
+  auch bei nur teilweise vorhandenen Metadaten nicht ignoriert.
+* Anzeige unverändert im Aufbau: eine nicht berechenbare aktuelle Marge
+  erscheint als **Datenlücke** („nicht verfügbar" + Markierung), nicht als
+  ältere Ersatzmarge.
+
+**Geprüfte direkte Aufrufer:** Hauptansicht (Bruttomargenzeile),
+Reverse-DCF-Karte und `computeReverseDcfFull()` (lesen nur `revCagr*` /
+`fcfDataSuspect` — unberührt), Wachstumsbereich `runGrowthCaseEngine()` (zeigt
+jetzt korrekt „–" statt einer periodenfremden Marge) sowie die interne
+FCF-Breakeven-Schätzung `fcfBreakevenYearEst` (entfällt ohne belastbaren
+Trend — gewollte Folge, kein Fixture prüft den Wert).
+
+### Neue Regressionstests — `_testGrossMarginPeriodMatch()`, 26 Assertions
+
+Registriert in `test/run-calc-tests.js`; rein, ohne DOM und ohne Zufall.
+GMP-1 vollständig versetzte Perioden · GMP-2 nur aktuelle Periode
+widersprüchlich · GMP-3 nur Vorjahresperiode widersprüchlich · GMP-4 passende
+Perioden (60 % / 50 % / +10 pp) · GMP-5 passende Einzelperioden mit
+Jahressprung · GMP-6 die drei Fälle ohne Metadaten
+(`[null,40,24]` → –/50/– · `[60,null,24]` → 60/–/– · `[60,40,24]` → 60/50/+10)
+· GMP-7 teilweise vorhandene Metadaten (einseitig, Lücke an einem Index,
+erkennbarer Widerspruch trotz Lücke) · GMP-8 die Hilfsfunktion direkt.
+**Keine bestehende Erwartung geändert oder gelockert.**
+
+### Gegenprobe (ausgeführt)
+
+Periodenprüfung an der Einzelmarge wieder entfernt → **5 Fehlschläge**, jeweils
+mit dem gemeldeten Istwert `{"cur":60,"prior":50,"trend":null}`.
+
+### Tatsächlich ausgeführte Tests
+
+* `npm test` → Rechentests **1459 bestanden · 0 fehlgeschlagen ·
+  0 Fehler/Exceptions** (1433 unverändert zur Baseline **+26 neue**),
+  Node-Tests **78/78** unverändert, gemeinsamer **Exit-Code 0**. Alle 434
+  Fixture-Assertions unverändert grün.
+* **Echter Browser** (Chromium 1194 headless über `playwright-core`, nur im
+  Arbeitsverzeichnis ausserhalb des Repositories installiert — das Projekt
+  bleibt abhängigkeitsfrei), Datei per `file://`, **0 `pageerror`**. Geprüft
+  wurde die **tatsächlich gerenderte Hauptansicht** (keine DOM-Attrappe), je
+  nach Import über `importMasterJsonFromTextarea()`:
+
+  | Fall | Profilwerte | Zeile „Bruttomarge letztes Jahr" |
+  |---|---|---|
+  | vollständig versetzt | `[null,null,null]` | **Datenlücke** („nicht verfügbar") |
+  | nur Index 0 widersprüchlich | `[null,50,null]` | **Datenlücke** — kein 60 % |
+  | nur Index 1 widersprüchlich | `[60,null,null]` | 60,0 % · Historie, Hinweis „Kein Vorjahresvergleich" |
+  | passende Perioden | `[60,50,10]` | 60,0 % · „Veränderung zum Vorjahr: +10,0 Prozentpunkte" |
+
+### Verbleibende Grenzen
+
+* Geprüft wird ausschliesslich `_v4_meta.<feld>.periods` von `revenue` und
+  `gross_profit` an den Indizes 0 und 1. Datensätze ohne Periodenangaben (reine
+  JSON-Pastes) werden weiterhin rein positionsbasiert ausgewertet — eine
+  umfassende Periodennormalisierung war ausdrücklich nicht beauftragt.
+* Es wird **nicht** nach einem passenden Bruttogewinn an einem anderen Index
+  gesucht. Fehlt zur jüngsten Umsatzperiode ein passender Bruttogewinn, bleibt
+  es bei der Datenlücke.
+* Der Browsercheck ist ein einmalig ausgeführtes Skript im Arbeitsverzeichnis,
+  **kein** Bestandteil von `npm test`; die Suiten bleiben abhängigkeitsfrei und
+  DOM-frei. Einziger Konsolenfehler beim Seitenaufruf: die blockierte Anfrage
+  an `fonts.googleapis.com` (Netzwerksperre der Prüfumgebung), wie im
+  Ausgangsstand.
+* `ENGINE_VERSION` / `DISPLAY_VERSION` bleiben `1.0.35-base-rate-lite`
+  (mehrere Fixtures pinnen den Wert exakt); V1.0.52 bezeichnet nur diesen
+  Dokumentationsabschnitt.
+* Weiter offen aus den Vorschritten: Fachansichten ausserhalb der Hauptansicht
+  nicht vereinfacht; Einheitenverdacht in `_makeBaseValuation()`;
+  index-basierte Ableitung von `eps_diluted`, `book_value`, `dps` in
+  `applyDerivedFieldsV4`; Korrelationen der Monte-Carlo-Größen nicht
+  modelliert; `buildCoreValuationContext()` wandelt bei direktem Aufruf
+  weiterhin `'15'` um.
+
+### Ausgangsstand für Chat 10
+
+Übergabebranch: `claude/gross-margin-period-match` (Basis `376c276` auf
+`claude/entry-gate-and-band-provenance`). Tool-Datei unverändert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`, Modul
+`src/dcf-core.js`.
+Testbefehl: `npm test` — beide Suiten grün, Exit-Code 0
+(1459 Rechen-Assertions · 78 Node-Tests).
+
 ## Update (Chat 9 Reparatur): Abrufsperre, Bruttomarge, Bandherkunft (V1.0.51)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, geprüfter Branch

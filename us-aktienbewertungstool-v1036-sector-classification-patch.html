@@ -37078,6 +37078,146 @@ function _testGoldenCases() {
 // applyConservativeHeuristics() an den globalen State abzufangen.
 // ════════════════════════════════════════════════════════════════
 // ════════════════════════════════════════════════════════════════
+// REGRESSIONSTEST — Bruttomarge: Periodenabgleich je Indexposition
+// ────────────────────────────────────────────────────────────────
+// Restfehler aus Chat 9: die Einzelmargen entstanden weiter rein über
+// gleiche Array-Indizes. Wiesen die vorhandenen Periodenangaben
+// verschiedene Berichtsjahre aus, verhinderte das nur den Trend — eine
+// bereits falsch gerechnete grossMarginCurrent (Bruttogewinn 2023 durch
+// Umsatz 2024) blieb stehen und wurde als "Bruttomarge letztes Jahr"
+// angezeigt. Rein, kein DOM, kein Zufall; Erwartungswerte nachgerechnet.
+// ════════════════════════════════════════════════════════════════
+function _testGrossMarginPeriodMatch() {
+  const results = [];
+  let _suite = '';
+  function suite(name) { _suite = name; }
+  function check(label, condition, extra) {
+    results.push({ suite: _suite, label, pass: !!condition,
+      extra: extra != null ? String(extra) : undefined });
+  }
+
+  // revenue immer [100, 80, 60]; gross_profit immer [60, 40, 24].
+  // Passende Margen waeren 60/100 = 60 %, 40/80 = 50 %, 24/60 = 40 %.
+  const REV = [100, 80, 60];
+  const GP  = [60, 40, 24];
+  const P24 = ['2024-12-31', '2023-12-31', '2022-12-31'];
+  const gm = (revPeriods, gpPeriods, revenue, gross_profit) => {
+    const mj = { fundamentals: { revenue: revenue || REV, gross_profit: gross_profit || GP } };
+    if (revPeriods || gpPeriods) {
+      mj.fundamentals._v4_meta = {};
+      if (revPeriods) mj.fundamentals._v4_meta.revenue      = { periods: revPeriods };
+      if (gpPeriods)  mj.fundamentals._v4_meta.gross_profit = { periods: gpPeriods };
+    }
+    const p = computeGrowthProfile(mj);
+    return { cur: p.grossMarginCurrent, prior: p.grossMarginPrior, trend: p.grossMarginTrend };
+  };
+  const ist = (r) => JSON.stringify(r);
+
+  // ── GMP-1: gemeldeter Fall, vollständig versetzte Perioden ──────
+  suite('GMP-1 vollständig versetzte Perioden');
+  {
+    // Umsatz 2024/2023/2022 gegen Bruttogewinn 2023/2022/2021: an keiner
+    // Indexposition passen die Perioden zusammen.
+    const r = gm(P24, ['2023-12-31', '2022-12-31', '2021-12-31']);
+    check('aktuelle Marge entsteht nicht (kein 60 % aus 2023/2024)', r.cur === null, ist(r));
+    check('Vorjahresmarge entsteht nicht (kein 50 %)', r.prior === null, ist(r));
+    check('kein Vorjahresvergleich', r.trend === null, ist(r));
+  }
+
+  // ── GMP-2: nur die aktuelle Periode widersprüchlich ─────────────
+  suite('GMP-2 nur aktuelle Periode widersprüchlich');
+  {
+    // Index 0: Umsatz 2024 gegen Bruttogewinn 2023 → keine Marge.
+    // Index 1: beide 2023 → 40/80 = 50 %.
+    const r = gm(P24, ['2023-12-31', '2023-12-31', '2022-12-31']);
+    check('aktuelle Marge ist eine Datenlücke', r.cur === null, ist(r));
+    check('passende Vorjahresmarge bleibt erhalten: 50 %', r.prior === 50, ist(r));
+    check('kein Vorjahresvergleich', r.trend === null, ist(r));
+  }
+
+  // ── GMP-3: nur die Vorjahresperiode widersprüchlich ─────────────
+  suite('GMP-3 nur Vorjahresperiode widersprüchlich');
+  {
+    // Index 0: beide 2024 → 60/100 = 60 %. Index 1: 2023 gegen 2021.
+    const r = gm(P24, ['2024-12-31', '2021-12-31', '2020-12-31']);
+    check('passende aktuelle Marge bleibt erhalten: 60 %', r.cur === 60, ist(r));
+    check('Vorjahresmarge entsteht nicht', r.prior === null, ist(r));
+    check('kein Vorjahresvergleich', r.trend === null, ist(r));
+  }
+
+  // ── GMP-4: passende Perioden 2024/2023/2022 ─────────────────────
+  suite('GMP-4 passende Perioden');
+  {
+    const r = gm(P24, P24);
+    check('aktuelle Marge 60 %', r.cur === 60, ist(r));
+    check('Vorjahresmarge 50 %', r.prior === 50, ist(r));
+    check('Veränderung +10 Prozentpunkte', Math.abs(r.trend - 10) < 1e-9, ist(r));
+  }
+
+  // ── GMP-5: passende Einzelperioden, aber Jahressprung ───────────
+  suite('GMP-5 passende Einzelperioden mit Jahressprung 2024/2022');
+  {
+    const sprung = ['2024-12-31', '2022-12-31', '2021-12-31'];
+    const r = gm(sprung, sprung);
+    check('aktuelle Marge bleibt erhalten: 60 %', r.cur === 60, ist(r));
+    check('vorherige Marge bleibt erhalten: 50 %', r.prior === 50, ist(r));
+    check('kein Vorjahresvergleich über einen Jahressprung', r.trend === null, ist(r));
+  }
+
+  // ── GMP-6: ohne Periodenmetadaten unverändert positionsbasiert ──
+  suite('GMP-6 ohne Periodenmetadaten unverändertes Verhalten');
+  {
+    const a = gm(null, null, REV, [null, 40, 24]);
+    check('[null,40,24] ⇒ null / 50 / null',
+      a.cur === null && a.prior === 50 && a.trend === null, ist(a));
+    const b = gm(null, null, REV, [60, null, 24]);
+    check('[60,null,24] ⇒ 60 / null / null',
+      b.cur === 60 && b.prior === null && b.trend === null, ist(b));
+    const c = gm(null, null, REV, [60, 40, 24]);
+    check('[60,40,24] ⇒ 60 / 50 / +10',
+      c.cur === 60 && c.prior === 50 && Math.abs(c.trend - 10) < 1e-9, ist(c));
+  }
+
+  // ── GMP-7: nur teilweise vorhandene Metadaten ───────────────────
+  suite('GMP-7 teilweise vorhandene Periodenangaben');
+  {
+    // Nur eine Seite hat Angaben: kein erkennbarer Widerspruch, deshalb
+    // bleibt es positionsbasiert (die Marge entsteht weiterhin).
+    const nurRev = gm(P24, null);
+    check('nur Umsatzperioden ⇒ Einzelmargen bleiben erhalten',
+      nurRev.cur === 60 && nurRev.prior === 50, ist(nurRev));
+    const nurGp = gm(null, P24);
+    check('nur Bruttogewinnperioden ⇒ Einzelmargen bleiben erhalten',
+      nurGp.cur === 60 && nurGp.prior === 50, ist(nurGp));
+    // Einzelne Lücke in der Periodenreihe: an diesem Index nichts prüfbar.
+    const luecke = gm(P24, [null, '2023-12-31', '2022-12-31']);
+    check('fehlende Periodenangabe an Index 0 blockiert die Marge nicht',
+      luecke.cur === 60 && luecke.prior === 50, ist(luecke));
+    // Erkennbarer Widerspruch trotz Lücke an anderer Stelle.
+    const teilWiderspruch = gm(P24, ['2022-12-31', null, '2020-12-31']);
+    check('erkennbarer Widerspruch an Index 0 wird trotz Lücke an Index 1 erkannt',
+      teilWiderspruch.cur === null && teilWiderspruch.prior === 50, ist(teilWiderspruch));
+  }
+
+  // ── GMP-8: Hilfsfunktion direkt ─────────────────────────────────
+  suite('GMP-8 Periodenabgleich je Indexposition');
+  {
+    const mkMj = (revPeriods, gpPeriods) => ({ fundamentals: { _v4_meta: {
+      revenue: { periods: revPeriods }, gross_profit: { periods: gpPeriods } } } });
+    check('gleiche Periode ⇒ passend',
+      _grossMarginPeriodsMatchAt(mkMj(P24, P24), 0) === true);
+    check('verschiedene Perioden ⇒ nicht passend',
+      _grossMarginPeriodsMatchAt(mkMj(P24, ['2023-12-31', '2022-12-31', '2021-12-31']), 0) === false);
+    check('ohne Metadaten ⇒ passend (kein Widerspruch erkennbar)',
+      _grossMarginPeriodsMatchAt({}, 0) === true);
+    check('fehlende Angabe an diesem Index ⇒ passend',
+      _grossMarginPeriodsMatchAt(mkMj(P24, [null, '2023-12-31', '2022-12-31']), 0) === true);
+  }
+
+  return results;
+}
+
+// ════════════════════════════════════════════════════════════════
 // REGRESSIONSTESTS — drei bestätigte Fehler aus Chat 9
 // ────────────────────────────────────────────────────────────────
 // F1  Abrufsperre und Statusmeldung stimmen überein (eine Prüfung)
@@ -37824,29 +37964,38 @@ function _cagr(arr, years) {
 // dieselbe Periode betreffen. Fehlen die Angaben, wird true zurueckgegeben:
 // dann gibt es nichts zu pruefen, und es wird bewusst keine eigene
 // Periodennormalisierung aufgebaut.
-function _grossMarginPeriodsAdjacent(mj) {
+function _gmPeriodsOf(mj, field) {
   const meta = (mj && mj.fundamentals && mj.fundamentals._v4_meta) || {};
-  const per = (field) => {
-    const m = meta[field];
-    return (m && Array.isArray(m.periods)) ? m.periods : null;
-  };
+  const m = meta[field];
+  return (m && Array.isArray(m.periods)) ? m.periods : null;
+}
+
+// Beziehen sich Bruttogewinn und Umsatz an DIESER Indexposition auf dieselbe
+// Periode? Nur ein ausdruecklicher Widerspruch (beide Angaben vorhanden und
+// verschieden) fuehrt zu false. Fehlt eine der beiden Angaben, gibt es nichts
+// zu pruefen — dann bleibt es beim bisherigen positionsbasierten Verhalten.
+// Es wird weder ueber andere Indizes gesucht noch normalisiert.
+function _grossMarginPeriodsMatchAt(mj, i) {
+  const revP = _gmPeriodsOf(mj, 'revenue');
+  const gpP  = _gmPeriodsOf(mj, 'gross_profit');
+  if (!revP || !gpP) return true;
+  if (revP[i] == null || gpP[i] == null) return true;
+  return String(revP[i]) === String(gpP[i]);
+}
+
+// Sind Index 0 und Index 1 unmittelbar aufeinanderfolgende Geschaeftsjahre?
+// Zusaetzlich gilt weiterhin die Periodengleichheit je Index (fuer direkte
+// Aufrufer, die die Einzelmargen nicht selbst geprueft haben).
+function _grossMarginPeriodsAdjacent(mj) {
   const yearOf = (p) => {
     if (p == null || typeof p !== 'string') return null;
     const m = p.match(/(\d{4})/);
     return m ? parseInt(m[1], 10) : null;
   };
-  const revP = per('revenue');
-  const gpP  = per('gross_profit');
-
-  // Zaehler und Nenner muessen je Index dieselbe Periode betreffen.
-  if (revP && gpP) {
-    for (const i of [0, 1]) {
-      if (revP[i] != null && gpP[i] != null && String(revP[i]) !== String(gpP[i])) return false;
-    }
+  for (const i of [0, 1]) {
+    if (!_grossMarginPeriodsMatchAt(mj, i)) return false;
   }
-
-  // Index 0 und 1 muessen unmittelbar benachbarte Geschaeftsjahre sein.
-  for (const arr of [revP, gpP]) {
+  for (const arr of [_gmPeriodsOf(mj, 'revenue'), _gmPeriodsOf(mj, 'gross_profit')]) {
     if (!arr) continue;
     const y0 = yearOf(arr[0]);
     const y1 = yearOf(arr[1]);
@@ -37886,11 +38035,16 @@ function computeGrowthProfile(mj) {
   // "Bruttomarge letztes Jahr" angezeigt wurde (revenue [100,80,60] mit
   // gross_profit [null,40,24] ergab 50 % statt einer Datenluecke) und der
   // "Vorjahresvergleich" zwei Jahre uebersprang.
+  // Aus ausdruecklich verschiedenen Perioden entsteht keine Marge: sonst
+  // teilte die "aktuelle" Marge z.B. den Bruttogewinn 2023 durch den Umsatz
+  // 2024. Der Widerspruch wird bereits HIER geprueft, nicht erst beim Trend —
+  // vorher blieb eine so berechnete grossMarginCurrent stehen und wurde als
+  // "Bruttomarge letztes Jahr" angezeigt.
   const grossMarginByIndex = [];
   for (let i = 0; i < Math.min(gp.length, rev.length, 5); i++) {
-    grossMarginByIndex.push(
-      (gp[i] != null && rev[i] != null && rev[i] > 0) ? (gp[i] / rev[i]) * 100 : null
-    );
+    const _passend = (gp[i] != null && rev[i] != null && rev[i] > 0)
+      && _grossMarginPeriodsMatchAt(mj, i);
+    grossMarginByIndex.push(_passend ? (gp[i] / rev[i]) * 100 : null);
   }
   const grossMarginCurrent  = grossMarginByIndex[0] ?? null;
   const grossMarginPrior    = grossMarginByIndex[1] ?? null;

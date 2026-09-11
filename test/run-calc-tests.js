@@ -60,6 +60,7 @@ const PURE_TEST_FUNCTIONS = [
   '_testSnapshotPathConsistency',
   '_testOverviewSimplification',
   '_testChat9Fixes',
+  '_testGrossMarginPeriodMatch',
 ];
 
 // Test-Helper, die echte DOM-Formularfelder anlegen/auslesen
