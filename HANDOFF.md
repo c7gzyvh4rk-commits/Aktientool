@@ -1,5 +1,213 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Update (Chat 9 Reparatur): Abrufsperre, Bruttomarge, Bandherkunft (V1.0.51)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, geprüfter Branch
+`claude/beautiful-carson-t5eqpi`, geprüfter Commit `cd1be7e` — der einzige
+Branch, der ihn enthält; keine nachträglichen Korrekturen (`main` steht
+weiterhin auf `b023dc8`). Tool-Datei unverändert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`, Modul
+`src/dcf-core.js`. Reparaturbranch: `claude/entry-gate-and-band-provenance`.
+Testbefehl: `npm test`. Baseline auf `cd1be7e` (ausgeführt, bestätigt die
+gemeldete Angabe): **1357 Rechen-Assertions · 78 Node-Tests · Exit-Code 0**.
+
+Umfang: ausschliesslich die drei gemeldeten Fehler, ihre unmittelbaren Folgen,
+Tests und dieses Dokument. **Keine Bewertungsformel, keine Abschlagsregel,
+keine Quantilberechnung, keine Modellgewichte und keine Szenariowerte
+geändert.**
+
+### Fehler 1 — Abrufsperre und Statusmeldung widersprachen sich
+
+**Am Code reproduziert** (Browser, Stand `cd1be7e`):
+
+| Adresse | Abrufknopf | `entrySetupState` | |
+|---|---|---|---|
+| `httpINVALID` | **frei** | `invalid_proxy` | **Widerspruch** |
+| `https://` (ohne Host) | frei | **`ready`** | Host fehlt, gilt als eingerichtet |
+| `beispiel.dev/sec` | gesperrt | `invalid_proxy` | ok |
+
+Zusätzlich reproduziert: Enter im Tickerfeld startete `secFetchAll()` auch bei
+ungültiger Adresse (Meldung „die Datenverbindung ist nicht erreichbar" statt
+„Adresse unvollständig"), und der `finally`-Block gab den Knopf nach Abrufende
+bedingungslos wieder frei — auch wenn die Adresse inzwischen `kaputt` lautete.
+
+**Ursache.** Drei unterschiedlich strenge Prüfungen: `secProxyConfigChanged()`
+(`startsWith('http')`), `entrySetupState()` (Schema-Regex ohne Host) und
+`_secProxyFetch()` (`startsWith('http')`).
+
+**Korrektur.** Neu `isUsableProxyUrl(value)` als **einzige** Prüfung:
+`http`/`https`-Schema **und** ein Hostname mit mindestens einem
+alphanumerischen Zeichen (`new URL`-Parsing). Sie speist
+`secProxyConfigChanged()`, `entrySetupState()`, den neuen synchronen
+Wachposten `_requireUsableProxy()` (von `_secProxyFetch()` **und** vom
+Einstieg in `secFetchAll()` genutzt) sowie `secSyncFetchButton()`, die einzige
+Stelle, die den Knopf ausserhalb eines laufenden Abrufs freigibt. Der
+`finally`-Block ruft jetzt `secSyncFetchButton()` statt `disabled = false`.
+Ohne gültige Adresse wird **keine Netzwerkanfrage** gestartet, auch nicht über
+Enter im Tickerfeld oder einen direkten Funktionsaufruf.
+Der Status-Schlüssel heisst nicht mehr `ready`, sondern **`configured`**:
+Die Texte sagen jetzt „Adresse ist vollständig — der Abruf lässt sich starten.
+Ob die Zwischenstelle erreichbar ist und korrekt antwortet, zeigt erst der
+Abruf." Die bestehenden Regeln gegen parallele/veraltete Abrufe
+(`activeSecFetchId`, `_isCurrent()`, `'Lädt…'`) sind unverändert und im
+Browser nachgemessen.
+
+### Fehler 2 — fehlende jüngste Bruttomarge zeigte die Vorjahreszahl
+
+**Am Code reproduziert** (`revenue [100,80,60]`), Stand `cd1be7e` → nachher:
+
+| `gross_profit` | aktuell | Vorjahr | Δ | | aktuell | Vorjahr | Δ |
+|---|---|---|---|---|---|---|---|
+| `[null,40,24]` | **50 %** | 40 % | **+10** | → | **Datenlücke** | 50 % | **keiner** |
+| `[60,null,24]` | 60 % | **40 %** | **+20** | → | 60 % | **keine** | **keiner** |
+| `[60,40,24]` | 60 % | 50 % | +10 | → | 60 % | 50 % | +10 |
+
+**Ursache.** `grossMargins.push(...)` übersprang Lücken und verkürzte die
+Reihe; Index 0 zeigte dann eine ältere Periode, und der „Vorjahresvergleich"
+übersprang bis zu zwei Jahre.
+
+**Korrektur.** `grossMarginByIndex[i]` erhält die Periodenposition (`null` an
+der Stelle der Lücke, statt die Reihe zu verkürzen). Der Vorjahresvergleich
+entsteht nur, wenn Index 0 und 1 beide gültig sind **und**
+`_grossMarginPeriodsAdjacent(mj)` das bestätigt: liegen Periodenangaben
+(`_v4_meta.<feld>.periods`) vor, müssen Index 0 und 1 unmittelbar benachbarte
+Geschäftsjahre sein und Zähler/Nenner je Index dieselbe Periode betreffen.
+Ohne Periodenangaben wird nicht blockiert — es wird **keine** neue
+Periodennormalisierung eingeführt. Geprüfte direkte Aufrufer: die Hauptansicht
+(zeigt jetzt Datenlücke bzw. nennt den fehlenden Vergleich im Hinweistext),
+der Wachstumsbereich (`Gross Margin`-Kachel), die interne
+FCF-Breakeven-Schätzung (`fcfBreakevenYearEst`, entfällt jetzt bei
+unbelastbarem Trend — gewollt) und `computeReverseDcfFull` (nutzt nur
+`revCagr*`/`fcfDataSuspect`, unberührt).
+
+### Fehler 3 — P25/P75 wurde als Simulationsergebnis beschrieben
+
+**Am Code reproduziert.** `ovScenarioRows()` schrieb „ein Viertel der
+simulierten Ergebnisse liegt darunter/darüber". Tatsächlich liefert die
+Synthese `decisionRangeMethod: 'weighted_p25_p75'` aus `_weightedQuantile`
+über die gewichteten Szenariowerte der Modelle (Fixture `T-01`: 6
+Szenariowerte aus 2 Modellen, P25 `2.79415505393804`, P75 `7.262863118767878`).
+
+**Korrektur.** Bezeichnung „Szenarioband, unteres/oberes Ende (P25/P75)",
+Erklärung „gewichtetes 25-/75-%-Quantil der Szenariowerte der verwendeten
+Bewertungsmodelle". Der Zusatz „gewichtet" wird nur behauptet, wenn
+`decisionRangeMethod === 'weighted_p25_p75'` ausgewiesen ist (ältere Snapshots
+ohne Methodenangabe erhalten die neutrale Formulierung). Der Hinweistext des
+Bewertungsbereichs nennt Szenarioanzahl und Modellzahl und sagt ausdrücklich,
+dass es **keine Wahrscheinlichkeitsaussage** ist. Detailkarte und
+Kennzahlenübersicht sprechen vom „gewichteten Szenarioband P25–P75". Die
+Monte-Carlo-Karte und ihre Erklärungen bleiben unverändert für die echte
+Simulation. Quantilberechnung, Gewichte, Szenariowerte und Sicherheitsabschlag
+sind unangetastet; die Bandgrenzen sind unverändert.
+
+### Neue Regressionstests — `_testChat9Fixes()`, 76 Assertions
+
+Registriert in `test/run-calc-tests.js`; rein, ohne DOM und ohne Zufall.
+Ergänzt: `URL` im Sandkasten des Rechentest-Runners (Standard-Browserglobal,
+das die neue Syntaxprüfung nutzt).
+
+* **F1** 13 Adressfälle (leer, Leerzeichen, `httpINVALID`, `https://`,
+  `http://`, `https://...`, ohne Schema, `ftp://`, `httpsx://`, gültige
+  http/https-Adressen, IP mit Port, Adresse mit Randleerzeichen) je dreifach
+  geprüft: `isUsableProxyUrl`, Schlüssel von `entrySetupState` und die
+  **Übereinstimmung** von Freigabe und Statusmeldung. Dazu `null`, `undefined`,
+  Zahl, Objekt; der Wachposten `_requireUsableProxy()` lehnt fünf ungültige
+  Adressen ab und lässt eine gültige durch.
+* **F2** die drei Pflichtfälle mit unabhängig nachgerechneten Werten
+  (40/80 = 50 %, 60/100 = 60 %, Δ = +10 pp), ausdrücklich „nicht 24/60 = 40 %
+  als Vorjahreswert"; dazu Periodenangaben passend / mit Sprung / zwischen
+  Zähler und Nenner versetzt; und die erzeugte Zeile der Hauptansicht
+  (Datenlücke statt `50,0 %`).
+* **F3** echtes Syntheseergebnis aus Fixture `T-01` durch die Pipeline:
+  Methode `weighted_p25_p75`, Bandgrenzen auf 1e-12 unverändert, angezeigte
+  Werte exakt gleich den Bandgrenzen, Bezeichnung und Erklärung nennen
+  gewichtete Modellszenarien, **keine** Treffer für „simuliert", „Monte" oder
+  „wahrscheinlich"; ohne ausgewiesene Methode keine Gewichtungsbehauptung.
+
+### Gegenproben (ausgeführt)
+
+| Rückbau | Rot |
+|---|---|
+| GP-1 alte Prüfung `startsWith('http')` | 11 (u. a. `httpINVALID` → `configured`) |
+| GP-2 alte Bruttomargen-Reihe ohne Positionserhalt | 7 (u. a. „aktuell 50", „Δ 20") |
+| GP-3 alte Simulationsbehauptung | 6 |
+| GP-4 Knopffreigabe ohne Adressprüfung | im Browser: Knopf nach Abrufende trotz Adresse `kaputt` wieder frei |
+
+### Tatsächlich ausgeführte Tests
+
+* `npm test` → Rechentests **1433 bestanden · 0 fehlgeschlagen ·
+  0 Fehler/Exceptions** (1357 unverändert zur Baseline **+76 neue**),
+  Node-Tests **78/78** unverändert, gemeinsamer **Exit-Code 0**. Alle 434
+  Fixture-Assertions unverändert grün. Genau **eine** bestehende Erwartung
+  angepasst und im Test begründet: `_testOverviewSimplification` erwartete den
+  Status-Schlüssel `ready`, der jetzt `configured` heisst (fachliche
+  Begründung: „eingetragen" ≠ „erreichbar"); die Aussage des Tests
+  (Abruf freigeschaltet) blieb gleich.
+* **Echter Browser** (Chromium 1194 headless über `playwright-core`, nur im
+  Arbeitsverzeichnis ausserhalb des Repositories installiert — das Projekt
+  bleibt abhängigkeitsfrei), Datei per `file://`, **0 `pageerror`**:
+  * **B1** sieben Adressen: **0 Widersprüche** zwischen Knopf,
+    `entrySetupState` und Einstiegsmeldung; kein Erreichbarkeitsversprechen.
+  * **B2** Enter im Tickerfeld bei `httpINVALID`, `https://`,
+    `beispiel.dev/sec` und leer: **0 Netzwerkanfragen**, jeweils Meldung
+    „Kein Abruf: …".
+  * **B3** gültige Adresse: Abruf wird tatsächlich versucht (1 Netzanfrage),
+    Knopf danach wieder frei.
+  * **B4** Adresse während des Abrufs auf `kaputt` geändert: Knopf bleibt
+    **gesperrt**, Beschriftung korrekt zurückgesetzt.
+  * **B4b** zwei überlappende Abrufe: Knopf zeigt `Lädt…` und bleibt gesperrt,
+    der neuere Ticker gewinnt (`activeSecFetchId` 2) — Regel gegen
+    parallele/veraltete Abrufe unverändert wirksam.
+  * **B5** die drei Bruttomargen-Pflichtfälle in der gerenderten Hauptansicht:
+    Datenlücke · 60,0 % ohne Vorjahresvergleich · 60,0 % mit +10,0 Prozentpunkten.
+  * **B6** Hauptansicht zeigt „Szenarioband … gewichtetes 25-/75-%-Quantil der
+    Szenariowerte der verwendeten Bewertungsmodelle", Werte 2,79 / 7,26,
+    Methode `weighted_p25_p75`, Bandgrenzen auf 1e-12 unverändert, kein
+    „simuliert" ausserhalb des Monte-Carlo-Teils; die Monte-Carlo-Erklärung
+    besteht weiter.
+  * **B7** schmale Breite 390×844: 0 px waagerechter Überlauf, alle fünf
+    Bereiche vorhanden.
+
+### Verbleibende Grenzen
+
+* Beim reinen Seitenaufruf ist der einzige Konsolenfehler eine blockierte
+  Anfrage an `fonts.googleapis.com` (Netzwerksperre der Prüfumgebung) —
+  gegen `cd1be7e` gemessen **identisch** (dort ebenfalls genau diese eine
+  Anfrage, 0 `pageerror`). Die weiteren Konsolenmeldungen im Browserlauf
+  stammen aus den absichtlich unerreichbaren Testadressen.
+* Der Browsercheck ist ein einmalig ausgeführtes Skript im Arbeitsverzeichnis,
+  **kein** Bestandteil von `npm test`; die Suiten bleiben abhängigkeitsfrei und
+  DOM-frei.
+* `isUsableProxyUrl()` prüft ausschliesslich die **Syntax**. Ob die
+  Zwischenstelle existiert, erreichbar ist oder korrekt antwortet, zeigt erst
+  der Abruf — die Texte sagen das ausdrücklich. Eine Vorabprüfung der
+  Erreichbarkeit wurde nicht eingebaut (wäre eine neue Netzwerkfunktion).
+* Der Periodenabgleich der Bruttomarge nutzt nur vorhandene
+  `_v4_meta.<feld>.periods`. Datensätze ohne Periodenangaben (reine
+  JSON-Pastes) werden weiterhin rein positionsbasiert ausgewertet; eine
+  umfassende Periodennormalisierung war ausdrücklich nicht beauftragt.
+* `fcfBreakevenYearEst` entfällt jetzt, wenn kein belastbarer
+  Bruttomargen-Trend vorliegt. Das ist die gewollte Folge der Korrektur; kein
+  Fixture prüft diesen Wert.
+* `ENGINE_VERSION` / `DISPLAY_VERSION` bleiben `1.0.35-base-rate-lite`
+  (mehrere Fixtures pinnen den Wert exakt); V1.0.51 bezeichnet nur diesen
+  Dokumentationsabschnitt.
+* Weiter offen aus den Vorschritten: Fachansichten ausserhalb der Hauptansicht
+  nicht vereinfacht; Einheitenverdacht in `_makeBaseValuation()`;
+  index-basierte Ableitung von `eps_diluted`, `book_value`, `dps` in
+  `applyDerivedFieldsV4`; Korrelationen der Monte-Carlo-Größen nicht
+  modelliert; `buildCoreValuationContext()` wandelt bei direktem Aufruf
+  weiterhin `'15'` um.
+
+### Ausgangsstand für Chat 10
+
+Übergabebranch: `claude/entry-gate-and-band-provenance` (Basis `cd1be7e` auf
+`claude/beautiful-carson-t5eqpi`). Tool-Datei unverändert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`, Modul
+`src/dcf-core.js`.
+Testbefehl: `npm test` — beide Suiten grün, Exit-Code 0
+(1433 Rechen-Assertions · 78 Node-Tests).
+
 ## Update (Chat 9): Einstieg und Hauptansicht vereinfacht (V1.0.50)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, geprüfter Branch

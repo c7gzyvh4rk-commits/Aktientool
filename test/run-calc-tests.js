@@ -59,6 +59,7 @@ const PURE_TEST_FUNCTIONS = [
   '_testSnapshotIntegrity',
   '_testSnapshotPathConsistency',
   '_testOverviewSimplification',
+  '_testChat9Fixes',
 ];
 
 // Test-Helper, die echte DOM-Formularfelder anlegen/auslesen
@@ -112,6 +113,7 @@ function buildSandbox() {
     location: { search: '' },
     navigator: { userAgent: 'node-calc-test-runner' },
     URLSearchParams,
+    URL,
     fetch: () => Promise.reject(new Error('Netzwerkzugriff ist im Rechentest-Runner nicht vorgesehen.')),
     setTimeout,
     clearTimeout,

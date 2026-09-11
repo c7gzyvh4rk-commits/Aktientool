@@ -16805,10 +16805,17 @@ function ovScenarioRows(mj, s) {
   push('conservative', 'Vorsichtiges Szenario', r.conservative, 'fc', 'ungünstigere Annahmen');
   push('optimistic', 'Günstiges Szenario', r.optimistic, 'fc', 'günstigere Annahmen');
   if (s.decisionRangeLow != null && s.decisionRangeHigh != null) {
-    push('p25', 'Entscheidungsband, unteres Ende (P25)', s.decisionRangeLow, 'fc',
-         'ein Viertel der simulierten Ergebnisse liegt darunter');
-    push('p75', 'Entscheidungsband, oberes Ende (P75)', s.decisionRangeHigh, 'fc',
-         'ein Viertel der simulierten Ergebnisse liegt darüber');
+    // Herkunft: Das Band entsteht in der Synthese aus den gewichteten
+    // Szenariowerten der verwendeten Bewertungsmodelle (_weightedQuantile,
+    // decisionRangeMethod = 'weighted_p25_p75') — NICHT aus der
+    // Monte-Carlo-Simulation. Frueher stand hier "simulierte Ergebnisse".
+    const gew = s.decisionRangeMethod === 'weighted_p25_p75';
+    push('p25', 'Szenarioband, unteres Ende (P25)', s.decisionRangeLow, 'fc',
+         gew ? 'gewichtetes 25-%-Quantil der Szenariowerte der verwendeten Bewertungsmodelle'
+             : '25-%-Quantil der Szenariowerte der verwendeten Bewertungsmodelle');
+    push('p75', 'Szenarioband, oberes Ende (P75)', s.decisionRangeHigh, 'fc',
+         gew ? 'gewichtetes 75-%-Quantil derselben Szenariowerte'
+             : '75-%-Quantil derselben Szenariowerte');
   }
   return rows;
 }
@@ -17079,7 +17086,9 @@ function renderOverview() {
     body += _ovFactRow('Bruttomarge letztes Jahr', gp && gp.grossMarginCurrent != null ? ovPct(gp.grossMarginCurrent, 1) : null, 'hist',
       gp && gp.grossMarginTrend != null
         ? ('Veränderung zum Vorjahr: ' + (gp.grossMarginTrend >= 0 ? '+' : '−') + ovNum(Math.abs(gp.grossMarginTrend), 1) + ' Prozentpunkte')
-        : 'Anteil des Umsatzes, der nach den direkten Kosten übrig bleibt');
+        : (gp && gp.grossMarginCurrent != null
+            ? 'Anteil des Umsatzes, der nach den direkten Kosten übrig bleibt. Kein Vorjahresvergleich: für das unmittelbare Vorjahr fehlt eine passende Angabe.'
+            : 'Anteil des Umsatzes, der nach den direkten Kosten übrig bleibt. Für das jüngste Geschäftsjahr ist keine Bruttomarge berechenbar.'));
     body += _ovFactRow('Operative Marge letztes Jahr', gp && gp.opMarginCurrent != null ? ovPct(gp.opMarginCurrent, 1) : null, 'hist',
       'Betriebsergebnis im Verhältnis zum Umsatz');
     body += '</div>';
@@ -17194,14 +17203,25 @@ function renderOverview() {
 
     body += '<div class="ovs-note">Szenariowerte sind <strong>gerechnete Erwartungen</strong>, keine berichteten Zahlen. '
       + 'Sie hängen an den Annahmen im Bereich <span class="linklike" onclick="switchTab(\'assumptions\')">Annahmen</span> '
-      + 'und ändern sich mit ihnen.</div>';
+      + 'und ändern sich mit ihnen.'
+      + ((s && s.decisionRangeLow != null && s.decisionRangeHigh != null)
+          ? ' Das <strong>Szenarioband (P25–P75)</strong> ist die nach Modellgewicht gewichtete Spannweite der '
+            + 'Einzelszenarien der verwendeten Bewertungsmodelle'
+            + (s.decisionRangeModelCount != null && s.decisionRangeScenarioPairs != null
+                ? ' (' + escapeHtml(String(s.decisionRangeScenarioPairs)) + ' Szenariowerte aus '
+                  + escapeHtml(String(s.decisionRangeModelCount)) + ' Modell(en))'
+                : '')
+            + '. Es ist <strong>keine Wahrscheinlichkeitsaussage</strong>: P25 und P75 sagen nichts darüber, '
+            + 'wie wahrscheinlich ein Kurs eintritt.'
+          : '')
+      + '</div>';
 
     body += _ovKippenBlock(mj, q, s);
     body += buildReverseDcfOverviewCard(mj);
     body += buildBaseRateLiteOverviewCard(mj, state.quality, state.valuation);
 
     html += _ovSection('Bewertung und Erwartungen',
-      'Kurs und gerechnete Szenariowerte nebeneinander — und was die Einordnung kippen könnte.', body);
+      'Kurs und gerechnete Szenariowerte der Bewertungsmodelle nebeneinander — und was die Einordnung kippen könnte.', body);
   }
 
   // ══ Bereich 5: Datenverlässlichkeit ══════════════════════════
@@ -17446,7 +17466,9 @@ function _ovDetailsCard(mj, q, s, dq, ampel, currency) {
   const _fvBand = (s && s.range) ? (function () {
     const rimBullOnly = !!s._rimBullCaseOnly;
     if (s.decisionRangeLow != null && s.decisionRangeHigh != null) {
-      const base = currency + ' ' + s.decisionRangeLow.toFixed(0) + '–' + s.decisionRangeHigh.toFixed(0) + ' (P25–P75)';
+      const base = currency + ' ' + s.decisionRangeLow.toFixed(0) + '–' + s.decisionRangeHigh.toFixed(0)
+        + (s.decisionRangeMethod === 'weighted_p25_p75'
+            ? ' (gewichtetes Szenarioband P25–P75)' : ' (Szenarioband P25–P75)');
       return (rimBullOnly && s.decisionRangeBullCase != null)
         ? base + ' / günstiger Fall: ' + currency + ' ' + s.decisionRangeBullCase.toFixed(0) : base;
     }
@@ -17461,7 +17483,7 @@ function _ovDetailsCard(mj, q, s, dq, ampel, currency) {
     ['Einordnung', ampel.label, ampel.c],
     ['Einstiegszone', buyStr, (s && s.position === 'blocked') ? 'var(--danger)' : ampel.c],
     ['Kurs', currentStr ? currency + ' ' + currentStr : '–', 'var(--text)'],
-    ['Wertband', _fvBand, 'var(--text)'],
+    ['Szenarioband der Modelle', _fvBand, 'var(--text)'],
     ['Sicherheitsabschlag', mosPct ? mosPct + '%' : '–', 'var(--text)'],
     ['Datenverlässlichkeit', dq.label, dq.color],
     ['Ausschlusskriterien', activeHs.length > 0 ? String(activeHs.length) + ' aktiv' : 'keine', activeHs.length > 0 ? 'var(--danger)' : 'var(--muted)'],
@@ -21489,17 +21511,49 @@ let _secProxyUrl = '';
 function renderSecTab() { /* statisches Panel */ }
 
 // ── Proxy URL Management ────────────────────────────────────────
+// EINE Pruefung fuer alles: Abrufknopf, Statusmeldungen und den Abrufpfad
+// selbst lesen ausschliesslich isUsableProxyUrl(). Vorher prueften
+// secProxyConfigChanged() (startsWith('http')), entrySetupState()
+// (Schema-Regex) und _secProxyFetch() unterschiedlich streng — 'httpINVALID'
+// schaltete den Knopf frei, waehrend die Statusmeldung den Abruf als gesperrt
+// meldete, und 'https://' galt trotz fehlendem Host als eingerichtet.
+//
+// Geprueft wird ausschliesslich die SYNTAX: http/https-Schema und ein
+// Hostname mit mindestens einem alphanumerischen Zeichen. Eine syntaktisch
+// gueltige Adresse sagt NICHTS darueber aus, ob die Zwischenstelle existiert,
+// erreichbar ist oder korrekt antwortet — das zeigt erst der Abruf.
+function isUsableProxyUrl(value) {
+  const url = typeof value === 'string' ? value.trim() : '';
+  if (!url) return false;
+  if (!/^https?:\/\//i.test(url)) return false;
+  let parsed;
+  try { parsed = new URL(url); } catch (e) { return false; }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  if (!parsed.hostname) return false;
+  // Reine Punkt-/Sonderzeichenfolgen sind kein Host.
+  if (!/[A-Za-z0-9]/.test(parsed.hostname)) return false;
+  return true;
+}
+
 function secProxyConfigChanged() {
   const el = g('sec-proxy-url');
   const statusEl = g('sec-proxy-status');
   const url = (el && el.value.trim()) || '';
   _secProxyUrl = url; // UI/UX: current input is usable immediately; Speichern persists to localStorage.
   const btn = g('sec-fetch-btn');
-  if (url.startsWith('http')) {
-    if (statusEl) { statusEl.textContent = 'Adresse eingetragen — der Abruf ist freigeschaltet.'; statusEl.style.color = 'var(--accent2)'; }
+  if (isUsableProxyUrl(url)) {
+    if (statusEl) {
+      statusEl.textContent = 'Adresse ist vollständig — der Abruf lässt sich starten. '
+        + 'Ob die Zwischenstelle erreichbar ist und korrekt antwortet, zeigt erst der Abruf.';
+      statusEl.style.color = 'var(--accent2)';
+    }
     if (btn) { btn.disabled = false; btn.title = 'Geschäftszahlen zu diesem Ticker abrufen'; }
   } else if (url.length > 0) {
-    if (statusEl) { statusEl.textContent = 'Die Adresse muss mit http:// oder https:// beginnen.'; statusEl.style.color = 'var(--danger)'; }
+    if (statusEl) {
+      statusEl.textContent = 'Die Adresse ist unvollständig: erforderlich sind http:// oder https:// und ein Rechnername, '
+        + 'zum Beispiel https://mein-worker.workers.dev/sec.';
+      statusEl.style.color = 'var(--danger)';
+    }
     if (btn) { btn.disabled = true; btn.title = 'Adresse der Datenverbindung ist unvollständig'; }
   } else {
     if (statusEl) { statusEl.textContent = 'Noch keine Adresse eingetragen — ohne sie ist kein automatischer Abruf möglich.'; statusEl.style.color = 'var(--muted)'; }
@@ -21515,10 +21569,12 @@ function secProxyConfigChanged() {
 // Meldung fuehrt in den Bereich "Daten und Einstellungen".
 // Rein anzeigend — keine Rueckwirkung auf Berechnungen.
 function entrySetupState(proxyUrl, hasData) {
-  const url = (proxyUrl || '').trim();
-  if (!url)                    return { level: 'missing', canFetch: false, key: 'no_proxy',      hasData: !!hasData };
-  if (!/^https?:\/\//i.test(url)) return { level: 'missing', canFetch: false, key: 'invalid_proxy', hasData: !!hasData };
-  return { level: 'ready', canFetch: true, key: 'ready', hasData: !!hasData };
+  const url = typeof proxyUrl === 'string' ? proxyUrl.trim() : '';
+  if (!url)                     return { level: 'missing', canFetch: false, key: 'no_proxy',      hasData: !!hasData };
+  if (!isUsableProxyUrl(url))   return { level: 'missing', canFetch: false, key: 'invalid_proxy', hasData: !!hasData };
+  // 'configured' statt 'ready': die Adresse ist vollstaendig, die Verbindung
+  // ist damit aber nicht als erreichbar nachgewiesen.
+  return { level: 'configured', canFetch: true, key: 'configured', hasData: !!hasData };
 }
 
 function renderEntryStatus() {
@@ -21526,17 +21582,19 @@ function renderEntryStatus() {
   if (!box) return;
   const st = entrySetupState(_secProxyUrl, !!(state && state.masterJson));
 
-  if (st.key === 'ready') {
+  if (st.canFetch) {
     box.innerHTML = '<div class="entry-status-box is-ready">'
-      + '<div class="entry-status-title">Datenverbindung eingerichtet</div>'
+      + '<div class="entry-status-title">Adresse der Datenverbindung ist eingetragen</div>'
       + '<div class="entry-status-text">Ticker eingeben und „Daten abrufen“ wählen. '
-      + 'Die abgerufenen Daten werden erst nach Ihrer Bestätigung übernommen.</div>'
+      + 'Ob die Zwischenstelle erreichbar ist und Daten liefert, zeigt sich erst beim Abruf — '
+      + 'die Adresse ist bisher nur auf ihre Schreibweise geprüft. '
+      + 'Abgerufene Daten werden erst nach Ihrer Bestätigung übernommen.</div>'
       + '</div>';
     return;
   }
 
   const detail = st.key === 'invalid_proxy'
-    ? 'Die eingetragene Adresse der Datenverbindung ist unvollständig (sie muss mit http:// oder https:// beginnen). Der automatische Abruf ist deshalb gesperrt.'
+    ? 'Die eingetragene Adresse der Datenverbindung ist unvollständig: erforderlich sind http:// oder https:// und ein Rechnername (zum Beispiel https://mein-worker.workers.dev/sec). Der automatische Abruf ist deshalb gesperrt.'
     : 'Für den automatischen Abruf bei der US-Börsenaufsicht (SEC) fehlt noch die Adresse einer eigenen Zwischenstelle. Solange sie fehlt, ist kein Abruf möglich.';
   const alt = st.hasData
     ? 'Die derzeit angezeigte Bewertung stammt aus zuvor importierten Daten.'
@@ -21578,10 +21636,14 @@ function secSaveProxyUrl() {
 
 // ── Proxy-basierter Fetch für SEC/Yahoo (kein direkter Browser→data.sec.gov) ──
 // User-Agent wird serverseitig vom Worker gesetzt, nicht im Browser.
-async function _secProxyFetch(targetUrl) {
-  if (!_secProxyUrl || !_secProxyUrl.startsWith('http')) {
-    throw new Error('Proxy-URL nicht konfiguriert. Bitte im Abschnitt "Proxy-Konfiguration" eintragen.');
+function _requireUsableProxy() {
+  if (!isUsableProxyUrl(_secProxyUrl)) {
+    throw new Error('Adresse der Datenverbindung fehlt oder ist unvollständig — unter „Daten und Einstellungen“ eintragen.');
   }
+}
+
+async function _secProxyFetch(targetUrl) {
+  _requireUsableProxy();
   const proxyUrl = _secProxyUrl.replace(/\/$/, '') + '?url=' + encodeURIComponent(targetUrl);
   const resp = await fetch(proxyUrl);
   if (!resp.ok) {
@@ -24185,6 +24247,16 @@ function _renderSecDiag(report, masterJson) {
 //   pendingMasterJson.meta.ticker gegen lastRequestedTicker.
 // ────────────────────────────────────────────────────────────────
 async function secFetchAll() {
+  // Dieselbe Pruefung wie fuer Knopf und Statusmeldung — sie gilt auch fuer
+  // Wege, die den gesperrten Knopf umgehen (Enter im Tickerfeld, direkter
+  // Aufruf). Ohne gueltige Adresse wird KEINE Netzwerkanfrage gestartet.
+  try { _requireUsableProxy(); } catch (e) {
+    _secStatus(_secProxyUrl && _secProxyUrl.trim()
+      ? 'Kein Abruf: Die Adresse der Datenverbindung ist unvollständig — erforderlich sind http:// oder https:// und ein Rechnername. Unter „Daten und Einstellungen“ korrigieren.'
+      : 'Kein Abruf: Es ist noch keine Datenverbindung eingetragen. Adresse unter „Daten und Einstellungen“ hinterlegen.', 'err');
+    secSyncFetchButton();
+    return;
+  }
   const ticker = ((g('sec-ticker')||{}).value||'').trim().toUpperCase();
   if (!ticker) { _secStatus('Bitte Ticker eingeben.','err'); return; }
   const doYahoo = !!(g('sec-yahoo-enabled')?.checked);
@@ -24345,22 +24417,33 @@ async function secFetchAll() {
       + (_netz ? ' — die Datenverbindung ist nicht erreichbar. Adresse unter „Daten und Einstellungen“ prüfen.' : ''), 'err');
     console.error('[SEC Fetch]', err);
   } finally {
-    // Button-Freigabe: immer btn.disabled=false (verhindert dauerhaftes Einfrieren),
-    // Text 'Daten abrufen' nur wenn dieser Request noch aktuell ist.
-    // Wenn ein neuerer Request läuft, zeigt er bereits 'Lädt…' — Text nicht überschreiben.
+    // Button-Freigabe: verhindert dauerhaftes Einfrieren, gibt den Knopf aber
+    // NUR frei, wenn die Adresse weiterhin gueltig ist. Eine waehrend des
+    // Abrufs ungueltig gemachte Adresse darf den Abruf nicht wieder
+    // freischalten (sonst widerspraeche der Knopf der Statusmeldung).
+    // Die bestehende Regel gegen parallele/veraltete Abrufe bleibt: ein
+    // laufender neuerer Request (Text 'Lädt…') wird nicht ueberschrieben.
     if (btn) {
       if (_isCurrent()) {
-        btn.disabled = false;
         btn.textContent = 'Daten abrufen';
-      } else {
-        // Stale Request: btn nur freigeben wenn kein anderer Fetch aktuell läuft
-        // (erkennbar daran, dass textContent noch 'Lädt…' ist vom neueren Request)
-        if (btn.textContent !== 'Lädt…') {
-          btn.disabled = false;
-        }
+        secSyncFetchButton();
+      } else if (btn.textContent !== 'Lädt…') {
+        secSyncFetchButton();
       }
     }
   }
+}
+
+// Setzt den Zustand des Abrufknopfes aus der aktuell eingetragenen Adresse.
+// Einzige Stelle, die den Knopf ausserhalb eines laufenden Abrufs freigibt.
+function secSyncFetchButton() {
+  const btn = g('sec-fetch-btn');
+  if (!btn) return;
+  const ok = isUsableProxyUrl(_secProxyUrl);
+  btn.disabled = !ok;
+  btn.title = ok
+    ? 'Geschäftszahlen zu diesem Ticker abrufen'
+    : 'Zuerst eine vollständige Adresse der Datenverbindung unter „Daten und Einstellungen“ eintragen';
 }
 
 // ── Import-Bestätigung / Abbruch ───────────────────────────────
@@ -36995,6 +37078,202 @@ function _testGoldenCases() {
 // applyConservativeHeuristics() an den globalen State abzufangen.
 // ════════════════════════════════════════════════════════════════
 // ════════════════════════════════════════════════════════════════
+// REGRESSIONSTESTS — drei bestätigte Fehler aus Chat 9
+// ────────────────────────────────────────────────────────────────
+// F1  Abrufsperre und Statusmeldung stimmen überein (eine Prüfung)
+// F2  fehlende jüngste Bruttomarge ist eine Datenlücke, keine Vorjahreszahl
+// F3  P25/P75-Band wird als gewichtetes Szenarioband der Modelle benannt
+// Reine Funktionen — kein DOM, kein Zufall. Erwartungswerte unabhängig
+// nachgerechnet bzw. am unveränderten Syntheseergebnis gemessen.
+// ════════════════════════════════════════════════════════════════
+function _testChat9Fixes() {
+  const results = [];
+  let _suite = '';
+  function suite(name) { _suite = name; }
+  function check(label, condition, extra) {
+    results.push({ suite: _suite, label, pass: !!condition,
+      extra: extra != null ? String(extra) : undefined });
+  }
+  const scen = (rows, key) => rows.filter(r => r.key === key)[0] || null;
+
+  // ── F1: eine gemeinsame Prüfung für Knopf, Status und Abrufpfad ──
+  suite('F1 Abrufsperre und Statusmeldung');
+  {
+    // [Adresse, erwartet gültig, erwarteter Schlüssel]
+    const FAELLE = [
+      ['',                            false, 'no_proxy'],
+      ['   ',                         false, 'no_proxy'],
+      ['httpINVALID',                 false, 'invalid_proxy'],   // gemeldeter Fehler
+      ['https://',                    false, 'invalid_proxy'],   // gemeldeter Fehler
+      ['http://',                     false, 'invalid_proxy'],
+      ['https://...',                 false, 'invalid_proxy'],
+      ['beispiel.dev/sec',            false, 'invalid_proxy'],
+      ['ftp://beispiel.dev/sec',      false, 'invalid_proxy'],
+      ['httpsx://beispiel.dev/sec',   false, 'invalid_proxy'],
+      ['https://beispiel.dev/sec',    true,  'configured'],
+      ['http://a.b/sec',              true,  'configured'],
+      ['https://192.168.0.5:8787/sec',true,  'configured'],
+      ['  https://beispiel.dev/sec ', true,  'configured']
+    ];
+    FAELLE.forEach(([adr, gueltig, key]) => {
+      const ist = isUsableProxyUrl(adr);
+      check('Adresse ' + JSON.stringify(adr) + ' → gültig=' + gueltig, ist === gueltig, ist);
+      const st = entrySetupState(adr, false);
+      check('Adresse ' + JSON.stringify(adr) + ' → Schlüssel ' + key, st.key === key, st.key);
+      // Kernaussage der Reparatur: Knopffreigabe und Statusmeldung lesen
+      // dieselbe Prüfung — sie können sich nicht mehr widersprechen.
+      check('Adresse ' + JSON.stringify(adr) + ' → Status und Freigabe stimmen überein',
+        st.canFetch === ist, st.canFetch + '/' + ist);
+    });
+    check('null ist keine gültige Adresse', isUsableProxyUrl(null) === false);
+    check('undefined ist keine gültige Adresse', isUsableProxyUrl(undefined) === false);
+    check('Zahl ist keine gültige Adresse', isUsableProxyUrl(12345) === false);
+    check('Objekt ist keine gültige Adresse', isUsableProxyUrl({}) === false);
+    // Der Abrufpfad selbst prüft dasselbe: _secProxyFetch lehnt ohne gültige
+    // Adresse ab, bevor irgendeine Netzwerkanfrage entsteht.
+    const _merk = _secProxyUrl;
+    let abgelehnt = 0, meldung = '', durchgelassen = 0;
+    ['', '   ', 'httpINVALID', 'https://', 'beispiel.dev/sec'].forEach(adr => {
+      _secProxyUrl = adr;
+      try { _requireUsableProxy(); durchgelassen++; }
+      catch (e) { abgelehnt++; meldung = e.message; }
+    });
+    _secProxyUrl = 'https://beispiel.dev/sec';
+    let gueltigDurch = false;
+    try { _requireUsableProxy(); gueltigDurch = true; } catch (e) {}
+    _secProxyUrl = _merk;
+    check('Abrufpfad lehnt alle fünf ungültigen Adressen ab', abgelehnt === 5 && durchgelassen === 0,
+      abgelehnt + ' abgelehnt / ' + durchgelassen + ' durchgelassen');
+    check('Ablehnung nennt die Datenverbindung', /Datenverbindung/.test(meldung), meldung);
+    check('gültige Adresse wird durchgelassen', gueltigDurch === true, gueltigDurch);
+  }
+
+  // ── F2: Bruttomarge periodentreu ────────────────────────────────
+  suite('F2 Bruttomarge: fehlender jüngster Wert ist eine Datenlücke');
+  {
+    const gm = (revenue, gross_profit, meta) => {
+      const mj = { fundamentals: { revenue, gross_profit } };
+      if (meta) mj.fundamentals._v4_meta = meta;
+      const p = computeGrowthProfile(mj);
+      return { cur: p.grossMarginCurrent, prior: p.grossMarginPrior, trend: p.grossMarginTrend };
+    };
+
+    // Pflichtfall 1 — gemeldeter Fehler: jüngster Wert fehlt.
+    // 40/80 = 50 %; für Index 0 ist nichts berechenbar.
+    const a = gm([100, 80, 60], [null, 40, 24]);
+    check('jüngster Wert fehlt ⇒ aktuelle Bruttomarge ist eine Datenlücke', a.cur === null, a.cur);
+    check('jüngster Wert fehlt ⇒ Vorjahresmarge 50 %', a.prior === 50, a.prior);
+    check('jüngster Wert fehlt ⇒ kein Vorjahresvergleich', a.trend === null, a.trend);
+
+    // Pflichtfall 2 — Lücke im Vorjahr: 60/100 = 60 %.
+    const b = gm([100, 80, 60], [60, null, 24]);
+    check('Vorjahr fehlt ⇒ aktuelle Bruttomarge 60 %', b.cur === 60, b.cur);
+    check('Vorjahr fehlt ⇒ keine Vorjahresmarge', b.prior === null, b.prior);
+    check('Vorjahr fehlt ⇒ kein Vorjahresvergleich', b.trend === null, b.trend);
+    check('kein Mehrjahresabstand als Vorjahresvergleich (nicht 24/60 = 40 %)',
+      b.prior !== 40 && b.trend !== 20, JSON.stringify(b));
+
+    // Pflichtfall 3 — vollständig: 60 %, 50 %, +10 Prozentpunkte.
+    const c = gm([100, 80, 60], [60, 40, 24]);
+    check('vollständig ⇒ aktuelle Bruttomarge 60 %', c.cur === 60, c.cur);
+    check('vollständig ⇒ Vorjahresmarge 50 %', c.prior === 50, c.prior);
+    check('vollständig ⇒ Veränderung +10 Prozentpunkte', Math.abs(c.trend - 10) < 1e-9, c.trend);
+
+    // Periodenangaben, soweit vorhanden, werden ausgewertet.
+    const passend = gm([100, 80, 60], [60, 40, 24], {
+      revenue:      { periods: ['2024-12-31', '2023-12-31', '2022-12-31'] },
+      gross_profit: { periods: ['2024-12-31', '2023-12-31', '2022-12-31'] }
+    });
+    check('benachbarte Perioden ⇒ Vorjahresvergleich +10 Prozentpunkte',
+      Math.abs(passend.trend - 10) < 1e-9, passend.trend);
+
+    const luecke = gm([100, 80, 60], [60, 40, 24], {
+      revenue:      { periods: ['2024-12-31', '2022-12-31', '2021-12-31'] },
+      gross_profit: { periods: ['2024-12-31', '2022-12-31', '2021-12-31'] }
+    });
+    check('Periodensprung ⇒ kein Vorjahresvergleich', luecke.trend === null, luecke.trend);
+    check('Periodensprung ⇒ Einzelmargen bleiben sichtbar',
+      luecke.cur === 60 && luecke.prior === 50, JSON.stringify(luecke));
+
+    const versetzt = gm([100, 80, 60], [60, 40, 24], {
+      revenue:      { periods: ['2024-12-31', '2023-12-31', '2022-12-31'] },
+      gross_profit: { periods: ['2024-12-31', '2022-12-31', '2021-12-31'] }
+    });
+    check('Zähler und Nenner aus verschiedenen Perioden ⇒ kein Vorjahresvergleich',
+      versetzt.trend === null, versetzt.trend);
+
+    // Die Hauptansicht übernimmt das Ergebnis: Datenlücke statt alter Marge.
+    const zeileLuecke = _ovFactRow('Bruttomarge letztes Jahr',
+      a.cur != null ? ovPct(a.cur, 1) : null, 'hist', 'x');
+    check('Hauptansicht zeigt bei fehlendem jüngstem Wert eine Datenlücke',
+      zeileLuecke.indexOf('Datenlücke') > -1 && zeileLuecke.indexOf('50,0') === -1, zeileLuecke);
+    const zeileWert = _ovFactRow('Bruttomarge letztes Jahr',
+      c.cur != null ? ovPct(c.cur, 1) : null, 'hist', 'x');
+    check('Hauptansicht zeigt den vorhandenen Wert als Historie',
+      zeileWert.indexOf('60,0 %') > -1 && zeileWert.indexOf('Historie') > -1, zeileWert);
+  }
+
+  // ── F3: Herkunft des P25/P75-Bands ──────────────────────────────
+  suite('F3 P25/P75 ist ein gewichtetes Szenarioband, keine Simulation');
+  {
+    // Echtes Syntheseergebnis, nicht erfunden: Fixture T-01 durch die
+    // Pipeline, wie sie auch die Regressionssuite fährt.
+    const fx = REGRESSION_FIXTURES.filter(f => f.id === 'T-01')[0];
+    const mj = JSON.parse(JSON.stringify(fx.mj));
+    migrateV3toV4(mj); _enrichLegacyMeta(mj); applyDerivedFieldsV4(mj);
+    normalizeSharesInPlace(mj); applyDerivedFieldsV4(mj);
+    const qres = runQualityEngine(mj);
+    const vres = runValuationEngine(mj);
+    const sres = runFairValueSynthesizer(mj, vres, qres);
+
+    check('Synthese liefert Methode weighted_p25_p75',
+      sres.decisionRangeMethod === 'weighted_p25_p75', sres.decisionRangeMethod);
+    check('Band stammt aus Szenariowerten mehrerer Modelle',
+      sres.decisionRangeScenarioPairs > 0 && sres.decisionRangeModelCount > 0,
+      sres.decisionRangeScenarioPairs + ' Werte / ' + sres.decisionRangeModelCount + ' Modelle');
+
+    // Bandgrenzen unverändert gegenüber dem Stand vor der Reparatur
+    // (gemessen auf cd1be7e mit demselben Fixture).
+    check('P25 unverändert 2.79415505393804',
+      Math.abs(sres.decisionRangeLow - 2.79415505393804) < 1e-12, sres.decisionRangeLow);
+    check('P75 unverändert 7.262863118767878',
+      Math.abs(sres.decisionRangeHigh - 7.262863118767878) < 1e-12, sres.decisionRangeHigh);
+
+    const rows = ovScenarioRows(mj, sres);
+    const p25 = scen(rows, 'p25'), p75 = scen(rows, 'p75');
+    check('angezeigter P25-Wert ist exakt die Bandgrenze',
+      p25 && p25.value === sres.decisionRangeLow, p25 && p25.value);
+    check('angezeigter P75-Wert ist exakt die Bandgrenze',
+      p75 && p75.value === sres.decisionRangeHigh, p75 && p75.value);
+    check('P25 wird als Szenarioband bezeichnet',
+      /Szenarioband/.test(p25.label), p25.label);
+    check('P75 wird als Szenarioband bezeichnet',
+      /Szenarioband/.test(p75.label), p75.label);
+    check('P25-Erklärung nennt gewichtete Quantile der Bewertungsmodelle',
+      /gewichtet/.test(p25.note) && /Bewertungsmodelle/.test(p25.note), p25.note);
+    check('P75-Erklärung nennt gewichtete Quantile derselben Szenariowerte',
+      /gewichtet/.test(p75.note) && /Szenariowerte/.test(p75.note), p75.note);
+    const texte = [p25.label, p25.note, p75.label, p75.note].join(' ');
+    check('keine Behauptung über Simulationsergebnisse',
+      !/simuliert|Simulation|Monte/i.test(texte), texte);
+    check('keine Behauptung über Eintrittswahrscheinlichkeiten',
+      !/wahrscheinlich/i.test(texte), texte);
+
+    // Ohne ausgewiesene Methode wird "gewichtet" nicht behauptet.
+    const ohneMethode = ovScenarioRows({}, {
+      currentPrice: 100, range: { base: 120 },
+      decisionRangeLow: 95, decisionRangeHigh: 140
+    });
+    check('ohne ausgewiesene Methode keine Gewichtungsbehauptung',
+      !/gewichtet/.test(scen(ohneMethode, 'p25').note), scen(ohneMethode, 'p25').note);
+    check('ohne ausgewiesene Methode weiterhin Szenariowerte der Modelle',
+      /Bewertungsmodelle/.test(scen(ohneMethode, 'p25').note), scen(ohneMethode, 'p25').note);
+  }
+
+  return results;
+}
+
+// ════════════════════════════════════════════════════════════════
 // REGRESSIONSTESTS — Vereinfachter Einstieg und Hauptansicht
 // ────────────────────────────────────────────────────────────────
 // Deckt die deterministischen Ableitungen der Hauptansicht ab:
@@ -37029,8 +37308,13 @@ function _testOverviewSimplification() {
     check('Adresse ohne http(s): kein Abruf', ohneSchema.canFetch === false, ohneSchema.canFetch);
     check('Adresse ohne http(s): Schlüssel invalid_proxy', ohneSchema.key === 'invalid_proxy', ohneSchema.key);
 
+    // Fachlich begruendete Aenderung (Chat-9-Reparatur, Befund 1): der
+    // Schluessel heisst nicht mehr 'ready'. Eine syntaktisch vollstaendige
+    // Adresse ist eingetragen ('configured'), aber damit ist keine
+    // erreichbare oder funktionierende Verbindung nachgewiesen. Die
+    // Aussage des Tests (Abruf ist freigeschaltet) bleibt unveraendert.
     const ok = entrySetupState('https://x.workers.dev/sec', false);
-    check('vollständige https-Adresse schaltet Abruf frei', ok.canFetch === true && ok.key === 'ready', ok.key);
+    check('vollständige https-Adresse schaltet Abruf frei', ok.canFetch === true && ok.key === 'configured', ok.key);
     const okHttp = entrySetupState('http://x/sec', true);
     check('http wird akzeptiert, Datenbestand wird durchgereicht',
       okHttp.canFetch === true && okHttp.hasData === true, okHttp.key + '/' + okHttp.hasData);
@@ -37534,6 +37818,44 @@ function _cagr(arr, years) {
 }
 
 // ── 1. GROWTH PROFILE ────────────────────────────────────────────
+// Prueft anhand der vorhandenen Periodenangaben (_v4_meta.<feld>.periods), ob
+// Index 0 und Index 1 von revenue und gross_profit wirklich zwei unmittelbar
+// aufeinanderfolgende Geschaeftsjahre sind und ob Zaehler und Nenner je Index
+// dieselbe Periode betreffen. Fehlen die Angaben, wird true zurueckgegeben:
+// dann gibt es nichts zu pruefen, und es wird bewusst keine eigene
+// Periodennormalisierung aufgebaut.
+function _grossMarginPeriodsAdjacent(mj) {
+  const meta = (mj && mj.fundamentals && mj.fundamentals._v4_meta) || {};
+  const per = (field) => {
+    const m = meta[field];
+    return (m && Array.isArray(m.periods)) ? m.periods : null;
+  };
+  const yearOf = (p) => {
+    if (p == null || typeof p !== 'string') return null;
+    const m = p.match(/(\d{4})/);
+    return m ? parseInt(m[1], 10) : null;
+  };
+  const revP = per('revenue');
+  const gpP  = per('gross_profit');
+
+  // Zaehler und Nenner muessen je Index dieselbe Periode betreffen.
+  if (revP && gpP) {
+    for (const i of [0, 1]) {
+      if (revP[i] != null && gpP[i] != null && String(revP[i]) !== String(gpP[i])) return false;
+    }
+  }
+
+  // Index 0 und 1 muessen unmittelbar benachbarte Geschaeftsjahre sein.
+  for (const arr of [revP, gpP]) {
+    if (!arr) continue;
+    const y0 = yearOf(arr[0]);
+    const y1 = yearOf(arr[1]);
+    if (y0 == null || y1 == null) continue;
+    if (y0 - y1 !== 1) return false;
+  }
+  return true;
+}
+
 function computeGrowthProfile(mj) {
   if (!mj) return null;
   const f   = mj.fundamentals || {};
@@ -37558,14 +37880,26 @@ function computeGrowthProfile(mj) {
   const revYoyMedian = revYoy.length > 0 ? _median(revYoy) : null;
 
   // ── Gross Margin Trend ───────────────────────────────────────
-  const grossMargins = [];
+  // Periodenposition bleibt erhalten: Index i der Margenreihe gehoert zu
+  // Index i der Datenreihen. Vorher verkuerzte push() die Reihe bei einer
+  // Luecke, wodurch eine aeltere Marge an Position 0 rutschte und als
+  // "Bruttomarge letztes Jahr" angezeigt wurde (revenue [100,80,60] mit
+  // gross_profit [null,40,24] ergab 50 % statt einer Datenluecke) und der
+  // "Vorjahresvergleich" zwei Jahre uebersprang.
+  const grossMarginByIndex = [];
   for (let i = 0; i < Math.min(gp.length, rev.length, 5); i++) {
-    if (gp[i] != null && rev[i] != null && rev[i] > 0)
-      grossMargins.push((gp[i] / rev[i]) * 100);
+    grossMarginByIndex.push(
+      (gp[i] != null && rev[i] != null && rev[i] > 0) ? (gp[i] / rev[i]) * 100 : null
+    );
   }
-  const grossMarginCurrent  = grossMargins[0]  ?? null;
-  const grossMarginPrior    = grossMargins[1]  ?? null;
-  const grossMarginTrend    = (grossMarginCurrent != null && grossMarginPrior != null)
+  const grossMarginCurrent  = grossMarginByIndex[0] ?? null;
+  const grossMarginPrior    = grossMarginByIndex[1] ?? null;
+  // Vorjahresvergleich nur, wenn beide unmittelbar benachbarten Perioden
+  // gueltige und zueinander passende Angaben haben. Liegen Periodenangaben
+  // vor, muessen sie das bestaetigen; ohne sie wird nicht blockiert (es gibt
+  // dann nichts zu pruefen — keine neue Periodennormalisierung).
+  const _gmAdjacent = _grossMarginPeriodsAdjacent(mj);
+  const grossMarginTrend    = (grossMarginCurrent != null && grossMarginPrior != null && _gmAdjacent)
     ? grossMarginCurrent - grossMarginPrior : null;
 
   // ── Op Margin (EBIT) ─────────────────────────────────────────
