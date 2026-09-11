@@ -1,5 +1,161 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Update (Chat 8 Restfehler): Mid-Cycle mit manuellem Margen-Override (V1.0.49)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, geprüfter Branch
+`claude/dcf-core-interface-fixes`, geprüfter Commit `7d39020` — die Spitze
+dieses Branches und der einzige Stand, der ihn enthält; keine nachfolgenden
+Korrekturen (`main` steht weiterhin auf `b023dc8`). Tool-Datei unverändert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`, Modul
+`src/dcf-core.js`. Reparaturbranch: `claude/midcycle-margin-override-fix`.
+Testbefehl: `npm test`. Baseline auf `7d39020` (ausgeführt):
+1298 Rechen-Assertions · 68 Node-Tests · Exit-Code 0.
+
+Umfang: ausschliesslich dieser Restfehler, das unmittelbar betroffene
+Diagnosefeld samt Adapter-Beschriftung, Tests und dieses Dokument. Die bereits
+behobene Szenarioübernahme, Modulabhängigkeit und Isolation wurden **nicht**
+erneut umgebaut.
+
+### Am Code reproduziert (Stand `7d39020`)
+
+`mkMidMj()` mit `activeModels: ['dcf_midcycle']` und `opMarginOverridePct: 15`,
+über beide beauftragten Wege (`analyzeDcfFromMasterJson()` im isolierten Modul
+und `normalizeDcfCoreInput()` → `runDcfCoreAnalysis()`):
+
+| Berechnung | wirksame Marge | vorher | nachher |
+|---|---|---|---|
+| DCF | 15 % | 22,5371752100 | 22,5371752100 |
+| zentrale Matrixzelle | **18 %** statt 15 % | **26,9618428228** | **22,5371752100** |
+| Reverse DCF (Zielkurs = DCF) | 15 % | 8 % ✓ | 8 % ✓ |
+
+Abweichung vorher: 4,4246676128 USD/Aktie.
+
+**Ursache.** `computeSensitivityMatrix()` leitete im Mid-Cycle-Zweig
+**unabhängig vom Aufrufer** erneut den historischen Median ab
+(`ctxOpts = { opMarginOverridePct: mc.opMarginMed, … }`) und überging damit die
+an der Eingabegrenze bereits aufgelöste Marge. Der Einstiegspunkt reichte sie
+zwar als `v._coreOpts` durch, die Matrix las das Feld aber nie. Da
+`ctx.marginOverridePct` in `coreValuationDetail()` Vorrang vor der übergebenen
+Szenariomarge hat, gewann der Median (18 %) gegen den Override (15 %).
+
+### Korrektur
+
+* **`computeSensitivityMatrix()` respektiert eine bereits aufgelöste
+  Margenbasis.** Liegt `v._coreOpts.opMarginOverridePct` als echte endliche
+  Zahl vor, wird sie unverändert als Kontextmarge verwendet — der historische
+  Median wird dann **nicht erneut abgeleitet**. Die Vorrangregel:
+  gültiger expliziter Override → Mid-Cycle-Median → Szenariomarge.
+* **Bestehende direkte Aufrufer bleiben unverändert.** Ohne `_coreOpts`
+  (alle heutigen Aufrufer, u. a. `buildSensitivityMatrix`, `renderValuation`)
+  leitet der Mid-Cycle-Pfad den Median weiterhin selbst ab. Nachgemessen:
+  identische Zellen und identischer Basiswert gegenüber `7d39020`.
+* **Punkt 6 erfüllt.** Ein gültiger Override scheitert **nicht** mehr allein an
+  fehlender Mid-Cycle-Historie: die Marge steht bereits fest, die übrigen
+  DCF-Daten prüft der Kontext wie bisher. Ohne Override bleibt der erklärte
+  Nichtverfügbarkeitsstatus erhalten.
+* **Diagnose widerspruchsfrei (Punkt 5).** Neu `out.opMarginBasis`
+  (`'override'` · `'midcycle_median'` · `'scenario'` · `'none'`).
+  `out.midCycle` wird nur noch mitgeführt, **wenn der Median tatsächlich die
+  Rechengrundlage ist** — sonst stünde dort ein Wert, mit dem gar nicht
+  gerechnet wurde. Der HTML-Adapter beschriftet entsprechend: bei Override
+  „Betriebsmarge manuell auf 15,0 % gesetzt (ersetzt den Mid-Cycle-Median)"
+  statt weiterhin „normalisiert auf den Mid-Cycle-Median".
+* **Gültigkeit des Overrides angezogen.** Die Eingabegrenze prüfte bisher nur
+  `isFinite(...)`; damit wurden `'15'` (Text) und `true` still zu Zahlen
+  gewandelt und hätten den Median ausgehebelt. Jetzt gilt nur eine echte
+  endliche **Zahl** als gültiger Override — keine stille Umwandlung mit
+  `Number()`/`parseFloat()`; ungültige Werte werden in `diagnostics.notes`
+  vermerkt und fallen auf den Median zurück. `buildCoreValuationContext()`
+  wurde bewusst **nicht** angetastet, damit direkte Aufrufer ihr bisheriges
+  Verhalten behalten.
+
+Keine Bewertungsformel, keine Abschlagsregel und keine historische
+Mid-Cycle-Definition geändert; keine zweite Bewertungslogik.
+
+### Neue Regressionstests — 10 in `tests/dcf-core.test.mjs`
+
+* **F4-1/2** Gemeldeter Fall über beide Wege: DCF und zentrale Matrixzelle je
+  22,5371752100 (Toleranz 1e-8), ausdrücklich **nicht** 26,9618428228; im
+  isolierten Modul ohne `realm:'this'`.
+* **F4-3** Reverse-DCF-Roundtrip: Zielkurs bei der **Normalisierung**
+  übergeben (das eingefrorene Input wird nicht nachträglich verändert) ⇒ 8 %
+  innerhalb `REVERSE_DCF_SEARCH.tolerancePp` (1e-4) bei ausgewiesener Marge 15 %.
+* **F4-4** Alle drei Wege weisen Marge 15 und Herkunft `override` aus;
+  `input.midCycle` und `sensitivity.midCycle` bleiben `null`, weil der Median
+  nicht Grundlage ist.
+* **F4-5** Ohne Override unverändert 26,9618428228 bei 18 %, Basis
+  `midcycle_median`, Median als Diagnose vorhanden.
+* **F4-6/7** Unzureichende Historie: ohne Override erklärter Status; mit
+  gültigem Override rechnen alle drei Wege konsistent, inkl.
+  Zielkurs-Roundtrip.
+* **F4-8** Bestehende direkte Matrixaufrufer ohne `_coreOpts` unverändert
+  (Mid-Cycle 18 % / 26,9618428228; Haupt-DCF 28,497784085663053).
+* **F4-9** Ungültiger Override (`'15'`, `NaN`, `Infinity`, `true`, `null`)
+  fällt auf den Median zurück.
+* **F4-10** Original und normalisiertes Input bleiben durch die Berechnungen
+  unverändert; Input weiterhin eingefroren.
+
+### Gegenproben (ausgeführt)
+
+| Rückbau | Rot |
+|---|---|
+| GP-1 aufgelöste Margenbasis wieder übergangen (Stand V1.0.48) | 4 — mit exakt der gemeldeten Abweichung: `erwartet ~22.53717521, erhalten 26.9618428228148` |
+| GP-2 lasche Gültigkeitsprüfung (`isFinite` ohne Typprüfung) | 1 (`erwartet ~18, erhalten 15`) |
+| GP-3 `midCycle` auch bei Override ausgewiesen | 2 (widersprüchliche Diagnose) |
+
+### Tatsächlich ausgeführte Tests
+
+* `npm test` → Rechentests **1298 bestanden · 0 fehlgeschlagen ·
+  0 Fehler/Exceptions** (unverändert zur Baseline), Node-Tests **78/78**
+  (vorher 68; +10), gemeinsamer **Exit-Code 0**. Keine bestehende Erwartung
+  geändert oder gelockert.
+* **Produktionsäquivalenz.** Fingerabdruck über **alle 134**
+  Regressions-Fixtures gegen `7d39020` (Forecast-Inputs, 72 Bewertungspunkte,
+  Reverse-DCF-Status samt Nullstellen, vollständige Sensitivitätsmatrix):
+  **byte-identisch** (1 256 993 Zeichen, 0 Abweichungen). Zusätzlich ein
+  direkter Matrixaufruf im Mid-Cycle-Pfad **ohne** `_coreOpts` gegen beide
+  Stände: identische Zellen und identischer Basiswert.
+* **Echter Browser** (Chromium 1194 headless über `playwright-core`, nur im
+  Arbeitsverzeichnis ausserhalb des Repositories installiert — das Projekt
+  bleibt abhängigkeitsfrei), Datei per `file://`, **0 JS-Fehler**:
+  alleinstehender Start gelingt; gemeldeter Fall behoben (DCF = Zelle =
+  22,5371752100, Marge 15, Basis `override`, keine Median-Diagnose);
+  Reverse-DCF-Roundtrip 8,0000000000 bei Marge 15; ohne Override unverändert
+  26,9618428228 bei 18 %; Adapter-Beschriftung folgt der Herkunft; bestehender
+  UI-Bewertungsaufruf (`T-TXRH-DEBT2`) unverändert BP 7,4357081414 /
+  FV Base 10,4360816.
+
+### Verbleibende Grenzen
+
+* Der Browsercheck ist ein einmalig ausgeführtes Skript im Arbeitsverzeichnis,
+  **kein** Bestandteil von `npm test`; die Suiten bleiben abhängigkeitsfrei und
+  DOM-frei. Node-Prüfungen sind ausdrücklich **kein** Browsernachweis.
+* Die angezogene Gültigkeitsprüfung gilt an der Eingabegrenze
+  (`normalizeDcfCoreInput`) und für den aufgelösten Kontext der Matrix. Ein
+  **direkter** Aufruf von `buildCoreValuationContext()` mit `'15'` würde den
+  Wert weiterhin umwandeln — bewusst unverändert, um bestehende Aufrufer nicht
+  zu berühren. Offener Punkt, nicht mitbehoben.
+* `v._coreOpts` ist der Kanal für den aufgelösten Kontext. Der Unterstrich
+  markiert ihn weiterhin als intern; eine Umbenennung wäre ein
+  Schnittstellenwechsel und war nicht beauftragt.
+* Nicht behoben, wie beauftragt: der Einheitenverdacht in
+  `_makeBaseValuation()` (125 von 134 Fixtures setzen Sätze als Brüche,
+  während der Produktionspfad in Prozentpunkten arbeitet).
+* Weiter offen aus den Vorschritten: index-basierte Ableitung von
+  `eps_diluted`, `book_value` und `dps` in `applyDerivedFieldsV4`;
+  Korrelationen der Monte-Carlo-Größen nicht modelliert; `ENGINE_VERSION` /
+  `DISPLAY_VERSION` nicht angehoben (mehrere Fixtures pinnen
+  `1.0.35-base-rate-lite` exakt).
+
+### Ausgangsstand für Chat 9
+
+Reparaturbranch: `claude/midcycle-margin-override-fix` (Basis `7d39020` auf
+`claude/dcf-core-interface-fixes`). Tool-Datei unverändert
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`, Modul
+`src/dcf-core.js`.
+Testbefehl: `npm test` — beide Suiten grün, Exit-Code 0.
+Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/midcycle-margin-override-fix
+
 ## Update (Chat 8 Reparatur): Drei Fehler der DCF-Schnittstelle behoben (V1.0.48)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, geprüfter Branch

@@ -4516,7 +4516,8 @@ function computeSensitivityMatrix(mj, v) {
     baseWaccPct: baseWacc, baseG1Pct: baseG1, terminalGrowthPct: tg,
     variedParameters: ['wacc', 'growth_stage1'],
     modelVersion: DCF_CORE_MODEL_VERSION,
-    netDebt: null, netDebtPerShare: null, owc: null, opMarginPctUsed: null
+    netDebt: null, netDebtPerShare: null, owc: null, opMarginPctUsed: null,
+    opMarginBasis: null, midCycle: null
   };
   if (baseWacc == null || baseG1 == null || tg == null) {
     out.reason = 'Basis-Inputs fehlen (wacc_derived, growth_stage1, growth_terminal)';
@@ -4531,15 +4532,45 @@ function computeSensitivityMatrix(mj, v) {
   }
   const isMidCycle = router.activeModels.includes('dcf_midcycle')
     && !router.activeModels.includes('dcf');
+
+  // ── V1.0.49: bereits aufgelöste Margenbasis hat Vorrang ──────────────
+  // `v._coreOpts` trägt die an der Eingabegrenze (normalizeDcfCoreInput)
+  // bereits festgelegte wirksame Marge. Bis V1.0.48 leitete die Matrix im
+  // Mid-Cycle-Pfad UNABHÄNGIG davon erneut den historischen Median ab und
+  // überging damit einen gültigen manuellen Override: beim Fixture mkMidMj()
+  // mit opMarginOverridePct 15 rechnete der DCF mit 15 % (22,5371752100),
+  // die zentrale Matrixzelle dagegen mit 18 % (26,9618428228).
+  //
+  // Wird KEIN aufgelöster Kontext übergeben (alle bestehenden direkten
+  // Aufrufer), bleibt das bisherige Verhalten unverändert: der Mid-Cycle-Pfad
+  // leitet den historischen Median selbst ab. Die historische
+  // Mid-Cycle-Definition ist dabei unangetastet.
+  const _resolved = (v && v._coreOpts) || null;
+  const _resolvedPct = (_resolved && typeof _resolved.opMarginOverridePct === 'number'
+                        && isFinite(_resolved.opMarginOverridePct))
+    ? _resolved.opMarginOverridePct : null;
   let ctxOpts = {};
   let mc = null;
-  if (isMidCycle) {
+  let marginBasis = 'scenario';
+  if (_resolvedPct != null) {
+    marginBasis = _resolved.marginBasis || 'override';
+    ctxOpts = { opMarginOverridePct: _resolvedPct, marginBasis: marginBasis };
+    if (marginBasis === 'midcycle_median') {
+      // Derselbe Wert, den die Grenze aufgelöst hat — hier nur als Diagnose
+      // mitgeführt, nicht als Rechengrundlage neu bestimmt.
+      const _mcDiag = computeMidCycleFcf(mj);
+      mc = (_mcDiag && _mcDiag.status === 'ok') ? _mcDiag : null;
+    }
+    // Ein gültiger Override scheitert NICHT an fehlender Mid-Cycle-Historie:
+    // die Marge steht bereits fest, die übrigen DCF-Daten prüft ctx unten.
+  } else if (isMidCycle) {
     mc = computeMidCycleFcf(mj);
     if (mc.status !== 'ok') {
       out.reason = 'Mid-Cycle-Marge nicht ableitbar: ' + mc.reason;
       return out;
     }
-    ctxOpts = { opMarginOverridePct: mc.opMarginMed, marginBasis: 'midcycle_median' };
+    marginBasis = 'midcycle_median';
+    ctxOpts = { opMarginOverridePct: mc.opMarginMed, marginBasis: marginBasis };
   }
   const ctx = buildCoreValuationContext(mj, ctxOpts);
   if (!ctx.ok) {
@@ -4576,7 +4607,18 @@ function computeSensitivityMatrix(mj, v) {
   out.netDebtPerShare = ctx.netDebtPerShare;
   out.owc = ctx.owc;
   out.opMarginPctUsed = (ctx.marginOverridePct != null) ? ctx.marginOverridePct : opMarginPct;
-  out.midCycle = mc;
+  // V1.0.49: Herkunft der wirksamen Marge ausdrücklich ausweisen, damit
+  // Anzeige und Diagnose nicht auseinanderlaufen.
+  //   'override'         manuell gesetzte Marge (hat Vorrang)
+  //   'midcycle_median'  historischer Mid-Cycle-Median
+  //   'scenario'         Marge des Base-Szenarios
+  //   'none'             keine Marge gesetzt (Ist-Marge des Forecasts)
+  out.opMarginBasis = (ctx.marginOverridePct != null)
+    ? marginBasis
+    : (opMarginPct != null ? 'scenario' : 'none');
+  // Nur mitführen, wenn der historische Median tatsächlich die Grundlage ist.
+  // Sonst stünde hier ein Wert, mit dem gar nicht gerechnet wurde.
+  out.midCycle = (out.opMarginBasis === 'midcycle_median') ? mc : null;
   out.waccStepsPct = [-2, -1, 0, 1, 2].map(d => baseWacc + d);
   out.g1StepsPct   = [-3, -1.5, 0, 1.5, 3].map(d => baseG1 + d);
   out.cells = out.waccStepsPct.map(w =>
@@ -4765,8 +4807,18 @@ function normalizeDcfCoreInput(masterJson, options) {
   const _am = (Array.isArray(opts.activeModels) && opts.activeModels.length > 0)
     ? opts.activeModels : null;
   const _wantsMidCycle = !!(_am && _am.indexOf('dcf_midcycle') >= 0 && _am.indexOf('dcf') < 0);
-  let effMarginOverridePct = (opts.opMarginOverridePct != null && isFinite(opts.opMarginOverridePct))
-    ? Number(opts.opMarginOverridePct) : null;
+  // V1.0.49: "gültig" heisst echte endliche ZAHL. `isFinite()` allein würde
+  // '15' und `true` stillschweigend umwandeln — ein Textwert oder ein
+  // Wahrheitswert darf den historischen Mid-Cycle-Median nicht aushebeln.
+  // Keine stille Umwandlung mit Number()/parseFloat().
+  let effMarginOverridePct = (typeof opts.opMarginOverridePct === 'number'
+                              && isFinite(opts.opMarginOverridePct))
+    ? opts.opMarginOverridePct : null;
+  if (opts.opMarginOverridePct != null && effMarginOverridePct == null) {
+    diagnostics.notes.push('opMarginOverridePct ist keine endliche Zahl (' +
+      (Array.isArray(opts.opMarginOverridePct) ? 'Array' : typeof opts.opMarginOverridePct) +
+      ') und wird nicht als Margen-Override verwendet.');
+  }
   let effMarginBasis = (effMarginOverridePct != null) ? (opts.marginBasis || 'override') : 'scenario';
   let midCycle = null;
   if (_wantsMidCycle && effMarginOverridePct == null) {
@@ -14844,8 +14896,14 @@ function buildSensitivityMatrix(mj, v) {
   const owcNote = (m.owc && m.owc.available)
     ? ` · Cashflow: FCFF inkl. ΔWC bei ${(m.owc.ratio * 100).toFixed(2)}% WC/Umsatz (${m.owc.source === 'manual_override' ? 'manuell gesetzt' : 'historischer Median'})`
     : ` · ⚠ Cashflow: FCFF mit ΔWC = 0 — ${OWC_PROVISIONAL_LABEL} (vom Modell gesetzt, nicht gemessen)`;
-  const midNote = (m.mode === 'dcf_midcycle' && m.opMarginPctUsed != null)
-    ? ` · Betriebsmarge normalisiert auf den Mid-Cycle-Median ${m.opMarginPctUsed.toFixed(1)}%`
+  // V1.0.49: Die Beschriftung folgt der ausgewiesenen Herkunft der Marge.
+  // Bis V1.0.48 stand hier auch dann "Mid-Cycle-Median", wenn tatsächlich eine
+  // manuell gesetzte Marge gerechnet wurde.
+  const midNote = (m.opMarginPctUsed == null) ? ''
+    : (m.opMarginBasis === 'override')
+      ? ` · Betriebsmarge manuell auf ${m.opMarginPctUsed.toFixed(1)}% gesetzt (ersetzt den Mid-Cycle-Median)`
+    : (m.opMarginBasis === 'midcycle_median' || (m.opMarginBasis == null && m.mode === 'dcf_midcycle'))
+      ? ` · Betriebsmarge normalisiert auf den Mid-Cycle-Median ${m.opMarginPctUsed.toFixed(1)}%`
     : '';
   // Alle nicht variierten Inputs sind in jeder Zelle identisch mit dem Haupt-DCF.
   const constNote = ` · variiert werden ausschließlich WACC und Stage-1-Wachstum; ` +

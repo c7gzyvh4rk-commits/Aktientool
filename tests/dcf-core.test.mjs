@@ -485,3 +485,168 @@ test('F3: ctx und source stammen aus derselben Datenbasis', () => {
   // Umsatzbasis des Forecasts == Umsatz in source.
   near(n.input.ctx.fi.revenue0, n.input.source.fundamentals.revenue[0], 1e-12);
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// V1.0.49 — Mid-Cycle-Pfad mit manuellem Margen-Override
+// ───────────────────────────────────────────────────────────────────────────
+// Gemeldet: mkMidMj() mit activeModels ['dcf_midcycle'] und
+// opMarginOverridePct 15 ergab DCF 22,5371752100 (Marge 15 %), die zentrale
+// Sensitivitätszelle dagegen 26,9618428228 (Marge 18 %, historischer Median).
+// Ursache: computeSensitivityMatrix() leitete im Mid-Cycle-Pfad den Median
+// erneut ab und überging die an der Eingabegrenze festgelegte Marge.
+// ═══════════════════════════════════════════════════════════════════════════
+
+test('F4: gemeldeter Fall — DCF und zentrale Matrixzelle bei Override 15 %', () => {
+  const n = core.normalizeDcfCoreInput(mkMidMj(), {
+    activeModels: ['dcf_midcycle'], opMarginOverridePct: 15 });
+  const r = core.runDcfCoreAnalysis(n.input);
+  const zelle = mittelzelle(r.sensitivity);
+  near(r.valuation.equityValuePerShare, 22.53717521, 1e-8);
+  near(zelle, 22.53717521, 1e-8);
+  assert.equal(zelle, r.valuation.equityValuePerShare);
+  // Ausdrücklich NICHT mehr der Median-Wert aus dem Fehlerbericht.
+  assert.notEqual(Number(zelle.toFixed(10)), 26.9618428228);
+  near(r.sensitivity.opMarginPctUsed, 15, 1e-12);
+});
+
+test('F4: derselbe Fall über analyzeDcfFromMasterJson im isolierten Modul', () => {
+  // Standardmäßig isolierte, leere Sandbox — kein realm:'this'.
+  const iso = loadDcfCore();
+  const r = iso.analyzeDcfFromMasterJson(mkMidMj(), {
+    activeModels: ['dcf_midcycle'], opMarginOverridePct: 15 });
+  assert.equal(r.ok, true);
+  near(r.valuation.equityValuePerShare, 22.53717521, 1e-8);
+  near(mittelzelle(r.sensitivity), 22.53717521, 1e-8);
+  near(r.reverseDcf.opMarginPctUsed, 15, 1e-12);
+});
+
+test('F4: Reverse-DCF-Roundtrip gewinnt 8 % bei Marge 15 % zurück', () => {
+  const opts = { activeModels: ['dcf_midcycle'], opMarginOverridePct: 15 };
+  const dcf = core.runDcfCoreAnalysis(
+    core.normalizeDcfCoreInput(mkMidMj(), opts).input).valuation.equityValuePerShare;
+  // Zielkurs bei der NORMALISIERUNG übergeben — das eingefrorene Inputobjekt
+  // wird nicht nachträglich verändert.
+  const n = core.normalizeDcfCoreInput(mkMidMj(), Object.assign({}, opts, { targetPricePerShare: dcf }));
+  const r = core.runDcfCoreAnalysis(n.input);
+  assert.equal(r.reverseDcf.status, 'ok');
+  near(r.reverseDcf.opMarginPctUsed, 15, 1e-12);
+  const tol = core.REVERSE_DCF_SEARCH.tolerancePp;
+  assert.ok(Math.abs(r.reverseDcf.impliedGrowthPct - 8) <= tol,
+    `erwartet 8 ± ${tol}, erhalten ${r.reverseDcf.impliedGrowthPct}`);
+});
+
+test('F4: die drei Wege weisen dieselbe Marge und Herkunft aus', () => {
+  const n = core.normalizeDcfCoreInput(mkMidMj(), {
+    activeModels: ['dcf_midcycle'], opMarginOverridePct: 15 });
+  const r = core.runDcfCoreAnalysis(n.input);
+  // Eingabegrenze
+  assert.equal(n.input.effectiveBase.op_margin_pct, 15);
+  assert.equal(n.input.effectiveBase.marginBasis, 'override');
+  assert.equal(n.input.effectiveBase.source.op_margin_pct, 'options.opMarginOverridePct');
+  assert.equal(n.input.ctx.marginOverridePct, 15);
+  // Ein Override ersetzt den historischen Median — er wird gar nicht erst
+  // aufgelöst, also steht dort auch kein Wert.
+  assert.equal(n.input.midCycle, null);
+  // Matrix: Marge und ausgewiesene Herkunft widerspruchsfrei
+  assert.equal(r.sensitivity.opMarginBasis, 'override');
+  assert.equal(r.sensitivity.midCycle, null,
+    'bei Override darf kein Median als Rechengrundlage ausgewiesen werden');
+  assert.equal(r.sensitivity.mode, 'dcf_midcycle');
+  // Reverse DCF
+  near(r.reverseDcf.opMarginPctUsed, 15, 1e-12);
+});
+
+test('F4: ohne Override bleibt der historische Mid-Cycle-Median wirksam', () => {
+  const n = core.normalizeDcfCoreInput(mkMidMj(), { activeModels: ['dcf_midcycle'] });
+  const r = core.runDcfCoreAnalysis(n.input);
+  near(r.valuation.equityValuePerShare, 26.9618428228148, 1e-9);
+  near(mittelzelle(r.sensitivity), 26.9618428228148, 1e-9);
+  near(r.sensitivity.opMarginPctUsed, 18, 1e-12);
+  assert.equal(r.sensitivity.opMarginBasis, 'midcycle_median');
+  // Hier ist der Median die Rechengrundlage und wird als Diagnose mitgeführt.
+  assert.equal(r.sensitivity.midCycle.status, 'ok');
+  near(r.sensitivity.midCycle.opMarginMed, 18, 1e-12);
+  assert.equal(n.input.effectiveBase.marginBasis, 'midcycle_median');
+});
+
+test('F4: unzureichende Historie — ohne Override erklärter Status', () => {
+  const kurz = mkMidMj();
+  for (const k of Object.keys(kurz.fundamentals)) kurz.fundamentals[k] = kurz.fundamentals[k].slice(0, 4);
+  const r = loadDcfCore().analyzeDcfFromMasterJson(kurz, { activeModels: ['dcf_midcycle'] });
+  assert.equal(r.ok, false);
+  assert.equal(r.valuation, null);
+  assert.ok(r.diagnostics.errors.some(e => /Mid-Cycle-Marge nicht ableitbar/.test(e)),
+    JSON.stringify(r.diagnostics.errors));
+});
+
+test('F4: unzureichende Historie — gültiger Override rechnet alle drei Wege', () => {
+  const kurz = mkMidMj();
+  for (const k of Object.keys(kurz.fundamentals)) kurz.fundamentals[k] = kurz.fundamentals[k].slice(0, 4);
+  const opts = { activeModels: ['dcf_midcycle'], opMarginOverridePct: 15 };
+  const n = core.normalizeDcfCoreInput(kurz, opts);
+  assert.equal(n.ok, true, n.reason || '');
+  const r = core.runDcfCoreAnalysis(n.input);
+  assert.equal(r.ok, true);
+  assert.ok(Number.isFinite(r.valuation.equityValuePerShare));
+  assert.equal(r.sensitivity.available, true,
+    'ein gültiger Override darf nicht an fehlender Historie scheitern: ' + r.sensitivity.reason);
+  assert.equal(mittelzelle(r.sensitivity), r.valuation.equityValuePerShare);
+  near(r.sensitivity.opMarginPctUsed, 15, 1e-12);
+  assert.equal(r.sensitivity.opMarginBasis, 'override');
+  near(r.reverseDcf.opMarginPctUsed, 15, 1e-12);
+  // Zielkurs-Roundtrip auch hier.
+  const nR = core.normalizeDcfCoreInput(kurz, Object.assign({}, opts,
+    { targetPricePerShare: r.valuation.equityValuePerShare }));
+  const rR = core.runDcfCoreAnalysis(nR.input);
+  assert.ok(Math.abs(rR.reverseDcf.impliedGrowthPct - 8) <= core.REVERSE_DCF_SEARCH.tolerancePp);
+});
+
+test('F4: direkte Matrixaufrufer ohne aufgelösten Kontext bleiben unverändert', () => {
+  // Alle bestehenden Aufrufer übergeben kein _coreOpts — der Mid-Cycle-Pfad
+  // leitet den Median dann weiterhin selbst ab.
+  const v = { error: null,
+    scenarios: { base: { growth_stage1: 8, terminal_growth: 2, wacc: 10, op_margin_pct: null } },
+    router: { activeModels: ['dcf_midcycle'], subClassification: 'standard_nonfin' } };
+  const m = core.computeSensitivityMatrix(mkMidMj(), v);
+  assert.equal(m.available, true);
+  near(m.opMarginPctUsed, 18, 1e-12);
+  assert.equal(m.opMarginBasis, 'midcycle_median');
+  near(m.baseValue, 26.9618428228148, 1e-9);
+  // Und der Haupt-DCF-Pfad ebenso unverändert.
+  const vDcf = { error: null,
+    scenarios: { base: { growth_stage1: 8, terminal_growth: 2, wacc: 10, op_margin_pct: 20 } },
+    router: { activeModels: ['dcf'], subClassification: 'standard_nonfin' } };
+  const mDcf = core.computeSensitivityMatrix(mkMj(), vDcf);
+  assert.equal(mDcf.available, true);
+  near(mDcf.baseValue, 28.497784085663053, 1e-12);
+  assert.equal(mDcf.opMarginBasis, 'scenario');
+  assert.equal(mDcf.midCycle, null);
+});
+
+test('F4: ein ungültiger Override fällt auf den historischen Median zurück', () => {
+  // Nur ein gültiger (endlicher) Override hat Vorrang. "15" als Text oder
+  // NaN ist keine Zahl und darf die Mid-Cycle-Ableitung nicht aushebeln.
+  for (const schlecht of ['15', NaN, Infinity, true, null]) {
+    const n = core.normalizeDcfCoreInput(mkMidMj(), {
+      activeModels: ['dcf_midcycle'], opMarginOverridePct: schlecht });
+    assert.equal(n.ok, true, JSON.stringify(schlecht));
+    const r = core.runDcfCoreAnalysis(n.input);
+    near(r.sensitivity.opMarginPctUsed, 18, 1e-12);
+    assert.equal(r.sensitivity.opMarginBasis, 'midcycle_median');
+    near(r.valuation.equityValuePerShare, 26.9618428228148, 1e-9);
+  }
+});
+
+test('F4: Original und normalisiertes Input bleiben durch die Berechnung unverändert', () => {
+  const orig = mkMidMj();
+  const origVorher = JSON.stringify(orig);
+  const n = core.normalizeDcfCoreInput(orig, {
+    activeModels: ['dcf_midcycle'], opMarginOverridePct: 15 });
+  assert.equal(JSON.stringify(orig), origVorher, 'Normalisierung hat das Original verändert');
+  const inputVorher = JSON.stringify(n.input.source);
+  core.runDcfCoreAnalysis(n.input);
+  core.runDcfCoreAnalysis(n.input);
+  assert.equal(JSON.stringify(orig), origVorher);
+  assert.equal(JSON.stringify(n.input.source), inputVorher);
+  assert.equal(Object.isFrozen(n.input), true);
+});
