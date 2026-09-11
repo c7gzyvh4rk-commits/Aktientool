@@ -142,7 +142,9 @@ Wertvergleich ohne Zeitraumgleichheit → 1. Danach wiederhergestellt: 0.
 
 * Uebergabebranch: `claude/sec-quarterly-period-fixes`
 * Ausgangscommit dieses Schrittes: `59eef47`
-* Ergebniscommit: *(unten nachgetragen)*
+* Ergebniscommit: `1d48e90`
+  — https://github.com/c7gzyvh4rk-commits/Aktientool/commit/1d48e90
+* Branchstand: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/sec-quarterly-period-fixes
 * Tool-Datei: `us-aktienbewertungstool-v1036-sector-classification-patch.html`
   (unveraendert) · Normalisierer: `src/sec-quarterly.js` · Tests:
   `tests/sec-quarterly.test.mjs` · Testbefehl: `npm test`
