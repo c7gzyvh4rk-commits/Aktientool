@@ -144,7 +144,13 @@ verschwiegen → 1.
 ### Ergebnis dieses Schrittes
 
 * Uebergabebranch: `claude/tender-galileo-wc31j5`
-* Ergebniscommit: *(unten nachgetragen)*
+* Ergebniscommit: `46e3404`
+  — https://github.com/c7gzyvh4rk-commits/Aktientool/commit/46e3404
+* Branchstand: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/tender-galileo-wc31j5
+* Anschluss fuer den naechsten Schritt: Branch `claude/tender-galileo-wc31j5`,
+  Commit wie unten nachgetragen (HANDOFF-Nachtrag), Tool-Datei
+  `us-aktienbewertungstool-v1036-sector-classification-patch.html`,
+  Normalisierer `src/sec-quarterly.js`, Testbefehl `npm test`.
 
 ## Update (Restfehler): Bruttomarge nur aus passenden Perioden (V1.0.52)
 
