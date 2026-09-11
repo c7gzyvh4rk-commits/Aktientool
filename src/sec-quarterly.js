@@ -402,55 +402,166 @@ function classifyFlowFact(startMs, endMs, fyEnd) {
 // ═════════════════════════════════════════════════════════════════════════════
 // Felder normalisieren
 // ═════════════════════════════════════════════════════════════════════════════
-function pickTag(facts, tags) {
-  for (const tag of tags) {
-    const arr = rawFacts(facts, tag);
-    if (arr.some(f => ACCEPTED_FORMS.includes(f.form) && parseIsoDate(f.end) != null)) {
-      return tag;
+// ── Kandidaten je Tag sammeln ────────────────────────────────────────────────
+// Die Filterung (Formular, Datumsangaben, fachliche Verwertbarkeit, Datenstichtag)
+// findet VOR der Tag-Auswahl statt: sonst koennte eine erst spaeter
+// veroeffentlichte Angabe eines bevorzugten Tags die historisch zulaessige
+// Quelle verdraengen. Widersprueche werden dabei NICHT ausgewertet — ein
+// zulaessiger bevorzugter Tag bleibt gewaehlt, damit kein stiller Tag-Wechsel
+// einen echten Widerspruch verdeckt.
+function asOfNote(f, period) {
+  return f.filed == null || parseIsoDate(f.filed) == null
+    ? `${period}: ohne gueltiges Veroeffentlichungsdatum — am Datenstichtag nicht belegbar`
+    : `${period}: erst nach dem Datenstichtag veroeffentlicht (${f.filed})`;
+}
+
+function collectFlowCandidates(facts, tag, fyEnd, asOfMs) {
+  const candidates = [], notes = [];
+  for (const f of rawFacts(facts, tag)) {
+    if (!ACCEPTED_FORMS.includes(f.form)) continue;
+    const endMs   = parseIsoDate(f.end);
+    const startMs = parseIsoDate(f.start);
+    if (endMs == null) continue;
+    if (startMs == null) {
+      notes.push(`Stichtagsangabe unter einer Zeitraumgroesse verworfen (${f.end})`);
+      continue;
     }
+    if (typeof f.val !== 'number' || !isFinite(f.val)) {
+      notes.push(`nicht numerischer Wert verworfen (${f.start}…${f.end})`);
+      continue;
+    }
+    const cls = classifyFlowFact(startMs, endMs, fyEnd);
+    if (cls.rejected) { notes.push(`${f.start}…${f.end} (${cls.days} Tage): ${cls.rejected}`); continue; }
+    if (asOfMs != null) {
+      const filedMs = parseIsoDate(f.filed);
+      if (filedMs == null || filedMs > asOfMs) {
+        notes.push(asOfNote(f, `${f.start}…${f.end}`));
+        continue;
+      }
+    }
+    candidates.push({ val: f.val, start: f.start, end: f.end, days: cls.days,
+                      periodType: cls.periodType, role: cls.role,
+                      through: cls.through, quarter: cls.quarter,
+                      form: f.form, accn: f.accn, filed: f.filed, frame: f.frame,
+                      tag, pos: cls.pos });
   }
-  return null;
+  return { candidates, notes };
+}
+
+function collectInstantCandidates(facts, tag, fyEnd, asOfMs) {
+  const candidates = [], notes = [];
+  for (const f of rawFacts(facts, tag)) {
+    if (!ACCEPTED_FORMS.includes(f.form)) continue;
+    const endMs = parseIsoDate(f.end);
+    if (endMs == null) continue;
+    if (f.start != null && parseIsoDate(f.start) != null) {
+      notes.push(`Zeitraumangabe unter einer Stichtagsgroesse verworfen (${f.start}…${f.end})`);
+      continue;
+    }
+    if (typeof f.val !== 'number' || !isFinite(f.val)) {
+      notes.push(`nicht numerischer Wert verworfen (${f.end})`);
+      continue;
+    }
+    const pos = fiscalPeriodOf(endMs, fyEnd);
+    if (!pos) { notes.push(`Stichtag ${f.end} liegt nicht auf dem Quartalsraster`); continue; }
+    if (asOfMs != null) {
+      const filedMs = parseIsoDate(f.filed);
+      if (filedMs == null || filedMs > asOfMs) { notes.push(asOfNote(f, `Stichtag ${f.end}`)); continue; }
+    }
+    candidates.push({ val: f.val, end: f.end, form: f.form, accn: f.accn,
+                      filed: f.filed, frame: f.frame, tag, pos });
+  }
+  return { candidates, notes };
+}
+
+/**
+ * Ersten Tag mit tatsaechlich verwertbaren Angaben waehlen — Reihenfolge der
+ * Tag-Liste bleibt die Priorität, es wird weiterhin genau EIN Tag je Feld
+ * verwendet (kein Tag-Wechsel-Bridging).
+ */
+function pickTagWithCandidates(facts, tags, collect) {
+  const skipped = [];
+  for (const tag of tags) {
+    const r = collect(tag);
+    if (r.candidates.length > 0) return { tag, candidates: r.candidates, notes: r.notes, skipped };
+    if (conceptOf(facts, tag)) skipped.push(tag);
+  }
+  return { tag: null, candidates: [], notes: [], skipped };
+}
+
+function skippedTagNotes(skipped, asOfMs) {
+  return skipped.map(t => `Tag ${t} uebersprungen — keine unter den geltenden Filtern`
+    + (asOfMs != null ? ' und dem Datenstichtag' : '') + ' verwertbaren Angaben');
+}
+
+/**
+ * Darf aus zwei Kumulierungen desselben Geschaeftsjahres subtrahiert werden?
+ *
+ * Die Zuordnung zu Geschaeftsjahr und YTD-Stufe allein genuegt NICHT: die
+ * Toleranz, mit der ein Periodenende in den Geschaeftsjahreskalender einsortiert
+ * wird, darf unterschiedlich lange Kumulierungszeitraeume nicht rechnerisch
+ * gleichsetzen. Geprueft werden daher die tatsaechlichen Daten:
+ *   1. identischer Beginn beider Kumulierungen (sonst ist die Differenz kein
+ *      Quartal, sondern die Differenz zweier verschieden langer Anlaeufe),
+ *   2. richtige zeitliche Reihenfolge,
+ *   3. zulaessige Dauer der abgeleiteten Einzelperiode (Quartalsfenster).
+ */
+function checkCumulativeDerivation(prev, cur) {
+  if (prev.start !== cur.start) {
+    return { ok: false, reason: `unterschiedlicher Beginn der kumulierten Perioden `
+      + `(${prev.start} vs. ${cur.start})` };
+  }
+  const prevEndMs = parseIsoDate(prev.end), curEndMs = parseIsoDate(cur.end);
+  if (prevEndMs == null || curEndMs == null) {
+    return { ok: false, reason: 'ungueltiges Periodenende in einer der Kumulierungen' };
+  }
+  if (prevEndMs >= curEndMs) {
+    return { ok: false, reason: `kumulierte Perioden nicht in zeitlicher Reihenfolge `
+      + `(${prev.end} … ${cur.end})` };
+  }
+  const startMs = prevEndMs + DAY_MS;
+  const days = inclusiveDays(startMs, curEndMs);
+  const cls = classifyPeriodDuration(days);
+  if (!cls || cls.type !== 'quarter') {
+    return { ok: false, days, reason: `Dauer der abgeleiteten Periode (${days} Tage) liegt `
+      + `ausserhalb des Quartalsfensters (${PERIOD_WINDOWS[0].minDays}–${PERIOD_WINDOWS[0].maxDays} Tage)` };
+  }
+  return { ok: true, start: isoOf(startMs), end: cur.end, days };
+}
+
+// Laufende Nummer einer Geschaeftsquartals-Position (monoton ueber Jahre hinweg).
+function quarterOrdinal(fiscalYear, fiscalQuarter) { return fiscalYear * 4 + fiscalQuarter; }
+function ordinalToPeriod(ord) {
+  const fiscalYear = Math.floor((ord - 1) / 4);
+  return { fiscalYear, fiscalQuarter: ord - fiscalYear * 4 };
 }
 
 function normalizeFlowField(field, facts, tags, fyEnd, asOfMs) {
   const out = {
     field, kind: 'flow', usedTag: null, consideredTags: tags.slice(), unit: null,
-    quarters: [], cumulatives: [], gaps: [], conflicts: [], notes: []
+    quarters: [], cumulatives: [], gaps: [], conflicts: [], rejectedDerivations: [], notes: []
   };
-  const tag = pickTag(facts, tags);
-  if (!tag) { out.notes.push('keine verwertbaren Angaben zu diesem Feld'); return out; }
-  out.usedTag = tag;
-  out.unit = unitKeyOf(conceptOf(facts, tag));
+  const picked = pickTagWithCandidates(facts, tags,
+    tag => collectFlowCandidates(facts, tag, fyEnd, asOfMs));
+  out.notes.push(...skippedTagNotes(picked.skipped, asOfMs));
+  if (!picked.tag) { out.notes.push('keine verwertbaren Angaben zu diesem Feld'); return out; }
+  out.usedTag = picked.tag;
+  out.unit = unitKeyOf(conceptOf(facts, picked.tag));
+  out.notes.push(...picked.notes);
 
-  // 1. Rohangaben einordnen (Kumulierung vs. Einzelquartal)
+  // 1. Kandidaten einordnen (Kumulierung vs. Einzelquartal)
   const cumBuckets  = new Map();  // "fy|through" → Kandidaten
   const discBuckets = new Map();  // "fy|quarter"  → Kandidaten
-  for (const f of rawFacts(facts, tag)) {
-    if (!ACCEPTED_FORMS.includes(f.form)) continue;
-    const endMs = parseIsoDate(f.end);
-    const startMs = parseIsoDate(f.start);
-    if (endMs == null) continue;
-    if (startMs == null) {
-      out.notes.push(`Stichtagsangabe unter einer Zeitraumgroesse verworfen (${f.end})`);
-      continue;
-    }
-    if (typeof f.val !== 'number' || !isFinite(f.val)) {
-      out.notes.push(`nicht numerischer Wert verworfen (${f.start}…${f.end})`);
-      continue;
-    }
-    const cls = classifyFlowFact(startMs, endMs, fyEnd);
-    if (cls.rejected) { out.notes.push(`${f.start}…${f.end} (${cls.days} Tage): ${cls.rejected}`); continue; }
-    const cand = { val: f.val, start: f.start, end: f.end, days: cls.days, periodType: cls.periodType,
-                   form: f.form, accn: f.accn, filed: f.filed, frame: f.frame, tag, pos: cls.pos };
-    if (cls.role === 'cumulative') {
-      const k = `${cls.pos.fiscalYear}|${cls.through}`;
-      if (!cumBuckets.has(k)) cumBuckets.set(k, []);
-      cumBuckets.get(k).push(cand);
+  for (const cand of picked.candidates) {
+    if (cand.role === 'cumulative') {
       // Die Kumulierung ueber ein Quartal IST das erste Quartal; sie wird
       // unten als gemeldetes Q1 verwendet (kein zweiter Behaelter, sonst
       // wuerde derselbe Widerspruch doppelt gemeldet).
+      const k = `${cand.pos.fiscalYear}|${cand.through}`;
+      if (!cumBuckets.has(k)) cumBuckets.set(k, []);
+      cumBuckets.get(k).push(cand);
     } else {
-      const k = `${cls.pos.fiscalYear}|${cls.quarter}`;
+      const k = `${cand.pos.fiscalYear}|${cand.quarter}`;
       if (!discBuckets.has(k)) discBuckets.set(k, []);
       discBuckets.get(k).push(cand);
     }
@@ -485,7 +596,7 @@ function normalizeFlowField(field, facts, tags, fyEnd, asOfMs) {
   for (const k of discSel.keys()) years.add(Number(k.split('|')[0]));
 
   const quarters = [];
-  const gaps = [];
+  const gapReasons = new Map();   // Ordinalzahl → Grund
   for (const fy of [...years].sort((a, b) => b - a)) {
     for (let q = 1; q <= 4; q++) {
       const cumThis = cumSel.get(`${fy}|${q}`) || null;
@@ -493,44 +604,47 @@ function normalizeFlowField(field, facts, tags, fyEnd, asOfMs) {
       // gemeldetes Einzelquartal geht vor.
       const rep = discSel.get(`${fy}|${q}`) || (q === 1 ? cumThis : null);
       const cumPrev = q > 1 ? (cumSel.get(`${fy}|${q - 1}`) || null) : null;
+      const periodKey = `FY${fy}-Q${q}`;
 
       // Ableitung nur aus zwei kompatiblen Kumulierungen desselben
       // Geschaeftsjahres (Q4 = Jahreswert − Neunmonatswert).
-      let derived = null;
+      let derived = null, blocked = null;
       if (q > 1 && cumThis && cumPrev) {
-        const filedMs = [cumThis.filed, cumPrev.filed].map(parseIsoDate);
-        const known = (filedMs[0] == null || filedMs[1] == null)
-          ? null
-          : isoOf(Math.max(filedMs[0], filedMs[1]));
-        derived = {
-          value: cumThis.val - cumPrev.val,
-          start: cumPrev.end,   // vorlaeufig; unten auf Folgetag gesetzt
-          end:   cumThis.end,
-          filed: known,
+        const compat = checkCumulativeDerivation(cumPrev, cumThis);
+        const beteiligte = {
           minuend:    { value: cumThis.val, start: cumThis.start, end: cumThis.end, ...provenanceOf(cumThis) },
           subtrahend: { value: cumPrev.val, start: cumPrev.start, end: cumPrev.end, ...provenanceOf(cumPrev) }
         };
-        derived.start = isoOf(parseIsoDate(cumPrev.end) + DAY_MS);
-      } else if (q === 1 && cumThis) {
-        derived = null; // Q1 ist die Kumulierung selbst und steht bereits als `rep`
+        if (compat.ok) {
+          const filedMs = [cumThis.filed, cumPrev.filed].map(parseIsoDate);
+          derived = {
+            value: cumThis.val - cumPrev.val,
+            start: compat.start, end: compat.end, days: compat.days,
+            filed: (filedMs[0] == null || filedMs[1] == null)
+              ? null : isoOf(Math.max(filedMs[0], filedMs[1])),
+            ...beteiligte
+          };
+        } else {
+          blocked = { fiscalYear: fy, fiscalQuarter: q, periodKey, reason: compat.reason,
+                      derivedDurationDays: compat.days != null ? compat.days : null,
+                      ...beteiligte };
+        }
       }
 
       if (!rep && !derived) {
-        // Nur innerhalb der beobachteten Spanne als Luecke melden — es wird
-        // nichts ergaenzt, nur benannt.
-        gaps.push({
-          fiscalYear: fy, fiscalQuarter: q, periodKey: `FY${fy}-Q${q}`,
-          reason: (q > 1 && (cumThis || cumPrev))
+        gapReasons.set(quarterOrdinal(fy, q),
+          blocked ? `Ableitung unzulaessig: ${blocked.reason}`
+          : (q > 1 && (cumThis || cumPrev))
             ? 'kumulierte Gegenperiode desselben Geschaeftsjahres fehlt'
-            : 'weder gemeldetes Quartal noch kompatible Kumulierung'
-        });
+            : 'weder gemeldetes Quartal noch kompatible Kumulierung');
+        if (blocked) out.rejectedDerivations.push(blocked);
         continue;
       }
 
       let entry;
       if (rep) {
         entry = {
-          fiscalYear: fy, fiscalQuarter: q, periodKey: `FY${fy}-Q${q}`,
+          fiscalYear: fy, fiscalQuarter: q, periodKey,
           start: rep.start, end: rep.end, durationDays: rep.days,
           fiscalYearEnd: rep.pos.fiscalYearEnd,
           value: rep.val, unit: out.unit, basis: 'reported',
@@ -539,10 +653,22 @@ function normalizeFlowField(field, facts, tags, fyEnd, asOfMs) {
           restatement: { restated: rep.supersedes.length > 0, supersedes: rep.supersedes },
           conflict: null
         };
-        if (derived && !sameValue(derived.value, rep.val)) {
-          // Gemeldet und abgeleitet widersprechen sich: der gemeldete Wert
-          // bleibt stehen (er ist nicht gerechnet), der Widerspruch wird
-          // ausgewiesen statt stillschweigend aufgeloest.
+        if (blocked) {
+          out.rejectedDerivations.push(blocked);
+        } else if (derived && (derived.start !== rep.start || derived.end !== rep.end)) {
+          // Verschiedene tatsaechliche Zeitraeume sind nicht dieselbe Periode und
+          // werden deshalb nicht gegeneinander geprueft.
+          out.rejectedDerivations.push({
+            fiscalYear: fy, fiscalQuarter: q, periodKey,
+            reason: `Zeitraum der Ableitung (${derived.start}…${derived.end}) weicht vom `
+              + `gemeldeten Quartal (${rep.start}…${rep.end}) ab — kein Wertvergleich`,
+            derivedDurationDays: derived.days,
+            minuend: derived.minuend, subtrahend: derived.subtrahend
+          });
+        } else if (derived && !sameValue(derived.value, rep.val)) {
+          // Gemeldet und abgeleitet widersprechen sich bei GLEICHEM Zeitraum: der
+          // gemeldete Wert bleibt stehen (er ist nicht gerechnet), der Widerspruch
+          // wird ausgewiesen statt stillschweigend aufgeloest.
           entry.conflict = {
             reason: 'gemeldetes Quartal weicht von der Differenz der Kumulierungen ab',
             derivedValue: derived.value, reportedMinusDerived: rep.val - derived.value,
@@ -552,15 +678,14 @@ function normalizeFlowField(field, facts, tags, fyEnd, asOfMs) {
         }
       } else {
         entry = {
-          fiscalYear: fy, fiscalQuarter: q, periodKey: `FY${fy}-Q${q}`,
-          start: derived.start, end: derived.end,
-          durationDays: inclusiveDays(parseIsoDate(derived.start), parseIsoDate(derived.end)),
+          fiscalYear: fy, fiscalQuarter: q, periodKey,
+          start: derived.start, end: derived.end, durationDays: derived.days,
           fiscalYearEnd: cumThis.pos.fiscalYearEnd,
           value: derived.value, unit: out.unit, basis: 'derived',
           // Herkunft eines abgeleiteten Wertes: er ist erst bekannt, wenn BEIDE
           // Kumulierungen veroeffentlicht sind — daher das spaetere `filed`.
           source: { form: `${derived.minuend.form} − ${derived.subtrahend.form}`,
-                    accn: null, filed: derived.filed, frame: null, tag },
+                    accn: null, filed: derived.filed, frame: null, tag: picked.tag },
           derivation: {
             method: q === 4 ? 'fiscal_year_minus_nine_months' : 'cumulative_difference',
             formula: `FY${fy}-YTD${q} − FY${fy}-YTD${q - 1}`,
@@ -578,13 +703,26 @@ function normalizeFlowField(field, facts, tags, fyEnd, asOfMs) {
   }
 
   quarters.sort((a, b) => b.end.localeCompare(a.end));
-  // Luecken nur innerhalb der tatsaechlich belegten Spanne melden — ausserhalb
-  // gibt es schlicht keine Daten, das ist keine Luecke.
-  if (quarters.length > 0) {
-    const ord = e => e.fiscalYear * 4 + e.fiscalQuarter;
-    const max = Math.max(...quarters.map(ord)), min = Math.min(...quarters.map(ord));
-    out.gaps = gaps.filter(g => { const o = g.fiscalYear * 4 + g.fiscalQuarter; return o > min && o < max; })
-                   .sort((a, b) => (b.fiscalYear * 4 + b.fiscalQuarter) - (a.fiscalYear * 4 + a.fiscalQuarter));
+  // Luecken ueber die GESAMTE Spanne zwischen fruehestem und spaetestem
+  // ausgegebenen Quartal — einschliesslich vollstaendig fehlender
+  // Geschaeftsjahre. Ausserhalb der Spanne gibt es schlicht keine Daten, das
+  // ist keine Luecke. Es wird nichts ergaenzt, nur benannt.
+  if (quarters.length > 1) {
+    const ords = quarters.map(e => quarterOrdinal(e.fiscalYear, e.fiscalQuarter));
+    const vorhanden = new Set(ords);
+    const max = Math.max(...ords), min = Math.min(...ords);
+    const gaps = [];
+    for (let ord = max - 1; ord > min; ord--) {
+      if (vorhanden.has(ord)) continue;
+      const { fiscalYear, fiscalQuarter } = ordinalToPeriod(ord);
+      gaps.push({
+        fiscalYear, fiscalQuarter, periodKey: `FY${fiscalYear}-Q${fiscalQuarter}`,
+        reason: gapReasons.get(ord) || (years.has(fiscalYear)
+          ? 'weder gemeldetes Quartal noch kompatible Kumulierung'
+          : 'keine Angaben in diesem Geschaeftsjahr')
+      });
+    }
+    out.gaps = gaps;
   }
   out.quarters = quarters;
   return out;
@@ -595,32 +733,21 @@ function normalizeInstantField(field, facts, tags, fyEnd, asOfMs) {
     field, kind: 'instant', usedTag: null, consideredTags: tags.slice(), unit: null,
     instants: [], conflicts: [], notes: []
   };
-  const tag = pickTag(facts, tags);
-  if (!tag) { out.notes.push('keine verwertbaren Angaben zu diesem Feld'); return out; }
-  out.usedTag = tag;
-  out.unit = unitKeyOf(conceptOf(facts, tag));
+  const picked = pickTagWithCandidates(facts, tags,
+    tag => collectInstantCandidates(facts, tag, fyEnd, asOfMs));
+  out.notes.push(...skippedTagNotes(picked.skipped, asOfMs));
+  if (!picked.tag) { out.notes.push('keine verwertbaren Angaben zu diesem Feld'); return out; }
+  out.usedTag = picked.tag;
+  out.unit = unitKeyOf(conceptOf(facts, picked.tag));
+  out.notes.push(...picked.notes);
 
   // Stichtagsgroessen: je Bilanzstichtag genau ein Wert. Es gibt hier weder
   // eine Summe noch eine Differenz — nur Auswahl.
   const buckets = new Map();
-  for (const f of rawFacts(facts, tag)) {
-    if (!ACCEPTED_FORMS.includes(f.form)) continue;
-    const endMs = parseIsoDate(f.end);
-    if (endMs == null) continue;
-    if (f.start != null && parseIsoDate(f.start) != null) {
-      out.notes.push(`Zeitraumangabe unter einer Stichtagsgroesse verworfen (${f.start}…${f.end})`);
-      continue;
-    }
-    if (typeof f.val !== 'number' || !isFinite(f.val)) {
-      out.notes.push(`nicht numerischer Wert verworfen (${f.end})`);
-      continue;
-    }
-    const pos = fiscalPeriodOf(endMs, fyEnd);
-    if (!pos) { out.notes.push(`Stichtag ${f.end} liegt nicht auf dem Quartalsraster`); continue; }
-    const k = `${pos.fiscalYear}|${pos.fiscalQuarter}|${f.end}`;
+  for (const cand of picked.candidates) {
+    const k = `${cand.pos.fiscalYear}|${cand.pos.fiscalQuarter}|${cand.end}`;
     if (!buckets.has(k)) buckets.set(k, []);
-    buckets.get(k).push({ val: f.val, end: f.end, form: f.form, accn: f.accn,
-                          filed: f.filed, frame: f.frame, tag, pos });
+    buckets.get(k).push(cand);
   }
 
   for (const [k, cands] of buckets) {
@@ -733,6 +860,9 @@ function normalizeSecQuarters(facts, options = {}) {
     if (SEC_QUARTERLY_FIELDS[field] === 'flow' && out[field].gaps.length > 0) {
       warnings.push(`${field}: ${out[field].gaps.length} Luecke(n) in der Quartalsreihe`);
     }
+    if (SEC_QUARTERLY_FIELDS[field] === 'flow' && out[field].rejectedDerivations.length > 0) {
+      warnings.push(`${field}: ${out[field].rejectedDerivations.length} unzulaessige Ableitung(en) verworfen`);
+    }
   }
 
   return {
@@ -760,6 +890,7 @@ module.exports = {
   fiscalPeriodOf,
   detectFiscalYearEnd,
   classifyFlowFact,
+  checkCumulativeDerivation,
   selectByRestatementRule,
   appTagMap,
   normalizeSecQuarters

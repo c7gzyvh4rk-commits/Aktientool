@@ -603,3 +603,181 @@ test('52/53-Wochen-Geschaeftsjahr (Ende Ende September) wird korrekt zerlegt', (
   assert.equal(qOf(res, 'revenue', 'FY2024-Q4').derivation.method, 'fiscal_year_minus_nine_months');
   assert.equal(r.gaps.length, 0);
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 12. Reparaturen nach Chat 10
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Facts mit frei gewaehlten Tags (fuer die Pruefung der Tag-Auswahl).
+function taggedFacts(byTag) {
+  const out = { 'us-gaap': {} };
+  for (const [tag, entries] of Object.entries(byTag)) {
+    out['us-gaap'][tag] = { units: { USD: entries } };
+  }
+  return out;
+}
+const DEZ = { month: 12, day: 31 };
+
+// ── Befund 1: Kompatibilitaet kumulierter Perioden ───────────────────────────
+test('Befund 1A: kumulierte Perioden mit unterschiedlichem Beginn werden nicht subtrahiert', () => {
+  // 01.01.–31.03. = 100 und 08.01.–30.06. = 220 decken NICHT denselben
+  // Zeitraumbeginn ab. 220 − 100 waere kein Quartalswert, sondern die Differenz
+  // zweier verschieden langer Anlaeufe.
+  const f = facts({ cfo: [
+    flow('2024-01-01', '2024-03-31', 100e6, '10-Q', '2024-04-25', 'Q1-2024'),
+    flow('2024-01-08', '2024-06-30', 220e6, '10-Q', '2024-07-25', 'Q2-2024')
+  ]});
+  const res = Q.normalizeSecQuarters(f, { tags: TAGS, fields: ['cfo'], fiscalYearEnd: DEZ });
+  assert.equal(qOf(res, 'cfo', 'FY2024-Q2'), null);
+  assert.equal(qOf(res, 'cfo', 'FY2024-Q1').value, 100e6);   // unveraendert gemeldet
+  const abgelehnt = res.fields.cfo.rejectedDerivations;
+  assert.equal(abgelehnt.length, 1);
+  assert.equal(abgelehnt[0].periodKey, 'FY2024-Q2');
+  assert.match(abgelehnt[0].reason, /Beginn/);
+  assert.deepEqual([abgelehnt[0].minuend.start, abgelehnt[0].subtrahend.start],
+    ['2024-01-08', '2024-01-01']);
+  assert.equal(res.warnings.some(w => w.includes('cfo') && w.includes('Ableitung')), true);
+});
+
+test('Befund 1B: abgeleitetes Quartal ausserhalb des Quartalsfensters wird verworfen', () => {
+  // 16.06.–10.10.2024 sind 117 Tage — das definierte Quartalsfenster endet
+  // bei 100 Tagen. Die Differenz 330 − 200 = 130 ist damit kein Quartalswert.
+  const f = facts({ cfo: [
+    flow('2024-01-01', '2024-06-15', 200e6, '10-Q', '2024-07-25', 'Q2-2024'),
+    flow('2024-01-01', '2024-10-10', 330e6, '10-Q', '2024-11-01', 'Q3-2024')
+  ]});
+  const res = Q.normalizeSecQuarters(f, { tags: TAGS, fields: ['cfo'], fiscalYearEnd: DEZ });
+  assert.equal(qOf(res, 'cfo', 'FY2024-Q3'), null);
+  const abgelehnt = res.fields.cfo.rejectedDerivations;
+  assert.equal(abgelehnt.length, 1);
+  assert.equal(abgelehnt[0].periodKey, 'FY2024-Q3');
+  assert.equal(abgelehnt[0].derivedDurationDays, 117);   // 16.06.–10.10.2024
+  assert.match(abgelehnt[0].reason, /Quartalsfenster/);
+});
+
+test('gemeldetes und abgeleitetes Quartal mit verschiedenen Zeitraeumen werden nicht verglichen', () => {
+  // Gemeldetes Q2 deckt 01.04.–30.06. ab, die Ableitung 08.04.–30.06.
+  // Das sind verschiedene Zeitraeume — kein Wertvergleich, kein Widerspruch.
+  const f = facts({ cfo: [
+    flow('2024-01-01', '2024-04-07', 100e6, '10-Q', '2024-05-01', 'Q1-2024'),
+    flow('2024-01-01', '2024-06-30', 220e6, '10-Q', '2024-08-01', 'Q2-2024'),
+    flow('2024-04-01', '2024-06-30', 115e6, '10-Q', '2024-08-01', 'Q2-2024')
+  ]});
+  const res = Q.normalizeSecQuarters(f, { tags: TAGS, fields: ['cfo'], fiscalYearEnd: DEZ });
+  const q2 = qOf(res, 'cfo', 'FY2024-Q2');
+  assert.equal(q2.value, 115e6);          // gemeldet bleibt gemeldet
+  assert.equal(q2.basis, 'reported');
+  assert.equal(q2.conflict, null);        // 220 − 100 = 120 ist ein anderer Zeitraum
+  assert.equal(res.fields.cfo.conflicts.length, 0);
+  assert.equal(res.fields.cfo.rejectedDerivations.length, 1);
+  assert.match(res.fields.cfo.rejectedDerivations[0].reason, /gemeldet/);
+});
+
+// ── Befund 2: Luecken ueber vollstaendig fehlende Geschaeftsjahre ────────────
+test('Befund 2: vollstaendig fehlende Geschaeftsjahre erscheinen als Luecken', () => {
+  const f = facts({ revenue: [
+    flow('2022-10-01', '2022-12-31', 100e6, '10-Q', '2023-02-01', 'Q4-2022'),
+    flow('2024-01-01', '2024-03-31', 120e6, '10-Q', '2024-04-25', 'Q1-2024')
+  ]});
+  const res = Q.normalizeSecQuarters(f, { tags: TAGS, fields: ['revenue'], fiscalYearEnd: DEZ });
+  const r = res.fields.revenue;
+  assert.deepEqual(r.quarters.map(x => x.periodKey), ['FY2024-Q1', 'FY2022-Q4']);
+  // Genau die vier Quartale des uebersprungenen Geschaeftsjahres, absteigend.
+  assert.deepEqual(r.gaps.map(g => g.periodKey),
+    ['FY2023-Q4', 'FY2023-Q3', 'FY2023-Q2', 'FY2023-Q1']);
+  assert.equal(new Set(r.gaps.map(g => g.periodKey)).size, 4);  // keine Doppelmeldung
+  assert.equal(r.gaps.every(g => typeof g.reason === 'string' && g.reason.length > 0), true);
+  assert.equal(res.warnings.some(w => w.includes('revenue') && w.includes('Luecke')), true);
+  // Nichts ausserhalb der belegten Spanne
+  assert.equal(r.gaps.some(g => g.fiscalYear === 2022 || g.fiscalYear === 2024), false);
+  assert.equal(r.quarters.every(x => x.value != null), true);
+});
+
+test('Luecken ueber fehlende Geschaeftsjahre auch bei abweichendem Geschaeftsjahr', () => {
+  // Geschaeftsjahresende 31.01.: Q3 FY2023 (Ende 31.10.2022) und Q2 FY2025
+  // (Ende 31.07.2024). Dazwischen fehlen 7 Quartale: FY2023-Q4, FY2024-Q1..Q4,
+  // FY2025-Q1 — und zusaetzlich nichts sonst.
+  const f = facts({ revenue: [
+    flow('2022-08-01', '2022-10-31', 90e6,  '10-Q', '2022-12-05', 'Q3-FY23'),
+    flow('2024-05-01', '2024-07-31', 120e6, '10-Q', '2024-09-05', 'Q2-FY25')
+  ]});
+  const res = Q.normalizeSecQuarters(f,
+    { tags: TAGS, fields: ['revenue'], fiscalYearEnd: { month: 1, day: 31 } });
+  const r = res.fields.revenue;
+  assert.deepEqual(r.quarters.map(x => x.periodKey), ['FY2025-Q2', 'FY2023-Q3']);
+  assert.deepEqual(r.gaps.map(g => g.periodKey),
+    ['FY2025-Q1', 'FY2024-Q4', 'FY2024-Q3', 'FY2024-Q2', 'FY2024-Q1', 'FY2023-Q4']);
+});
+
+// ── Befund 3: Tag-Auswahl unter dem Datenstichtag ────────────────────────────
+test('Befund 3: Tag-Auswahl beachtet den Datenstichtag (Zeitraumwerte)', () => {
+  const nurFallback = taggedFacts({
+    FallbackTag: [flow('2024-01-01', '2024-03-31', 100e6, '10-Q', '2024-05-01', 'F-1')]
+  });
+  const opts = { tags: { cfo: ['PreferredTag', 'FallbackTag'] }, fields: ['cfo'],
+                 fiscalYearEnd: DEZ, asOfDate: '2024-06-01' };
+  const ohne = Q.normalizeSecQuarters(nurFallback, opts);
+  assert.equal(qOf(ohne, 'cfo', 'FY2024-Q1').value, 100e6);
+  assert.equal(ohne.fields.cfo.usedTag, 'FallbackTag');
+
+  // Derselbe Zeitraum zusaetzlich unter dem bevorzugten Tag — aber erst nach
+  // dem Datenstichtag veroeffentlicht. Er darf den zulaessigen Tag nicht
+  // verdraengen.
+  const mitPreferred = taggedFacts({
+    PreferredTag: [flow('2024-01-01', '2024-03-31', 110e6, '10-Q', '2025-05-01', 'P-1')],
+    FallbackTag:  [flow('2024-01-01', '2024-03-31', 100e6, '10-Q', '2024-05-01', 'F-1')]
+  });
+  const mit = Q.normalizeSecQuarters(mitPreferred, opts);
+  assert.equal(mit.fields.cfo.usedTag, 'FallbackTag');
+  assert.equal(qOf(mit, 'cfo', 'FY2024-Q1').value, 100e6);
+  assert.equal(JSON.stringify(mit.fields.cfo).includes('110000000'), false);
+
+  // Ohne Datenstichtag bleibt die bisherige Priorität: der bevorzugte Tag gewinnt.
+  const ohneStichtag = Q.normalizeSecQuarters(mitPreferred,
+    { tags: opts.tags, fields: ['cfo'], fiscalYearEnd: DEZ });
+  assert.equal(ohneStichtag.fields.cfo.usedTag, 'PreferredTag');
+  assert.equal(qOf(ohneStichtag, 'cfo', 'FY2024-Q1').value, 110e6);
+});
+
+test('Tag-Auswahl beachtet den Datenstichtag auch bei Bilanzstichtagen', () => {
+  const f = taggedFacts({
+    PreferredTag: [stock('2024-03-31', 510e6, '10-Q', '2025-05-01', 'P-1')],
+    FallbackTag:  [stock('2024-03-31', 500e6, '10-Q', '2024-05-01', 'F-1')]
+  });
+  const opts = { tags: { total_debt: ['PreferredTag', 'FallbackTag'] },
+                 fields: ['total_debt'], fiscalYearEnd: DEZ };
+  const mitStichtag = Q.normalizeSecQuarters(f, { ...opts, asOfDate: '2024-06-01' });
+  assert.equal(mitStichtag.fields.total_debt.usedTag, 'FallbackTag');
+  assert.deepEqual(mitStichtag.fields.total_debt.instants.map(x => x.value), [500e6]);
+
+  const ohneStichtag = Q.normalizeSecQuarters(f, opts);
+  assert.equal(ohneStichtag.fields.total_debt.usedTag, 'PreferredTag');
+  assert.deepEqual(ohneStichtag.fields.total_debt.instants.map(x => x.value), [510e6]);
+});
+
+test('Tag-Auswahl verlangt fachliche Verwertbarkeit, nicht nur ein Enddatum', () => {
+  // Bevorzugter Tag: nur eine Stichtagsangabe unter einer Zeitraumgroesse und
+  // eine rollierende Zwoelfmonatsperiode — beides fuer Quartale unbrauchbar.
+  const f = taggedFacts({
+    PreferredTag: [stock('2024-03-31', 999e6, '10-Q', '2024-05-01', 'P-1'),
+                   flow('2023-04-01', '2024-03-31', 999e6, '10-Q', '2024-05-01', 'P-2')],
+    FallbackTag:  [flow('2024-01-01', '2024-03-31', 100e6, '10-Q', '2024-05-01', 'F-1')]
+  });
+  const res = Q.normalizeSecQuarters(f,
+    { tags: { cfo: ['PreferredTag', 'FallbackTag'] }, fields: ['cfo'], fiscalYearEnd: DEZ });
+  assert.equal(res.fields.cfo.usedTag, 'FallbackTag');
+  assert.equal(qOf(res, 'cfo', 'FY2024-Q1').value, 100e6);
+});
+
+test('ein Widerspruch im bevorzugten Tag fuehrt nicht zum stillen Tag-Wechsel', () => {
+  const f = taggedFacts({
+    PreferredTag: [flow('2024-01-01', '2024-03-31', 100e6, '10-Q', '2024-05-01', 'P-A'),
+                   flow('2024-01-01', '2024-03-31', 105e6, '10-Q', '2024-05-01', 'P-B')],
+    FallbackTag:  [flow('2024-01-01', '2024-03-31', 100e6, '10-Q', '2024-05-01', 'F-1')]
+  });
+  const res = Q.normalizeSecQuarters(f,
+    { tags: { cfo: ['PreferredTag', 'FallbackTag'] }, fields: ['cfo'], fiscalYearEnd: DEZ });
+  assert.equal(res.fields.cfo.usedTag, 'PreferredTag');   // kein stiller Wechsel
+  assert.equal(qOf(res, 'cfo', 'FY2024-Q1'), null);       // Widerspruch bleibt sichtbar
+  assert.equal(res.fields.cfo.conflicts.length, 1);
+});

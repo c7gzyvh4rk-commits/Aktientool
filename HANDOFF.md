@@ -1,5 +1,152 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Reparatur (nach Chat 10): Drei Fehler im SEC-Quartalsnormalisierer (V1.0.54)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
+`claude/tender-galileo-wc31j5`, Ausgangscommit
+`59eef478c01ee5cd9f295b3bf69578b93e78ed10` — der neueste Stand, der den
+Chat-10-Commit enthaelt; keine nachtraeglichen Korrekturen (kein weiterer Branch
+enthaelt ihn, `main` steht weiterhin auf `b023dc8`). Geaenderte Dateien:
+`src/sec-quarterly.js`, `tests/sec-quarterly.test.mjs`, dieses Dokument.
+Produktdatei `us-aktienbewertungstool-v1036-sector-classification-patch.html`
+**unveraendert** (per `git diff` gegen `59eef47` belegt), keine Einbindung des
+Normalisierers, keine TTM-Integration. Reparaturbranch:
+`claude/sec-quarterly-period-fixes`. Testbefehl: `npm test`. Baseline auf
+`59eef47` (ausgefuehrt): **1459 Rechen-Assertions · 102 Node-Tests ·
+Exit-Code 0**.
+
+### Am Code reproduziert (Stand `59eef47`, vor der Aenderung)
+
+| Fall | vorher | erwartet |
+|---|---|---|
+| 1A: kumuliert 01.01.–31.03. = 100 und **08.01.**–30.06. = 220 | Q2 01.04.–30.06. = 120, `derived`, keine Warnung | kein Q2, Diagnose |
+| 1B: kumuliert 01.01.–**15.06.** = 200 und 01.01.–**10.10.** = 330 | Q3 16.06.–10.10. = 130 mit **117 Tagen**, keine Warnung | kein Q3, Diagnose |
+| 2: nur Q4/2022 und Q1/2024 | `gaps` und `warnings` **leer** | vier Luecken FY2023-Q1…Q4 |
+| 3: `asOfDate` 2024-06-01, Preferred (filed 2025-05-01) vor Fallback (filed 2024-05-01) | `usedTag` = Preferred, **kein** Quartalswert | Fallback, Q1 = 100 |
+
+Die vier Ausgaben wurden vor der Korrektur einzeln ausgegeben und stimmen mit
+dem Befund ueberein.
+
+### Ursachen und Korrekturen
+
+**1. Kompatibilitaet kumulierter Perioden und Dauer der Ableitung.**
+Ursache: `normalizeFlowField()` subtrahierte allein aufgrund der Behaelter-
+Schluessel (gleiches Geschaeftsjahr, aufeinanderfolgende YTD-Stufe). Die
+Toleranz, mit der ein Periodenende in den Geschaeftsjahreskalender einsortiert
+wird (20 Tage), setzte dadurch unterschiedlich lange Kumulierungszeitraeume
+rechnerisch gleich. Korrektur: neue Funktion `checkCumulativeDerivation(prev,
+cur)` prueft vor **jeder** Differenzbildung die tatsaechlichen Daten —
+(a) identischer Beginn beider Kumulierungen, (b) richtige zeitliche Reihenfolge,
+(c) Dauer der abgeleiteten Einzelperiode im Quartalsfenster (80–100 Tage).
+Faellt eine Pruefung durch, entsteht **kein** Quartalswert; der Fall erscheint
+strukturiert unter `fields.<feld>.rejectedDerivations` (Grund, beide
+Kumulierungen mit Herkunft, gegebenenfalls die berechnete Dauer), als
+Lueckengrund und als `warnings`-Eintrag. Zusaetzlich wird ein gemeldetes
+Quartal nur noch dann gegen die Differenz geprueft, wenn beide **denselben
+tatsaechlichen Zeitraum** abdecken; sonst bleibt der gemeldete Wert stehen und
+die Abweichung wird als abgelehnte Ableitung ausgewiesen (kein Schein-
+Widerspruch aus verschiedenen Perioden). Zulaessige abweichende und
+52/53-Wochen-Geschaeftsjahre bleiben unberuehrt (gleicher YTD-Beginn, 91/92
+Tage je Quartal).
+
+**2. Luecken ueber vollstaendig fehlende Geschaeftsjahre.**
+Ursache: Die Lueckenliste entstand innerhalb der Schleife ueber die
+**belegten** Geschaeftsjahre; ein Jahr ohne jede Angabe wurde nie betrachtet,
+und der anschliessende Spannenfilter konnte nur bereits erzeugte Eintraege
+durchlassen. Korrektur: Die Spanne wird jetzt ueber eine fortlaufende
+Quartalsnummer (`quarterOrdinal` = Geschaeftsjahr × 4 + Quartal) gebildet und
+zwischen fruehestem und spaetestem **ausgegebenen** Quartal vollstaendig
+durchlaufen; jede nicht belegte Position wird genau einmal gemeldet, absteigend
+sortiert, mit Grund (aufgezeichneter Grund des Geschaeftsjahres bzw. „keine
+Angaben in diesem Geschaeftsjahr"). Ausserhalb der Spanne entsteht weiterhin
+keine Luecke, und es wird kein Wert ergaenzt.
+
+**3. Tag-Auswahl unter dem Datenstichtag.**
+Ursache: `pickTag()` entschied vor jeder Filterung allein anhand „Formular
+zulaessig und Enddatum vorhanden". Eine erst spaeter veroeffentlichte Angabe
+eines bevorzugten Tags verdraengte damit eine historisch zulaessige Quelle.
+Korrektur: Die Filterung (Formular, Datumsangaben, fachliche Verwertbarkeit je
+Feldart, Datenstichtag) laeuft jetzt in `collectFlowCandidates()` bzw.
+`collectInstantCandidates()` **vor** der Tag-Auswahl;
+`pickTagWithCandidates()` nimmt den ersten Tag mit tatsaechlich verwertbaren
+Angaben. Die Tag-Priorität und „genau ein Tag je Feld" bleiben unveraendert
+(kein Tag-Wechsel-Bridging). Widersprueche werden weiterhin **nach** der
+Tag-Auswahl aufgeloest — ein ansonsten zulaessiger bevorzugter Tag wird also
+nicht still uebersprungen, sein Widerspruch bleibt sichtbar. Uebersprungene
+Tags werden in `notes` benannt. Gilt fuer Zeitraumwerte und Bilanzstichtage
+gleichermassen; die doppelte Filterlogik beider Feldarten ist dabei
+zusammengefallen.
+
+### Neue Tests — `tests/sec-quarterly.test.mjs`, Abschnitt 12 (9 Tests)
+
+Befund 1A · Befund 1B (inkl. `derivedDurationDays` = 117) · gemeldetes vs.
+abgeleitetes Quartal mit verschiedenen Zeitraeumen · Befund 2 (vier Luecken,
+keine Doppelmeldung, nichts ausserhalb der Spanne) · Luecken ueber fehlende
+Geschaeftsjahre bei Geschaeftsjahresende 31.01. (sechs Luecken ueber zwei
+Jahresgrenzen) · Befund 3 fuer Zeitraumwerte (mit und ohne Stichtag) · Befund 3
+fuer Bilanzstichtage · fachliche Verwertbarkeit statt blossem Enddatum · kein
+stiller Tag-Wechsel bei echtem Widerspruch. Erwartungen unabhaengig von Hand
+gerechnet, rein synthetische Facts. **Keine bestehende Erwartung geaendert oder
+gelockert.**
+
+### Gegenproben (ausgefuehrt)
+
+Jede Korrektur einzeln entfernt, jeweils rote Tests: Pruefung des kumulierten
+Beginns → 1 Fehlschlag · Dauerpruefung der Ableitung → 1 · Luecken nur in
+belegten Geschaeftsjahren → 2 · Tag-Auswahl ohne Stichtagsfilter → 1 ·
+Wertvergleich ohne Zeitraumgleichheit → 1. Danach wiederhergestellt: 0.
+
+### Tatsaechlich ausgefuehrte Tests
+
+* Vor der Aenderung: die neuen Regressionstests auf `59eef47` → **8 von 33
+  rot** (die drei Befunde; der Test „kein stiller Tag-Wechsel" war bereits
+  gruen und sichert die Korrektur ab).
+* Nach der Aenderung: `npm test` → Rechentests **1459 bestanden ·
+  0 fehlgeschlagen · 0 Fehler/Exceptions** (unveraendert zur Baseline, die
+  HTML-Datei wurde nicht angefasst), Node-Tests **111/111** (102 unveraendert
+  **+9 neue**), gemeinsamer **Exit-Code 0**. Alle 434 Fixture-Assertions
+  unveraendert gruen.
+* Weiterhin gruen und damit belegt: gueltige kumulierte Quartale (Test 4),
+  Q4-Ableitung aus 10-K und 10-Q (Test 5), keine Verrechnung ueber
+  Geschaeftsjahresgrenzen (Test 6), abweichendes Geschaeftsjahr (Test 8),
+  Berichtigungen und Datenstichtag (Tests 10, 11, 15), Bilanzstichtage ohne
+  Summierung (Test 14) und 52/53-Wochen-Geschaeftsjahr (Test 24).
+* Diff kontrolliert: nur `src/sec-quarterly.js`, `tests/sec-quarterly.test.mjs`
+  und `HANDOFF.md`; `git diff` gegen `59eef47` zeigt keine Aenderung an der
+  HTML-Datei, und weder HTML noch `package.json`, `test/run-all.js`,
+  `test/run-calc-tests.js` oder `src/dcf-core.js` nennen den Normalisierer.
+
+### Verbleibende Einschraenkungen
+
+* Der Normalisierer bleibt **nicht angeschlossen**: die produktive Bewertung
+  rechnet weiterhin ausschliesslich auf Jahresbasis (10-K/FY). Keine
+  TTM-Integration — ausdruecklich noch nicht beauftragt.
+* Die Gleichheit der Kumulierungsbeginne wird **exakt** gefordert. Ein Filer,
+  der denselben Geschaeftsjahresbeginn in zwei Filings unterschiedlich datiert,
+  erhaelt dadurch keine Ableitung, sondern eine Diagnose — bewusst streng, da
+  die Differenz sonst einen anderen Zeitraum abbildet.
+* Ebenso exakt ist der Zeitraumvergleich zwischen gemeldetem und abgeleitetem
+  Quartal; abweichende Zeitraeume werden nicht verglichen, sondern gemeldet.
+* Das Quartalsfenster bleibt bei 80–100 Tagen (einschliesslich gezaehlt).
+  Ungewoehnlich lange oder kurze Einzelquartale (z. B. Rumpfperioden nach einer
+  Geschaeftsjahresumstellung) erzeugen daher keine Ableitung.
+* Weiterhin gilt: eine Tag-Kette je Feld ohne Bridging; Geschaeftsjahr benannt
+  nach dem Kalenderjahr seines Endes; nur `us-gaap`; Werte in gemeldeter
+  Einheit und Vorzeichen.
+* Offen aus den Vorschritten: Einheitenverdacht in `_makeBaseValuation()`;
+  index-basierte Ableitung von `eps_diluted`, `book_value`, `dps` in
+  `applyDerivedFieldsV4`; Korrelationen der Monte-Carlo-Groessen; Fachansichten
+  ausserhalb der Hauptansicht nicht vereinfacht.
+
+### Anschlussstand fuer Chat 11
+
+* Uebergabebranch: `claude/sec-quarterly-period-fixes`
+* Ausgangscommit dieses Schrittes: `59eef47`
+* Ergebniscommit: *(unten nachgetragen)*
+* Tool-Datei: `us-aktienbewertungstool-v1036-sector-classification-patch.html`
+  (unveraendert) · Normalisierer: `src/sec-quarterly.js` · Tests:
+  `tests/sec-quarterly.test.mjs` · Testbefehl: `npm test`
+
 ## Schritt: Isolierte Normalisierung von SEC-Quartalsdaten (V1.0.53)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
