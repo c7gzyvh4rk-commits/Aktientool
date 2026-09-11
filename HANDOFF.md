@@ -207,6 +207,10 @@ das die neue Syntaxprüfung nutzt).
 `src/dcf-core.js`.
 Testbefehl: `npm test` — beide Suiten grün, Exit-Code 0
 (1433 Rechen-Assertions · 78 Node-Tests).
+Code-Commit dieses Schritts: `efe14c9`; Ergebniscommit ist die Spitze des
+Reparaturbranches (dieser Nachtrag).
+Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/entry-gate-and-band-provenance
+Commit-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/commit/efe14c9
 
 ## Update (Chat 9): Einstieg und Hauptansicht vereinfacht (V1.0.50)
 
