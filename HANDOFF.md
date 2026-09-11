@@ -203,6 +203,10 @@ Testfunktion registriert (kein DOM, kein globaler Zustand).
 `src/dcf-core.js`.
 Testbefehl: `npm test` — beide Suiten grün, Exit-Code 0
 (1357 Rechen-Assertions · 78 Node-Tests).
+Code-Commit dieses Schritts: `551fe6a`; Ergebniscommit ist die Spitze des
+Übergabebranches (dieser Nachtrag).
+Branch-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/beautiful-carson-t5eqpi
+Commit-Link: https://github.com/c7gzyvh4rk-commits/Aktientool/commit/551fe6a
 
 ## Update (Chat 8 Restfehler): Mid-Cycle mit manuellem Margen-Override (V1.0.49)
 
