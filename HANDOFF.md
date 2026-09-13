@@ -141,7 +141,8 @@ Befund ueberein. Nachgerechnet: (92·1002 + 92·1000 + 90·998 + 91·**1992**)/3
 
 * Uebergabebranch: `claude/ttm-share-period-fixes`
 * Ausgangscommit dieses Schrittes: `4da5082` (Code `7087944`)
-* Ergebniscommit: `ERGEBNISCOMMIT`
+* Ergebniscommit: `b5559df`
+  — https://github.com/c7gzyvh4rk-commits/Aktientool/commit/b5559df
 * Branchstand: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/ttm-share-period-fixes
 * Tool-Datei: `us-aktienbewertungstool-v1036-sector-classification-patch.html`
   · Bloecke darin: `SEC-QUARTALS-BLOCK`, `DATENBASIS-BLOCK`, `DCF-CORE-BLOCK`
