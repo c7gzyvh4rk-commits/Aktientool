@@ -14151,34 +14151,75 @@ function buildTtmShareBasis(sharesInput, windows) {
     out.reason = 'keine gewichteten Quartalsaktienzahlen uebergeben';
     return out;
   }
-  const byEnd = {};
+  // V1.0.57: Zuordnung ueber die VOLLSTAENDIGE Periode. Mehrere Angaben mit
+  // demselben Ende bleiben nebeneinander stehen; welche verwendet wird,
+  // entscheidet erst der Abgleich mit dem Flussquartal. Eine zeitlich
+  // unpassende Angabe kann eine passende dadurch nicht mehr verdraengen.
+  const byPeriod = {};
   for (let i = 0; i < wq.length; i++) {
-    const e = wq[i] && wq[i].end;
-    if (typeof e === 'string' && _ttmNum(wq[i].value) != null) byEnd[e] = wq[i];
+    const r = wq[i];
+    if (!r || typeof r.end !== 'string' || typeof r.start !== 'string') continue;
+    if (_ttmNum(r.value) == null) continue;
+    const key = r.start + '|' + r.end;
+    const vorher = byPeriod[key];
+    // Berichtigungsregel INNERHALB derselben Periode: die zuletzt
+    // veroeffentlichte Angabe gewinnt; eine Angabe ohne Datum verdraengt
+    // keine datierte.
+    if (vorher) {
+      const a = vorher.filed || null, b = r.filed || null;
+      if (b == null || (a != null && a >= b)) continue;
+    }
+    byPeriod[key] = r;
   }
   const list = Array.isArray(windows) ? windows : [];
   for (let i = 0; i < list.length; i++) {
     const w = list[i];
     const qEnds = w.quarterEnds || [];
-    const qDays = w.quarterDays || [];
+    const qStarts = w.quarterStarts || [];
     if (qEnds.length !== 4) {
       out.reason = 'TTM-Fenster bis ' + w.end + ' ist nicht durch vier Quartale belegt';
+      out.values = []; out.ends = []; out.quarters_used = [];
+      return out;
+    }
+    if (qStarts.length !== 4) {
+      // Ohne die Quartalsbeginne laesst sich die Vereinbarkeit nicht pruefen.
+      // Es wird NICHT ersatzweise ueber das Enddatum zugeordnet.
+      out.reason = 'Quartalsbeginne des Fensters bis ' + w.end + ' fehlen — ohne sie ist die '
+        + 'Vereinbarkeit der Aktienangaben nicht pruefbar';
       out.values = []; out.ends = []; out.quarters_used = [];
       return out;
     }
     let sumW = 0, sumWV = 0;
     const used = [];
     for (let k = 0; k < 4; k++) {
-      const rec = byEnd[qEnds[k]];
+      const rec = byPeriod[qStarts[k] + '|' + qEnds[k]];
       if (!rec) {
-        out.reason = 'gewichtete Aktienzahl fuer das Quartal bis ' + qEnds[k] + ' fehlt';
+        // Diagnose benennt, ob ueberhaupt nichts vorliegt oder nur etwas
+        // zeitlich Unpassendes. Es wird nichts gekuerzt oder hochgerechnet.
+        const andere = wq.filter(x => x && x.end === qEnds[k] && x.start !== qStarts[k]);
+        out.reason = 'gewichtete Aktienzahl fuer das Quartal ' + qStarts[k] + '…' + qEnds[k]
+          + (andere.length > 0
+              ? ' fehlt; vorhanden ist nur eine Angabe mit abweichendem Zeitraum ('
+                + andere.map(x => x.start + '…' + x.end).join(', ')
+                + ') — sie wird nicht verwendet'
+              : ' fehlt');
         out.values = []; out.ends = []; out.quarters_used = [];
         return out;
       }
-      const weight = _ttmNum(qDays[k]) != null ? qDays[k] : 1;
+      // Gewichtet wird mit der TATSAECHLICHEN Dauer der Aktienangabe. Da
+      // Beginn und Ende exakt zum Flussquartal passen, ist das zugleich
+      // dessen Dauer — gerechnet wird sie aber aus der Angabe selbst.
+      const weight = _ttmInclusiveDays(_ttmParseIso(rec.start), _ttmParseIso(rec.end));
+      if (!(weight > 0)) {
+        out.reason = 'Zeitraum der Aktienangabe ' + rec.start + '…' + rec.end + ' ist unbrauchbar';
+        out.values = []; out.ends = []; out.quarters_used = [];
+        return out;
+      }
       sumW += weight;
       sumWV += weight * rec.value;
-      used.push({ end: qEnds[k], value: rec.value, days: weight });
+      used.push({ start: rec.start, end: rec.end, value: rec.value, days: weight,
+                  filed: rec.filed || null, form: rec.form || null,
+                  source: rec.source || null });
     }
     if (!(sumW > 0)) {
       out.reason = 'Quartalslaengen des Fensters bis ' + w.end + ' sind unbrauchbar';
@@ -14190,6 +14231,22 @@ function buildTtmShareBasis(sharesInput, windows) {
     out.quarters_used.push(used);
   }
   out.ok = out.values.length > 0;
+  // V1.0.57: Veroeffentlichungsstand der TATSAECHLICH verwendeten
+  // Aktienangaben des juengsten Fensters. Verworfene Angaben gehen nicht ein.
+  if (out.ok) {
+    const benutzt = out.quarters_used[0] || [];
+    const filedListe = benutzt.map(x => x.filed);
+    out.latest_filed = _ttmLatestFiled(filedListe);
+    out.filed_complete = filedListe.every(x => x != null && _ttmParseIso(x) != null);
+    out.forms_used = benutzt.map(x => x.form).filter((v, i, a) => v != null && a.indexOf(v) === i).sort();
+    if (!out.filed_complete) {
+      out.warnings.push('Veroeffentlichungsstand der gewichteten Aktienzahl unvollstaendig: '
+        + benutzt.filter(x => x.filed == null).map(x => x.start + '…' + x.end).join(', ')
+        + ' ohne Veroeffentlichungsdatum.');
+    }
+  } else {
+    out.latest_filed = null; out.filed_complete = false; out.forms_used = [];
+  }
   if (!out.ok && !out.reason) out.reason = 'kein TTM-Fenster vorhanden';
   if (out.ok && out.current.value == null) {
     out.warnings.push('Aktuelle Aktienzahl (Stichtag) nicht uebergeben — die Bewertung je Aktie beruht '
@@ -14303,6 +14360,10 @@ function buildTtmDataset(payload, opts) {
     index: i, start: w.start, end: w.end, durationDays: w.durationDays,
     quarters: w.quarters.map(q => q.periodKey),
     quarterEnds: w.quarters.map(q => q.end),
+    // V1.0.57: Die Quartalsbeginne werden mitgefuehrt, damit eine
+    // Aktienangabe vollstaendig (Beginn UND Ende) gegen das Flussquartal
+    // geprueft werden kann — ein gleiches Enddatum genuegt nicht.
+    quarterStarts: w.quarters.map(q => q.start),
     quarterDays: w.quarters.map(q => _ttmInclusiveDays(_ttmParseIso(q.start), _ttmParseIso(q.end))),
     label: 'TTM ' + w.start + '…' + w.end
   }));
@@ -14378,12 +14439,36 @@ function buildTtmDataset(payload, opts) {
     }
   });
   instKeys.forEach(k => { const s = out.instants[k]; if (s && s.ok) filedList.push(s.filed); });
+  // V1.0.57: Die gewichteten Aktienzahlen gehen in das ausgewiesene
+  // TTM-Ergebnis ein (EPS, Bewertung je Aktie) — ihr Veroeffentlichungsstand
+  // gehoert deshalb zum Datenstand der Bewertung. Bis V1.0.56 fehlte er hier.
+  // Verworfene oder nicht verwendete Angaben gehen ausdruecklich NICHT ein.
+  if (out.shares && out.shares.ok) {
+    filedList.push(out.shares.latest_filed);
+    (out.shares.forms_used || []).forEach(f => formList.push(f));
+  }
   const uniqueForms = formList.filter((v, i) => formList.indexOf(v) === i).sort();
+  const _latest = filedList.length > 0 ? _ttmLatestFiled(filedList) : null;
+  const _vollstaendig = filedList.length > 0 && filedList.every(x => x != null && _ttmParseIso(x) != null);
   out.publication = {
-    latest_filed: filedList.length > 0 ? _ttmLatestFiled(filedList) : null,
+    latest_filed: _latest,
+    // Ein unvollstaendig bekannter Stand wird sichtbar gekennzeichnet statt
+    // erfunden: fehlt an einer verwendeten Angabe das Datum, ist
+    // latest_filed null und dieses Kennzeichen false.
+    latest_filed_complete: _vollstaendig,
     as_of_date: out.as_of_date,
-    forms: uniqueForms
+    forms: uniqueForms,
+    // Nur nachrichtlich: die aktuelle Aktienzahl am Stichtag ist eine
+    // Zusatzangabe und veraendert den Datenstand der Bewertung nicht.
+    current_shares_filed: (out.shares && out.shares.current && out.shares.current.source)
+      ? (out.shares.current.source.filed || null) : null,
+    current_shares_as_of: (out.shares && out.shares.current) ? (out.shares.current.as_of || null) : null,
+    current_shares_note: 'nur nachrichtlich — nicht Bestandteil des Bewertungsdatenstands'
   };
+  if (!_vollstaendig) {
+    out.warnings.push('Veroeffentlichungsstand der TTM-Datenbasis unvollstaendig: mindestens eine '
+      + 'verwendete Angabe traegt kein Veroeffentlichungsdatum.');
+  }
   out.period = { start: out.windows[0].start, end: out.windows[0].end,
                  durationDays: out.windows[0].durationDays, window_count: out.window_count };
   out.period_label = out.windows[0].label;
@@ -14424,7 +14509,7 @@ function collectWeightedShareQuarters(facts, options) {
   const o = options || {};
   const asOf = o.asOfDate ? parseIsoDate(o.asOfDate) : null;
   const tags = o.shareTags || TTM_SHARE_TAGS_DILUTED;
-  const byEnd = {};
+  const byPeriod = {};
   for (let t = 0; t < tags.length; t++) {
     const liste = _ttmRawFacts(facts, 'us-gaap', tags[t]);
     let gefunden = false;
@@ -14438,18 +14523,26 @@ function collectWeightedShareQuarters(facts, options) {
       if (asOf != null && (filedMs == null || filedMs > asOf)) continue;
       const cls = classifyPeriodDuration(inclusiveDays(sMs, eMs));
       if (!cls || cls.type !== 'quarter') continue;
-      const end = isoOf(eMs);
-      const vorher = byEnd[end];
-      // Berichtigungen: die zuletzt veroeffentlichte Angabe gewinnt.
+      const end = isoOf(eMs), start = isoOf(sMs);
+      // V1.0.57: Schluessel ist die VOLLSTAENDIGE Periode (Beginn und Ende).
+      // Bis V1.0.56 genuegte das Enddatum — eine zeitlich unpassende Angabe
+      // (z. B. Rumpfzeitraum mit gleichem Ende) verdraengte dadurch die
+      // passende, bevor die Vereinbarkeit mit dem Flussquartal ueberhaupt
+      // geprueft war. Die Berichtigungsregel gilt weiterhin, aber nur
+      // innerhalb DERSELBEN Periode — sonst waere sie kein Ersatz, sondern
+      // ein Periodenwechsel.
+      const key = start + '|' + end;
+      const vorher = byPeriod[key];
       if (vorher && vorher.filed != null && f.filed != null && vorher.filed >= f.filed) continue;
-      byEnd[end] = { end, start: isoOf(sMs), value: f.val, filed: f.filed || null, form: f.form,
+      byPeriod[key] = { end, start, value: f.val, filed: f.filed || null, form: f.form,
                      tag: tags[t],
                      source: { form: f.form, accn: f.accn || null, filed: f.filed || null, tag: tags[t] } };
       gefunden = true;
     }
     if (gefunden) break;   // eine Tag-Kette je Groesse, kein Bridging
   }
-  return Object.keys(byEnd).map(k => byEnd[k]).sort((a, b) => b.end.localeCompare(a.end));
+  return Object.keys(byPeriod).map(k => byPeriod[k])
+    .sort((a, b) => (b.end.localeCompare(a.end) || b.start.localeCompare(a.start)));
 }
 
 /** Gemeldete Quartals-EPS — ausschliesslich als Gegenprobe. */
@@ -14905,13 +14998,25 @@ function buildDataBasisReport(mj, resolved) {
     };
     rep.publication = {
       latest_filed: ds.publication ? ds.publication.latest_filed : null,
+      latest_filed_complete: ds.publication ? !!ds.publication.latest_filed_complete : false,
       as_of_date: ds.as_of_date || meta.data_cutoff_date || meta.as_of_date || null,
       forms: ds.publication ? (ds.publication.forms || []).slice() : [],
-      source_primary: meta.source_primary || null
+      source_primary: meta.source_primary || null,
+      // Getrennt ausgewiesen: der Stand der aktuellen Stichtagsaktien gehoert
+      // nicht zum Datenstand der Bewertung (V1.0.57).
+      current_shares_filed: ds.publication ? (ds.publication.current_shares_filed || null) : null,
+      current_shares_note: ds.publication ? (ds.publication.current_shares_note || null) : null
     };
     rep.share_basis = {
       weighted_average_ttm: (ds.shares && ds.shares.ok) ? ds.shares.values[0] : null,
       weighted_average_method: ds.shares ? ds.shares.method : null,
+      // Herkunft der tatsaechlich verwendeten Quartalsangaben (V1.0.57).
+      weighted_average_filed: (ds.shares && ds.shares.ok) ? (ds.shares.latest_filed || null) : null,
+      weighted_average_filed_complete: (ds.shares && ds.shares.ok) ? !!ds.shares.filed_complete : false,
+      weighted_average_quarters_used: (ds.shares && ds.shares.ok && ds.shares.quarters_used[0])
+        ? ds.shares.quarters_used[0].map(x => ({ start: x.start, end: x.end, days: x.days,
+            value: x.value, filed: x.filed, form: x.form }))
+        : [],
       weighted_average_series: (ds.shares && ds.shares.ok) ? ds.shares.values.slice(0, 10) : [],
       current_shares: ds.shares && ds.shares.current ? ds.shares.current.value : null,
       current_shares_as_of: ds.shares && ds.shares.current ? ds.shares.current.as_of : null,
@@ -18463,13 +18568,22 @@ function buildDataBasisCard(mj, valuation, opts) {
     ${zeile(istTtm ? 'Zeitraum (TTM)' : 'Zeitraum (letztes Geschäftsjahr)', zeitraum,
        istTtm && p.duration_days ? p.duration_days + ' Tage · ' + (p.window_count || 0) + ' überschneidungsfreie Fenster' : null)}
     ${istTtm ? zeile('Verwendete Quartale', quartale) : ''}
-    ${zeile('Veröffentlichungsstand', pub.latest_filed ? escapeHtml(pub.latest_filed) : '<span style="color:var(--muted)">unbekannt</span>',
-       (pub.forms && pub.forms.length > 0) ? 'Formulare: ' + pub.forms.join(', ') : null)}
+    ${zeile('Veröffentlichungsstand',
+       pub.latest_filed ? escapeHtml(pub.latest_filed)
+         : '<span style="color:var(--warn)">unvollständig bekannt</span>',
+       [(pub.forms && pub.forms.length > 0) ? 'Formulare: ' + pub.forms.join(', ') : null,
+        istTtm ? 'einschließlich der verwendeten Aktienangaben' : null,
+        (pub.latest_filed_complete === false)
+          ? 'mindestens eine verwendete Angabe ohne Veröffentlichungsdatum' : null
+       ].filter(Boolean).join(' · ') || null)}
     ${zeile('Datenstichtag', pub.as_of_date ? escapeHtml(pub.as_of_date) : '<span style="color:var(--muted)">–</span>',
        pub.source_primary ? 'Quelle: ' + pub.source_primary : null)}
     ${aktienZeile}
     ${zeile('Aktuelle Aktienzahl (Stichtag)', _dbFmtNum(sb.current_shares, 1),
-       sb.current_shares_as_of ? 'Stand ' + sb.current_shares_as_of + ' — getrennt vom Durchschnitt geführt' : 'getrennt vom Durchschnitt geführt')}
+       (sb.current_shares_as_of ? 'Stand ' + sb.current_shares_as_of + ' — getrennt vom Durchschnitt geführt'
+                                : 'getrennt vom Durchschnitt geführt')
+       + (pub.current_shares_filed ? ' · veröffentlicht ' + pub.current_shares_filed
+            + ' (nur nachrichtlich, nicht Teil des Bewertungsdatenstands)' : ''))}
     ${istTtm && sb.eps_ttm != null ? zeile('EPS (TTM)', _dbFmtNum(sb.eps_ttm, 2),
        'TTM-Ergebnis / gewichtete TTM-Aktienzahl — nicht die Summe der Quartals-EPS.') : ''}
     ${rep.da ? zeile('Abschreibungen (D&amp;A) / Umsatz',
@@ -40930,6 +41044,371 @@ function _testTtmIntegrationFixes() {
     // Gegenprobe: ohne D&A ist FCFF = EBIT×(1−t) − CapEx = 220×0,75 − 55 = 110
     check('FCFF ohne D&A = 110', nah(r0._fcfPerYearAbs[1], 110, 1e-9), r0._fcfPerYearAbs[1]);
     check('FCFF mit D&A = 160', nah(r50._fcfPerYearAbs[1], 160, 1e-9), r50._fcfPerYearAbs[1]);
+  }
+
+  return results;
+}
+
+// ════════════════════════════════════════════════════════════════
+// REGRESSIONSTESTS — zwei Restfehler bei den TTM-Aktienangaben (V1.0.57)
+// ────────────────────────────────────────────────────────────────
+// S1  Aktienperioden vollständig mit dem Flussquartal abgleichen
+//     (Beginn UND Ende; Gewichtung mit der tatsächlichen Dauer)
+// S2  Veröffentlichungsstand der tatsächlich verwendeten
+//     Aktienangaben in den Datenstand der Bewertung übernehmen
+//
+// Reine Funktionen, kein DOM, kein Zufall. Die SEC-Facts sind synthetisch;
+// alle Erwartungswerte sind von Hand nachgerechnet und stehen als Rechnung
+// im Test.
+// ════════════════════════════════════════════════════════════════
+function _testTtmSharePeriodFixes() {
+  const results = [];
+  let _suite = '';
+  function suite(name) { _suite = name; }
+  function check(label, condition, extra) {
+    results.push({ suite: _suite, label, pass: !!condition,
+      extra: extra != null ? String(extra) : undefined });
+  }
+  const nah = (a, b, tol) => a != null && b != null && Math.abs(a - b) <= (tol || 1e-9);
+
+  // ── Synthetische SEC-companyfacts in gemeldeten Einheiten ──────────
+  const QE = { 1: '-03-31', 2: '-06-30', 3: '-09-30', 4: '-12-31' };
+  const QS = { 1: '-01-01', 2: '-04-01', 3: '-07-01', 4: '-10-01' };
+  const _filed = (y, n) => (n === 4 ? (y + 1) + '-02-15' : y + '-' + String(n * 3 + 2).padStart(2, '0') + '-01');
+  const _form  = (n) => (n === 4 ? '10-K' : '10-Q');
+  const TH = { 2022: 4, 2023: 4, 2024: 4, 2025: 2 };
+  const M = 1e6;
+  const _flowU = (p) => { const u = [];
+    Object.keys(p).forEach(y => { let c = 0;
+      for (let n = 1; n <= TH[y]; n++) { c += p[y][n - 1];
+        u.push({ start: y + '-01-01', end: y + QE[n], val: c * M, form: _form(n), filed: _filed(+y, n), accn: 'f' + y + n }); } });
+    return { units: { USD: u } }; };
+  const _instU = (p) => { const u = [];
+    Object.keys(p).forEach(y => { for (let n = 1; n <= TH[y]; n++)
+      u.push({ end: y + QE[n], val: p[y][n - 1] * M, form: _form(n), filed: _filed(+y, n), accn: 'i' + y + n }); });
+    return { units: { USD: u } }; };
+  const _shareU = (p) => { const u = [];
+    Object.keys(p).forEach(y => { for (let n = 1; n <= TH[y]; n++)
+      u.push({ start: y + QS[n], end: y + QE[n], val: p[y][n - 1] * M, form: _form(n), filed: _filed(+y, n), accn: 's' + y + n }); });
+    return { units: { shares: u } }; };
+
+  const REV  = { 2022: [1000, 1100, 1100, 1200], 2023: [1100, 1150, 1200, 1250],
+                 2024: [1175, 1225, 1275, 1325], 2025: [1300, 1350] };
+  const EBIT = { 2022: [150, 160, 160, 170], 2023: [160, 165, 175, 180],
+                 2024: [170, 175, 185, 190], 2025: [195, 200] };
+  const NI   = { 2022: [120, 130, 130, 140], 2023: [135, 138, 142, 145],
+                 2024: [145, 148, 152, 155], 2025: [160, 165] };
+  const CFO  = { 2022: [200, 200, 210, 210], 2023: [210, 215, 215, 220],
+                 2024: [220, 225, 225, 230], 2025: [235, 240] };
+  const CPX  = { 2022: [70, 70, 70, 70], 2023: [72, 72, 73, 73],
+                 2024: [75, 75, 75, 75], 2025: [78, 78] };
+  const DA   = { 2022: [55, 57, 58, 60], 2023: [56, 57, 58, 59],
+                 2024: [57, 57, 58, 58], 2025: [60, 61] };
+  const DEBT = { 2022: [900, 910, 920, 900], 2023: [1000, 1010, 1020, 1050],
+                 2024: [1100, 1120, 1150, 1200], 2025: [1170, 1180] };
+  const LTD  = { 2022: [700, 710, 720, 700], 2023: [800, 810, 820, 850],
+                 2024: [900, 920, 950, 1000], 2025: [970, 980] };
+  const CASH = { 2022: [600, 610, 620, 600], 2023: [650, 660, 670, 700],
+                 2024: [740, 750, 760, 800], 2025: [810, 820] };
+  const CA   = { 2022: [1800, 1810, 1820, 1800], 2023: [1900, 1910, 1920, 1950],
+                 2024: [2000, 2020, 2050, 2100], 2025: [2110, 2120] };
+  const CL   = { 2022: [1200, 1210, 1220, 1200], 2023: [1250, 1260, 1270, 1300],
+                 2024: [1320, 1330, 1340, 1350], 2025: [1360, 1370] };
+  const SHQ  = { 2022: [1010, 1009, 1008, 1007], 2023: [1006, 1005, 1004, 1003],
+                 2024: [1004, 1003, 1002, 1000], 2025: [998, 996] };
+  const EQ   = { 2022: [3000, 3000, 3000, 3000], 2023: [3100, 3100, 3100, 3100],
+                 2024: [3200, 3200, 3200, 3300], 2025: [3350, 3400] };
+  const AST  = { 2022: [7000, 7000, 7000, 7000], 2023: [7500, 7500, 7500, 7500],
+                 2024: [8000, 8000, 8000, 8100], 2025: [8200, 8300] };
+
+  const facts = () => ({ 'us-gaap': {
+      Revenues: _flowU(REV), OperatingIncomeLoss: _flowU(EBIT), NetIncomeLoss: _flowU(NI),
+      NetCashProvidedByUsedInOperatingActivities: _flowU(CFO),
+      PaymentsToAcquirePropertyPlantAndEquipment: _flowU(CPX),
+      DepreciationDepletionAndAmortization: _flowU(DA),
+      LongTermDebtAndCapitalLeaseObligations: _instU(DEBT), LongTermDebtNoncurrent: _instU(LTD),
+      CashAndCashEquivalentsAtCarryingValue: _instU(CASH),
+      AssetsCurrent: _instU(CA), LiabilitiesCurrent: _instU(CL),
+      WeightedAverageNumberOfDilutedSharesOutstanding: _shareU(SHQ),
+      StockholdersEquity: _instU(EQ), Assets: _instU(AST)
+    }, dei: { EntityCommonStockSharesOutstanding: { units: { shares: [
+      { end: '2025-07-20', val: 995 * M, form: '10-Q', filed: '2025-08-01' } ] } } } });
+
+  const shareListe = (f) => f['us-gaap'].WeightedAverageNumberOfDilutedSharesOutstanding.units.shares;
+  const shareEintrag = (f, ende) => shareListe(f).filter(x => x.end === ende)[0] || null;
+
+  // Produktiver Importweg wie in secFetchAll.
+  const importiere = (f, stichtag) => {
+    const extracted = {};
+    ['revenue', 'ebit', 'net_income', 'cfo', 'capex', 'da', 'total_debt', 'long_term_debt',
+     'cash_and_equivalents', 'current_assets', 'current_liabilities', 'total_equity',
+     'total_assets', 'shares_diluted', 'eps_diluted'].forEach(k => {
+      if (SEC_TAG_MAP[k]) extracted[k] = _extractWithFallback(f, SEC_TAG_MAP[k], 10);
+    });
+    _applySecDerivations(extracted);
+    const mj = _buildSecMasterJson({ ticker: 'SHP', cik: '0000003', companyName: 'Aktienperioden AG',
+      sic: '3674', fiscalYearEnd: '1231', exchange: 'NASDAQ', sicMapping: _sicToSector('3674'),
+      extracted: extracted, yahooData: null, secFacts: f, derivationNotes: [] });
+    if (stichtag) {
+      // Datenstichtag ausdruecklich setzen — derselbe Erzeugungsweg.
+      mj.meta.data_cutoff_date = stichtag;
+      mj.fundamentals._ttm = buildTtmDatasetFromFacts(f, {
+        reportingUnit: mj.meta.reporting_unit || 'millions', asOfDate: stichtag });
+    }
+    mj.market = { price: 45, price_currency: 'USD' };
+    applyDerivedFieldsV4(mj); normalizeSharesInPlace(mj); applyDerivedFieldsV4(mj);
+    applyConservativeHeuristics(mj);
+    return mj;
+  };
+  // Gewichteter TTM-Durchschnitt des juengsten Fensters, von Hand gerechnet:
+  // (92·1002 + 92·1000 + 90·998 + 91·996) / 365 = 364640 / 365
+  const ERW_SHARES = (92 * 1002 + 92 * 1000 + 90 * 998 + 91 * 996) / 365;
+
+  // ── S1-A: exakter Periodenabgleich bleibt unveraendert richtig ─────
+  suite('S1-A exakter Periodenabgleich');
+  {
+    const mj = importiere(facts(), null);
+    const ds = mj.fundamentals._ttm;
+    check('Datensatz vollständig', ds.complete === true, JSON.stringify(ds.reasons));
+    check('gewichteter TTM-Durchschnitt = 364640/365 = 999,013698630137',
+      nah(ds.shares.values[0], ERW_SHARES, 1e-12) && nah(ds.shares.values[0], 999.013698630137, 1e-9),
+      ds.shares.values[0]);
+    const benutzt = ds.shares.quarters_used[0];
+    check('vier verwendete Angaben mit Beginn und Ende',
+      benutzt.length === 4 && benutzt.every(x => !!x.start && !!x.end), JSON.stringify(benutzt.map(x => x.start)));
+    check('Gewichte sind die tatsächlichen Perioden­dauern (92/92/90/91)',
+      JSON.stringify(benutzt.map(x => x.days)) === JSON.stringify([92, 92, 90, 91]),
+      JSON.stringify(benutzt.map(x => x.days)));
+    check('Zuordnung Beginn→Quartal stimmt',
+      JSON.stringify(benutzt.map(x => x.start + '…' + x.end)) === JSON.stringify(
+        ['2024-07-01…2024-09-30', '2024-10-01…2024-12-31', '2025-01-01…2025-03-31', '2025-04-01…2025-06-30']),
+      JSON.stringify(benutzt.map(x => x.start)));
+  }
+
+  // ── S1-B: gleiches Ende, abweichender Beginn wird abgewiesen ───────
+  suite('S1-B abweichender Beginn wird abgewiesen');
+  {
+    const f = facts();
+    const e = shareEintrag(f, '2025-06-30');
+    e.start = '2025-04-11';        // 81 statt 91 Tage
+    e.val = 1992 * M;
+    const mj = importiere(f, null);
+    const ds = mj.fundamentals._ttm;
+    // Der frühere Fehler hätte (92·1002 + 92·1000 + 90·998 + 91·1992)/365
+    // = 455276/365 = 1247,3315068493151 ergeben.
+    const falsch = (92 * 1002 + 92 * 1000 + 90 * 998 + 91 * 1992) / 365;
+    check('keine gewichtete TTM-Aktienzahl', ds.shares.ok === false, ds.shares.reason);
+    check('insbesondere nicht 1247,3315068493151',
+      !(ds.shares.values.length > 0 && nah(ds.shares.values[0], falsch, 1e-6)),
+      JSON.stringify(ds.shares.values));
+    check('die Diagnose nennt den erwarteten Zeitraum',
+      /2025-04-01…2025-06-30/.test(ds.shares.reason || ''), ds.shares.reason);
+    check('und die abweichende Angabe', /2025-04-11/.test(ds.shares.reason || ''), ds.shares.reason);
+    check('kein gekürzter oder hochgerechneter Ersatzwert',
+      ds.shares.values.length === 0 && ds.eps.ok === false);
+    check('Datensatz ist dadurch unvollständig', ds.complete === false);
+    check('Aktienbasis wird als fehlend geführt',
+      (ds.missing || []).some(m => m.app_field === 'shares_diluted'),
+      JSON.stringify((ds.missing || []).map(m => m.app_field)));
+
+    // SEC-Facts → TTM → Bewertung: sichtbarer FY-Rückfall statt Vermischung.
+    mj.valuation.data_basis = 'ttm';
+    const v = runValuationEngine(mj);
+    check('Bewertung fällt sichtbar auf FY zurück',
+      v.dataBasis.selected === 'fy' && v.dataBasis.fallback.active === true,
+      JSON.stringify(v.dataBasis.fallback.reasons));
+    check('der Grund nennt die Aktienzahl',
+      v.dataBasis.fallback.reasons.join(' ').indexOf('Aktienzahl') >= 0,
+      JSON.stringify(v.dataBasis.fallback.reasons));
+    check('der Jahresimport bleibt nutzbar',
+      mj.fundamentals.revenue[0] === 5000 && v.modelResults.dcf.applicable === true,
+      mj.fundamentals.revenue[0]);
+  }
+
+  // ── S1-C: passende und unpassende Angabe mit gleichem Ende ─────────
+  suite('S1-C unpassende Angabe verdrängt passende nicht');
+  {
+    const unpassend = (f, filed) => ({ start: '2025-04-11', end: '2025-06-30', val: 1992 * M,
+      form: '10-Q', filed: filed, accn: 'stoerer' });
+    // Reihenfolge 1: unpassende Angabe steht VOR der passenden.
+    const f1 = facts();
+    shareListe(f1).unshift(unpassend(f1, '2025-08-05'));
+    const ds1 = importiere(f1, null).fundamentals._ttm;
+    check('Variante A: passende Angabe wird verwendet',
+      nah(ds1.shares.values[0], ERW_SHARES, 1e-12), ds1.shares.values[0]);
+    // Reihenfolge 2: unpassende Angabe steht DAHINTER und ist sogar später
+    // veröffentlicht — die Berichtigungsregel gilt nur je gleicher Periode.
+    const f2 = facts();
+    shareListe(f2).push(unpassend(f2, '2025-08-20'));
+    const ds2 = importiere(f2, null).fundamentals._ttm;
+    check('Variante B: passende Angabe wird verwendet',
+      nah(ds2.shares.values[0], ERW_SHARES, 1e-12), ds2.shares.values[0]);
+    check('beide Reihenfolgen liefern dasselbe Ergebnis',
+      nah(ds1.shares.values[0], ds2.shares.values[0], 0));
+    check('die verwendete Angabe beginnt am 01.04.2025',
+      ds2.shares.quarters_used[0][3].start === '2025-04-01',
+      ds2.shares.quarters_used[0][3].start);
+    check('und trägt 996 Mio. Aktien', ds2.shares.quarters_used[0][3].value === 996,
+      ds2.shares.quarters_used[0][3].value);
+
+    // Berichtigung DERSELBEN Periode wirkt weiterhin: spätere Meldung gewinnt.
+    const f3 = facts();
+    shareListe(f3).push({ start: '2025-04-01', end: '2025-06-30', val: 990 * M,
+      form: '10-Q/A', filed: '2025-08-20', accn: 'berichtigung' });
+    const ds3 = importiere(f3, null).fundamentals._ttm;
+    const erwBerichtigt = (92 * 1002 + 92 * 1000 + 90 * 998 + 91 * 990) / 365;
+    check('Berichtigung derselben Periode wird übernommen',
+      nah(ds3.shares.values[0], erwBerichtigt, 1e-12), ds3.shares.values[0]);
+  }
+
+  // ── S2-A: Veröffentlichungsstand der verwendeten Angabe ────────────
+  suite('S2-A Veröffentlichungsstand der Aktienangabe');
+  {
+    const f = facts();
+    shareEintrag(f, '2025-06-30').filed = '2025-09-01';
+    const mj = importiere(f, '2025-09-10');
+    const ds = mj.fundamentals._ttm;
+    check('Datensatz vollständig', ds.complete === true, JSON.stringify(ds.reasons));
+    check('Aktienbasis unverändert 364640/365', nah(ds.shares.values[0], ERW_SHARES, 1e-12),
+      ds.shares.values[0]);
+    check('Veröffentlichungsstand ist der 01.09.2025',
+      ds.publication.latest_filed === '2025-09-01', ds.publication.latest_filed);
+    check('nicht mehr der 01.08.2025', ds.publication.latest_filed !== '2025-08-01');
+    check('Stand als vollständig bekannt gekennzeichnet',
+      ds.publication.latest_filed_complete === true);
+    check('die Aktienbasis nennt ihren eigenen Stand',
+      ds.shares.latest_filed === '2025-09-01', ds.shares.latest_filed);
+    check('aktuelle Stichtagsaktien getrennt ausgewiesen',
+      ds.publication.current_shares_filed === '2025-08-01' &&
+      /nachrichtlich/.test(ds.publication.current_shares_note || ''),
+      ds.publication.current_shares_filed);
+
+    // Bericht und Snapshot übernehmen denselben Stand.
+    mj.valuation.data_basis = 'ttm';
+    const v = runValuationEngine(mj);
+    check('Bewertung auf TTM', v.dataBasis.selected === 'ttm', v.dataBasis.selected);
+    check('Bericht zeigt den korrigierten Stand',
+      v.dataBasis.publication.latest_filed === '2025-09-01',
+      v.dataBasis.publication.latest_filed);
+    check('Bericht nennt den Stand der verwendeten Aktienangaben',
+      v.dataBasis.share_basis.weighted_average_filed === '2025-09-01',
+      v.dataBasis.share_basis.weighted_average_filed);
+    const rec = buildSnapshotRecord({ masterJson: mj, valuation: v, quality: null,
+      synthesis: null, dataQuality: null, now: new Date('2025-09-11T00:00:00Z'), id: 's2' });
+    check('Snapshot speichert denselben Stand',
+      rec.data_basis.publication.latest_filed === '2025-09-01',
+      rec.data_basis.publication.latest_filed);
+    check('Snapshot speichert auch den Stand der Aktienangaben',
+      rec.data_basis.share_basis.weighted_average_filed === '2025-09-01');
+    const karte = buildDataBasisCard(mj, v, {});
+    check('die Anzeige zeigt den korrigierten Stand', karte.indexOf('2025-09-01') >= 0);
+    check('die Anzeige benennt die Aktienangaben als Bestandteil',
+      karte.indexOf('einschließlich der verwendeten Aktienangaben') >= 0);
+    check('die Anzeige kennzeichnet die Stichtagsaktien als nachrichtlich',
+      karte.indexOf('nur nachrichtlich') >= 0);
+  }
+
+  // ── S2-B: früherer Datenstichtag schließt die Angabe aus ───────────
+  suite('S2-B Datenstichtagsregel bleibt gültig');
+  {
+    const f = facts();
+    shareEintrag(f, '2025-06-30').filed = '2025-09-01';
+    const ds = importiere(f, '2025-08-15').fundamentals._ttm;
+    check('nach dem Stichtag veröffentlichte Angabe wird nicht verwendet',
+      ds.shares.ok === false, ds.shares.reason);
+    check('die Fehlend-Behandlung greift', ds.complete === false &&
+      (ds.missing || []).some(m => m.app_field === 'shares_diluted'));
+
+    // Mit einer zuvor veröffentlichten, kompatiblen Angabe derselben Periode
+    // wird diese verwendet — und der Stand bleibt der frühere.
+    const f2 = facts();
+    shareEintrag(f2, '2025-06-30').filed = '2025-09-01';
+    shareListe(f2).push({ start: '2025-04-01', end: '2025-06-30', val: 994 * M,
+      form: '10-Q', filed: '2025-08-01', accn: 'frueher' });
+    const dsFrueh = importiere(f2, '2025-08-15').fundamentals._ttm;
+    const erwFrueh = (92 * 1002 + 92 * 1000 + 90 * 998 + 91 * 994) / 365;
+    check('die zuvor verfügbare kompatible Angabe wird verwendet',
+      nah(dsFrueh.shares.values[0], erwFrueh, 1e-12), dsFrueh.shares.values[0]);
+    check('und der Stand bleibt der 01.08.2025',
+      dsFrueh.publication.latest_filed === '2025-08-01', dsFrueh.publication.latest_filed);
+    // Ohne Stichtagsbeschränkung gewinnt die spätere Berichtigung.
+    const dsSpaet = importiere(f2, '2025-09-10').fundamentals._ttm;
+    check('ohne Stichtagsbeschränkung gewinnt die spätere Meldung',
+      nah(dsSpaet.shares.values[0], ERW_SHARES, 1e-12), dsSpaet.shares.values[0]);
+    check('und der Stand wandert auf den 01.09.2025',
+      dsSpaet.publication.latest_filed === '2025-09-01', dsSpaet.publication.latest_filed);
+  }
+
+  // ── S2-C: verworfene Angabe verändert den Stand nicht ──────────────
+  suite('S2-C verworfene Angabe bleibt ohne Wirkung');
+  {
+    const f = facts();
+    // Spätere, zeitlich unpassende Angabe mit gleichem Ende.
+    shareListe(f).push({ start: '2025-04-11', end: '2025-06-30', val: 1992 * M,
+      form: '10-Q', filed: '2025-09-05', accn: 'spaet-unpassend' });
+    const ds = importiere(f, '2025-09-10').fundamentals._ttm;
+    check('Aktienbasis unverändert 364640/365', nah(ds.shares.values[0], ERW_SHARES, 1e-12),
+      ds.shares.values[0]);
+    check('Veröffentlichungsstand bleibt der 01.08.2025',
+      ds.publication.latest_filed === '2025-08-01', ds.publication.latest_filed);
+    check('die verworfene Angabe steht nicht unter den verwendeten',
+      ds.shares.quarters_used[0].every(x => x.start !== '2025-04-11'));
+  }
+
+  // ── S2-D: fehlendes Veröffentlichungsdatum wird gekennzeichnet ─────
+  suite('S2-D unvollständiger Stand wird sichtbar');
+  {
+    const f = facts();
+    delete shareEintrag(f, '2025-03-31').filed;
+    // Ohne Datenstichtag bleibt eine Angabe ohne Veröffentlichungsdatum
+    // verwendbar (mit Stichtag schließt die Stichtagsregel sie aus — geprüft
+    // in S2-B). Geprüft wird hier, dass der Stand dann als unvollständig
+    // bekannt gilt, statt ein Datum zu erfinden.
+    const ds = buildTtmDatasetFromFacts(f, { reportingUnit: 'millions' });
+    check('die Angabe wird ohne Stichtag weiterhin verwendet',
+      ds.shares.ok === true, ds.shares.reason);
+    check('Aktienbasis unverändert', nah(ds.shares.values[0], ERW_SHARES, 1e-12), ds.shares.values[0]);
+    check('der Stand gilt als unvollständig bekannt',
+      ds.publication.latest_filed === null && ds.publication.latest_filed_complete === false,
+      String(ds.publication.latest_filed));
+    check('es wird kein Datum erfunden', ds.shares.latest_filed === null);
+    check('die Unvollständigkeit ist benannt',
+      ds.warnings.some(w => /unvollstaendig/.test(w)),
+      JSON.stringify(ds.warnings));
+    // Anzeige: der unbekannte Stand wird als solcher gezeigt, kein Datum.
+    const mjU = importiere(facts(), null);
+    mjU.fundamentals._ttm = ds;
+    mjU.valuation.data_basis = 'ttm';
+    const karteU = buildDataBasisCard(mjU, null, {});
+    check('die Anzeige zeigt den unvollständigen Stand',
+      karteU.indexOf('unvollständig bekannt') >= 0);
+    check('und benennt die fehlende Angabe',
+      karteU.indexOf('ohne Veröffentlichungsdatum') >= 0);
+    check('mit Datenstichtag greift stattdessen die Stichtagsregel',
+      buildTtmDatasetFromFacts(f, { reportingUnit: 'millions', asOfDate: '2025-09-10' })
+        .shares.ok === false);
+  }
+
+  // ── S1-D: Helferebene — ohne Quartalsbeginne kein Ersatzabgleich ───
+  suite('S1-D kein Rückfall auf das Enddatum');
+  {
+    const angaben = [
+      { start: '2024-07-01', end: '2024-09-30', value: 1002, filed: '2024-11-01', form: '10-Q' },
+      { start: '2024-10-01', end: '2024-12-31', value: 1000, filed: '2025-02-15', form: '10-K' },
+      { start: '2025-01-01', end: '2025-03-31', value: 998, filed: '2025-05-01', form: '10-Q' },
+      { start: '2025-04-01', end: '2025-06-30', value: 996, filed: '2025-08-01', form: '10-Q' }
+    ];
+    const fenster = [{ end: '2025-06-30',
+      quarterEnds: ['2024-09-30', '2024-12-31', '2025-03-31', '2025-06-30'],
+      quarterStarts: ['2024-07-01', '2024-10-01', '2025-01-01', '2025-04-01'],
+      quarterDays: [92, 92, 90, 91] }];
+    const gut = buildTtmShareBasis({ weighted_diluted_quarters: angaben }, fenster);
+    check('mit Quartalsbeginnen wird gerechnet', gut.ok === true && nah(gut.values[0], ERW_SHARES, 1e-12),
+      gut.reason || gut.values[0]);
+    const ohneStarts = [Object.assign({}, fenster[0], { quarterStarts: [] })];
+    const schlecht = buildTtmShareBasis({ weighted_diluted_quarters: angaben }, ohneStarts);
+    check('ohne Quartalsbeginne wird NICHT über das Enddatum zugeordnet',
+      schlecht.ok === false && /Quartalsbeginne/.test(schlecht.reason || ''), schlecht.reason);
   }
 
   return results;

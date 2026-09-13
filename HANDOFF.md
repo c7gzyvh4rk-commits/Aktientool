@@ -1,5 +1,156 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Reparatur: Zwei Restfehler bei den TTM-Aktienangaben (V1.0.57)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
+`claude/ttm-integration-fixes`, Ausgangscommit
+`4da5082161098a7f288bddf5c8a29cc6465f7928` (Codecommit `7087944`) — der
+neueste Stand auf GitHub, der diese Reparaturen enthaelt; kein anderer Branch
+enthaelt ihn, `main` steht weiterhin auf `b023dc8`. Tool-Datei:
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Reparaturbranch: `claude/ttm-share-period-fixes`. Testbefehl: `npm test`.
+Baseline auf `4da5082` selbst ausgefuehrt: **1645 Rechen-Assertions ·
+142 Node-Tests · Exit-Code 0**.
+
+### Befunde vor der Aenderung reproduziert
+
+Am unveraenderten Stand, mit den synthetischen SEC-Facts aus
+`_testTtmIntegrationFixes()` und ueber den produktiven Importweg:
+
+| Befund | vorher | erwartet |
+|---|---|---|
+| 1: Aktienangabe 11.04.–30.06.2025 (81 Tage) gegen Umsatzquartal 01.04.–30.06.2025 (91 Tage) | mit **91** Tagen gewichtet, TTM-Aktienzahl **1.247,331506849315 Mio.**, `complete: true`, keine Warnung, DCF anwendbar | Angabe verwerfen, Diagnose, FY-Rueckfall |
+| 2: verwendete Aktienangabe (Ende 30.06.2025) veroeffentlicht am 01.09.2025, Datenstichtag 10.09.2025 | `publication.latest_filed` = **2025-08-01** | 2025-09-01 |
+
+Beide Werte wurden vor der Aenderung einzeln ausgegeben und stimmen mit dem
+Befund ueberein. Nachgerechnet: (92·1002 + 92·1000 + 90·998 + 91·**1992**)/365
+= 455276/365 = 1.247,3315068493151.
+
+### 1 · Aktienperioden vollstaendig abgleichen
+
+* `buildTtmDataset` fuehrt in jedem TTM-Fenster jetzt auch die
+  **Quartalsbeginne** mit (`quarterStarts`) — bis V1.0.56 nur Enden und Dauern.
+* `buildTtmShareBasis` ordnet eine Quartalsangabe nur noch zu, wenn **Beginn
+  UND Ende** exakt zum zugehoerigen Flussquartal passen. Ein gleiches
+  Enddatum oder eine aehnliche Dauer genuegt nicht. Fehlen die
+  Quartalsbeginne, wird **nicht** ersatzweise ueber das Enddatum zugeordnet,
+  sondern mit Grund abgebrochen.
+* Gewichtet wird mit der **tatsaechlichen Periodendauer der Angabe**
+  (aus deren eigenem Beginn und Ende), nicht mit der Dauer des Umsatzquartals.
+* `collectWeightedShareQuarters` schluesselt Angaben jetzt nach der
+  **vollstaendigen Periode** (`Beginn|Ende`) statt nach dem Enddatum. Dadurch
+  kann eine zeitlich unpassende Angabe eine passende nicht mehr verdraengen,
+  bevor die Vereinbarkeit ueberhaupt geprueft ist. Die Berichtigungsregel
+  („zuletzt veroeffentlichte Angabe gewinnt") gilt weiterhin, aber nur
+  innerhalb **derselben** Periode — sonst waere sie ein Periodenwechsel.
+  Dieselbe Regel wendet `buildTtmShareBasis` auf die kompatiblen Angaben an;
+  eine Angabe ohne Datum verdraengt keine datierte.
+* Fehlt danach eine passende Angabe, nennt die Diagnose den erwarteten
+  Zeitraum **und** die vorhandene abweichende Angabe. Es wird nichts gekuerzt,
+  hochgerechnet oder ersetzt; es greift der bestehende sichtbare FY-Rueckfall
+  (bzw. die bestehende Sperre). Der Jahresimport bleibt unberuehrt.
+
+### 2 · Veroeffentlichungsstand der verwendeten Aktienangaben
+
+* `buildTtmShareBasis` fuehrt die Herkunft der **tatsaechlich verwendeten**
+  Angaben mit (`quarters_used[*].filed/form/source`) und weist daraus
+  `latest_filed`, `filed_complete` und `forms_used` fuer das juengste Fenster
+  aus.
+* `buildTtmDataset` bezieht diesen Stand in `publication.latest_filed` ein.
+  Verworfene oder nicht verwendete Angaben gehen ausdruecklich **nicht** ein.
+* Getrennt ausgewiesen: die **aktuelle Stichtagsaktienzahl** ist eine
+  Zusatzangabe (`publication.current_shares_filed`, gekennzeichnet als „nur
+  nachrichtlich — nicht Bestandteil des Bewertungsdatenstands"); die
+  **historischen gewichteten Durchschnitte** gehoeren zum Datenstand der
+  Bewertung.
+* Fehlt an einer verwendeten Angabe das Veroeffentlichungsdatum, bleibt
+  `latest_filed` null, `latest_filed_complete` ist false und eine Warnung
+  benennt die Luecke — es wird kein Datum erfunden.
+* Die Datenstichtagsregel bleibt unveraendert: nach dem Stichtag
+  veroeffentlichte Angaben werden nicht verwendet (eine zuvor verfuegbare
+  kompatible Angabe tritt an ihre Stelle, sonst greift die Fehlend-Behandlung).
+* `buildDataBasisReport` reicht den korrigierten Stand samt
+  `share_basis.weighted_average_filed` durch; Anzeige (`buildDataBasisCard`)
+  und Snapshot (`data_basis`) uebernehmen denselben Stand aus dieser einen
+  Quelle.
+
+### Tatsaechlich ausgefuehrte Tests
+
+* `npm test` → Rechentests **1700 bestanden · 0 fehlgeschlagen ·
+  0 Fehler/Exceptions** (1645 der Baseline **+ 55** neu aus
+  `_testTtmSharePeriodFixes`; alle 434 Fixture-Assertions unveraendert gruen),
+  Node-Tests **148/148** (142 **+ 6** neu in `tests/sec-ttm.test.mjs`),
+  gemeinsamer **Exit-Code 0**.
+* **Pflichttests des Auftrags**, jeweils mit von Hand nachgerechneten Werten:
+  * Exakter Periodenabgleich weiterhin richtig: (92·1002 + 92·1000 + 90·998 +
+    91·996)/365 = 364640/365 = **999,013698630137 Mio.**, Gewichte 92/92/90/91.
+  * Gleiches Ende, abweichender Beginn → kein Wert, Diagnose nennt beide
+    Zeitraeume, `complete: false`, sichtbarer FY-Rueckfall; 1.247,33… entsteht
+    nicht mehr. Geprueft ueber den Weg SEC-Facts → TTM → Bewertung.
+  * Passende und unpassende Angabe mit gleichem Ende: nur die passende wird
+    verwendet — in **beiden** Eingabereihenfolgen und auch dann, wenn die
+    unpassende spaeter veroeffentlicht wurde. Eine Berichtigung **derselben**
+    Periode wird weiterhin uebernommen.
+  * Gewichtungsquelle: mit absichtlich falschen `quarterDays` bleiben die
+    Gewichte 92/92/90/91 (aus den Angaben selbst).
+  * Veroeffentlichungsstand 01.09.2025 wird uebernommen — in Datensatz,
+    Bericht, Anzeige und Snapshot.
+  * Frueherer Datenstichtag (15.08.2025) schliesst die Angabe aus: ohne
+    Alternative greift die Fehlend-Behandlung, mit einer zuvor
+    veroeffentlichten kompatiblen Angabe wird diese verwendet und der Stand
+    bleibt der 01.08.2025.
+  * Eine spaetere, unpassende Angabe veraendert weder Aktienbasis noch
+    Veroeffentlichungsstand.
+* **Gegenproben (ausgefuehrt)**, jede Korrektur einzeln entfernt, danach
+  wiederhergestellt (0 rot): Zuordnung wieder nur ueber das Enddatum
+  (15 Rechen-/2 Node-Tests) · Gewichtung wieder mit der Umsatzquartalsdauer
+  (1 Node-Test) · Erhebung wieder nach Enddatum geschluesselt (1/1) ·
+  fehlende Quartalsbeginne wieder toleriert (1/0) · Aktienangaben wieder ohne
+  Wirkung auf den Stand (7/2) · unvollstaendiger Stand nicht mehr
+  gekennzeichnet (1/1).
+* Diff kontrolliert: `git diff -U0` beruehrt ausschliesslich
+  `buildTtmShareBasis`, `buildTtmDataset` (Fensterbeginne und
+  Veroeffentlichungsstand), `collectWeightedShareQuarters`, das
+  Durchreichen in `buildDataBasisReport`, zwei Zeilen der Anzeige sowie die
+  Testdateien. Die Korrekturen aus V1.0.55/V1.0.56 (FY/TTM-Sicht, D&A,
+  Matrix, Monte Carlo, Snapshot) sind unveraendert.
+* **Keine Browser- und keine Live-SEC-Pruefung** in diesem Schritt
+  ausgefuehrt.
+
+### Verbleibende Einschraenkungen
+
+* Der Periodenabgleich ist **exakt**: ein Filer, der denselben Zeitraum in
+  Aktien- und Ergebnisangaben unterschiedlich datiert, erhaelt keine
+  TTM-Aktienbasis, sondern eine Diagnose und den FY-Rueckfall.
+* Ohne Datenstichtag bleiben Angaben ohne Veroeffentlichungsdatum verwendbar;
+  der Stand gilt dann als unvollstaendig bekannt (`latest_filed` null). Mit
+  Datenstichtag schliesst die bestehende Stichtagsregel sie aus.
+* Der Veroeffentlichungsstand bleibt das spaeteste Datum der verwendeten
+  Angaben des **juengsten** Fensters; aeltere Fenster fuehren ihren Stand
+  nicht gesondert.
+* Unveraendert offen aus den Vorschritten: D&A-Sperre wirkt auch auf
+  Jahresbasis; auf TTM sind `book_value`, `tangible_book_value`, `dps` und
+  weitere Reihen ungedeckt (RIM, DDM, P/TBV-Gordon, Excess Return gesperrt);
+  der Synthesizer bewertet Datenverfuegbarkeit an der Jahreshistorie;
+  Einheitenverdacht in `_makeBaseValuation()`; index-basierte Ableitung von
+  `eps_diluted`, `book_value`, `dps` in `applyDerivedFieldsV4`; Korrelationen
+  der Monte-Carlo-Groessen; Fachansichten ausserhalb der Hauptansicht nicht
+  vereinfacht.
+
+### Anschlussstand fuer den naechsten Schritt
+
+* Uebergabebranch: `claude/ttm-share-period-fixes`
+* Ausgangscommit dieses Schrittes: `4da5082` (Code `7087944`)
+* Ergebniscommit: `ERGEBNISCOMMIT`
+* Branchstand: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/ttm-share-period-fixes
+* Tool-Datei: `us-aktienbewertungstool-v1036-sector-classification-patch.html`
+  · Bloecke darin: `SEC-QUARTALS-BLOCK`, `DATENBASIS-BLOCK`, `DCF-CORE-BLOCK`
+  · Modulzugaenge: `src/sec-quarterly.js`, `src/sec-ttm.js`, `src/dcf-core.js`
+  · Tests: `tests/sec-ttm.test.mjs`, `tests/sec-quarterly.test.mjs`,
+    `_testDataBasis`, `_testTtmIntegrationFixes` und
+    `_testTtmSharePeriodFixes` in der Tool-Datei
+  · Testbefehl: `npm test`
+
 ## Reparatur (nach Chat 11): Vier Integrationsbefunde der TTM-Datenbasis (V1.0.56)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch

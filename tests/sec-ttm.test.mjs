@@ -622,6 +622,124 @@ test('Aktienzahlen werden gesondert erhoben — keine Ableitung aus Kumulierunge
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Aktienperioden und ihr Veroeffentlichungsstand (V1.0.57)
+// ═══════════════════════════════════════════════════════════════════════════
+// Fenster des juengsten TTM-Zeitraums der Fixture, von Hand gebildet.
+const FENSTER = [{
+  end: '2025-06-30',
+  quarterEnds:   ['2024-09-30', '2024-12-31', '2025-03-31', '2025-06-30'],
+  quarterStarts: ['2024-07-01', '2024-10-01', '2025-01-01', '2025-04-01'],
+  quarterDays:   [92, 92, 90, 91]
+}];
+const ANGABE = (start, end, value, filed) => ({ start, end, value, filed: filed || null, form: '10-Q',
+  source: { form: '10-Q', accn: 'a', filed: filed || null, tag: 'Test' } });
+// (92·1002 + 92·1000 + 90·998 + 91·996) / 365 = 364640 / 365
+const ERWARTET = (92 * 1002 + 92 * 1000 + 90 * 998 + 91 * 996) / 365;
+const VIER = [
+  ANGABE('2024-07-01', '2024-09-30', 1002, '2024-11-01'),
+  ANGABE('2024-10-01', '2024-12-31', 1000, '2025-02-15'),
+  ANGABE('2025-01-01', '2025-03-31', 998,  '2025-05-01'),
+  ANGABE('2025-04-01', '2025-06-30', 996,  '2025-08-01')
+];
+
+test('der Quartalsdurchschnitt wird nur bei exakt passender Periode verwendet', () => {
+  const gut = api.buildTtmShareBasis({ weighted_diluted_quarters: VIER }, FENSTER);
+  assert.equal(gut.ok, true, gut.reason);
+  assert.ok(Math.abs(gut.values[0] - ERWARTET) < 1e-12);
+  assert.ok(Math.abs(gut.values[0] - 999.013698630137) < 1e-9);
+  // Gewichtet wird mit der tatsaechlichen Dauer der Angabe.
+  assert.deepEqual(gut.quarters_used[0].map(x => x.days), [92, 92, 90, 91]);
+
+  // Gleiches Ende, abweichender Beginn: wird abgewiesen, nicht gewichtet.
+  const schief = VIER.slice(0, 3).concat([ANGABE('2025-04-11', '2025-06-30', 1992, '2025-08-01')]);
+  const r = api.buildTtmShareBasis({ weighted_diluted_quarters: schief }, FENSTER);
+  assert.equal(r.ok, false);
+  assert.equal(r.values.length, 0);
+  assert.match(r.reason, /2025-04-01…2025-06-30/);
+  assert.match(r.reason, /abweichendem Zeitraum/);
+  // Der frueher entstandene Wert darf nicht mehr auftreten.
+  const falsch = (92 * 1002 + 92 * 1000 + 90 * 998 + 91 * 1992) / 365;
+  assert.ok(Math.abs(falsch - 1247.3315068493151) < 1e-9, 'Vergleichswert des Befunds');
+  assert.equal(r.values.indexOf(falsch), -1);
+});
+
+test('gewichtet wird mit der Dauer der Angabe, nicht mit der des Umsatzquartals', () => {
+  // Dasselbe Fenster, aber mit absichtlich falschen quarterDays. Die
+  // Gewichtung muss sich aus Beginn und Ende der Aktienangaben ergeben.
+  const verfaelscht = [Object.assign({}, FENSTER[0], { quarterDays: [999, 1, 1, 1] })];
+  const r = api.buildTtmShareBasis({ weighted_diluted_quarters: VIER }, verfaelscht);
+  assert.equal(r.ok, true, r.reason);
+  assert.deepEqual(r.quarters_used[0].map(x => x.days), [92, 92, 90, 91]);
+  assert.ok(Math.abs(r.values[0] - ERWARTET) < 1e-12);
+  // Mit den falschen Gewichten waere (999·1002 + 1·1000 + 1·998 + 1·996)/1002
+  // = 1001,9920159680639 entstanden.
+  const falsch = (999 * 1002 + 1000 + 998 + 996) / 1002;
+  assert.ok(Math.abs(r.values[0] - falsch) > 1, r.values[0] + ' vs ' + falsch);
+});
+
+test('eine unpassende Angabe verdraengt die passende in keiner Reihenfolge', () => {
+  const stoerer = ANGABE('2025-04-11', '2025-06-30', 1992, '2025-08-20');   // spaeter gemeldet
+  const davor  = [stoerer].concat(VIER);
+  const danach = VIER.concat([stoerer]);
+  const a = api.buildTtmShareBasis({ weighted_diluted_quarters: davor }, FENSTER);
+  const b = api.buildTtmShareBasis({ weighted_diluted_quarters: danach }, FENSTER);
+  assert.equal(a.ok, true, a.reason);
+  assert.equal(b.ok, true, b.reason);
+  assert.ok(Math.abs(a.values[0] - ERWARTET) < 1e-12);
+  assert.equal(a.values[0], b.values[0]);
+  assert.equal(b.quarters_used[0][3].start, '2025-04-01');
+  assert.equal(b.quarters_used[0][3].value, 996);
+
+  // Innerhalb DERSELBEN Periode gilt die Berichtigungsregel weiterhin.
+  const berichtigt = VIER.concat([ANGABE('2025-04-01', '2025-06-30', 990, '2025-08-20')]);
+  const c = api.buildTtmShareBasis({ weighted_diluted_quarters: berichtigt }, FENSTER);
+  assert.ok(Math.abs(c.values[0] - (92 * 1002 + 92 * 1000 + 90 * 998 + 91 * 990) / 365) < 1e-12);
+  assert.equal(c.quarters_used[0][3].filed, '2025-08-20');
+});
+
+test('die Erhebung behaelt Angaben mit gleichem Ende, aber anderem Beginn', () => {
+  const f = buildFacts();
+  const liste = f['us-gaap'].WeightedAverageNumberOfDilutedSharesOutstanding.units.shares;
+  liste.push({ start: '2025-04-11', end: '2025-06-30', val: 1992, form: '10-Q',
+               filed: '2025-08-20', accn: 'stoerer' });
+  const erhoben = ttmMod.collectWeightedShareQuarters(f, {});
+  const mitEnde = erhoben.filter(x => x.end === '2025-06-30');
+  assert.equal(mitEnde.length, 2, 'beide Zeitraeume bleiben erhalten');
+  assert.deepEqual(mitEnde.map(x => x.start).sort(), ['2025-04-01', '2025-04-11']);
+});
+
+test('der Veroeffentlichungsstand umfasst die verwendeten Aktienangaben', () => {
+  const p = payloadOf();
+  // Die verwendete Angabe des juengsten Quartals wird spaeter veroeffentlicht.
+  p.shares.weighted_diluted_quarters.forEach(q => {
+    if (q.end === '2025-06-30') q.filed = '2025-09-01';
+  });
+  const ds = api.buildTtmDataset(p, {});
+  assert.equal(ds.complete, true, JSON.stringify(ds.reasons));
+  assert.equal(ds.shares.latest_filed, '2025-09-01');
+  assert.equal(ds.shares.filed_complete, true);
+  assert.equal(ds.publication.latest_filed, '2025-09-01');
+  assert.equal(ds.publication.latest_filed_complete, true);
+  // Die aktuelle Stichtagsangabe bleibt davon getrennt.
+  assert.equal(ds.publication.current_shares_filed, '2025-08-01');
+  assert.match(ds.publication.current_shares_note, /nachrichtlich/);
+});
+
+test('fehlende Veroeffentlichungsdaten werden gekennzeichnet, nicht erfunden', () => {
+  const p = payloadOf();
+  p.shares.weighted_diluted_quarters.forEach(q => {
+    if (q.end === '2025-03-31') { q.filed = null; q.source = Object.assign({}, q.source, { filed: null }); }
+  });
+  const ds = api.buildTtmDataset(p, {});
+  assert.equal(ds.shares.ok, true, ds.shares.reason);
+  assert.equal(ds.shares.latest_filed, null);
+  assert.equal(ds.shares.filed_complete, false);
+  assert.equal(ds.publication.latest_filed, null);
+  assert.equal(ds.publication.latest_filed_complete, false);
+  assert.ok(ds.warnings.some(w => /unvollstaendig/.test(w)), ds.warnings.join(' | '));
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Modulgrenze: der Block bleibt frei von Oberflaeche und globalem Zustand
 // ═══════════════════════════════════════════════════════════════════════════
 test('der DATENBASIS-BLOCK laeuft in einer leeren Sandbox', () => {
