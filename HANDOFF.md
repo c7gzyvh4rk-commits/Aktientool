@@ -199,7 +199,8 @@ Keine weitere bestehende Erwartung wurde geaendert oder gelockert.
 
 * Uebergabebranch: `claude/ttm-integration-fixes`
 * Ausgangscommit dieses Schrittes: `dd35f7e` (Code `55462b1`)
-* Ergebniscommit: `ERGEBNISCOMMIT`
+* Ergebniscommit: `7087944`
+  — https://github.com/c7gzyvh4rk-commits/Aktientool/commit/7087944
 * Branchstand: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/ttm-integration-fixes
 * Tool-Datei: `us-aktienbewertungstool-v1036-sector-classification-patch.html`
   · Bloecke darin: `SEC-QUARTALS-BLOCK`, `DATENBASIS-BLOCK`, `DCF-CORE-BLOCK`
