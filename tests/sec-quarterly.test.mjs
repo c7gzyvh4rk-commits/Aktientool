@@ -502,11 +502,18 @@ test('Umfang und Eingaben werden geprueft', () => {
   const f = facts({ revenue: [FY_ANCHOR] });
   assert.equal(Q.normalizeSecQuarters(f, { tags: TAGS, fields: ['ebitda'] }).ok, false);
   assert.equal(Q.normalizeSecQuarters(f, { tags: TAGS, asOfDate: '31.12.2024' }).ok, false);
-  // Umfang dieses Schrittes
+  // Umfang. Erweitert in V1.0.56 um `depreciation_amortization`: ohne
+  // periodengleiche Abschreibungen rechnete die TTM-Sicht die D&A-Quote des
+  // FCFF mit einem unbelegten Nullwert. Es kommt KEIN neuer Tag hinzu — das
+  // Feld verwendet die vorhandene Liste SEC_TAG_MAP.da der Anwendung.
   assert.deepEqual(Object.keys(Q.SEC_QUARTERLY_FIELDS),
     ['revenue', 'operating_income', 'net_income', 'cfo', 'capex',
+     'depreciation_amortization',
      'total_debt', 'long_term_debt', 'cash_and_equivalents',
      'current_assets', 'current_liabilities']);
+  assert.equal(Q.SEC_QUARTERLY_FIELDS.depreciation_amortization, 'flow');
+  assert.equal(Q.APP_TAG_FIELD.depreciation_amortization, 'da');
+  assert.equal(Q.appTagMap().depreciation_amortization[0], 'DepreciationDepletionAndAmortization');
 });
 
 test('alle Felder des Umfangs laufen ueber denselben Weg', () => {
@@ -546,26 +553,47 @@ test('Tag-Listen stammen aus der Anwendung (keine zweite Fassung)', () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 10. Abgrenzung: der Normalisierer bleibt ein eigenstaendiges Modul
+// 10. Eine einzige gepflegte Quelle der Normalisierung
 // ═════════════════════════════════════════════════════════════════════════════
-// Erwartung geaendert in V1.0.55 — begruendet durch eine fachliche
-// Verhaltensaenderung: die Anwendung VERWENDET seit der TTM-Datenbasis die
-// normalisierten Quartalsdaten (fundamentals._ttm, DATENBASIS-BLOCK) und nennt
-// deren Herkunft ausdruecklich. Der Normalisierer selbst bleibt unveraendert
-// ausserhalb der HTML-Datei: keine Implementierung, kein Modulimport, keine
-// zweite Fassung seiner Tag-Listen. Genau das wird hier weiterhin geprueft.
-test('der Normalisierer selbst steht nicht in der Anwendung', async () => {
+// Erwartung geaendert in V1.0.56 — begruendet durch eine fachlich notwendige
+// Verhaltensaenderung: der produktive SEC-Abruf laeuft im Browser und muss die
+// Quartalsdaten dort normalisieren koennen. Die Logik steht deshalb jetzt im
+// SEC-QUARTALS-BLOCK der ausgelieferten HTML-Datei; `src/sec-quarterly.js`
+// schneidet ihn aus. Die frueheren Erwartungen ("die Zeichenketten kommen in
+// der HTML-Datei nicht vor") beschreiben diesen Aufbau nicht mehr. Geprueft
+// wird stattdessen die dahinterliegende Eigenschaft, die weiterhin gelten
+// muss: es gibt GENAU EINE Fassung dieser Logik.
+test('die Normalisierung existiert genau einmal — im Block der Anwendung', async () => {
   const { readFileSync } = await import('node:fs');
   const html = readFileSync(Q.APP_FILE, 'utf8');
-  assert.equal(/function\s+normalizeSecQuarters\s*\(/.test(html), false,
-    'keine Kopie der Normalisierungsfunktion in der Anwendung');
-  assert.equal(/require\s*\(\s*['"][^'"]*sec-quarterly/.test(html), false,
-    'kein Modulimport des Normalisierers');
-  assert.equal(html.includes('SEC_QUARTERLY_FIELDS'), false,
-    'keine zweite Fassung des Feldumfangs');
-  // Die AUSGABE des Normalisierers wird dagegen ausdruecklich als Herkunft
-  // der TTM-Datenbasis benannt.
-  assert.equal(html.includes("generated_from: 'normalizeSecQuarters'"), true);
+  const modul = readFileSync(new URL('../src/sec-quarterly.js', import.meta.url), 'utf8');
+
+  // Genau eine Implementierung, und zwar in der Anwendung.
+  const treffer = html.match(/function\s+normalizeSecQuarters\s*\(/g) || [];
+  assert.equal(treffer.length, 1, 'genau eine Implementierung in der Anwendung');
+  assert.equal(/function\s+normalizeSecQuarters\s*\(/.test(modul), false,
+    'keine zweite Fassung im Modul');
+  assert.equal(/function\s+normalizeFlowField\s*\(/.test(modul), false,
+    'auch keine Teilkopie im Modul');
+
+  // Das Modul liefert genau den Code aus dem Block (Identitaet, keine Kopie).
+  const block = Q.extractQuarterlyBlock().source;
+  assert.ok(block.includes('function normalizeSecQuarters(facts, options = {})'));
+  assert.ok(block.includes(Q.normalizeSecQuarters.toString().split('\n')[0]));
+
+  // Die Tag-Listen bleiben in der Datenschicht und werden nicht dupliziert.
+  assert.deepEqual(Q.SEC_QUARTERLY_REQUIRED_HELPERS.slice(), ['SEC_TAG_MAP']);
+  assert.equal(/const\s+SEC_TAG_MAP\s*=/.test(block), false,
+    'keine zweite Fassung der Tag-Listen im Block');
+});
+
+test('der Block laeuft auch in einer leeren Sandbox ohne Oberflaeche', () => {
+  const isoliert = Q.loadQuarterlyBlock({ realm: 'isolated' });
+  const res = isoliert.normalizeSecQuarters(
+    facts({ revenue: [flow(...CY.ytd3, 100e6, '10-Q', '2024-04-25', 'Q1'), FY_ANCHOR] }),
+    { tags: TAGS, fields: ['revenue'] });
+  assert.equal(res.ok, true);
+  assert.equal(res.fields.revenue.quarters.length >= 1, true);
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

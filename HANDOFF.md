@@ -1,5 +1,213 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Reparatur (nach Chat 11): Vier Integrationsbefunde der TTM-Datenbasis (V1.0.56)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
+`claude/loving-hypatia-dw0omk`, Ausgangscommit
+`dd35f7e824853c747c4004e4fd4a32f65459f22f` (Codecommit `55462b1`) — der
+neueste Stand auf GitHub, der Chat 11 enthaelt; kein anderer Branch enthaelt
+ihn, `main` steht weiterhin auf `b023dc8`. Tool-Datei:
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Reparaturbranch: `claude/ttm-integration-fixes`. Testbefehl: `npm test`.
+Baseline auf `dd35f7e` selbst ausgefuehrt: **1541 Rechen-Assertions ·
+136 Node-Tests · Exit-Code 0**.
+
+### Befunde vor der Aenderung reproduziert
+
+Am Testdatensatz aus `_testDataBasis()`, mit dem unveraenderten Stand:
+
+| Groesse | vorher | mit korrekter Bewertungssicht |
+|---|---|---|
+| Haupt-DCF (TTM) | 4,5278430548507655 | — |
+| zentrale Matrixzelle (bestehender Anzeigeweg) | 6,840667572136707 | 4,5278430548507655 |
+| Monte Carlo, Seed 4242, 500 Laeufe (Median) | 6,668302970122216 | 4,503155606297324 |
+| erster Prognoseumsatz im Snapshot | 5.003,50 | 5.253,675 |
+| Ausgangsperiode der Prognose | 2024-12-31 | 2025-06-30 |
+| Aktienbasis im Snapshot | 1000 (FY) | 999,0136986301369 (TTM) |
+| D&A-Quote im TTM-DCF | 0 (unbelegt) | gemessen |
+
+`fundamentals._ttm` entstand im SEC-Abruf gar nicht — `datasetFromFacts()` war
+nur ueber `src/sec-ttm.js` erreichbar.
+
+### 1 · Eine gemeinsame Bewertungssicht
+
+* Neu `resolveValuationView(mj, valuation)`: loest die Datenbasis **einmal**
+  auf und liefert die Sicht, auf der die gespeicherte Bewertung beruht.
+  Weichen gespeicherte Bewertung und aktuelle Auswahl voneinander ab, gibt es
+  **keine** Sicht, sondern einen benannten Hinweis — Zahlen aus zwei
+  Datenbasen werden nicht nebeneinander gezeigt.
+* `buildValuationBasisView()` ist jetzt **idempotent**: eine bereits
+  aufgeloeste Sicht wird unveraendert zurueckgegeben (keine doppelte
+  Umwandlung).
+* Neu `buildValuationDiagnosticBlocks(mj, v, baseRateWarnings)` — die
+  Diagnosebloecke der Bewertungsansicht (Sensitivitaetsmatrix, Simulation,
+  Reverse-DCF-Diagnose) entstehen dort auf **einer** Sicht. `renderValuation`
+  reicht sie nur noch durch; damit ist genau der Anzeigeweg pruefbar und nicht
+  nur die Helfer darunter. Die Uebersicht ruft
+  `buildReverseDcfOverviewCard` ebenfalls auf der Sicht auf.
+* Unveraendert bleiben: alle FY-Direktaufrufe der Helfer (`computeSensitivity
+  Matrix(mj, v)` usw.), der Faktor-Overlay (rechnet nur auf Kurs, Synthese und
+  Qualitaet — datenbasisunabhaengig) und der Synthesizer, der Modellergebnisse
+  sowie Datenverfuegbarkeits-Urteile aus der **Jahreshistorie** bewertet
+  (ausdruecklich gewollt, siehe „Qualitaetsdiagnostik").
+
+### 2 · Konsistente TTM-Snapshots
+
+* `buildSnapshotRecord` loest die Sicht der gespeicherten Bewertung auf und
+  verwendet sie fuer `buildForecastInputs`, `buildSnapshotShareBasis` und
+  `buildSnapshotForecastTargets`. Gespeichert wird weiterhin das
+  **unveraenderte** Master-JSON samt Jahreshistorie als reproduzierbarer Input.
+* `_snapshotTargetPeriod` kennt die Periodenart: ein fortgeschriebenes
+  TTM-Fenster wird **nicht** als Geschaeftsjahr ausgegeben
+  (`target_fiscal_year: null`, Beschriftung „TTM-Periode bis …, kein
+  Geschaeftsjahr"). Die Ausgangsperiode stammt aus den Periodenangaben der
+  tatsaechlich verwendeten Reihen.
+* `buildSnapshotShareBasis` unterscheidet jetzt ausdruecklich drei Groessen:
+  historischer gewichteter Durchschnitt (`shares_diluted_*`, mit
+  `average_kind`), Aktienzahl am Stichtag (`current_shares_*`) und der
+  tatsaechlich verwendete Bewertungsnenner (`valuation_denominator*` aus dem
+  DCF-Ergebnis).
+* `key_inputs` behaelt die FY-Kennzahlen unveraendert und ausdruecklich als
+  `latest_fy_*` benannt; daneben steht neu `key_inputs.valuation_basis` mit
+  den Groessen, auf denen die gespeicherte Bewertung wirklich beruht.
+* Ist die Basis nicht eindeutig (Bewertung auf FY, Auswahl auf TTM), entstehen
+  **keine** halb gerechneten Prognoseziele, sondern ein benannter Grund.
+  Vorhandene Snapshots werden nicht neu berechnet oder ueberschrieben.
+
+### 3 · Fehlende Abschreibungen sind nicht 0
+
+* Der Quartalsumfang ist um `depreciation_amortization` erweitert — **ohne
+  neuen Tag**: verwendet wird die vorhandene Liste `SEC_TAG_MAP.da`. Die
+  TTM-Datenbasis deckt D&A damit periodengleich ab und bildet daraus
+  `EBITDA = EBIT + D&A` desselben Fensters (gleiche Definition wie in der
+  Jahressicht, keine Doppelzaehlung). D&A ist ein **optionales** Feld: sein
+  Fehlen macht die TTM-Basis nicht unbrauchbar.
+* Neu `_resolveDaForForecast(mj)` nach dem Vorbild von
+  `_resolveOwcForForecast`: `measured` · `manual_override` ·
+  `assumption_required`. `buildForecastInputs` gibt `daRatio` **null** statt 0,
+  wenn nichts belegt ist.
+* Neu `_explicitNumber()`: nur eine echte Zahl (auch als numerischer Text)
+  gilt als gesetzte Annahme. **Fehlend, Leerstring, `false` und Text ohne Zahl
+  gelten nicht als ausdrueckliche 0.**
+* Die Entscheidung faellt **einmal** in `buildCoreValuationContext` und gilt
+  damit fuer Haupt-DCF, Mid-Cycle, Reverse DCF, Sensitivitaetsmatrix und Monte
+  Carlo; `buildSnapshotForecastTargets` verwendet dieselbe Entscheidung. Jeder
+  Weg nennt denselben Grund (`_daBlockReason`), der DCF zusaetzlich
+  `_exclusionCode: 'da_assumption_required'`.
+* Neues Annahmenfeld „Abschreibungen (D&A) / Umsatz (%)" (`as-da`,
+  `valuation.assumptions.da_pct_of_revenue`). Herkunft und Status stehen im
+  Ausweis der Datenbasis (`report.da`) und damit in Anzeige **und** Snapshot.
+* **Folge, die ueber TTM hinausgeht:** fehlen D&A-Daten vollstaendig, fehlt
+  auch die Jahres-EBITDA-Reihe — dann gilt dieselbe Sperre auf FY. Das ist
+  gewollt: eine unbelegte Null ist auf Jahresbasis genauso falsch. Alle
+  vorhandenen Fixtures liefern messbare D&A; keine bestehende Erwartung
+  musste dafuer geaendert werden.
+
+### 4 · Quartals-/TTM-Erzeugung am produktiven Importpfad
+
+* Der Quartalsnormalisierer steht jetzt als **SEC-QUARTALS-BLOCK** in der
+  ausgelieferten HTML-Datei — derselben einzigen Quelle wie DCF-CORE-BLOCK und
+  DATENBASIS-BLOCK. `src/sec-quarterly.js` schneidet ihn aus und behaelt seine
+  Schnittstelle unveraendert. Kein Build-Schritt, keine Browserkopie; fachlich
+  ist der Code unveraendert uebernommen (einziger Unterschied: `appTagMap()`
+  liest `SEC_TAG_MAP` direkt statt aus der Datei).
+* Die Erzeugerseite (gewichtete Quartalsaktienzahlen, Quartals-EPS als
+  Gegenprobe, aktuelle Aktienzahl, `quarterlyPayloadFromFacts`,
+  `buildTtmDatasetFromFacts`) liegt jetzt ebenfalls im DATENBASIS-BLOCK;
+  `src/sec-ttm.js` leitet nur noch weiter.
+* **Einheitengrenze** `convertQuarterlyPayloadUnits()`: Geldbetraege ÷ Teiler
+  der Berichtseinheit, Aktienzahlen ÷ 1e6 (Mio. Stueck), Werte je Aktie mit
+  dem Verhaeltnis beider Teiler skaliert. Die Werte werden **umgerechnet**,
+  nicht umbenannt; die Umrechnung ist ausgewiesen (`unit_conversion`).
+* `_buildSecMasterJson` legt `fundamentals._ttm` aus denselben companyfacts an
+  und protokolliert das Ergebnis unter `meta._sec_fetch.ttm`. FY bleibt
+  Vorgabe (`valuation.data_basis` wird nicht gesetzt); ein Fehler in der
+  TTM-Erzeugung wirft nicht und laesst den Jahresimport unberuehrt.
+  Veroeffentlichungsstand, Berichtigungen, Perioden und Quellen bleiben
+  erhalten. Eine manuelle `_ttm`-Vorbereitung ist nicht mehr noetig.
+
+### Geaenderte Testerwartungen (mit Begruendung)
+
+1. `tests/sec-quarterly.test.mjs`, Abschnitt 10: die frueheren Erwartungen
+   („die Zeichenketten kommen in der HTML-Datei nicht vor") beschreiben den
+   Aufbau nach dem Umzug nicht mehr. Geprueft wird jetzt die dahinterliegende
+   Eigenschaft: **genau eine** Implementierung, und zwar in der Anwendung;
+   keine Teilkopie im Modul; keine zweite Fassung der Tag-Listen.
+2. Derselbe Test: Umfang um `depreciation_amortization` erweitert — mit
+   Begruendung und der Pruefung, dass kein neuer Tag entsteht.
+3. `_testDataBasis`: „ungedecktes Feld bleibt leer" verwendete `ebitda` als
+   Beispiel; EBITDA ist jetzt gedeckt (EBIT + D&A). Das Beispiel ist auf ein
+   weiterhin ungedecktes Feld umgestellt, EBITDA wird positiv geprueft.
+4. `tests/sec-ttm.test.mjs`: die Fixtures erklaeren ihre Berichtseinheit
+   (`'units'`), weil die Erzeugung sie jetzt ausweist.
+
+Keine weitere bestehende Erwartung wurde geaendert oder gelockert.
+
+### Tatsaechlich ausgefuehrte Tests
+
+* `npm test` → Rechentests **1645 bestanden · 0 fehlgeschlagen ·
+  0 Fehler/Exceptions** (1541 der Baseline + **84** aus `_testDataBasis`
+  erweitert + **102** neu aus `_testTtmIntegrationFixes`; alle 434
+  Fixture-Assertions unveraendert gruen), Node-Tests **142/142**
+  (136 + 6 neu), gemeinsamer **Exit-Code 0**.
+* **Echter Browser** (vorinstalliertes Chromium, `headless_shell`, reales DOM,
+  **synthetische SEC-Antworten, kein Netzzugriff**): 20 Pruefungen gruen —
+  Import erzeugt `_ttm`; FY-Ansicht rendert; Auswahlfeld vorhanden; Wechsel
+  FY → TTM → FY; Matrix rechnet mit den Nettoschulden der jeweiligen Sicht
+  (400M gegen 360M); Simulation gerendert; RIM auf TTM gesperrt; Snapshot mit
+  TTM-Basis, Zielperiode 2026-06-30 und TTM-Aktienbasis; FY-Ergebnis nach der
+  Rueckkehr bitgleich reproduziert (8,97098352412715); ohne D&A ist der DCF
+  gesperrt und der Grund sichtbar.
+* **Gegenproben (ausgefuehrt)**, jede Korrektur einzeln entfernt, danach
+  wiederhergestellt (0 rot): Matrix auf Jahresdaten (2 rot) · Simulation auf
+  Jahresdaten (2) · Reverse-DCF-Block auf Jahresdaten (2) · Schutz vor
+  gemischten Basen entfernt (3) · doppelte Umwandlung wieder moeglich (1) ·
+  Snapshot-Forecast-Inputs aus dem Master-JSON (2) · Aktienbasis aus dem
+  Master-JSON (2) · Prognoseziele aus dem Master-JSON (3) · Zielperioden
+  wieder als Geschaeftsjahr (2) · gemischte Basis im Snapshot zugelassen (1) ·
+  D&A wieder still 0 (1) · Sperre im Kern entfernt (5) · gemessene D&A
+  ignoriert (123) · Leerstring gilt wieder als 0 (1) · Erzeugung im
+  Importpfad entfernt (1) · Einheitenumrechnung entfaellt (16 Rechen-/1
+  Node-Test).
+* Diff kontrolliert: `git diff -U0` zeigt ausser den genannten Stellen keine
+  Aenderung; die Loeschungen beschraenken sich auf die ersetzten Zeilen.
+
+### Verbleibende Einschraenkungen
+
+* Ohne belegte D&A sind DCF, Mid-Cycle, Matrix, Simulation und Reverse DCF
+  gesperrt — **auch auf Jahresbasis**. Abhilfe ist sichtbar benannt
+  (Annahmenfeld setzen, auch 0 ist zulaessig).
+* Auf TTM-Basis bleiben `book_value`, `tangible_book_value`, `dps`,
+  `gross_profit`, `sbc` und weitere Reihen ungedeckt; RIM, RIM-Buyback, DDM,
+  P/TBV-Gordon und Excess Return sind dort gesperrt.
+* Der Synthesizer bewertet Datenverfuegbarkeit weiterhin an der
+  Jahreshistorie (Leverage-Add-on aus `net_debt/ebitda`, SBC-Deckel). Das ist
+  gewollt, heisst aber: diese Zuschlaege beziehen sich auf die Jahresreihe,
+  nicht auf das TTM-Fenster.
+* Fuer die Umstellung sind weiterhin mindestens zwei ueberschneidungsfreie
+  Fenster noetig; der Quartalsanschluss wird exakt verlangt.
+* Masseinheiten werden an der Grenze umgerechnet, aber nicht geraten: passt
+  `ds.reporting_unit` nicht zu `meta.reporting_unit`, bleibt es sichtbar bei FY.
+* Die Browserpruefung deckt den Ablauf mit **synthetischen** SEC-Antworten ab;
+  ein Abruf gegen echte SEC-Daten (Proxy) ist damit nicht geprueft.
+* Offen aus den Vorschritten: Einheitenverdacht in `_makeBaseValuation()`;
+  index-basierte Ableitung von `eps_diluted`, `book_value`, `dps` in
+  `applyDerivedFieldsV4`; Korrelationen der Monte-Carlo-Groessen;
+  Fachansichten ausserhalb der Hauptansicht nicht vereinfacht.
+
+### Anschlussstand fuer Chat 13
+
+* Uebergabebranch: `claude/ttm-integration-fixes`
+* Ausgangscommit dieses Schrittes: `dd35f7e` (Code `55462b1`)
+* Ergebniscommit: `ERGEBNISCOMMIT`
+* Branchstand: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/ttm-integration-fixes
+* Tool-Datei: `us-aktienbewertungstool-v1036-sector-classification-patch.html`
+  · Bloecke darin: `SEC-QUARTALS-BLOCK`, `DATENBASIS-BLOCK`, `DCF-CORE-BLOCK`
+  · Modulzugaenge: `src/sec-quarterly.js`, `src/sec-ttm.js`, `src/dcf-core.js`
+  · Tests: `tests/sec-ttm.test.mjs`, `tests/sec-quarterly.test.mjs`,
+    `_testDataBasis` und `_testTtmIntegrationFixes` in der Tool-Datei
+  · Testbefehl: `npm test`
+
 ## Chat 11: TTM-Werte aus Quartalsdaten und ausgewiesene Datenbasis (V1.0.55)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch

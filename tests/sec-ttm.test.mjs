@@ -368,7 +368,10 @@ test('ein fehlender Bilanzstichtag allein verhindert die Umstellung', () => {
 // 5./6./7./8. Datenbasis: Auswahl, Ausweis, Rueckfall, Modellsperre
 // ═══════════════════════════════════════════════════════════════════════════
 const mjWith = (ds, basis) => ({
-  meta: { as_of_date: '2025-08-10', data_cutoff_date: '2025-08-10', source_primary: 'SEC_EDGAR' },
+  // Die synthetischen Facts stehen in gemeldeten Einheiten (USD, Stueck);
+  // ein daraus gebauter Datensatz traegt deshalb reporting_unit 'units'.
+  meta: { as_of_date: '2025-08-10', data_cutoff_date: '2025-08-10', source_primary: 'SEC_EDGAR',
+          reporting_unit: 'units' },
   valuation: { data_basis: basis },
   market: { price: 50, shares_outstanding_derived: 955 },
   fundamentals: {
@@ -523,8 +526,10 @@ test('abweichende Masseinheit verhindert die Umstellung — ohne Umrechnung', ()
   // Passt die Einheit, wird umgestellt — derselbe Datensatz.
   mj.meta.reporting_unit = 'units';
   assert.equal(api.resolveDataBasis(mj).basis, 'ttm');
-  // Fehlende Angabe auf einer Seite ist ebenfalls kein Freibrief.
-  const ohne = mjWith(api.buildTtmDataset(payloadOf(), {}), 'ttm');
+  // Eine fehlende Angabe auf einer Seite ist ebenfalls kein Freibrief.
+  const ohneDs = api.buildTtmDataset(payloadOf(), {});
+  ohneDs.reporting_unit = null;
+  const ohne = mjWith(ohneDs, 'ttm');
   ohne.meta.reporting_unit = 'millions';
   assert.equal(api.resolveDataBasis(ohne).basis, 'fy');
 });
@@ -540,6 +545,83 @@ test('ohne TTM-Datensatz bleibt alles auf Jahresbasis und wird begruendet', () =
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Erzeugerseite und Einheitengrenze (V1.0.56)
+// ═══════════════════════════════════════════════════════════════════════════
+test('die Erzeugung liefert gemeldete Einheiten; die Umrechnung ist ein eigener Schritt', () => {
+  const roh = ttmMod.quarterlyPayloadFromFacts(buildFacts(), {});
+  assert.equal(roh.reporting_unit, 'units');
+  // Unveraendert wie gemeldet: Q2/2025 = 230 (die Fixture rechnet in Einern).
+  const q = roh.fields.revenue.quarters.find(x => x.periodKey === 'FY2025-Q2');
+  assert.equal(q.value, 230);
+  assert.equal(roh.shares.weighted_diluted_quarters[0].value, 960);
+
+  const konv = ttmMod.convertQuarterlyPayloadUnits(roh, { reportingUnit: 'thousands' });
+  assert.equal(konv.ok, true);
+  assert.equal(konv.payload.reporting_unit, 'thousands');
+  assert.equal(konv.payload.unit_conversion.money_divisor, 1e3);
+  assert.equal(konv.payload.unit_conversion.share_divisor, 1e6);
+  // Geld: 230 / 1e3 = 0,23 · Aktien: 960 / 1e6 = 0,00096
+  const q2 = konv.payload.fields.revenue.quarters.find(x => x.periodKey === 'FY2025-Q2');
+  assert.equal(q2.value, 0.23);
+  assert.equal(konv.payload.shares.weighted_diluted_quarters[0].value, 960 / 1e6);
+  // Das Original bleibt unberuehrt.
+  assert.equal(roh.fields.revenue.quarters.find(x => x.periodKey === 'FY2025-Q2').value, 230);
+});
+
+test('Werte je Aktie werden mit dem Verhaeltnis beider Teiler skaliert', () => {
+  const roh = ttmMod.quarterlyPayloadFromFacts(buildFacts(), {});
+  roh.shares.eps_diluted_quarters = { '2025-06-30': 2 };
+  // millions: Geldteiler 1e6, Aktienteiler 1e6 → Faktor 1, EPS unveraendert.
+  const mio = ttmMod.convertQuarterlyPayloadUnits(roh, { reportingUnit: 'millions' });
+  assert.equal(mio.payload.shares.eps_diluted_quarters['2025-06-30'], 2);
+  assert.equal(mio.payload.unit_conversion.per_share_factor, 1);
+  // thousands: Geldteiler 1e3, Aktienteiler 1e6 → Faktor 1000.
+  const tsd = ttmMod.convertQuarterlyPayloadUnits(roh, { reportingUnit: 'thousands' });
+  assert.equal(tsd.payload.unit_conversion.per_share_factor, 1000);
+  assert.equal(tsd.payload.shares.eps_diluted_quarters['2025-06-30'], 2000);
+});
+
+test('datasetFromFacts liefert einen Datensatz in den Zieleinheiten', () => {
+  const ds = ttmMod.datasetFromFacts(buildFacts(), { reportingUnit: 'thousands' });
+  assert.equal(ds.ok, true);
+  assert.equal(ds.complete, true);
+  assert.equal(ds.reporting_unit, 'thousands');
+  // 860 (Einer) / 1e3 = 0,86
+  assert.equal(ds.flows.revenue.values[0], 0.86);
+  // Aktien: (92·980 + 92·980 + 90·970 + 91·960)/365 / 1e6
+  assert.ok(Math.abs(ds.shares.values[0] - (354980 / 365) / 1e6) < 1e-15);
+  // EPS = Ergebnis / Aktien — in beiden Einheiten dieselbe Groesse je Aktie
+  // bis auf den ausgewiesenen Faktor: 78/1e3 geteilt durch (972,55/1e6).
+  assert.ok(Math.abs(ds.eps.values[0] - (78 / 1e3) / ((354980 / 365) / 1e6)) < 1e-9);
+});
+
+test('ein Fehler in der Erzeugung zerstoert nichts, sondern wird begruendet', () => {
+  const kaputt = ttmMod.datasetFromFacts({ 'us-gaap': {} }, { reportingUnit: 'millions' });
+  assert.equal(kaputt.ok, false);
+  assert.equal(kaputt.complete, false);
+  assert.equal(kaputt.reporting_unit, 'millions');
+  assert.ok(Array.isArray(kaputt.reasons) && kaputt.reasons.length > 0);
+  assert.ok(/Quartalsnormalisierung nicht moeglich/.test(kaputt.reasons[0]), kaputt.reasons[0]);
+  // Und der Datensatz ist als Datenbasis schlicht nicht verfuegbar.
+  const res = api.resolveDataBasis({ meta: { reporting_unit: 'millions' },
+    valuation: { data_basis: 'ttm' }, fundamentals: { _ttm: kaputt } });
+  assert.equal(res.basis, 'fy');
+  assert.equal(res.fallback, true);
+});
+
+test('Aktienzahlen werden gesondert erhoben — keine Ableitung aus Kumulierungen', () => {
+  const sh = ttmMod.collectWeightedShareQuarters(buildFacts(), {});
+  assert.equal(sh.length, 14);
+  assert.equal(sh[0].end, '2025-06-30');
+  assert.equal(sh[0].value, 960);
+  // Nur Quartalsangaben: eine Jahresangabe wird nicht als Quartal gezaehlt.
+  assert.equal(sh.every(x => x.start && x.end), true);
+  const cur = ttmMod.collectCurrentShares(buildFacts(), {});
+  assert.equal(cur.value, 955);
+  assert.equal(cur.as_of, '2025-07-25');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Modulgrenze: der Block bleibt frei von Oberflaeche und globalem Zustand
 // ═══════════════════════════════════════════════════════════════════════════
 test('der DATENBASIS-BLOCK laeuft in einer leeren Sandbox', () => {
@@ -547,7 +629,19 @@ test('der DATENBASIS-BLOCK laeuft in einer leeren Sandbox', () => {
   const ds = isoliert.buildTtmDataset(payloadOf(), {});
   assert.equal(ds.complete, true);
   assert.equal(ds.flows.revenue.values[0], 860);
-  assert.equal(isoliert.DATA_BASIS_REQUIRED_HELPERS.length, 0);
+  // V1.0.56: der Block nennt seine Helfer ausdruecklich; der Loader loest
+  // genau diese Liste auf (keine stille Abhaengigkeit).
+  assert.deepEqual(Array.from(isoliert.DATA_BASIS_REQUIRED_HELPERS),
+    ['_median', '_explicitNumber', 'DA_PROVISIONAL_LABEL', '_resolveDaForForecast']);
+  assert.deepEqual(Array.from(isoliert.DATA_BASIS_REQUIRED_BLOCKS), ['SEC-QUARTALS-BLOCK']);
+  // Die Helfer sind in der Sandbox wirklich vorhanden — der Ausweis nennt
+  // den D&A-Status, statt ihn stillschweigend auszulassen.
+  const rep = isoliert.buildDataBasisReport({
+    meta: {}, valuation: {},
+    fundamentals: { revenue: [100, 90], ebit: [20, 18], ebitda: [25, 22], _v4_meta: {} }
+  });
+  assert.equal(rep.da.source, 'measured');
+  assert.ok(rep.da.ratio_pct > 0);
 });
 
 test('der Block enthaelt keinen Zugriff auf Oberflaeche, Speicher oder Zufall', () => {
