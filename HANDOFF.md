@@ -1,5 +1,106 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Audit (Chat 12): Unabhaengige Pruefung des Stands V1.0.57
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
+`claude/ttm-share-period-fixes`, geprueft wurde der Commit
+`3544bcfbd78d739805c778065bf2b3f48996876d` (Codecommit `b5559df`, V1.0.57) —
+der neueste auf GitHub gespeicherte Stand dieses Branches einschliesslich der
+nachtraeglichen Korrekturen; `main` steht weiterhin auf `b023dc8` und enthaelt
+keinen der Vorschritte. Tool-Datei:
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Auditbranch: `claude/dreamy-cray-kc8x6o`. Testbefehl: `npm test`.
+
+**Auftragsart: Audit, keine Erweiterungsrunde.** Produktcode wurde NICHT
+geaendert. Ergaenzt wurden ausschliesslich die Auswertung `AUDIT-CHAT12.md`
+und die Tests `tests/audit-chat12.test.mjs` / `tests/audit-chat12.mjs`.
+
+### Vollstaendige Befunde: `AUDIT-CHAT12.md`
+
+Sieben bestaetigte Befunde (je mit Schweregrad, betroffener Funktion,
+reproduzierbarem Nachweis, Auswirkung und Korrekturempfehlung) und drei
+offene Pruefpunkte. Kurzfassung:
+
+| # | Schwere | Funktion | Kern des Befunds |
+|---|---|---|---|
+| A-1 | hoch | `buildReverseDcfDiagnosticBlock` | Reverse-DCF-Karte der Bewertungsansicht rechnet auf `f.fcf[0]` und setzt Nettoschulden still auf 0 — **−4,66 %** gegen **+10,80 %** der Uebersichtskarte (Nettoschulden 2.000M ableitbar) |
+| A-2 | hoch | `runMonteCarloDcf`, `buildSnapshotForecastTargets`, `runValuationEngine` | Mid-Cycle-Marge erreicht Simulation, Snapshot und `reverseDcfImpliedGrowth` nicht: MC-Median **30,18** gegen Fair Value **12,27**; Snapshot-FCFF J1 **236,25** statt 118,125 |
+| A-3 | hoch | `computeReverseDcfFull` | Uebersichtskarte sperrt auf `f.fcf[0]`, bevor `coreReverseDcf` ueberhaupt gebildet wird → „nicht berechenbar" trotz eindeutigem Kernergebnis +5,00 % |
+| A-4 | hoch | `_computeOwcHistory` + `SEC_TAG_MAP.total_debt` | Kurzfristige Finanzschulden nur als Restgroesse `total_debt − long_term_debt`; `debt_short_term` wird ignoriert. Gleiche Bilanz, Fair Value **25,26 statt 19,62** (+28,7 %), WC-Quote kippt von +10 % auf −20 % |
+| A-5 | mittel | `forecastDcfCore` | Verwaesserung endet im Terminalwert bei Jahr 10 (`pvTvAbs / sharesYear[10]`): bei 8 %/y ist der TV je Aktie **2,10x** zu hoch, Gesamtwert +22 % |
+| A-6 | niedrig | `computeMidCycleFcf` | Fehlende D&A still als 0 → Referenz-FCF 100 statt 150 (nur Anzeige/Warnung) |
+| A-7 | niedrig | Synthesizer (MoS) | Buyback-Zuschlag liest nur `modelResults['dcf']`; im Mid-Cycle-Pfad heisst der Schluessel `dcf_midcycle` → Zuschlag entfaellt trotz 94 % Uplift |
+
+Offene Pruefpunkte: O-1 moegliche Doppelzaehlung laufender Faelligkeiten im
+Debt-Komponenten-Rebuild (ohne echte SEC-Facts nicht belegbar) · O-2
+Working-Capital-Historie ohne Periodenabgleich (`_joinPeriodKeyed` fehlt) ·
+O-3 zwei Randfaelle der Nullstellensuche im Reverse DCF (kein reproduzierender
+Datensatz konstruierbar).
+
+### Tatsaechlich ausgefuehrte Tests
+
+* Baseline auf `3544bcf` selbst ausgefuehrt: **1700 Rechen-Assertions ·
+  434 Fixture-Assertions · 148 Node-Tests · Exit-Code 0**.
+* Nach Ergaenzung der Audittests: **1700 Rechen-Assertions · 162 Node-Tests
+  (148 + 14 neu) · Exit-Code 0**.
+* Keine bestehende Testerwartung wurde geaendert.
+
+Die 14 neuen Tests in `tests/audit-chat12.test.mjs` sind ausdruecklich
+getrennt:
+
+* **A1–A5 Referenz** (Erwartungswerte unabhaengig nachgerechnet, sichern
+  richtiges Verhalten ab): konstanter FCFF-Fall (EV = 150/0,10 = 1.500M =
+  15,00/Aktie, inkl. Aufteilung Phase 1 / Terminalwert gegen die Annuitaet) ·
+  Nettoschuldeneffekt (0 / 500 / −200 / 2.000 / fehlend) ·
+  Working-Capital-Bindung gegen eine eigene Formel, mit drei Gegenbeispielen
+  (Quote 0, g = 0 wirkungslos, negative Quote) · Reverse-DCF-Roundtrip in vier
+  Varianten inkl. Gegenprobe `checkValuePerShare` · Matrix-Mittelzelle = DCF-Base.
+* **B1–B8 Befund-Nachweis** (characterization): halten die bestaetigten
+  Abweichungen als Messwert fest. Sie behaupten NICHT, dass das Verhalten
+  richtig ist; jeder nennt im Kommentar den Befund und die Erwartung, die nach
+  der Korrektur gelten muss. **Wer einen Befund behebt, muss den zugehoerigen
+  B-Test umkehren** — das ist beabsichtigt und dokumentiert.
+
+Geprueft wurden die End-zu-Ende-Aufrufwege (`modelDcf`, `modelDcfMidcycle`,
+`computeSensitivityMatrix`/`buildSensitivityMatrix`, `solveReverseDcfGrowth`,
+`computeReverseDcfFull`, `buildReverseDcfOverviewCard`,
+`buildReverseDcfDiagnosticBlock`, `runMonteCarloDcf`,
+`buildSnapshotForecastTargets`, `runValuationEngine`, `buildScenarios`,
+Datenbasis- und Bilanzschicht), nicht nur isolierte Hilfsfunktionen. Die
+Audittests laden dafuer den ausgelieferten `<script>`-Block vollstaendig in
+einen vm-Kontext (`tests/audit-chat12.mjs`), read-only, ohne DOM und ohne Netz.
+
+### Verbleibende Einschraenkungen dieses Audits
+
+Ausdruecklich **keine** pauschale Zertifizierung. Nicht geprueft: kein
+Live-Abruf bei SEC/Yahoo (alle Nachweise beruhen auf synthetischen Daten mit
+von Hand nachgerechneten Erwartungswerten) · keine Browser-/DOM-Pruefung
+(die zwei DOM-Tests bleiben ausgewiesen uebersprungen) · die Nicht-DCF-Modelle
+(RIM, RIM-Buyback, DDM, EPV-Floor, P/TBV-Gordon, Excess Return) wurden nicht
+auf innere Konsistenz geprueft · Gewichtung im Synthesizer, Einstiegszone und
+Datenqualitaets-Gates nur so weit, wie A-7 sie beruehrt · Sektor- und
+Klassifikationstabellen, Laufzeit und Sicherheit ungeprueft. Abschnitt 4 von
+`AUDIT-CHAT12.md` fuehrt das aus.
+
+Die Einschraenkungen der Vorschritte bleiben unveraendert offen (D&A-Sperre
+wirkt auch auf Jahresbasis; auf TTM sind `book_value`, `tangible_book_value`,
+`dps` u. a. ungedeckt; Synthesizer bewertet Datenverfuegbarkeit an der
+Jahreshistorie; Einheitenverdacht in `_makeBaseValuation()`; indexbasierte
+Ableitung in `applyDerivedFieldsV4`; Korrelationen der Monte-Carlo-Groessen).
+
+### Anschlussstand fuer den naechsten Schritt
+
+* Uebergabebranch: `claude/dreamy-cray-kc8x6o`
+* Ausgangscommit dieses Schrittes: `3544bcf` (Code `b5559df`, V1.0.57)
+* Auditbefunde: `AUDIT-CHAT12.md`
+* Tool-Datei (unveraendert):
+  `us-aktienbewertungstool-v1036-sector-classification-patch.html`
+* Testbefehl: `npm test` · erwartet **1700 Rechen-Assertions · 162 Node-Tests
+  · Exit-Code 0**
+* Empfohlene Reihenfolge fuer die Reparatur: A-2 und A-3 zuerst (eine
+  gemeinsame Ursache je Weg, rein mechanisch), dann A-1, dann A-4, dann A-5.
+  A-6 und A-7 sind Einzeiler.
+
 ## Reparatur: Zwei Restfehler bei den TTM-Aktienangaben (V1.0.57)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
