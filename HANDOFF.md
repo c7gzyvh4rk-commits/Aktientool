@@ -92,7 +92,11 @@ Ableitung in `applyDerivedFieldsV4`; Korrelationen der Monte-Carlo-Groessen).
 
 * Uebergabebranch: `claude/dreamy-cray-kc8x6o`
 * Ausgangscommit dieses Schrittes: `3544bcf` (Code `b5559df`, V1.0.57)
+* Ergebniscommit: `82a2f82`
+  — https://github.com/c7gzyvh4rk-commits/Aktientool/commit/82a2f82
+* Branchstand: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/dreamy-cray-kc8x6o
 * Auditbefunde: `AUDIT-CHAT12.md`
+  — https://github.com/c7gzyvh4rk-commits/Aktientool/blob/claude/dreamy-cray-kc8x6o/AUDIT-CHAT12.md
 * Tool-Datei (unveraendert):
   `us-aktienbewertungstool-v1036-sector-classification-patch.html`
 * Testbefehl: `npm test` · erwartet **1700 Rechen-Assertions · 162 Node-Tests
