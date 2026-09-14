@@ -14,6 +14,26 @@ und diese Auswertung.
 
 ---
 
+## 0 · Bearbeitungsstand der Befunde
+
+| Befund | Status | Erledigt in |
+|---|---|---|
+| A-1 | **behoben** | Korrekturchat 12A, V1.0.58, Branch `claude/chat12a-dcf-consistency` |
+| A-2 | **behoben** | Korrekturchat 12A, V1.0.58, Branch `claude/chat12a-dcf-consistency` |
+| A-3 | **behoben** | Korrekturchat 12A, V1.0.58, Branch `claude/chat12a-dcf-consistency` |
+| A-4 | **offen** | — (Nachweis `B5` bleibt als Fehlernachweis grün) |
+| A-5 | **offen** | — (Nachweis `B6` bleibt als Fehlernachweis grün) |
+| A-6 | **offen** | — (Nachweis `B7` bleibt als Fehlernachweis grün) |
+| A-7 | **offen** | — (Nachweis `B8` bleibt als Fehlernachweis grün) |
+| O-1 bis O-3 | **unverändert offen** | nicht bestätigt, nicht angefasst |
+
+Die Nachweise `B1`–`B4` (A-1, A-2, A-3) wurden in Korrekturchat 12A in
+**Regressionstests des richtigen Verhaltens** umgewandelt (`R1`–`R9` in
+`tests/audit-chat12.test.mjs`). `B5`–`B8` bleiben ausdrücklich
+Befund-Nachweise: die zugehörigen Befunde sind offen.
+
+---
+
 ## 1 · Tatsächlich geprüfter Umfang
 
 Geprüft wurden die **End-zu-Ende-Aufrufwege** der Bewertung, nicht nur
@@ -44,6 +64,7 @@ und keine Laufzeit- oder Sicherheitsprüfung.
 |---|---|
 | `npm test` auf `3544bcf` (Baseline, selbst ausgeführt) | 1700 Rechen-Assertions · 434 Fixture-Assertions · 148 Node-Tests · **Exit 0** |
 | `npm test` nach Ergänzung der Audittests | 1700 Rechen-Assertions · **162 Node-Tests** (148 + 14 neu) · **Exit 0** |
+| `npm test` nach Korrekturchat 12A (A-1/A-2/A-3 behoben, B1–B4 → R1–R9) | 1700 Rechen-Assertions · 434 Fixture-Assertions · **167 Node-Tests** · **Exit 0** |
 
 Keine bestehende Testerwartung wurde geändert. Die neuen Tests sind in zwei
 Gruppen getrennt:
@@ -54,6 +75,10 @@ Gruppen getrennt:
   fest. Sie behaupten **nicht**, dass das Verhalten richtig ist; jeder Test
   nennt im Kommentar den Befund und die Erwartung, die nach der Korrektur
   gelten muss.
+* **R1–R9 (Regression, ergänzt in Korrekturchat 12A)** — ersetzen `B1`–`B4`,
+  nachdem A-1, A-2 und A-3 behoben sind, und sichern das richtige Verhalten ab.
+  `B5`–`B8` bleiben unverändert Befund-Nachweise der weiterhin offenen
+  Befunde A-4 bis A-7.
 
 ---
 
@@ -61,6 +86,16 @@ Gruppen getrennt:
 
 ### A-1 · Reverse-DCF-Karte der Bewertungsansicht: andere Cashflow-Definition und stiller Nettoschulden-Nullwert
 
+* **Status: BEHOBEN** in Korrekturchat 12A (V1.0.58).
+  `buildReverseDcfDiagnosticBlock()` rechnet jetzt auf `coreReverseDcf` —
+  demselben FCFF-Kern, derselben wirksamen Margenbasis und derselben
+  Nettoschuldenbrücke (`_resolveNetDebtForDcfBridge()`) wie Haupt-DCF und
+  Übersichtskarte. Die eigenständige `calculateImpliedGrowth()`-Rechnung auf
+  `f.fcf[0]` und die Zeile „0 (angenommen)" sind entfallen; unbekannte
+  Nettoschulden ergeben einen erklärten Nichtverfügbarkeitsstatus statt einer
+  Zahl. Die Reported-/Owner-FCF-Diagnosen bleiben erhalten, aber unter der
+  eigenen Überschrift „Getrennte Diagnose auf REPORTED-FCF-Basis (CFO − CapEx)"
+  mit dem Basis-Hinweis. Regressionstests `R7`, `R8`; im Browser geprüft.
 * **Schweregrad:** hoch (Prioritäten 2, 3)
 * **Funktion:** `buildReverseDcfDiagnosticBlock()` (Z. 17415 ff.), aufgerufen
   aus `buildValuationDiagnosticBlocks()` (Z. 21510) und gerendert in
@@ -87,6 +122,23 @@ Gruppen getrennt:
 
 ### A-2 · Mid-Cycle-Marge erreicht Simulation, Snapshot und gespeicherten Reverse DCF nicht
 
+* **Status: BEHOBEN** in Korrekturchat 12A (V1.0.58). Neue gemeinsame
+  Auflösung `resolveEffectiveMarginBasis(mj, v)` + `coreOptsFromMarginBasis()`
+  im Kernblock, mit derselben Vorrangregel wie `normalizeDcfCoreInput()`:
+  aufgelöster Stand (`v._coreOpts`, trägt den manuellen Override) → tatsächlich
+  gerechnetes DCF-Modell → Mid-Cycle-Median bei reinem `dcf_midcycle`-Router →
+  Szenariomarge. `runValuationEngine()` löst EINMAL auf der bewerteten
+  FY-/TTM-Sicht auf und führt den Stand als `_coreOpts` mit;
+  `computeSensitivityMatrix()`, `runMonteCarloDcf()` und
+  `buildSnapshotForecastTargets()` lesen ihn, statt je eigene Logik zu
+  verwenden. Der gespeicherte `reverseDcfImpliedGrowth` entsteht aus demselben
+  Stand. Ein gewählter Mid-Cycle-Pfad ohne ableitbaren Median ergibt überall
+  denselben erklärten Status — kein stiller Rückfall auf die Ist-Marge.
+  Der Snapshot speichert zusätzlich die Herkunft (`op_margin_basis`,
+  `op_margin_basis_source`, `op_margin_override_pct`,
+  `op_margin_pct_scenario`), damit der spätere Soll-Ist-Vergleich gegen den
+  wirklich bewerteten Pfad messen kann. Regressionstests `R1`–`R6`;
+  im Browser geprüft.
 * **Schweregrad:** hoch (Prioritäten 3, 5)
 * **Funktionen:** `runMonteCarloDcf()` (Z. 17124: `buildCoreValuationContext(mj, {})`),
   `buildSnapshotForecastTargets()` (liest `scenarios.base.op_margin_pct`),
@@ -119,6 +171,19 @@ Gruppen getrennt:
 
 ### A-3 · Reverse-DCF-Übersichtskarte sperrt anhand einer fremden Cashflow-Größe
 
+* **Status: BEHOBEN** in Korrekturchat 12A (V1.0.58).
+  `coreReverseDcf = solveReverseDcfGrowth(mj, opts)` entsteht jetzt als Erstes
+  in `computeReverseDcfFull()` — vor allen FCF-Gates — und wird in JEDEM
+  Rückgabepfad mitgeführt, auch im Stub `_notApplicableReverseDcf()` und im
+  Financials-Zweig. Neue Felder: `coreAvailable`, `reportedFcfGateBlocked`,
+  `reportedFcfGateReason`; der Basis-Hinweis liegt als
+  `REVERSE_DCF_FCF_BASIS_NOTE` an einer Stelle und erreicht damit auch die
+  gesperrten Pfade. Die Gates (`fcf0M` fehlend/≤ 0/`fcfDataSuspect`) wirken nur
+  noch auf `applicable`/`reverseDcfReported`/`reverseDcfOwner` — die eigene
+  Voraussetzung dieser Diagnose. Beide Anzeigen scheitern nur noch am
+  Kernstatus und zeigen einen Kernwert ausschliesslich bei `core.ok`.
+  Regressionstest `R9` (fehlendes FCF, negatives FCF, `fcfDataSuspect`,
+  Financials), `R8` (unbekannte Nettoschulden); im Browser geprüft.
 * **Schweregrad:** hoch (Prioritäten 3, 6)
 * **Funktion:** `computeReverseDcfFull()` (Z. 42415 ff.) bricht bei
   `fcf0M == null || fcf0M <= 0` (ebenso bei fehlendem Kurs/WACC/tg und bei

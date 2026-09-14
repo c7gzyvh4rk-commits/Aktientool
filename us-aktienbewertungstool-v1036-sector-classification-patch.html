@@ -4808,6 +4808,112 @@ function solveReverseDcfGrowth(mj, opts) {
   }));
 }
 
+// ── EINE Auflösung der wirksamen Margenbasis ────────────────────────
+// V1.0.58 (Auditbefund A-2): Haupt-DCF, Sensitivitätsmatrix, Monte Carlo,
+// Snapshot-Prognose und der gespeicherte Reverse DCF müssen mit DERSELBEN
+// tatsächlich verwendeten Betriebsmarge rechnen. Bis V1.0.57 löste das jeder
+// Verbraucher für sich — oder gar nicht: im Mid-Cycle-Pfad rechnete der
+// Haupt-DCF mit dem Median (15 %), Monte Carlo, Snapshot-Prognose und
+// `valuation.reverseDcfImpliedGrowth` dagegen mit der Ist-Marge (30 %). In
+// derselben Ansicht standen damit ein Fair Value von 12,80 und ein
+// Simulationsmedian von 30,69 nebeneinander, obwohl die Simulation
+// ausdrücklich „dieselbe Cashflow-Definition wie im Haupt-DCF" zusagt.
+//
+// Vorrangregel — identisch zu normalizeDcfCoreInput() an der Modulgrenze:
+//   1. bereits aufgelöster Stand (`v._coreOpts`). Er trägt einen
+//      ausdrücklich übergebenen (manuellen) Override und hat deshalb
+//      Vorrang vor jeder erneuten Ableitung.
+//   2. die Marge, mit der das DCF-Modell dieser Bewertung wirklich
+//      gerechnet hat (`_coreMarginBasis` / `_coreOpMarginPctUsed`).
+//   3. der Mid-Cycle-Median, wenn der Router ausschliesslich `dcf_midcycle`
+//      führt (dieselbe computeMidCycleFcf()-Definition wie bisher).
+//   4. sonst: Marge des Base-Szenarios, kein Override.
+//
+// Ein gewählter Mid-Cycle-Pfad ohne ableitbaren Median ergibt
+// `available: false` mit Begründung — KEIN stiller Rückfall auf die
+// Ist-Marge. Die fachliche Mid-Cycle-Definition bleibt unverändert; diese
+// Funktion legt nur fest, WER welchen Wert zu sehen bekommt.
+function resolveEffectiveMarginBasis(mj, v) {
+  const out = {
+    available: true, reason: null,
+    opMarginOverridePct: null,
+    marginBasis: 'scenario',
+    source: 'scenario_margin',
+    midCycle: null
+  };
+  // Endliche ZAHL, nicht bloss "truthy": '15' oder true dürfen den
+  // historischen Median nicht aushebeln (dieselbe Prüfung wie an der Grenze).
+  const _isNum = (x) => (typeof x === 'number' && isFinite(x));
+  const _midCycleDiag = () => {
+    const d = computeMidCycleFcf(mj);
+    return (d && d.status === 'ok') ? d : null;
+  };
+
+  // 1) Bereits aufgelöster Stand — trägt auch den manuellen Override.
+  const pre = (v && v._coreOpts) || null;
+  if (pre && _isNum(pre.opMarginOverridePct)) {
+    out.opMarginOverridePct = pre.opMarginOverridePct;
+    out.marginBasis = pre.marginBasis || 'override';
+    out.source = pre.source || 'resolved_core_opts';
+    if (out.marginBasis === 'midcycle_median') out.midCycle = _midCycleDiag();
+    return out;
+  }
+  if (pre && pre.resolved === true) {
+    // Ausdrücklich aufgelöst und ausdrücklich ohne Override: Szenariomarge.
+    out.marginBasis = pre.marginBasis || 'scenario';
+    out.source = pre.source || 'resolved_core_opts';
+    return out;
+  }
+
+  // 2) Was das DCF-Modell dieser Bewertung wirklich gerechnet hat.
+  const mr = (v && v.modelResults) || null;
+  const used = mr ? (mr.dcf_midcycle || mr.dcf || mr.DCF || null) : null;
+  if (used && used.applicable === true && _isNum(used._coreOpMarginPctUsed)
+      && used._coreMarginBasis && used._coreMarginBasis !== 'scenario') {
+    out.opMarginOverridePct = used._coreOpMarginPctUsed;
+    out.marginBasis = used._coreMarginBasis;
+    out.source = 'dcf_model_result';
+    if (out.marginBasis === 'midcycle_median') out.midCycle = _midCycleDiag();
+    return out;
+  }
+
+  // 3) Reiner Mid-Cycle-Pfad des Routers.
+  const am = (v && v.router && Array.isArray(v.router.activeModels))
+    ? v.router.activeModels : null;
+  const wantsMidCycle = !!(am && am.indexOf('dcf_midcycle') >= 0 && am.indexOf('dcf') < 0);
+  if (wantsMidCycle) {
+    const d = computeMidCycleFcf(mj);
+    out.marginBasis = 'midcycle_median';
+    out.source = 'router_midcycle';
+    out.midCycle = (d && d.status === 'ok') ? d : null;
+    if (!d || d.status !== 'ok') {
+      out.available = false;
+      out.reason = 'Mid-Cycle-Marge nicht ableitbar: ' + ((d && d.reason) || 'unbekannt');
+      out.opMarginOverridePct = null;
+      return out;
+    }
+    out.opMarginOverridePct = d.opMarginMed;
+    return out;
+  }
+
+  // 4) Szenariomarge.
+  return out;
+}
+
+// Kernoptionen aus der aufgelösten Margenbasis — mit Herkunft, damit jeder
+// Verbraucher denselben Stand unverändert weitergeben kann, statt ihn neu
+// abzuleiten. `resolved: true` heisst: hier wurde bereits entschieden,
+// auch wenn kein Override wirksam ist.
+function coreOptsFromMarginBasis(res) {
+  if (!res || res.available !== true) return null;
+  return {
+    opMarginOverridePct: res.opMarginOverridePct,
+    marginBasis: res.marginBasis,
+    source: res.source,
+    resolved: true
+  };
+}
+
 // ── Sensitivitätsmatrix auf dem gemeinsamen Kern ────────────────────
 // Variiert AUSSCHLIESSLICH die ausgewiesenen Parameter WACC und Stage-1-
 // Wachstum. Terminalwachstum, Marge, Steuerquote, CapEx-, D&A- und
@@ -4843,45 +4949,26 @@ function computeSensitivityMatrix(mj, v) {
   const isMidCycle = router.activeModels.includes('dcf_midcycle')
     && !router.activeModels.includes('dcf');
 
-  // ── V1.0.49: bereits aufgelöste Margenbasis hat Vorrang ──────────────
-  // `v._coreOpts` trägt die an der Eingabegrenze (normalizeDcfCoreInput)
-  // bereits festgelegte wirksame Marge. Bis V1.0.48 leitete die Matrix im
-  // Mid-Cycle-Pfad UNABHÄNGIG davon erneut den historischen Median ab und
-  // überging damit einen gültigen manuellen Override: beim Fixture mkMidMj()
-  // mit opMarginOverridePct 15 rechnete der DCF mit 15 % (22,5371752100),
-  // die zentrale Matrixzelle dagegen mit 18 % (26,9618428228).
-  //
-  // Wird KEIN aufgelöster Kontext übergeben (alle bestehenden direkten
-  // Aufrufer), bleibt das bisherige Verhalten unverändert: der Mid-Cycle-Pfad
-  // leitet den historischen Median selbst ab. Die historische
-  // Mid-Cycle-Definition ist dabei unangetastet.
-  const _resolved = (v && v._coreOpts) || null;
-  const _resolvedPct = (_resolved && typeof _resolved.opMarginOverridePct === 'number'
-                        && isFinite(_resolved.opMarginOverridePct))
-    ? _resolved.opMarginOverridePct : null;
-  let ctxOpts = {};
-  let mc = null;
-  let marginBasis = 'scenario';
-  if (_resolvedPct != null) {
-    marginBasis = _resolved.marginBasis || 'override';
-    ctxOpts = { opMarginOverridePct: _resolvedPct, marginBasis: marginBasis };
-    if (marginBasis === 'midcycle_median') {
-      // Derselbe Wert, den die Grenze aufgelöst hat — hier nur als Diagnose
-      // mitgeführt, nicht als Rechengrundlage neu bestimmt.
-      const _mcDiag = computeMidCycleFcf(mj);
-      mc = (_mcDiag && _mcDiag.status === 'ok') ? _mcDiag : null;
-    }
-    // Ein gültiger Override scheitert NICHT an fehlender Mid-Cycle-Historie:
-    // die Marge steht bereits fest, die übrigen DCF-Daten prüft ctx unten.
-  } else if (isMidCycle) {
-    mc = computeMidCycleFcf(mj);
-    if (mc.status !== 'ok') {
-      out.reason = 'Mid-Cycle-Marge nicht ableitbar: ' + mc.reason;
-      return out;
-    }
-    marginBasis = 'midcycle_median';
-    ctxOpts = { opMarginOverridePct: mc.opMarginMed, marginBasis: marginBasis };
+  // ── V1.0.58: Margenbasis kommt aus der GEMEINSAMEN Auflösung ─────────
+  // Die Matrix leitet die wirksame Marge nicht mehr selbst ab, sondern
+  // benutzt resolveEffectiveMarginBasis() — dieselbe Auflösung, die auch
+  // Haupt-DCF, Monte Carlo, Snapshot-Prognose und Reverse DCF benutzen.
+  // Damit kann keine Sonderlogik je Verbraucher mehr auseinanderlaufen.
+  // Vorrang und Verhalten sind unverändert: ein aufgelöster Stand
+  // (`v._coreOpts`, auch mit manuellem Override) schlägt die erneute
+  // Ableitung, ein reiner Mid-Cycle-Router-Pfad ergibt den historischen
+  // Median, und ein gültiger Override scheitert NICHT an fehlender
+  // Mid-Cycle-Historie. Die historische Mid-Cycle-Definition selbst
+  // (computeMidCycleFcf) ist unangetastet.
+  const _mbRes = resolveEffectiveMarginBasis(mj, v);
+  if (!_mbRes.available) {
+    out.reason = _mbRes.reason || 'Wirksame Margenbasis nicht auflösbar';
+    return out;
   }
+  const ctxOpts = coreOptsFromMarginBasis(_mbRes) || {};
+  const mc = _mbRes.midCycle;
+  const marginBasis = _mbRes.marginBasis;
+  out.opMarginBasisSource = _mbRes.source;
   const ctx = buildCoreValuationContext(mj, ctxOpts);
   if (!ctx.ok && ctx.daAssumptionRequired) {
     out.reason = _daBlockReason(ctx, 'Sensitivitaetsmatrix');
@@ -12525,9 +12612,12 @@ function calculateImpliedGrowth(params) {
 // konnte damit ein Wachstum ausweisen, das der Haupt-DCF nie erzeugen würde.
 // Rückgabe null = kein eindeutiges Ergebnis; den erklärten Status liefert
 // solveReverseDcfGrowth (siehe computeReverseDcfFull → coreReverseDcf).
-function computeReverseDcf(mj) {
+// V1.0.58 (Auditbefund A-2): `opts` wird durchgereicht, damit der
+// gespeicherte Reverse DCF auf DERSELBEN Margenbasis rechnet wie der
+// Haupt-DCF. Ohne Optionen bleibt das Verhalten unverändert.
+function computeReverseDcf(mj, opts) {
   if (!mj) return null;
-  const r = solveReverseDcfGrowth(mj);
+  const r = solveReverseDcfGrowth(mj, opts || undefined);
   return r.ok ? r.impliedGrowthPct : null;
 }
 
@@ -15249,7 +15339,24 @@ function runValuationEngine(mj) {
     : applicableCount >= 1 ? 'lite'
     : 'minimal';
 
-  const reverseG = computeReverseDcf(_basisView);
+  // ── V1.0.58 (Auditbefund A-2): EINE wirksame Margenbasis der Bewertung ──
+  // Aufgelöst wird auf der tatsächlich bewerteten Sicht (`_basisView`, FY oder
+  // TTM) und aus dem Modell, das wirklich gerechnet hat. Der aufgelöste Stand
+  // wird als `_coreOpts` mitgeführt: Sensitivitätsmatrix, Monte Carlo und
+  // Snapshot-Prognose lesen ihn, statt die Marge je Verbraucher neu abzuleiten.
+  const _marginBasisRes = resolveEffectiveMarginBasis(_basisView, {
+    router, scenarios, modelResults: results
+  });
+  const _coreOpts = coreOptsFromMarginBasis(_marginBasisRes);
+  // Bis V1.0.57 stand hier `computeReverseDcf(_basisView)` ohne Optionen: der
+  // gespeicherte Reverse DCF rechnete im Mid-Cycle-Pfad mit der Ist-Marge
+  // (0,06 % impliziertes Wachstum) statt mit der bewerteten Mid-Cycle-Marge
+  // (9,68 %). Ist die Margenbasis nicht auflösbar, gibt es keinen
+  // gespeicherten Wert — kein stiller Rückfall auf die Ist-Marge.
+  // EIN Solver-Lauf: die gespeicherte Zahl und ihr Status stammen aus
+  // demselben Ergebnis (und die Nullstellensuche laeuft nicht zweimal).
+  const _reverseFull = _coreOpts ? solveReverseDcfGrowth(_basisView, _coreOpts) : null;
+  const reverseG = (_reverseFull && _reverseFull.ok) ? _reverseFull.impliedGrowthPct : null;
 
   return {
     timestamp: new Date().toISOString(),
@@ -15263,6 +15370,20 @@ function runValuationEngine(mj) {
     scenariosError,
     modelResults: results,
     reverseDcfImpliedGrowth: reverseG,
+    // ── Wirksame Margenbasis dieser Bewertung, maschinenlesbar ──────────
+    // Wird von computeSensitivityMatrix(), runMonteCarloDcf() und
+    // buildSnapshotForecastTargets() gelesen; sie leiten nicht neu ab.
+    _coreOpts,
+    _marginBasis:            _marginBasisRes.marginBasis,
+    _marginBasisSource:      _marginBasisRes.source,
+    _marginBasisAvailable:   _marginBasisRes.available,
+    _marginBasisReason:      _marginBasisRes.reason,
+    _opMarginPctUsed:        _marginBasisRes.opMarginOverridePct,
+    // Status des gespeicherten Reverse DCF — eine fehlende Zahl hat damit
+    // einen nachvollziehbaren Grund statt eines stillen null.
+    _reverseDcfStatus:       _reverseFull ? _reverseFull.status : 'margin_basis_unresolved',
+    _reverseDcfStatusReason: _reverseFull ? _reverseFull.reason : _marginBasisRes.reason,
+    _reverseDcfMarginBasis:  _reverseFull ? _reverseFull.marginBasis : null,
     // Fix 4: WACC-Gating Diagnose
     _waccIsHeuristic,
     _waccMissingComponents,
@@ -17121,7 +17242,23 @@ function runMonteCarloDcf(mj, vResult, opts) {
   // Capital und dieselbe Eigenkapitalbrücke wie im Haupt-DCF. Die Simulationswerte
   // werden über probAbovePrice mit dem Kurs verglichen, müssen also Eigenkapital-
   // werte je Aktie sein.
-  const ctx = buildCoreValuationContext(mj, {});
+  //
+  // V1.0.58 (Auditbefund A-2): ... und dieselbe MARGENBASIS. Bis V1.0.57 stand
+  // hier `buildCoreValuationContext(mj, {})` — die Simulation rechnete im
+  // Mid-Cycle-Pfad mit der Ist-Marge weiter, während der Haupt-DCF auf den
+  // Mid-Cycle-Median normalisiert war. Die zugesagte Gleichheit der
+  // Cashflow-Definition galt für die Marge damit nicht. Die Auflösung erfolgt
+  // jetzt EINMAL zentral (resolveEffectiveMarginBasis) und wird hier nur
+  // weitergegeben — kein eigener Ableitungsweg.
+  const _mbRes = resolveEffectiveMarginBasis(mj, vResult);
+  if (!_mbRes.available) {
+    return { _blocked: true, _reason:
+      'Monte Carlo ausgeschlossen — die wirksame Margenbasis der Bewertung ist nicht ' +
+      'auflösbar: ' + (_mbRes.reason || 'unbekannt') + '. Eine Simulation auf einer ' +
+      'anderen Marge als der bewerteten wäre nicht mit dem Haupt-DCF vergleichbar.' };
+  }
+  const _coreOpts = coreOptsFromMarginBasis(_mbRes) || {};
+  const ctx = buildCoreValuationContext(mj, _coreOpts);
   const fi  = ctx.ok ? ctx.fi : null;
   const useForecast = ctx.ok;
 
@@ -17172,7 +17309,13 @@ function runMonteCarloDcf(mj, vResult, opts) {
     op_margin_shock: {
       shape: 'normal', mean_pp: 0, sd_pp: sigmaM,
       sd_source: 'σ der historischen operativen Margen (buildScenarios)',
-      applied_as: 'Schock × Umsatz/Aktie × (1 − Steuersatz) × ' + MC_CONFIG.marginShockYears + ' Jahre'
+      applied_as: 'Schock × Umsatz/Aktie × (1 − Steuersatz) × ' + MC_CONFIG.marginShockYears + ' Jahre',
+      // V1.0.58: Der Schock wirkt auf die BEWERTETE Margenbasis, nicht auf
+      // eine eigene. Welche das ist, steht ausdrücklich daneben.
+      margin_basis: _mbRes.marginBasis,
+      margin_basis_source: _mbRes.source,
+      margin_basis_pct: (_mbRes.opMarginOverridePct != null)
+        ? _mbRes.opMarginOverridePct : null
     },
     independence: 'Alle vier Größen werden unabhängig gezogen — Korrelationen sind NICHT modelliert.'
   };
@@ -17214,7 +17357,10 @@ function runMonteCarloDcf(mj, vResult, opts) {
       ' (davon ' + runsInvalidCore + ' ohne Kernergebnis, z.B. WACC ≤ Terminalwachstum, und ' +
       runsNonFinite + ' nicht endlich).',
       seed, runsRequested: RUNS, runsValid: out.length, runsNegative,
-      runsInvalid, runsInvalidCore, runsNonFinite, distributions };
+      runsInvalid, runsInvalidCore, runsNonFinite, distributions,
+      _opMarginPctUsed: ctx.marginOverridePct,
+      _marginBasis: ctx.marginBasis,
+      _marginBasisSource: _mbRes.source };
   }
 
   out.sort((a, b) => a - b);
@@ -17246,7 +17392,14 @@ function runMonteCarloDcf(mj, vResult, opts) {
     distributions,
     sigmaG,
     sigmaM,
-    usedForecast:   useForecast
+    usedForecast:   useForecast,
+    // ── Wirksame Margenbasis dieser Simulation, maschinenlesbar ──────
+    // V1.0.58: identisch mit der des Haupt-DCF (gemeinsame Auflösung).
+    _opMarginPctUsed:    ctx.marginOverridePct,
+    _marginBasis:        ctx.marginBasis,
+    _marginBasisSource:  _mbRes.source,
+    _midCycleOpMarginPct: (_mbRes.midCycle && _mbRes.midCycle.status === 'ok')
+      ? _mbRes.midCycle.opMarginMed : null
   };
 }
 
@@ -17439,42 +17592,112 @@ function buildReverseDcfDiagnosticBlock(mj, v, baseRateWarnings) {
 
   const sharesM  = (f.shares_diluted && f.shares_diluted[0]) || null;
   const fcf0M    = (f.fcf && f.fcf[0] != null) ? f.fcf[0] : null;
-  const netDebtM = (f.net_debt && f.net_debt[0] != null) ? f.net_debt[0] : null;
   const price    = (market.price != null) ? market.price : null;
   const waccPct  = val.wacc_derived;
   const tgPct    = val.growth_terminal;
 
-  const result = calculateImpliedGrowth({
-    price, sharesM,
-    netDebtM: netDebtM != null ? netDebtM : 0,
-    fcf0M, waccPct, terminalGrowthPct: tgPct,
-    years: 10, marginOfSafety: 0
-  });
+  // ══ V1.0.58 (Auditbefund A-1): derselbe FCFF-Kern wie Haupt-DCF ════════
+  // Bis V1.0.57 rechnete diese Karte eigenständig mit calculateImpliedGrowth()
+  // auf `f.fcf[0]` (CFO − CapEx, also nachfinanziert): ohne ΔWC, ohne Fade,
+  // ohne Aktienprojektion — und mit `netDebtM ?? 0`, obwohl die zentrale
+  // Nettoschuldenauflösung den Wert häufig ableiten kann. Ergebnis waren zwei
+  // widersprüchliche „Market-Implied Growth"-Zahlen in derselben Anwendung
+  // (gemessen: −4,66 % hier gegen +10,80 % in der Übersichtskarte, 15,5 pp).
+  //
+  // Maßgeblich ist jetzt `coreReverseDcf` — derselbe Bewertungskern, dieselbe
+  // wirksame Margenbasis (gemeinsame Auflösung) und dieselbe Nettoschulden-
+  // brücke wie Haupt-DCF und Übersichtskarte. Die Reported-/Owner-FCF-Zahlen
+  // bleiben als ausdrücklich getrennt beschriftetes SBC-Diagnosepaar erhalten.
+  const _mbRes = resolveEffectiveMarginBasis(mj, v);
+  if (!_mbRes.available) {
+    // Kein Ausweichen auf die Ist-Marge: eine Zahl auf einer anderen Marge als
+    // der bewerteten waere keine Aussage ueber DIESE Bewertung.
+    return `
+      <div class="rdcf-block">
+        <div class="rdcf-dl">Reverse DCF / Market-Implied Growth · <span style="color:var(--warn)">nicht berechenbar</span></div>
+        <div class="rdcf-na">Margenbasis der Bewertung nicht auflösbar: ${escapeHtml(_mbRes.reason || 'unbekannt')}.
+          Ein implizites Wachstum auf einer anderen Marge als der bewerteten waere keine Aussage über diese Bewertung.</div>
+        <div class="rdcf-note">Diagnose · kein Einfluss auf Synthese, Fair Value oder Einstiegszone</div>
+      </div>`;
+  }
+  const _coreOpts = coreOptsFromMarginBasis(_mbRes);
+  const rdcf  = computeReverseDcfFull(mj, _coreOpts) || {};
+  const _core = rdcf.coreReverseDcf || solveReverseDcfGrowth(mj, _coreOpts);
+
+  // Nettoschulden ausschliesslich ueber die zentrale Aufloesung. Ein
+  // unbekannter Wert ergibt einen nachvollziehbaren Nichtverfuegbarkeits-
+  // status — NIE eine stille Null.
+  const _nd = _resolveNetDebtForDcfBridge(f);
+  const _ndTxt = _nd.available
+    ? `${_nd.netDebtM.toFixed(0)}${_nd.netDebtM < 0 ? ' (Nettoliquidität)' : ''} · Quelle: ${escapeHtml(String(_nd.source))}`
+    : `nicht ermittelbar (fehlend: ${escapeHtml((_nd.missing || []).join(', ') || 'Schulden-/Liquiditätsdaten')}) — NICHT als 0 angenommen`;
+  const _marginTxt = (_mbRes.opMarginOverridePct != null)
+    ? `${_mbRes.opMarginOverridePct.toFixed(2)}% · ${escapeHtml(String(_mbRes.marginBasis))}`
+    : `Szenariomarge des Haupt-DCF`;
 
   const inputRows = `
     <div class="rdcf-inputs">
       <div class="rdcf-row"><span class="rdcf-lbl">Aktueller Kurs</span><span class="rdcf-val">${price != null ? price.toFixed(2) : '–'}</span></div>
-      <div class="rdcf-row"><span class="rdcf-lbl">FCF₀ (Mio.)</span><span class="rdcf-val">${fcf0M != null ? fcf0M.toFixed(0) : '–'}</span></div>
       <div class="rdcf-row"><span class="rdcf-lbl">Aktien diluted (Mio.)</span><span class="rdcf-val">${sharesM != null ? sharesM.toFixed(0) : '–'}</span></div>
-      <div class="rdcf-row"><span class="rdcf-lbl">Netto-Schulden (Mio.)</span><span class="rdcf-val">${netDebtM != null ? netDebtM.toFixed(0) : '0 (angenommen)'}</span></div>
+      <div class="rdcf-row"><span class="rdcf-lbl">Netto-Schulden (Mio.)</span><span class="rdcf-val">${_ndTxt}</span></div>
+      <div class="rdcf-row"><span class="rdcf-lbl">Betriebsmarge (wirksam)</span><span class="rdcf-val">${_marginTxt}</span></div>
       <div class="rdcf-row"><span class="rdcf-lbl">WACC verwendet</span><span class="rdcf-val">${waccPct != null ? waccPct.toFixed(2) + '%' : '–'}</span></div>
       <div class="rdcf-row"><span class="rdcf-lbl">Terminal Growth verwendet</span><span class="rdcf-val">${tgPct != null ? tgPct.toFixed(2) + '%' : '–'}</span></div>
     </div>`;
 
-  // ── Fehlerfall: nicht berechenbar ──────────────────────────────
-  if (!result.ok) {
-    const warns = result.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('');
+  // ── Getrennt beschriftetes SBC-Diagnosepaar auf REPORTED-FCF-Basis ─────
+  // Andere Cashflow-Definition als der Kern. Es wird ausdrücklich als solches
+  // bezeichnet und traegt den Basis-Hinweis aus computeReverseDcfFull().
+  const _pctTxt = (x) => `${x >= 0 ? '+' : ''}${x.toFixed(2)}%`;
+  const _repG   = (rdcf.reverseDcfReported != null && isFinite(rdcf.reverseDcfReported))
+    ? rdcf.reverseDcfReported : null;
+  const _ownG   = (rdcf.reverseDcfOwner != null && isFinite(rdcf.reverseDcfOwner))
+    ? rdcf.reverseDcfOwner : null;
+  const _repWarn = rdcf.reportedFcfGateBlocked
+    ? (rdcf.reportedFcfGateReason || rdcf.reason || 'nicht berechenbar')
+    : (rdcf.impliedGrowthWarning || null);
+  const _ownWarn = (rdcf.ownerFcfWarnings && rdcf.ownerFcfWarnings.length)
+    ? rdcf.ownerFcfWarnings[0] : null;
+  const diagPair = `
+    <div class="rdcf-inputs" style="margin-top:8px;border-top:1px dashed var(--border);padding-top:8px">
+      <div class="rdcf-row"><span class="rdcf-lbl" style="font-weight:600">Getrennte Diagnose auf REPORTED-FCF-Basis (CFO − CapEx)</span><span class="rdcf-val"></span></div>
+      <div class="rdcf-row"><span class="rdcf-lbl">FCF₀ (Mio., berichtet)</span><span class="rdcf-val">${fcf0M != null ? fcf0M.toFixed(0) : '–'}</span></div>
+      <div class="rdcf-row"><span class="rdcf-lbl">Reported-FCF-Basis</span><span class="rdcf-val">${
+        _repG != null ? _pctTxt(_repG) : '– ' + (_repWarn ? '(' + escapeHtml(String(_repWarn)) + ')' : '')
+      }</span></div>
+      <div class="rdcf-row"><span class="rdcf-lbl">SBC-adj. Owner-FCF-Basis</span><span class="rdcf-val">${
+        _ownG != null ? _pctTxt(_ownG) : '– ' + (_ownWarn ? '(' + escapeHtml(String(_ownWarn)) + ')' : '')
+      }</span></div>
+      <div class="rdcf-note" style="margin-top:4px">${escapeHtml(rdcf.fcfBasisNote || REVERSE_DCF_FCF_BASIS_NOTE)}</div>
+    </div>`;
+
+  // ── Kernstatus entscheidet ueber die Hauptzahl ─────────────────────────
+  // Ein Kernwert wird NUR gezeigt, wenn seine eigenen Voraussetzungen
+  // erfuellt sind (eindeutige Loesung, bekannte Nettoschulden, Kurs, WACC,
+  // Terminalwachstum). Sonst steht der erklaerte Status da — und ausdruecklich
+  // NICHT ersatzweise die FCF-basierte Diagnosezahl, die etwas anderes misst.
+  if (!_core || !_core.ok) {
+    const _statusLabel = {
+      not_applicable:          'nicht anwendbar',
+      inputs_missing:          'Eingaben fehlen',
+      net_debt_unknown:        'Nettoschulden unbekannt',
+      wacc_le_terminal_growth: 'WACC ≤ Terminalwachstum',
+      no_solution_in_range:    'keine Lösung im zulässigen Suchbereich',
+      multiple_solutions:      'mehrdeutig — mehrere Lösungen',
+      not_evaluable:           'nicht bewertbar'
+    }[(_core && _core.status) || ''] || 'nicht berechenbar';
     return `
       <div class="rdcf-block">
-        <div class="rdcf-dl">Reverse DCF / Market-Implied Growth · <span style="color:var(--warn)">nicht berechenbar</span></div>
+        <div class="rdcf-dl">Reverse DCF / Market-Implied Growth · <span style="color:var(--warn)">${escapeHtml(_statusLabel)}</span></div>
+        <div class="rdcf-na">${escapeHtml((_core && _core.reason) || 'Der gemeinsame Bewertungskern liefert kein eindeutiges implizites Wachstum.')}</div>
         ${inputRows}
-        <ul class="rdcf-warn">${warns}</ul>
+        ${diagPair}
         <div class="rdcf-note">Diagnose · kein Einfluss auf Synthese, Fair Value oder Einstiegszone</div>
       </div>`;
   }
 
   // ── Klassifikation nach Anspruch ───────────────────────────────
-  const g = result.impliedGrowthPct;
+  const g = _core.impliedGrowthPct;
   let tier, tierLabel, tierColor;
   if (g < 0)        { tier = 'shrink';   tierLabel = 'Markt impliziert Schrumpfung';        tierColor = 'var(--info)'; }
   else if (g < 5)   { tier = 'moderate'; tierLabel = 'moderat';                              tierColor = 'var(--accent2)'; }
@@ -17505,39 +17728,15 @@ function buildReverseDcfDiagnosticBlock(mj, v, baseRateWarnings) {
       </div>`;
   }
 
-  const evMrd = (result.impliedEnterpriseValueM / 1000);
-  const _diag = result.diagnostics;
+  // ── Kontrollrechnung des Kerns ─────────────────────────────────────────
+  // Eigenkapitalwert je Aktie beim geloesten Wachstum gegen den Kurs. Die
+  // Zahlen stammen aus solveReverseDcfGrowth(), nicht aus einer zweiten
+  // Rechnung dieser Karte.
+  const _chk   = (_core.checkValuePerShare != null && isFinite(_core.checkValuePerShare))
+    ? _core.checkValuePerShare : null;
+  const _resid = (_core.residualPerShare != null && isFinite(_core.residualPerShare))
+    ? _core.residualPerShare : null;
 
-  // PATCH 3: Owner FCF (SBC-adjusted) reverse DCF in standalone block
-  const _sbcArr  = Array.isArray(f.sbc) ? f.sbc : [];
-  const _sbc0    = _sbcArr[0] != null && isFinite(_sbcArr[0]) && _sbcArr[0] >= 0 ? _sbcArr[0] : null;
-  let _ownerG = null, _ownerWarn = null;
-  if (_sbc0 != null && fcf0M != null) {
-    const _ownerFcf = fcf0M - _sbc0;
-    if (_ownerFcf > 0) {
-      const _ownerRes = calculateImpliedGrowth({
-        price, sharesM,
-        netDebtM: netDebtM != null ? netDebtM : 0,
-        fcf0M: _ownerFcf, waccPct, terminalGrowthPct: tgPct,
-        years: 10, marginOfSafety: 0
-      });
-      _ownerG = _ownerRes.ok ? _ownerRes.impliedGrowthPct : null;
-      if (!_ownerRes.ok) _ownerWarn = (_ownerRes.warnings && _ownerRes.warnings[0]) || 'n/a';
-    } else {
-      _ownerWarn = 'SBC-adjusted FCF ≤ 0';
-    }
-  } else {
-    _ownerWarn = 'SBC nicht verfügbar';
-  }
-  const _ownerRow = _ownerG != null
-    ? `<div class="rdcf-row" style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">
-        <span class="rdcf-lbl">SBC-adj. Owner FCF Basis</span>
-        <span class="rdcf-val" style="color:${_ownerG > 25 ? 'var(--warn)' : 'var(--accent2)'}">${_ownerG >= 0 ? '+' : ''}${_ownerG.toFixed(2)}%</span>
-       </div>`
-    : `<div class="rdcf-row" style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">
-        <span class="rdcf-lbl">SBC-adj. Owner FCF Basis</span>
-        <span class="rdcf-val" style="color:var(--muted)">– ${_ownerWarn ? '(' + escapeHtml(_ownerWarn) + ')' : ''}</span>
-       </div>`;
   return `
     <div class="rdcf-block">
       <div class="rdcf-dl">Reverse DCF / Market-Implied Growth · 10J Stage-1 · Diagnose</div>
@@ -17545,16 +17744,20 @@ function buildReverseDcfDiagnosticBlock(mj, v, baseRateWarnings) {
         <div class="rdcf-g" style="color:${tierColor}">${(g >= 0 ? '+' : '') + g.toFixed(2)}%</div>
         <div class="rdcf-g-tier" style="color:${tierColor}">${tierLabel}</div>
         <div class="rdcf-g-help">
-          Stage-1-Wachstum, das der Markt für die nächsten 10 Jahre einpreist
+          Stage-1-Umsatzwachstum, das der Markt für die nächsten 10 Jahre einpreist
           (bei WACC ${waccPct.toFixed(2)}% und Terminal Growth ${tgPct.toFixed(2)}%).
+          Gerechnet auf dem gemeinsamen Bewertungskern ${escapeHtml(String(_core.modelVersion || DCF_CORE_MODEL_VERSION))} —
+          ${escapeHtml(String(_core.valuationBasisLabel || DCF_CORE_DEFINITION_LABEL))}, also dieselbe
+          Cashflow-Definition, dieselbe Margenbasis und dieselbe Nettoschuldenbrücke wie im Haupt-DCF.
         </div>
       </div>
       ${inputRows}
-      ${_ownerRow}
       <div class="rdcf-row" style="border-top:1px dashed var(--border);margin-top:8px;padding-top:8px">
-        <span class="rdcf-lbl">Implizierter Enterprise Value</span>
-        <span class="rdcf-val">${evMrd.toFixed(2)} Mrd. · Konvergenz Δ ${Math.abs(_diag.convergedDeltaM).toFixed(3)} Mio. · ${_diag.iterations} Iter.</span>
+        <span class="rdcf-lbl">Kontrollrechnung</span>
+        <span class="rdcf-val">Eigenkapitalwert ${_chk != null ? _chk.toFixed(2) : '–'}/Aktie · Rest zum Kurs ${_resid != null ? (_resid >= 0 ? '+' : '') + _resid.toFixed(4) : '–'}</span>
       </div>
+      <div class="rdcf-note" style="margin-top:4px">${escapeHtml(String(_core.heldConstantNote || ''))}</div>
+      ${diagPair}
       <div class="rdcf-tiers">
         <div class="rdcf-tier"><span class="rdcf-tier-range">&lt; 0%</span> Markt impliziert Schrumpfung</div>
         <div class="rdcf-tier"><span class="rdcf-tier-range">0–5%</span> moderat</div>
@@ -19283,12 +19486,26 @@ function _ovMiniWhy(q, s, mj) {
 // Nutzt computeReverseDcfFull als primäre Quelle (keine lokale
 // Duplizierung von Inputvalidierung oder calculateImpliedGrowth).
 // KEIN Einfluss auf Fair Value, Buy Price oder MoS.
-function buildReverseDcfOverviewCard(mj) {
+// V1.0.58 (Auditbefund A-2): `v` ist die gespeicherte Bewertung. Aus ihr wird
+// die wirklich bewertete Margenbasis aufgelöst und an den Kern weitergegeben —
+// sonst zeigte die Übersichtskarte im Mid-Cycle-Pfad ein implizites Wachstum
+// auf der Ist-Marge neben einem Fair Value auf dem Mid-Cycle-Median.
+// Ohne `v` bleibt das Verhalten unverändert (Szenariomarge).
+function buildReverseDcfOverviewCard(mj, v) {
   if (!mj) return '';
   const meta = mj.meta || {};
   if (meta.sub_classification === 'financial') return '';
 
-  const rdcf = computeReverseDcfFull(mj);
+  const _mbRes = resolveEffectiveMarginBasis(mj, v);
+  if (!_mbRes.available) {
+    // Kein Ausweichen auf die Ist-Marge: eine Zahl auf einer anderen Marge als
+    // der bewerteten waere keine Aussage ueber DIESE Bewertung.
+    return `<div class="ov-rdcf-card ov-rdcf-na">
+      <div class="ov-rdcf-title">Reverse DCF <span class="ov-rdcf-diag-tag">nur Diagnose</span></div>
+      <div class="ov-rdcf-na-text">Margenbasis der Bewertung nicht auflösbar · ${escapeHtml(_mbRes.reason || 'unbekannt')}</div>
+    </div>`;
+  }
+  const rdcf = computeReverseDcfFull(mj, coreOptsFromMarginBasis(_mbRes));
 
   // Maßgeblich ist der Reverse DCF auf dem gemeinsamen Bewertungskern.
   // Ohne eindeutige Lösung wird der erklärte Status gezeigt — NICHT ersatzweise
@@ -19915,7 +20132,7 @@ function renderOverview() {
     // Uebersicht eine Reverse-DCF-Zahl aus den Jahresdaten neben einer
     // TTM-Bewertung.
     const _ovVw = resolveValuationView(mj, state.valuation);
-    body += _ovVw.ok ? buildReverseDcfOverviewCard(_ovVw.mj)
+    body += _ovVw.ok ? buildReverseDcfOverviewCard(_ovVw.mj, state.valuation)
       : '<div class="txt-diagnostic">&#9888; ' + escapeHtml(_ovVw.reason || '') + '</div>';
     body += buildBaseRateLiteOverviewCard(mj, state.quality, state.valuation);
 
@@ -22760,7 +22977,25 @@ function buildSnapshotForecastTargets(mj, valuationResult) {
 
   const val  = (mj.valuation) || {};
   const fade = val.fade ? { enabled: !!val.fade.enabled, fromYear: val.fade.from_year } : { enabled: false };
-  const marginPct = (sc.op_margin_pct != null && isFinite(sc.op_margin_pct)) ? sc.op_margin_pct : null;
+  // ── V1.0.58 (Auditbefund A-2): BEWERTETE Margenbasis, nicht die Ist-Marge ──
+  // Bis V1.0.57 las der Snapshot ausschliesslich `scenarios.base.op_margin_pct`.
+  // Im Mid-Cycle-Pfad war das die Ist-Marge (30 %), während die gespeicherte
+  // Bewertung auf den Mid-Cycle-Median (15 %) normalisiert war: der Snapshot
+  // hielt damit einen Prognosepfad fest, der nie bewertet wurde — und der
+  // spätere Soll-Ist-Vergleich (compareSnapshotForecastToActual) hätte gegen
+  // diesen falschen Pfad gemessen. Aufgelöst wird über dieselbe zentrale
+  // Funktion wie im Haupt-DCF; ein wirksamer Override hat Vorrang vor der
+  // Szenariomarge, sonst bleibt es bei der Szenariomarge.
+  const _mbRes = resolveEffectiveMarginBasis(mj, valuationResult);
+  if (!_mbRes.available) {
+    return unavailable('Wirksame Margenbasis der Bewertung nicht auflösbar: ' +
+      (_mbRes.reason || 'unbekannt') + '. Ohne sie entstehen keine Prognoseziele — ' +
+      'ein Pfad auf einer anderen Marge als der bewerteten waere kein Soll-Wert.');
+  }
+  const _scenarioMarginPct = (sc.op_margin_pct != null && isFinite(sc.op_margin_pct))
+    ? sc.op_margin_pct : null;
+  const marginPct = (_mbRes.opMarginOverridePct != null)
+    ? _mbRes.opMarginOverridePct : _scenarioMarginPct;
 
   let r = null;
   try { r = forecastDcfCore(fi, g1, tg, wacc, fade, marginPct); } catch (e) { return unavailable('Prognoserechnung fehlgeschlagen: ' + ((e && e.message) || String(e))); }
@@ -22812,6 +23047,13 @@ function buildSnapshotForecastTargets(mj, valuationResult) {
     target_periods_known: !!latestEnd,
     scenario: { name: 'base', growth_stage1_pct: g1, terminal_growth_pct: tg, wacc_pct: wacc,
                 op_margin_pct_used: (r._opMarginUsed != null) ? r._opMarginUsed * 100 : null,
+                // V1.0.58: Herkunft der wirksamen Marge wird mitgespeichert,
+                // damit ein spaeterer Soll-Ist-Vergleich nachvollziehbar
+                // gegen den TATSAECHLICH bewerteten Pfad messen kann.
+                op_margin_basis: _mbRes.marginBasis,
+                op_margin_basis_source: _mbRes.source,
+                op_margin_override_pct: _mbRes.opMarginOverridePct,
+                op_margin_pct_scenario: _scenarioMarginPct,
                 fade_enabled: !!fade.enabled, fade_from_year: fade.enabled ? (fade.fromYear || null) : null,
                 tax_rate_pct: fi.taxRate, owc_ratio: r._owcRatio },
     years: years,
@@ -42370,11 +42612,41 @@ function computeGrowthProfile(mj) {
 //   • Szenario-Breakeven-Analyse (welches g wäre bei MoS X% nötig)
 //   • g bei verschiedenen Exit-Kursen (Upside-Szenarien)
 // KEIN Buy-Signal. KEIN Einfluss auf Synthese.
-function computeReverseDcfFull(mj) {
+// ── Eine Textquelle fuer den Basis-Hinweis des Diagnosepaares ───────────
+// V1.0.58: Der Hinweis erreicht jetzt AUCH die Rueckgabepfade, die an den
+// Reported-FCF-Gates abbrechen — bis V1.0.57 stand er nur im Erfolgsfall.
+const REVERSE_DCF_FCF_BASIS_NOTE =
+  'reverseDcfReported/reverseDcfOwner lösen das Wachstum des REPORTED FCF ' +
+  '(CFO − CapEx) und dienen ausschließlich dem SBC-Vergleich beider Größen. Sie sind ' +
+  'nicht definitionskonsistent zum Haupt-DCF (kein ΔWC, keine Nettoschuldenbrücke, kein ' +
+  'Fade) und dürfen nicht als dessen implizites Wachstum gelesen werden — dafür ist ' +
+  'coreReverseDcf zuständig.';
+
+// V1.0.58 (Auditbefund A-3): `opts` wird an den Bewertungskern durchgereicht
+// (Margenbasis, Zielkurs), damit beide Reverse-DCF-Anzeigen auf der wirklich
+// bewerteten Basis rechnen.
+function computeReverseDcfFull(mj, opts) {
   if (!mj) return null;
   const f      = mj.fundamentals || {};
   const v      = mj.valuation    || {};
   const market = mj.market       || {};
+
+  // ══ Maßgeblicher Reverse DCF: gemeinsamer Bewertungskern ═══════════════
+  // V1.0.58 (Auditbefund A-3): Der Kern wird VOR allen FCF-Gates gebildet und
+  // in JEDEM Rückgabepfad mitgeführt. Bis V1.0.57 entstand
+  // `coreReverseDcf = solveReverseDcfGrowth(mj)` erst NACH den Gates auf
+  // `f.fcf[0]` (fehlend/≤ 0/suspekt) — eine funktionierende Kernrechnung wurde
+  // damit durch eine Sperre verdeckt, die zu einer ANDEREN Cashflow-Definition
+  // gehört (CFO − CapEx). Praktisch traf das jede TTM-Sicht ohne gedeckten
+  // `cfo` und jeden manuellen Import ohne `fcf`: die Übersichtskarte meldete
+  // „FCF₀ fehlt — Reverse DCF nicht berechenbar", obwohl der Kern ein
+  // eindeutiges Ergebnis lieferte und der Haupt-DCF anwendbar war.
+  //
+  // Die Gates bleiben bestehen, wirken aber nur noch auf das
+  // REPORTED-/OWNER-FCF-Diagnosepaar (`reverseDcfReported`,
+  // `reverseDcfOwner`, `applicable`) — dessen eigene Voraussetzung ist ein
+  // positiver, belastbarer Reported-FCF. Der Kernstatus ist davon unabhängig.
+  const coreReverseDcf = solveReverseDcfGrowth(mj, opts || undefined);
 
   // Financials: Reverse DCF nicht sinnvoll (konsistent mit computeReverseDcf)
   if ((mj.meta && mj.meta.sub_classification) === 'financial') {
@@ -42402,7 +42674,21 @@ function computeReverseDcfFull(mj) {
       reverseDcfReportedClassification: null,
       reverseDcfOwnerClassification: null,
       cagr3y: null,
-      cagr5y: null
+      cagr5y: null,
+      // ── Kernergebnis in ALLEN Rückgabepfaden (V1.0.58, A-3) ──────────
+      // `applicable`/`reason` beziehen sich ausschliesslich auf die
+      // REPORTED-FCF-Diagnose. Der Kern trägt seinen eigenen Status.
+      coreReverseDcf,
+      coreImpliedGrowthPct: coreReverseDcf.ok ? coreReverseDcf.impliedGrowthPct : null,
+      coreStatus: coreReverseDcf.status,
+      coreStatusReason: coreReverseDcf.reason,
+      coreAvailable: coreReverseDcf.ok === true,
+      modelVersion: DCF_CORE_MODEL_VERSION,
+      reportedFcfGateBlocked: true,
+      reportedFcfGateReason: reason,
+      fcfBasisDiagnosticOnly: true,
+      fcfBasisConsistentWithCore: false,
+      fcfBasisNote: REVERSE_DCF_FCF_BASIS_NOTE
     }, extras || {});
   }
 
@@ -42515,14 +42801,11 @@ function computeReverseDcfFull(mj) {
   // Reported basis (Rückwärtskompatibilität: impliedGrowthPct bleibt = reported)
   const reverseDcfReported = baseResult.ok ? baseResult.impliedGrowthPct : null;
 
-  // ── Maßgeblicher Reverse DCF: gemeinsamer Bewertungskern ────────────
-  // reverseDcfReported/reverseDcfOwner bilden weiterhin das SBC-Diagnosepaar
-  // auf der REPORTED-FCF-Basis (CFO − CapEx). Beide Zahlen sind untereinander
+  // Hinweis: `coreReverseDcf` steht bereits am Anfang dieser Funktion (A-3).
+  // reverseDcfReported/reverseDcfOwner bilden das SBC-Diagnosepaar auf der
+  // REPORTED-FCF-Basis (CFO − CapEx). Beide Zahlen sind untereinander
   // vergleichbar, aber NICHT mit dem Haupt-DCF: andere Cashflow-Definition,
-  // kein ΔWC, keine Nettoschuldenbrücke, kein Fade. Der maßgebliche Reverse DCF
-  // ist coreReverseDcf — er löst das Stage-1-Umsatzwachstum auf demselben Kern
-  // wie Haupt-DCF und Sensitivitätsmatrix.
-  const coreReverseDcf = solveReverseDcfGrowth(mj);
+  // kein ΔWC, keine Nettoschuldenbrücke, kein Fade.
 
   // ── PATCH 3: Klassifikation implied growth ───────────────────
   function _classifyImpliedGrowth(impliedGrowth, cagr3y, cagr5y) {
@@ -42553,16 +42836,15 @@ function computeReverseDcfFull(mj) {
     coreImpliedGrowthPct: coreReverseDcf.ok ? coreReverseDcf.impliedGrowthPct : null,
     coreStatus: coreReverseDcf.status,
     coreStatusReason: coreReverseDcf.reason,
+    coreAvailable: coreReverseDcf.ok === true,
     modelVersion: DCF_CORE_MODEL_VERSION,
+    reportedFcfGateBlocked: false,
+    reportedFcfGateReason: null,
     // ── SBC-Diagnosepaar auf REPORTED-FCF-Basis (nicht kernkonsistent) ──
     reverseDcfReported,
     reverseDcfOwner,
     fcfBasisDiagnosticOnly: true,
-    fcfBasisNote: 'reverseDcfReported/reverseDcfOwner lösen das Wachstum des REPORTED FCF ' +
-      '(CFO − CapEx) und dienen ausschließlich dem SBC-Vergleich beider Größen. Sie sind ' +
-      'nicht definitionskonsistent zum Haupt-DCF (kein ΔWC, keine Nettoschuldenbrücke, kein ' +
-      'Fade) und dürfen nicht als dessen implizites Wachstum gelesen werden — dafür ist ' +
-      'coreReverseDcf zuständig.',
+    fcfBasisNote: REVERSE_DCF_FCF_BASIS_NOTE,
     fcfBasisConsistentWithCore: false,
     sbcAdjustedFcm: sbcAdjustedFcf,               // Mio., diagnostisch
     sbc0: _ownerDiag.status === 'ok' ? _ownerDiag.sbc_m : null,   // aus computeSbcFcfDiagnostics

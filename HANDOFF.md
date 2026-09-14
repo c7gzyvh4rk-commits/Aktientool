@@ -1,5 +1,227 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Korrekturchat 12A: Konsistenz von DCF-Kern, Margenbasis und Reverse DCF (V1.0.58)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
+`claude/dreamy-cray-kc8x6o`, Ausgangscommit `6b2793a` (die Branch-Spitze; sie
+enthaelt den geforderten Mindeststand und die nachfolgenden HANDOFF-Ergaenzungen).
+Gearbeitet wurde ausschliesslich auf dem Repository-Code, nicht auf `main`
+(`main` steht weiterhin auf `b023dc8`) und ohne Chat-Anhaenge.
+Tool-Datei: `us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Ergebnisbranch: **`claude/chat12a-dcf-consistency`** — der vom Auftrag
+gewuenschte Name; er traegt das Ergebnis. Die Sitzungsumgebung hatte zusaetzlich
+den technischen Branchnamen `claude/quirky-franklin-fzbcn9` vorgegeben; **derselbe
+Ergebniscommit wurde deshalb auch dorthin gepusht**, damit beide Namen auf
+denselben Stand zeigen. Maszgeblich und fuer Korrekturchat 12B zu verwenden ist
+`claude/chat12a-dcf-consistency`.
+Eine `AGENTS.md` existiert in diesem Repository nicht.
+Testbefehl: `npm test`.
+
+**Bestaetigter Teststand vor der Aenderung** (selbst ausgefuehrt auf `6b2793a`):
+1700 Rechen-Assertions · 434 Fixture-Assertions · 162 Node-Tests · Exit 0.
+
+**Auftrag.** Ausschliesslich die Auditbefunde **A-1, A-2 und A-3** aus
+`AUDIT-CHAT12.md`. Keine weiteren Features, keine Refactorings.
+A-4 bis A-7 und O-1 bis O-3 wurden bewusst NICHT angefasst.
+
+### Reproduktion am unveraenderten Ausgangscode
+
+Zuerst am Ausgangsstand gemessen (zyklischer Datensatz, Ist-Marge 30 %,
+Mid-Cycle-Median 15 %, `net_debt[0] = 500`, Kurs 20; A-1 mit ableitbaren
+Nettoschulden 2.000M, Kurs 12):
+
+| Groesse | vorher | nachher |
+|---|---|---|
+| Haupt-DCF (Mid-Cycle) | 12,80 (Marge 15 %) | 12,80 (unveraendert) |
+| Sensitivitaetsmatrix, zentrale Zelle | 12,80 (Marge 15 %) | 12,80 (unveraendert) |
+| Monte-Carlo-Median (Seed 4242, 2.000 Laeufe) | **30,69** (Marge 30 %) | **12,92** (Marge 15 %) |
+| Snapshot-Prognose FCFF Jahr 1 | **236,25** (Marge 30 %) | **118,125** (Marge 15 %) |
+| `valuation.reverseDcfImpliedGrowth` (echter Engine-Pfad) | **0,0649 %** (Marge 30 %) | **9,678 %** (Marge 15 %) |
+| Reverse-DCF-Karte der Bewertungsansicht (A-1-Datensatz) | **−4,66 %**, „Netto-Schulden: 0 (angenommen)" | **+10,80 %**, Nettoschulden 2.000M mit Quelle |
+| Reverse-DCF-Uebersichtskarte (A-1-Datensatz) | +10,80 % | +10,80 % (unveraendert) |
+| Uebersichtskarte ohne `f.fcf` (A-3) | „nicht berechenbar · FCF₀ fehlt" | **+5,00 %** (Kernwert) |
+
+Im zyklischen Pfad zeigten **beide** Reverse-DCF-Anzeigen vorher keinen Wert
+(kein `f.fcf` vorhanden — A-1 und A-3 wirkten dort zusammen); jetzt zeigen
+beide denselben Kernwert +9,68 % bzw. +9,7 %.
+
+### Aenderungen am Produktcode
+
+**A-2 — eine gemeinsame Aufloesung der wirksamen Margenbasis (Kernursache):**
+
+* **neu** `resolveEffectiveMarginBasis(mj, v)` und
+  `coreOptsFromMarginBasis(res)` im markierten `DCF-CORE-BLOCK` (nutzen nur
+  `computeMidCycleFcf`, das bereits in `DCF_CORE_REQUIRED_HELPERS` steht; die
+  Isolationspruefung bleibt gruen). Vorrangregel identisch zu
+  `normalizeDcfCoreInput()` an der Modulgrenze:
+  1. bereits aufgeloester Stand `v._coreOpts` — traegt einen ausdruecklichen
+     (manuellen) Override und hat deshalb Vorrang,
+  2. die Marge, mit der das DCF-Modell dieser Bewertung wirklich gerechnet hat
+     (`_coreMarginBasis`/`_coreOpMarginPctUsed`),
+  3. Mid-Cycle-Median, wenn der Router ausschliesslich `dcf_midcycle` fuehrt,
+  4. sonst Szenariomarge, kein Override.
+  Ein gewaehlter Mid-Cycle-Pfad ohne ableitbaren Median ergibt
+  `available: false` mit Begruendung — kein stiller Rueckfall auf die Ist-Marge.
+  Ein Textwert (`'22'`) ist kein gueltiger Override (keine stille Umwandlung).
+  Die fachliche Mid-Cycle-Definition (`computeMidCycleFcf`) ist unveraendert.
+* `computeSensitivityMatrix()`: eigene Inline-Ableitung entfernt, benutzt jetzt
+  die gemeinsame Aufloesung. Verhalten und Werte unveraendert (Gegenprobe:
+  alle bestehenden Erwartungen gruen), zusaetzlich `opMarginBasisSource`.
+* `runValuationEngine()`: loest EINMAL auf der tatsaechlich bewerteten Sicht
+  (`_basisView`, FY oder TTM) und aus dem Modell auf, das wirklich gerechnet
+  hat. Fuehrt `_coreOpts`, `_marginBasis`, `_marginBasisSource`,
+  `_marginBasisAvailable`, `_marginBasisReason`, `_opMarginPctUsed`,
+  `_reverseDcfStatus`, `_reverseDcfStatusReason`, `_reverseDcfMarginBasis` mit.
+  Der gespeicherte `reverseDcfImpliedGrowth` entsteht aus demselben
+  Solver-Lauf wie sein Status (kein zweiter Durchlauf der Nullstellensuche).
+* `runMonteCarloDcf()`: `buildCoreValuationContext(mj, {})` →
+  `buildCoreValuationContext(mj, _coreOpts)`. Nicht aufloesbare Margenbasis
+  sperrt die Simulation mit Begruendung. Neu am Ergebnis:
+  `_opMarginPctUsed`, `_marginBasis`, `_marginBasisSource`,
+  `_midCycleOpMarginPct`, sowie `margin_basis*` in
+  `distributions.op_margin_shock`.
+* `buildSnapshotForecastTargets()`: rechnet mit der bewerteten Marge statt mit
+  `scenarios.base.op_margin_pct`. Nicht aufloesbare Margenbasis ⇒ keine
+  Prognoseziele, mit Grund. Der gespeicherte Szenarioblock traegt jetzt
+  `op_margin_basis`, `op_margin_basis_source`, `op_margin_override_pct` und
+  `op_margin_pct_scenario` — damit misst der spaetere Soll-Ist-Vergleich
+  (`compareSnapshotForecastToActual`) gegen den wirklich bewerteten Pfad.
+* `computeReverseDcf(mj, opts)`: reicht Optionen durch (ohne Optionen
+  unveraendert).
+
+**A-1 — Reverse-DCF-Karte der Bewertungsansicht auf den FCFF-Kern:**
+
+* `buildReverseDcfDiagnosticBlock()` rechnet nicht mehr selbst mit
+  `calculateImpliedGrowth()` auf `f.fcf[0]` und `netDebtM ?? 0`, sondern zeigt
+  `coreReverseDcf` aus `computeReverseDcfFull(mj, _coreOpts)` — derselbe Kern,
+  dieselbe wirksame Margenbasis, dieselbe Nettoschuldenbruecke wie Haupt-DCF
+  und Uebersichtskarte.
+* Nettoschulden ausschliesslich ueber `_resolveNetDebtForDcfBridge()`; die
+  Zeile „0 (angenommen)" ist entfallen. Unbekannte Nettoschulden ⇒ Status
+  `net_debt_unknown` mit Begruendung und ausdruecklich KEINE Hauptzahl.
+* Neue Zeile „Betriebsmarge (wirksam)" (Wert + Herkunft) und eine
+  Kontrollrechnung (Eigenkapitalwert je Aktie, Rest zum Kurs) aus dem
+  Solver-Ergebnis — keine zweite Rechnung in der Karte.
+* Die Reported-/Owner-FCF-Diagnosen bleiben erhalten, aber unter eigener
+  Ueberschrift „Getrennte Diagnose auf REPORTED-FCF-Basis (CFO − CapEx)" mit
+  dem Basis-Hinweis, der die Karte bis V1.0.57 nie erreichte.
+* `buildReverseDcfOverviewCard(mj, v)`: nimmt die gespeicherte Bewertung an und
+  rechnet damit auf derselben Margenbasis; Aufrufstelle in der Uebersicht gibt
+  `state.valuation` mit. Nicht aufloesbare Margenbasis ⇒ Status statt Zahl.
+
+**A-3 — unabhaengige Verfuegbarkeitspruefung:**
+
+* `computeReverseDcfFull(mj, opts)`: `coreReverseDcf` entsteht als Erstes —
+  **vor** den FCF-Gates — und wird in JEDEM Rueckgabepfad mitgefuehrt, auch im
+  Stub `_notApplicableReverseDcf()` und im Financials-Zweig. Neu:
+  `coreAvailable`, `reportedFcfGateBlocked`, `reportedFcfGateReason`.
+* Der Basis-Hinweis liegt als Konstante `REVERSE_DCF_FCF_BASIS_NOTE` an einer
+  Stelle und erreicht damit auch die gesperrten Pfade.
+* Die Gates (`fcf0M` fehlend / ≤ 0 / `fcfDataSuspect`) wirken nur noch auf
+  `applicable`, `reverseDcfReported` und `reverseDcfOwner` — die eigene
+  Voraussetzung dieser Diagnose. `runGrowthCaseEngine()` liest weiterhin
+  `applicable`/`impliedGrowthPct` und ist damit unveraendert.
+* Beide Anzeigen scheitern nur noch am Kernstatus und zeigen einen Kernwert
+  ausschliesslich, wenn dessen eigene Voraussetzungen erfuellt sind
+  (`core.ok`: eindeutige Loesung, bekannte Nettoschulden, Kurs, WACC, tg).
+
+### Tests
+
+`B1`–`B4` (die Nachweise zu A-1, A-2, A-3) sind in **Regressionstests des
+richtigen Verhaltens** umgewandelt worden — `R1`–`R9` in
+`tests/audit-chat12.test.mjs`. `B5`–`B8` bleiben **ausdruecklich
+Befund-Nachweise**: A-4 bis A-7 sind offen und wurden nicht angefasst.
+`A1`–`A5` (Referenz) sind unveraendert.
+
+| Test | sichert ab |
+|---|---|
+| `R1` | Monte Carlo rechnet auf der bewerteten Mid-Cycle-Marge; Margenbasis am Ergebnis und in den Verteilungsannahmen; Gegenprobe Ist-Margen-Pfad; Determinismus bei festem Seed |
+| `R2` | Snapshot-Prognoseziele auf der bewerteten Marge (FCFF J1 = 118,125 von Hand), gespeicherte Herkunft, Soll-Ist-Vergleich gegen den bewerteten Pfad |
+| `R3` | **echter Engine-Pfad**: `runValuationEngine` → eine Margenbasis fuer DCF, Matrix, MC, Snapshot, gespeicherten Reverse DCF und BEIDE Reverse-DCF-Anzeigen; zusaetzlich der eine Anzeigeweg `buildValuationDiagnosticBlocks` |
+| `R4` | Standard-DCF bleibt auf der Szenariomarge (kein erzwungener Override) |
+| `R5` | manueller Margen-Override hat Vorrang vor dem Mid-Cycle-Median; Textwert ist kein gueltiger Override |
+| `R6` | Mid-Cycle-Pfad ohne ableitbaren Median: erklaerter Status in Matrix, MC, Snapshot und Karte — kein stiller Rueckfall |
+| `R7` | A-1: Karte rechnet auf dem FCFF-Kern, ableitbare Nettoschulden werden mit Quelle gezeigt, beide Anzeigen stimmen ueberein, Reported-Diagnose getrennt beschriftet |
+| `R8` | unbekannte Nettoschulden: Nichtverfuegbarkeitsstatus statt Null, in beiden Anzeigen; Kernergebnis wird trotzdem mitgefuehrt |
+| `R9` | A-3: fehlendes FCF, nichtpositives FCF, `fcfDataSuspect` und Financials — Kernrechnung bleibt verfuegbar bzw. traegt ihren eigenen Status |
+
+**`npm test` nach der Aenderung: 1700 Rechen-Assertions · 434
+Fixture-Assertions · 167 Node-Tests · Exit 0.** Keine bestehende
+Testerwartung wurde gelockert oder geaendert; die 1700 Rechen-Assertions und
+alle 434 Fixture-Assertions sind unveraendert gruen. Die Node-Testzahl geht
+von 162 auf 167 (−4 umgewandelte B-Tests, +9 Regressionstests).
+
+### Browserpruefung (durchgefuehrt)
+
+Mit dem vorinstallierten Chromium (Playwright) wurde die ausgelieferte
+HTML-Datei geladen, ein zyklischer Datensatz ueber den regulaeren Importweg
+(`importMasterJsonFromTextarea()`) eingelesen und **beide Anzeigen im
+gerenderten Zustand** gelesen:
+
+* Bewertungsansicht, Reverse-DCF-Karte: `+9.68%`, keine Zeile
+  „0 (angenommen)", wirksame Margenbasis `midcycle_median` sichtbar,
+  Reported-FCF-Diagnose getrennt beschriftet.
+* Uebersicht, Reverse-DCF-Karte: `+9.7%`, **nicht** gesperrt (vorher haette der
+  A-3-Gate hier „FCF₀ fehlt" gezeigt — der Datensatz hat kein `f.fcf`).
+* Haupt-DCF 12,80 · Monte-Carlo-Median 13,13 (vorher ~30,7) · gespeicherter
+  Reverse DCF 9,678 · `_marginBasis = midcycle_median`, `_opMarginPctUsed = 15`.
+* Keine JavaScript-Fehler; die einzige Konsolenmeldung ist ein
+  fehlgeschlagener externer Ressourcenabruf (kein Netz in der Umgebung) und
+  steht in keinem Zusammenhang mit der Aenderung.
+
+### Grenzen dieses Schrittes
+
+* Kein Live-Abruf bei SEC oder Yahoo. Alle Nachweise beruhen auf synthetischen
+  Datensaetzen mit von Hand nachgerechneten Erwartungswerten.
+* Die Browserpruefung deckt den zyklischen Mid-Cycle-Fall auf FY-Basis ab. Der
+  TTM-Pfad ist ueber die bestehenden Node-/Rechentests gedeckt
+  (`_testTtmIntegrationFixes`, `_testDataBasis`), nicht zusaetzlich im Browser.
+* Der Monte-Carlo-Median muss bei einer nichtlinearen Bewertung nicht exakt dem
+  Base-Wert entsprechen; belegt ist die Annahmenweitergabe deterministisch ueber
+  `_opMarginPctUsed`/`_marginBasis` und die Gegenprobe, die Groessenordnung
+  zusaetzlich mit festem Seed.
+* Die beiden DOM-Formulartests (`_testManualAssumptionOverride`,
+  `_testMarketDataOverrides`) bleiben wie bisher ausgewiesen uebersprungen.
+* Beobachtung ohne Aenderung (ausserhalb des Auftrags, kein Befund dieses
+  Audits): die manuellen Annahmen `valuation.assumptions.midcycle_margin_pct`
+  und `target_op_margin_pct` werden in der Oberflaeche erfasst, aber von
+  `computeMidCycleFcf()`/`modelDcfMidcycle()` nicht gelesen — ein Override
+  wirkt derzeit nur ueber `opts.opMarginOverridePct` bzw. `v._coreOpts`.
+  Bewusst nicht angefasst, weil das Bewertungsergebnisse veraendern wuerde.
+
+### Weiterhin offene Befunde (nicht angefasst)
+
+* **A-4** kurzfristige Finanzschulden nur als Restgroesse (`B5` gruen)
+* **A-5** Verwaesserung endet im Terminalwert bei Jahr 10 (`B6` gruen)
+* **A-6** `computeMidCycleFcf()` setzt fehlende D&A still auf 0 (`B7` gruen)
+* **A-7** Buyback-MoS-Zuschlag greift im Mid-Cycle-Pfad nie (`B8` gruen)
+* **O-1** bis **O-3** unveraendert offen und unbestaetigt
+
+Die Einschraenkungen der Vorschritte bleiben offen (D&A-Sperre wirkt auch auf
+Jahresbasis; auf TTM sind `book_value`, `tangible_book_value`, `dps` u. a.
+ungedeckt; Synthesizer bewertet Datenverfuegbarkeit an der Jahreshistorie;
+Einheitenverdacht in `_makeBaseValuation()`; indexbasierte Ableitung in
+`applyDerivedFieldsV4`; Korrelationen der Monte-Carlo-Groessen).
+
+### Anschlussstand — Ausgangsbasis fuer Korrekturchat 12B
+
+**Dieser Ergebnisbranch ist die Ausgangsbasis fuer Korrekturchat 12B.**
+
+* **Ausgangsbasis fuer 12B (Branch): `claude/chat12a-dcf-consistency`**
+* Ausgangscommit dieses Schrittes: `6b2793a`
+* Ergebniscommit: `ERGEBNISCOMMIT`
+  — https://github.com/c7gzyvh4rk-commits/Aktientool/commit/ERGEBNISCOMMIT
+* Branchstand: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/chat12a-dcf-consistency
+* Auditstatus: `AUDIT-CHAT12.md`, Abschnitt 0 (Bearbeitungsstand der Befunde)
+  — https://github.com/c7gzyvh4rk-commits/Aktientool/blob/claude/chat12a-dcf-consistency/AUDIT-CHAT12.md
+* Tool-Datei: `us-aktienbewertungstool-v1036-sector-classification-patch.html`
+* Testbefehl: `npm test` · erwartet **1700 Rechen-Assertions · 434
+  Fixture-Assertions · 167 Node-Tests · Exit 0**
+* Empfohlene Reihenfolge fuer 12B: **A-4** (hoch, Bilanz- und
+  Working-Capital-Wirkung), dann **A-5** (mittel, lokale Aenderung in
+  `forecastDcfCore`, wirkt auf alle vier Pfade), dann **A-6** und **A-7**
+  (Einzeiler). `B5`–`B8` sind dabei jeweils in Regressionstests umzukehren.
+
 ## Audit (Chat 12): Unabhaengige Pruefung des Stands V1.0.57
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch

@@ -188,6 +188,13 @@ test('A5 Referenz: Sensitivitaetsmatrix-Mittelzelle ist der Haupt-DCF-Wert', () 
 // ═══════════════════════════════════════════════════════════════════════════
 // B) BEFUND-NACHWEISE — halten bestaetigte Abweichungen fest.
 //    Diese Tests behaupten NICHT, dass das Verhalten richtig ist.
+//
+// KORREKTURCHAT 12A (V1.0.58): Die Befunde A-1, A-2 und A-3 sind behoben.
+// Ihre Nachweise B1–B4 wurden deshalb in REGRESSIONSTESTS des richtigen
+// Verhaltens umgewandelt (R1–R9 unten) — sie sichern die Korrektur ab,
+// statt die Abweichung festzuhalten.
+// B5–B8 bleiben ausdruecklich BEFUND-NACHWEISE: die Befunde A-4 bis A-7
+// sind offen und in diesem Auftrag bewusst nicht angefasst worden.
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Zyklischer Referenzfall: aktuelle Marge 30 %, Mid-Cycle-Median 15 %.
@@ -207,54 +214,291 @@ function midCycleMj() {
     market: { price: 20 }
   };
 }
+const midCycleV = (mj) => ({
+  scenarios: S.buildScenarios(mj),
+  router: { activeModels: ['dcf_midcycle'], subClassification: 'cyclical' },
+  error: null
+});
 
-test('B1 BEFUND: Monte Carlo rechnet im Mid-Cycle-Pfad mit der Ist-Marge statt der Mid-Cycle-Marge', () => {
-  // Befund A-2: runMonteCarloDcf() ruft buildCoreValuationContext(mj, {}) ohne
-  // opMarginOverridePct. Der Haupt-DCF (modelDcfMidcycle) normalisiert dagegen
-  // auf den Median. Nach der Korrektur muss der MC-Median in der Naehe des
-  // DCF-Base liegen; dieser Test ist dann umzukehren.
+// ═══════════════════════════════════════════════════════════════════════════
+// R) REGRESSION — richtiges Verhalten nach der Korrektur von A-1, A-2, A-3.
+//    Erwartungswerte unabhaengig nachgerechnet bzw. aus dem Haupt-DCF
+//    abgeleitet, der selbst durch A1–A5 abgesichert ist.
+// ═══════════════════════════════════════════════════════════════════════════
+
+test('R1 (A-2) Monte Carlo rechnet auf der bewerteten Mid-Cycle-Marge', () => {
+  // Frueher (Befund A-2): runMonteCarloDcf() rief buildCoreValuationContext(mj, {})
+  // ohne Margenbasis und rechnete deshalb mit der Ist-Marge 30 % weiter,
+  // waehrend der Haupt-DCF auf den Median 15 % normalisiert war — MC-Median
+  // 30,69 gegen Fair Value 12,80 in DERSELBEN Ansicht.
   const mj = midCycleMj();
   const sc = S.buildScenarios(mj);
   const dcf = S.modelDcfMidcycle(mj, sc);
   assert.equal(dcf._midCycleOpMarginPct, 15);
   assert.equal(sc.base.op_margin_pct, 30, 'Szenario traegt weiterhin die Ist-Marge');
 
-  const v = { scenarios: sc, router: { activeModels: ['dcf_midcycle'], subClassification: 'cyclical' }, error: null };
+  const v = midCycleV(mj);
   const mc = S.runMonteCarloDcf(mj, v, { seed: 4242, runs: 2000 });
   assert.ok(!mc._blocked, 'MC laeuft');
-  // Gemessene Abweichung: MC-Median liegt um mehr als das Doppelte ueber dem
-  // ausgewiesenen Fair Value — beide Zahlen stehen in derselben Ansicht.
-  assert.ok(mc.median > 2 * dcf.base,
-    'BEFUND A-2: MC-Median ' + mc.median.toFixed(2) + ' vs. DCF ' + dcf.base.toFixed(2));
-  // Die Sensitivitaetsmatrix ist dagegen konsistent (Gegenprobe).
+
+  // 1) DETERMINISTISCHER Nachweis der Annahmenweitergabe: die wirksame Marge
+  //    steht am Ergebnis und ist die bewertete, nicht die Ist-Marge.
+  assert.equal(mc._opMarginPctUsed, 15, 'MC rechnet mit der Mid-Cycle-Marge');
+  assert.equal(mc._marginBasis, 'midcycle_median');
+  assert.equal(mc.distributions.op_margin_shock.margin_basis, 'midcycle_median',
+    'die Verteilungsannahmen weisen die Margenbasis aus');
+
+  // 2) Der Median muss bei einer nichtlinearen Bewertung NICHT exakt dem
+  //    Base-Wert entsprechen (Streuung von g1, WACC, tg und Margenschock
+  //    wirken asymmetrisch). Geprueft wird die Groessenordnung: vorher lag er
+  //    beim Doppelten, jetzt nahe am ausgewiesenen Fair Value.
+  assert.ok(mc.median > 0.8 * dcf.base && mc.median < 1.25 * dcf.base,
+    'MC-Median ' + mc.median.toFixed(2) + ' liegt bei DCF ' + dcf.base.toFixed(2));
+  assert.ok(mc.median < 2 * dcf.base, 'kein Ist-Margen-Median mehr');
+
+  // 3) Gegenprobe: mit der Ist-Marge ergaebe sich der alte, deutlich hoehere
+  //    Median — die Weitergabe ist also wirksam und nicht zufaellig.
+  const mcIst = S.runMonteCarloDcf(mj, { scenarios: sc, error: null,
+    router: { activeModels: ['dcf'], subClassification: 'standard_nonfin' } },
+    { seed: 4242, runs: 2000 });
+  assert.equal(mcIst._marginBasis, 'scenario');
+  assert.ok(mcIst.median > 2 * dcf.base,
+    'Ist-Margen-Pfad ' + mcIst.median.toFixed(2) + ' als Gegenprobe');
+
+  // 4) Gleicher Seed, gleiche Eingaben ⇒ gleiches Ergebnis.
+  const mc2 = S.runMonteCarloDcf(mj, midCycleV(mj), { seed: 4242, runs: 2000 });
+  assert.equal(mc2.median, mc.median, 'deterministisch bei festem Seed');
+
+  // 5) Die Sensitivitaetsmatrix bleibt konsistent (war schon vorher richtig).
   const m = S.computeSensitivityMatrix(mj, v);
   assert.ok(Math.abs(m.baseValue - dcf.base) < 1e-12, 'Matrix bleibt konsistent');
+  assert.equal(m.opMarginPctUsed, 15);
 });
 
-test('B2 BEFUND: Snapshot-Prognoseziele verwenden die Ist-Marge, nicht die bewertete Mid-Cycle-Marge', () => {
-  // Befund A-2 (zweiter Weg): buildSnapshotForecastTargets() liest
-  // scenarios.base.op_margin_pct. Der spaetere Soll-Ist-Vergleich misst damit
-  // gegen einen Pfad, der nie bewertet wurde.
+test('R2 (A-2) Snapshot-Prognoseziele verwenden die bewertete Mid-Cycle-Marge', () => {
+  // Frueher (Befund A-2): buildSnapshotForecastTargets() las
+  // scenarios.base.op_margin_pct (30 %) und speicherte damit einen
+  // Prognosepfad, der nie bewertet wurde; der spaetere Soll-Ist-Vergleich
+  // haette gegen diesen falschen Pfad gemessen.
   const mj = midCycleMj();
-  const sc = S.buildScenarios(mj);
-  const v = { scenarios: sc, router: { activeModels: ['dcf_midcycle'], subClassification: 'cyclical' }, error: null };
+  const v = midCycleV(mj);
   const snap = S.buildSnapshotForecastTargets(mj, v);
   assert.equal(snap.available, true);
-  assert.equal(snap.scenario.op_margin_pct_used, 30, 'BEFUND A-2: Snapshot rechnet mit 30 %');
-  // Von Hand: Umsatz J1 = 1.050; FCFF bei 30 % Marge
-  //   = 1.050·(0,30·0,75 + 0,05 − 0,05) = 236,25M
-  // Bei der bewerteten Mid-Cycle-Marge 15 % waeren es 118,125M.
-  assert.ok(Math.abs(snap.years[0].fcff - 236.25) < 1e-9, 'erhalten ' + snap.years[0].fcff);
+  assert.equal(snap.scenario.op_margin_pct_used, 15, 'Snapshot rechnet mit 15 %');
+  // Herkunft wird mitgespeichert, damit der Vergleich nachvollziehbar bleibt.
+  assert.equal(snap.scenario.op_margin_basis, 'midcycle_median');
+  assert.equal(snap.scenario.op_margin_override_pct, 15);
+  assert.equal(snap.scenario.op_margin_pct_scenario, 30,
+    'die Szenariomarge bleibt zur Nachvollziehbarkeit erhalten');
+
+  // Von Hand: Umsatz J1 = 1.050; FCFF bei 15 % Marge
+  //   = 1.050·(0,15·0,75 + 0,05 − 0,05) = 118,125M
+  // (bei der Ist-Marge 30 % waeren es 236,25M — der alte, falsche Pfad)
+  assert.ok(Math.abs(snap.years[0].fcff - 118.125) < 1e-9, 'erhalten ' + snap.years[0].fcff);
   const fi = S.buildForecastInputs(mj);
   const rMid = S.forecastDcfCore(fi, 5, 2, 10, { enabled: false }, 15);
   assert.ok(Math.abs(rMid._fcfPerYearAbs[1] - 118.125) < 1e-9);
+
+  // Der spaetere Soll-Ist-Vergleich greift auf genau diesen Pfad zu. Dafuer
+  // muessen die Zielperioden bekannt sein — deshalb hier mit Periodenmeta.
+  const mjP = midCycleMj();
+  mjP.fundamentals._v4_meta = {
+    revenue: { periods: ['2024-12-31', '2023-12-31', '2022-12-31',
+                         '2021-12-31', '2020-12-31', '2019-12-31'],
+               period_type: 'FY' }
+  };
+  const snapP = S.buildSnapshotForecastTargets(mjP, midCycleV(mjP));
+  assert.equal(snapP.available, true);
+  assert.equal(snapP.target_periods_known, true);
+  assert.equal(snapP.scenario.op_margin_pct_used, 15);
+  const target = snapP.years[0];
+  const cmp = S.compareSnapshotForecastToActual(
+    { forecast_targets: snapP },
+    { period_end: target.target_period_end, period_type: target.target_period_type,
+      revenue: 1050, fcff: 118.125, op_margin_pct: 15 });
+  assert.equal(cmp.comparable, true, cmp.reason || '');
+  assert.ok(Math.abs(cmp.deltas.fcff.abs) < 1e-9,
+    'Soll-Ist-Vergleich misst gegen den bewerteten Pfad, erhalten ' + cmp.deltas.fcff.target);
+  // Gegenprobe: gegen den alten Ist-Margen-Pfad (236,25M) waere der Ist-Wert
+  // von 118,125M eine Verfehlung um −50 % gewesen.
+  assert.ok(Math.abs(cmp.deltas.fcff.target - 118.125) < 1e-9);
 });
 
-test('B3 BEFUND: Reverse-DCF-Karte der Bewertungsansicht rechnet auf f.fcf und setzt Nettoschulden still auf 0', () => {
-  // Befund A-1: buildReverseDcfDiagnosticBlock() ruft calculateImpliedGrowth()
-  // mit fcf0M = f.fcf[0] (CFO − CapEx) und netDebtM ?? 0 — obwohl
-  // _resolveNetDebtForDcfBridge() aus total_debt − cash 2.000M ableitet.
-  // Die Uebersichtskarte zeigt daneben den Kernwert.
+test('R3 (A-2) ECHTER ENGINE-PFAD: eine Margenbasis fuer DCF, Matrix, MC, Snapshot und gespeicherten Reverse DCF', () => {
+  // Der Audit pruefte A-2 an konstruierten v-Objekten. Hier laeuft der
+  // vollstaendige Bewertungsprozess (runValuationEngine) einschliesslich der
+  // tatsaechlich verwendeten FY-/TTM-Sicht, des gespeicherten Reverse DCF und
+  // der Snapshot-Prognose.
+  const mj = midCycleMj();
+  const v = S.runValuationEngine(mj);
+  assert.equal(v.error, undefined, 'Engine laeuft: ' + (v.error || ''));
+  assert.equal(v.router.activeModels.join(','), 'dcf_midcycle', 'zyklischer Pfad');
+
+  const dm = v.modelResults.dcf_midcycle;
+  assert.equal(dm.applicable, true);
+  assert.equal(dm._coreOpMarginPctUsed, 15);
+  assert.equal(dm._coreMarginBasis, 'midcycle_median');
+
+  // Die Engine fuehrt EINEN aufgeloesten Stand mit.
+  assert.equal(v._marginBasisAvailable, true);
+  assert.equal(v._marginBasis, 'midcycle_median');
+  assert.equal(v._opMarginPctUsed, 15);
+  assert.equal(v._coreOpts.opMarginOverridePct, 15);
+  assert.equal(v._coreOpts.resolved, true);
+
+  // Gespeicherter Reverse DCF: Kern auf der Mid-Cycle-Marge.
+  const coreMid = S.solveReverseDcfGrowth(mj, { opMarginOverridePct: 15, marginBasis: 'midcycle_median' });
+  assert.equal(coreMid.status, 'ok');
+  assert.equal(v.reverseDcfImpliedGrowth, coreMid.impliedGrowthPct,
+    'gespeicherter Reverse DCF = Kern auf der bewerteten Marge');
+  assert.equal(v._reverseDcfMarginBasis, 'midcycle_median');
+  // Gegenprobe: auf der Ist-Marge waere es eine voellig andere Zahl.
+  const coreIst = S.solveReverseDcfGrowth(mj);
+  assert.ok(Math.abs(coreIst.impliedGrowthPct - coreMid.impliedGrowthPct) > 5,
+    'Ist-Marge ' + coreIst.impliedGrowthPct.toFixed(2) + ' vs. bewertet ' + coreMid.impliedGrowthPct.toFixed(2));
+
+  // Alle Verbraucher lesen denselben Stand aus dem Engine-Ergebnis.
+  const mtx = S.computeSensitivityMatrix(mj, v);
+  assert.equal(mtx.available, true);
+  assert.equal(mtx.opMarginPctUsed, 15);
+  assert.ok(Math.abs(mtx.baseValue - dm.base) < 1e-12);
+
+  const mc = S.runMonteCarloDcf(mj, v, { seed: 4242, runs: 2000 });
+  assert.equal(mc._opMarginPctUsed, 15);
+  assert.ok(mc.median < 2 * dm.base, 'MC-Median ' + mc.median.toFixed(2));
+
+  const snap = S.buildSnapshotForecastTargets(mj, v);
+  assert.equal(snap.scenario.op_margin_pct_used, 15);
+  assert.ok(Math.abs(snap.years[0].fcff - 118.125) < 1e-9);
+
+  // Beide Reverse-DCF-Anzeigen im zyklischen Pfad zeigen denselben Kernwert.
+  const gOv = Number((S.buildReverseDcfOverviewCard(mj, v)
+    .match(/ov-rdcf-hero"[^>]*>\+?(-?[\d.]+)%/) || [])[1]);
+  const gCard = Number((S.buildReverseDcfDiagnosticBlock(mj, v, [])
+    .match(/rdcf-g"[^>]*>\+?(-?[\d.]+)%/) || [])[1]);
+  assert.ok(Math.abs(gCard - coreMid.impliedGrowthPct) < 0.01,
+    'Karte der Bewertungsansicht ' + gCard);
+  assert.ok(Math.abs(gOv - gCard) < 0.1,
+    'beide Anzeigen stimmen ueberein: Uebersicht ' + gOv + ' vs. Karte ' + gCard);
+
+  // Der EINE Anzeigeweg (Matrix, Simulation, Reverse DCF auf derselben Sicht)
+  // fuehrt dieselbe Margenbasis. Er entscheidet ueber die tatsaechlich
+  // verwendete FY-/TTM-Sicht (resolveValuationView) und ist damit der Weg,
+  // den die Bewertungsansicht wirklich rendert.
+  const blocks = S.buildValuationDiagnosticBlocks(mj, v, []);
+  assert.equal(blocks.view.ok, true, blocks.view.reason || '');
+  assert.equal(v.dataBasis.selected, 'fy', 'diese Sicht ist das letzte Geschaeftsjahr');
+  const gCardView = Number((blocks.reverseHtml
+    .match(/rdcf-g"[^>]*>\+?(-?[\d.]+)%/) || [])[1]);
+  assert.ok(Math.abs(gCardView - coreMid.impliedGrowthPct) < 0.01,
+    'Anzeigeweg zeigt den Kernwert ' + gCardView);
+  assert.ok(/midcycle_median/.test(blocks.reverseHtml),
+    'die wirksame Margenbasis steht in der Karte');
+  assert.equal(/0 \(angenommen\)/.test(blocks.reverseHtml), false);
+  // Die Matrixzelle des Anzeigewegs ist weiterhin der Haupt-DCF-Wert
+  // (die Anzeige rundet auf eine Dezimalstelle).
+  assert.ok(blocks.matrixHtml.includes(dm.base.toFixed(1)),
+    'Matrix des Anzeigewegs zeigt ' + dm.base.toFixed(1));
+});
+
+test('R4 (A-2) Standard-DCF bleibt auf der Szenariomarge — kein Mid-Cycle-Override', () => {
+  // Gegenprobe zur gemeinsamen Aufloesung: im Standardpfad darf keine
+  // Margenbasis erzwungen werden, sonst wuerden die Szenarien (conservative/
+  // optimistic) ihre eigene Marge verlieren.
+  const val = { wacc_components: { tax_rate: 25 }, fade: { enabled: false },
+                wacc_derived: 10, growth_terminal: 2, growth_stage1: 5 };
+  const mj = refMj({ net_debt: [500] }, val, { price: 20 });
+  const v = S.runValuationEngine(mj);
+  assert.equal(v.error, undefined);
+  assert.ok(v.router.activeModels.includes('dcf'), 'Standardpfad');
+  assert.equal(v._marginBasis, 'scenario');
+  assert.equal(v._opMarginPctUsed, null, 'kein Override im Standardpfad');
+  assert.equal(v._coreOpts.opMarginOverridePct, null);
+
+  const mc = S.runMonteCarloDcf(mj, v, { seed: 4242, runs: 500 });
+  assert.equal(mc._marginBasis, 'scenario');
+  assert.equal(mc._opMarginPctUsed, null);
+
+  const snap = S.buildSnapshotForecastTargets(mj, v);
+  assert.equal(snap.scenario.op_margin_basis, 'scenario');
+  // Umsatz J1 = 1.050, Marge 20 % ⇒ FCFF = 1.050·(0,20·0,75 + 0,05 − 0,05) = 157,5M
+  assert.ok(Math.abs(snap.years[0].fcff - 157.5) < 1e-9, 'erhalten ' + snap.years[0].fcff);
+
+  const mtx = S.computeSensitivityMatrix(mj, v);
+  assert.equal(mtx.opMarginBasis, 'scenario');
+  assert.ok(Math.abs(mtx.baseValue - v.modelResults.dcf.base) < 1e-12);
+});
+
+test('R5 (A-2) manueller Margen-Override hat Vorrang vor dem Mid-Cycle-Median', () => {
+  // Die Vorrangregel der Eingabegrenze (normalizeDcfCoreInput) gilt jetzt fuer
+  // ALLE Verbraucher: ein ausdruecklich uebergebener Override schlaegt die
+  // erneute Ableitung des historischen Medians.
+  const mj = midCycleMj();
+  const vOvr = { scenarios: S.buildScenarios(mj), error: null,
+    router: { activeModels: ['dcf_midcycle'], subClassification: 'cyclical' },
+    _coreOpts: { opMarginOverridePct: 22, marginBasis: 'override', resolved: true } };
+
+  const mtx = S.computeSensitivityMatrix(mj, vOvr);
+  assert.equal(mtx.opMarginPctUsed, 22, 'Matrix folgt dem Override');
+  assert.equal(mtx.opMarginBasis, 'override');
+
+  const mc = S.runMonteCarloDcf(mj, vOvr, { seed: 4242, runs: 500 });
+  assert.equal(mc._opMarginPctUsed, 22, 'MC folgt dem Override');
+  assert.equal(mc._marginBasis, 'override');
+
+  const snap = S.buildSnapshotForecastTargets(mj, vOvr);
+  assert.equal(snap.scenario.op_margin_pct_used, 22, 'Snapshot folgt dem Override');
+  assert.equal(snap.scenario.op_margin_basis, 'override');
+  // Umsatz J1 = 1.050, Marge 22 % ⇒ FCFF = 1.050·(0,22·0,75 + 0) = 173,25M
+  assert.ok(Math.abs(snap.years[0].fcff - 173.25) < 1e-9, 'erhalten ' + snap.years[0].fcff);
+
+  // Der Haupt-DCF auf demselben Override als Bezug.
+  const fi = S.buildForecastInputs(mj);
+  const rOvr = S.forecastDcfCore(fi, 5, 2, 10, { enabled: false }, 22);
+  assert.ok(Math.abs(rOvr._fcfPerYearAbs[1] - 173.25) < 1e-9);
+
+  // Ein Textwert ist KEIN gueltiger Override (keine stille Umwandlung) —
+  // dann gilt wieder der Mid-Cycle-Median.
+  const vBad = { scenarios: S.buildScenarios(mj), error: null,
+    router: { activeModels: ['dcf_midcycle'], subClassification: 'cyclical' },
+    _coreOpts: { opMarginOverridePct: '22', marginBasis: 'override' } };
+  assert.equal(S.computeSensitivityMatrix(mj, vBad).opMarginPctUsed, 15);
+  assert.equal(S.runMonteCarloDcf(mj, vBad, { seed: 4242, runs: 500 })._opMarginPctUsed, 15);
+});
+
+test('R6 (A-2) Mid-Cycle-Pfad ohne ableitbaren Median: erklaerter Status, kein stiller Rueckfall', () => {
+  // Zu kurze Historie (< 5 Jahre) ⇒ computeMidCycleFcf liefert
+  // insufficient_data. Keiner der Verbraucher darf dann auf die Ist-Marge
+  // ausweichen; alle nennen denselben Grund.
+  const mj = midCycleMj();
+  mj.fundamentals.revenue = mj.fundamentals.revenue.slice(0, 3);
+  mj.fundamentals.ebit    = mj.fundamentals.ebit.slice(0, 3);
+  mj.fundamentals.capex   = mj.fundamentals.capex.slice(0, 3);
+  const v = midCycleV(mj);
+  assert.notEqual(S.computeMidCycleFcf(mj).status, 'ok');
+
+  const mtx = S.computeSensitivityMatrix(mj, v);
+  assert.equal(mtx.available, false);
+  assert.ok(/Mid-Cycle-Marge nicht ableitbar/.test(mtx.reason), mtx.reason);
+
+  const mc = S.runMonteCarloDcf(mj, v, { seed: 4242, runs: 200 });
+  assert.equal(mc._blocked, true);
+  assert.ok(/Margenbasis/.test(mc._reason), mc._reason);
+
+  const snap = S.buildSnapshotForecastTargets(mj, v);
+  assert.equal(snap.available, false);
+  assert.ok(/Margenbasis/.test(snap.reason), snap.reason);
+
+  const card = S.buildReverseDcfDiagnosticBlock(mj, v, []);
+  assert.ok(/nicht berechenbar/.test(card) && /Margenbasis/.test(card));
+  assert.equal(/rdcf-g"/.test(card), false, 'keine Zahl ohne gueltige Margenbasis');
+});
+
+test('R7 (A-1) Reverse-DCF-Karte der Bewertungsansicht rechnet auf dem FCFF-Kern und nutzt die zentrale Nettoschuldenaufloesung', () => {
+  // Frueher (Befund A-1): die Karte rechnete mit calculateImpliedGrowth() auf
+  // f.fcf[0] (CFO − CapEx) und netDebtM ?? 0 und zeigte −4,66 %, waehrend die
+  // Uebersichtskarte +10,80 % auswies — 15,5 pp Unterschied in derselben
+  // Anwendung, mit der Zeile "Netto-Schulden (Mio.): 0 (angenommen)".
   const mj = {
     meta: { ticker: 'RDIV', sub_classification: 'standard_nonfin' },
     fundamentals: {
@@ -270,6 +514,7 @@ test('B3 BEFUND: Reverse-DCF-Karte der Bewertungsansicht rechnet auf f.fcf und s
                  wacc_derived: 10, growth_terminal: 2, growth_stage1: 5 },
     market: { price: 12 }
   };
+  // Nettoschulden sind NICHT gesetzt, aber ableitbar: 2.000 − 0 = 2.000M.
   const bridge = S._resolveNetDebtForDcfBridge(mj.fundamentals);
   assert.equal(bridge.available, true);
   assert.equal(bridge.netDebtM, 2000);
@@ -278,36 +523,131 @@ test('B3 BEFUND: Reverse-DCF-Karte der Bewertungsansicht rechnet auf f.fcf und s
   assert.equal(core.status, 'ok');
   assert.equal(core.netDebtPerShare, 20);
 
-  const html = S.buildReverseDcfDiagnosticBlock(mj, { scenarios: {}, router: { activeModels: ['dcf'] } }, []);
+  const v = { scenarios: {}, router: { activeModels: ['dcf'] }, error: null };
+  const html = S.buildReverseDcfDiagnosticBlock(mj, v, []);
   const shown = Number((html.match(/rdcf-g"[^>]*>\+?(-?[\d.]+)%/) || [])[1]);
   assert.ok(Number.isFinite(shown), 'Karte zeigt eine Zahl');
-  assert.ok(/0 \(angenommen\)/.test(html), 'BEFUND A-1: Karte setzt Nettoschulden auf 0');
-  assert.ok(Math.abs(shown - core.impliedGrowthPct) > 10,
-    'BEFUND A-1: Karte ' + shown + ' % vs. Kern ' + core.impliedGrowthPct.toFixed(2) + ' %');
+  assert.ok(Math.abs(shown - core.impliedGrowthPct) < 0.01,
+    'Karte ' + shown + ' % = Kern ' + core.impliedGrowthPct.toFixed(2) + ' %');
+
+  // Keine stille Nullannahme mehr; die abgeleiteten Nettoschulden stehen da.
+  assert.equal(/0 \(angenommen\)/.test(html), false, 'keine stille Nullannahme');
+  assert.ok(/2000/.test(html), 'abgeleitete Nettoschulden werden gezeigt');
+  assert.ok(/total_debt\[0\]/.test(html), 'Quelle der Nettoschulden wird genannt');
+
+  // Beide Anzeigen stimmen ueberein.
+  const gOv = Number((S.buildReverseDcfOverviewCard(mj, v)
+    .match(/ov-rdcf-hero"[^>]*>\+?(-?[\d.]+)%/) || [])[1]);
+  assert.ok(Math.abs(gOv - core.impliedGrowthPct) < 0.1, 'Uebersichtskarte ' + gOv);
+
+  // Die Reported-/Owner-FCF-Diagnose darf bleiben, aber nur getrennt
+  // beschriftet und mit dem Basis-Hinweis.
+  assert.ok(/REPORTED-FCF-Basis/.test(html), 'Diagnosepaar ist eigens beschriftet');
+  assert.ok(/nicht definitionskonsistent zum Haupt-DCF/.test(html),
+    'Basis-Hinweis erreicht die Karte');
+  const full = S.computeReverseDcfFull(mj);
+  assert.equal(full.fcfBasisConsistentWithCore, false);
+  assert.ok(full.reverseDcfReported != null);
+  assert.ok(Math.abs(full.reverseDcfReported - core.impliedGrowthPct) > 10,
+    'die beiden Groessen sind weiterhin verschieden — deshalb getrennt beschriftet');
 });
 
-test('B4 BEFUND: Reverse-DCF-Uebersichtskarte sperrt auf f.fcf, obwohl der Kern rechnen kann', () => {
-  // Befund A-3: computeReverseDcfFull() bricht bei fehlendem/negativem
-  // f.fcf[0] ab, BEVOR coreReverseDcf berechnet wird. Die Uebersichtskarte
-  // zeigt danach "nicht berechenbar", obwohl solveReverseDcfGrowth() ein
-  // eindeutiges Ergebnis liefert und der Haupt-DCF anwendbar ist.
-  const mj = refMj({ net_debt: [500] },
+test('R8 (A-1/A-3) unbekannte Nettoschulden: nachvollziehbarer Nichtverfuegbarkeitsstatus statt Null', () => {
+  // Weder net_debt noch total_debt/cash ⇒ die Bruecke ist nicht aufloesbar.
+  // Der Kern liefert dann keinen Eigenkapitalwert, und BEIDE Anzeigen muessen
+  // das begruenden statt eine Zahl auf einer stillen Null zu zeigen.
+  const mj = refMj({ fcf: [150, 140, 130, 120], cfo: [200, 190, 180, 170] },
     { wacc_components: { tax_rate: 25 }, fade: { enabled: false },
       wacc_derived: 10, growth_terminal: 2, growth_stage1: 5 },
-    { price: 18.728383767294428 });
-  assert.ok(mj.fundamentals.fcf === undefined, 'f.fcf ist nicht besetzt');
+    { price: 12 });
+  const bridge = S._resolveNetDebtForDcfBridge(mj.fundamentals);
+  assert.equal(bridge.available, false);
 
+  const core = S.solveReverseDcfGrowth(mj);
+  assert.equal(core.status, 'net_debt_unknown');
+  assert.equal(core.impliedGrowthPct, null);
+
+  const v = { scenarios: {}, router: { activeModels: ['dcf'] }, error: null };
+  const html = S.buildReverseDcfDiagnosticBlock(mj, v, []);
+  assert.equal(/rdcf-g"/.test(html), false, 'keine Hauptzahl ohne Nettoschulden');
+  assert.ok(/Nettoschulden unbekannt/.test(html), 'Status wird benannt');
+  assert.ok(/NICHT als 0/.test(html) || /NICHT/.test(html), 'die Nullannahme wird ausdruecklich verneint');
+  assert.equal(/0 \(angenommen\)/.test(html), false);
+
+  const card = S.buildReverseDcfOverviewCard(mj, v);
+  assert.ok(/ov-rdcf-na/.test(card), 'Uebersichtskarte zeigt den Status');
+  assert.ok(/Nettoschulden/.test(card));
+
+  // Das Kernergebnis wird trotzdem in allen Rueckgabepfaden mitgefuehrt.
+  const full = S.computeReverseDcfFull(mj);
+  assert.ok(full.coreReverseDcf, 'coreReverseDcf ist vorhanden');
+  assert.equal(full.coreStatus, 'net_debt_unknown');
+  assert.equal(full.coreAvailable, false);
+});
+
+test('R9 (A-3) fehlendes oder nichtpositives FCF sperrt die verfuegbare Kernrechnung nicht', () => {
+  // Frueher (Befund A-3): computeReverseDcfFull() brach bei fcf0M == null oder
+  // <= 0 ab, BEVOR coreReverseDcf gebildet wurde. Die Uebersichtskarte meldete
+  // "FCF₀ fehlt — Reverse DCF nicht berechenbar", obwohl der Kern ein
+  // eindeutiges Ergebnis lieferte und der Haupt-DCF anwendbar war.
+  const val = { wacc_components: { tax_rate: 25 }, fade: { enabled: false },
+                wacc_derived: 10, growth_terminal: 2, growth_stage1: 5 };
+  const price = 18.728383767294428;
+
+  // (a) f.fcf fehlt vollstaendig (jede TTM-Sicht ohne gedeckten cfo).
+  const mj = refMj({ net_debt: [500] }, val, { price });
+  assert.ok(mj.fundamentals.fcf === undefined, 'f.fcf ist nicht besetzt');
   const core = S.solveReverseDcfGrowth(mj);
   assert.equal(core.status, 'ok');
   assert.ok(Math.abs(core.impliedGrowthPct - 5) < 1e-2);
   assert.equal(S.modelDcf(mj, scOf(5, 2, 10, 20)).applicable, true, 'Haupt-DCF ist anwendbar');
 
   const full = S.computeReverseDcfFull(mj);
-  assert.equal(full.applicable, false);
-  assert.equal(full.coreReverseDcf, undefined, 'BEFUND A-3: Kernergebnis wird gar nicht erst gebildet');
-  const card = S.buildReverseDcfOverviewCard(mj);
-  assert.ok(/ov-rdcf-na/.test(card) && /FCF₀ fehlt/.test(card),
-    'BEFUND A-3: Karte meldet "nicht berechenbar"');
+  // Das REPORTED-Diagnosepaar bleibt gesperrt — das ist seine eigene
+  // Voraussetzung. Der Kern ist davon unabhaengig.
+  assert.equal(full.applicable, false, 'Reported-FCF-Diagnose bleibt gesperrt');
+  assert.equal(full.reverseDcfReported, null);
+  assert.equal(full.reportedFcfGateBlocked, true);
+  assert.ok(full.coreReverseDcf, 'Kernergebnis wird mitgefuehrt');
+  assert.equal(full.coreStatus, 'ok');
+  assert.equal(full.coreAvailable, true);
+  assert.equal(full.coreImpliedGrowthPct, core.impliedGrowthPct);
+  assert.ok(/nicht definitionskonsistent zum Haupt-DCF/.test(full.fcfBasisNote || ''),
+    'der Basis-Hinweis erreicht auch den gesperrten Pfad');
+
+  const v = { scenarios: {}, router: { activeModels: ['dcf'] }, error: null };
+  const card = S.buildReverseDcfOverviewCard(mj, v);
+  assert.equal(/ov-rdcf-na/.test(card), false, 'Karte ist nicht mehr gesperrt');
+  assert.equal(/FCF₀ fehlt/.test(card), false);
+  const gOv = Number((card.match(/ov-rdcf-hero"[^>]*>\+?(-?[\d.]+)%/) || [])[1]);
+  assert.ok(Math.abs(gOv - core.impliedGrowthPct) < 0.1, 'Karte zeigt den Kernwert ' + gOv);
+
+  // (b) nichtpositives FCF.
+  const mjNeg = refMj({ net_debt: [500], fcf: [-10, -10, -10, -10] }, val, { price });
+  const fullNeg = S.computeReverseDcfFull(mjNeg);
+  assert.equal(fullNeg.applicable, false);
+  assert.equal(fullNeg.coreStatus, 'ok', 'Kern rechnet trotz negativem Reported-FCF');
+  assert.ok(Math.abs(fullNeg.coreImpliedGrowthPct - core.impliedGrowthPct) < 1e-9);
+  assert.equal(/ov-rdcf-na/.test(S.buildReverseDcfOverviewCard(mjNeg, v)), false);
+
+  // (c) als verdaechtig markierte FCF-Groesse (fcfDataSuspect).
+  const mjSus = refMj({ net_debt: [500], fcf: [900, 900, 900, 900], cfo: [950, 950, 950, 950] },
+    val, { price });
+  const gp = S.computeGrowthProfile(mjSus);
+  assert.equal(gp.fcfDataSuspect, true, 'Datensatz loest den Suspect-Flag aus');
+  const fullSus = S.computeReverseDcfFull(mjSus);
+  assert.equal(fullSus.applicable, false, 'Reported-Diagnose bleibt gesperrt');
+  assert.equal(fullSus.coreStatus, 'ok', 'Kern bleibt verfuegbar');
+  assert.equal(/ov-rdcf-na/.test(S.buildReverseDcfOverviewCard(mjSus, v)), false);
+
+  // (d) Financials bleiben ausdruecklich nicht anwendbar — auch im Kern.
+  const mjFin = refMj({ net_debt: [500] }, val, { price });
+  mjFin.meta.sub_classification = 'financial';
+  const fullFin = S.computeReverseDcfFull(mjFin);
+  assert.equal(fullFin.applicable, false);
+  assert.equal(fullFin.coreStatus, 'not_applicable');
+  assert.equal(fullFin.coreAvailable, false);
+  assert.equal(S.buildReverseDcfOverviewCard(mjFin, v), '', 'keine Karte fuer Financials');
 });
 
 test('B5 BEFUND: kurzfristige Finanzschulden nur als Restgroesse — total_debt = long_term_debt kippt Working Capital und Wert', () => {
