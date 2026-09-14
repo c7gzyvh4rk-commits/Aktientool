@@ -209,8 +209,8 @@ Einheitenverdacht in `_makeBaseValuation()`; indexbasierte Ableitung in
 
 * **Ausgangsbasis fuer 12B (Branch): `claude/chat12a-dcf-consistency`**
 * Ausgangscommit dieses Schrittes: `6b2793a`
-* Ergebniscommit: `ERGEBNISCOMMIT`
-  — https://github.com/c7gzyvh4rk-commits/Aktientool/commit/ERGEBNISCOMMIT
+* Ergebniscommit: `153c143`
+  — https://github.com/c7gzyvh4rk-commits/Aktientool/commit/153c143
 * Branchstand: https://github.com/c7gzyvh4rk-commits/Aktientool/tree/claude/chat12a-dcf-consistency
 * Auditstatus: `AUDIT-CHAT12.md`, Abschnitt 0 (Bearbeitungsstand der Befunde)
   — https://github.com/c7gzyvh4rk-commits/Aktientool/blob/claude/chat12a-dcf-consistency/AUDIT-CHAT12.md
