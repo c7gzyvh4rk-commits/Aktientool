@@ -1,5 +1,284 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Korrekturchat 12B: Schuldenkomponenten und Periodenzuordnung (V1.0.59)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
+**`claude/chat12a-dcf-consistency`** — der in Korrekturchat 12A ausdrücklich
+dokumentierte Ergebnisbranch. Ausgangscommit **`380e1cf`** (Branch-Spitze);
+er enthält den geforderten Mindeststand `6b2793a` und die abgeschlossenen
+Korrekturen A-1/A-2/A-3 aus Codecommit `153c143` (V1.0.58). Gegenprobe:
+`git branch -a --contains 6b2793a` nennt `claude/chat12a-dcf-consistency`,
+`claude/dreamy-cray-kc8x6o` und `claude/quirky-franklin-fzbcn9`; maszgeblich
+ist laut HANDOFF 12A ausdruecklich `claude/chat12a-dcf-consistency` (die
+beiden anderen sind Auditbranch bzw. der technische Sitzungsname von 12A).
+`main` steht weiterhin auf `b023dc8` und wurde nicht angefasst.
+Tool-Datei: `us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Ergebnisbranch: **`claude/chat12b-debt-periods`** — der vom Auftrag
+gewuenschte Name. Die Sitzungsumgebung hatte zusaetzlich den technischen
+Branchnamen `claude/sleepy-cori-m8lv12` vorgegeben; **derselbe Ergebniscommit
+wurde deshalb auch dorthin gepusht**, damit beide Namen auf denselben Stand
+zeigen. Maszgeblich und fuer **Korrekturchat 12C** zu verwenden ist
+`claude/chat12b-debt-periods`.
+Eine `AGENTS.md` existiert in diesem Repository nicht (gesucht im gesamten
+Arbeitsbaum).
+Testbefehl: `npm test`.
+
+**Bestaetigter Teststand vor der Aenderung** (selbst ausgefuehrt auf `380e1cf`):
+1700 Rechen-Assertions · 434 Fixture-Assertions · 167 Node-Tests · Exit 0.
+
+**Auftrag.** Auditbefund **A-4** beheben und die unmittelbar zusammenhaengenden
+offenen Pruefpunkte **O-1** und **O-2** untersuchen. A-5, A-6, A-7 und O-3
+wurden bewusst NICHT angefasst.
+
+---
+
+### 1 · Reproduktion und Ursache am Importpfad
+
+**A-4 am unveraenderten Ausgangscode reproduziert.** Identische Bilanz
+(UV 400, Zahlungsmittel 100, kurzfristige Verbindlichkeiten 500 davon 300
+Finanzschulden, LTD 700, `debt_short_term[0] = 300`), einziger Unterschied
+`total_debt`:
+
+| `total_debt` | kurzfr. Finanzschulden | OWC-Quote | Nettoschulden | Fair Value |
+|---|---|---|---|---|
+| 700 (= `LongTermDebt`) | 0 („gemessen") | −20 % | 600 | 25,26 |
+| 1.000 (vollstaendig) | 300 | +10 % | 900 | 19,62 |
+
+**Danach geprueft, ob der Importweg das ueberhaupt erzeugt.** Synthetische
+SEC-Facts wurden durch die **produktive Kette** geschickt
+(`_extractWithFallback` → `_applySecDerivations` → `_buildSecMasterJson` →
+`applyDerivedFieldsV4` / `normalizeSharesInPlace` /
+`applyConservativeHeuristics`) — also genau den Weg, den `secFetchAll()`
+beim Live-Abruf nimmt. Ergebnis:
+
+| Fall | Filing-Tags | vorher |
+|---|---|---|
+| Rebuild greift | `LongTermDebt` 700 + `ShortTermBorrowings` 300 | `total_debt` wird auf 1.000 zurueckgebaut — **kein** Fehler |
+| **ST-Anteil < 5 %** | `LongTermDebt` 700 + `ShortTermBorrowings` 20 | Rebuild-Schwelle greift nicht ⇒ `total_debt = 700`; Restgroesse 0 „gemessen", obwohl `debt_short_term[0] = 20` fuer **dieselbe** Periode vorliegt |
+| **Komponente nur im aktuellen Jahr** | `ShortTermBorrowings` nur FY2025 | Jahr 0 richtig, Jahre 1–3 als 0 „gemessen"; der Median kippt ins Negative |
+| **Komponente veraltet** | `ShortTermBorrowings` nur FY2024–FY2022 | fuer den aktuellen Stichtag liegt nichts vor; Restgroesse 0 galt trotzdem als Messung |
+
+A-4 ist damit ein **nachgewiesener Importfehler**, nicht nur ein synthetisch
+inkonsistenter Datensatz.
+
+**Die Ursache liegt tiefer als im Audit vermutet.** Alle drei Tags der Kette
+`SEC_TAG_MAP.total_debt` (`LongTermDebtAndCapitalLeaseObligations`,
+`LongTermDebt`, `DebtAndCapitalLeaseObligations`) sind *langfristige*
+Schuldkonzepte; keines enthaelt kurzfristige Bankschulden oder Commercial
+Paper. Die Restgroesse `total_debt − long_term_debt` misst deshalb
+bestenfalls die **laufende Tranche** langfristiger Schulden — und wenn beide
+Reihen auf **dasselbe** Tag fallen (`LongTermDebt` ist Kettenplatz 2 in
+`total_debt` und Kettenplatz 1 in `long_term_debt`), ist sie strukturell 0
+und nie eine Messung.
+
+---
+
+### 2 · Aenderungen am Produktcode
+
+Alle Aenderungen liegen in der ausgelieferten HTML-Datei; `src/dcf-core.js`
+laedt den `DCF-CORE-BLOCK` unveraendert weiter (Isolationspruefung gruen).
+
+**A-4 — kurzfristige Finanzschulden semantisch aufloesen (Kernursache):**
+
+* **neu** `_resolveShortTermDebtHistory(f)` und `_secSourceTag(meta)` im
+  markierten `DCF-CORE-BLOCK`. Sie nutzen ausschliesslich Helfer, die bereits
+  in `DCF_CORE_REQUIRED_HELPERS` stehen (`_joinPeriodKeyed`,
+  `_seriesHasPeriodContext`, `_secPeriodYear`, `_secPeriodDaysApart`).
+  Vorrang **je Berichtsperiode**:
+  1. **gemeldete Komponenten** ⇒ `status: 'measured'`,
+  2. **Restgroesse** `total_debt − long_term_debt`, nur bei nachweislich
+     passendem Umfang ⇒ `status: 'derived'`,
+  3. **belegte Null** (`total_debt = 0`) ⇒ gemessene 0,
+  4. sonst **unbekannt mit Begruendung** — das Jahr gilt als unvollstaendig.
+* **Ueberschneidungen nach den tatsaechlichen Tag-Definitionen**, statt
+  pauschaler Addition (neue Tabellen `STD_TAGS_INCLUDING_CURRENT_LTD` und
+  `DEBT_TAG_SCOPE`):
+  * `us-gaap:DebtCurrent` ist „debt classified as current" und enthaelt die
+    laufenden Faelligkeiten **bereits** ⇒ `debt_long_term_current` wird dann
+    NICHT zusaetzlich addiert;
+  * `ShortTermBorrowings` / `CommercialPaper` decken sie nicht ab ⇒ die
+    laufende Tranche wird addiert;
+  * `FinanceLeaseLiabilityCurrent` ist kein `Debt*`-Konzept und wird addiert
+    — ausser die als laufende Tranche verwendete Restgroesse enthaelt es
+    bereits (`LongTermDebtAndCapitalLeaseObligations`).
+* **Restgroesse nur bei passendem Umfang UND Stichtag**, ausdruecklich als
+  `derived` gekennzeichnet. Blockiert, wenn `total_debt` und
+  `long_term_debt` aus demselben us-gaap-Konzept stammen (strukturell 0), und
+  wenn `total_debt` aus dem period-keyed Komponenten-Rebuild stammt (dort
+  sind die Komponenten die Quelle; eine fehlende Komponente ist *nicht
+  gemeldet*, nicht *null*).
+* **Belegte Null, fehlender Wert und Widerspruch bleiben getrennt.** Ein
+  ungeklaerter Widerspruch erzeugt keinen scheinbar gemessenen Wert mehr:
+  die gemeldeten Komponenten haben Vorrang, die Abweichung wird als
+  `shortTermDebtDiscrepancyM` gefuehrt und im Bewertungsausweis genannt.
+* **Eine konsistente Schuldenbasis fuer OWC und Nettoschulden.** Der
+  Komponenten-Rebuild ersetzt den direkten `total_debt`-Wert jetzt auch
+  unterhalb der 5-%-Schwelle, wenn das direkte Tag den Umfang der verwendeten
+  Komponenten nachweislich nicht abdecken kann (`_tdScopeTooNarrow`, mit
+  Begruendung in `meta._debt_warnings`). Bleibt danach noch eine Luecke
+  (Restgroesse als laufende Tranche *und* separat gemeldete kurzfristige
+  Bankschulden), wird ausdruecklich ausgewiesen, dass die
+  Nettoschuldenbruecke insoweit mit einer zu niedrigen Gesamtverschuldung
+  rechnet.
+* `_resolveOwcForForecast()` fuehrt Herkunft und Widersprueche mit
+  (`shortTermDebtSources`, `shortTermDebtDerived`, `periodKeyed`,
+  `debtWarnings`); `modelDcf()` weist sie in den Warnungen aus.
+
+**O-1 — laufende Faelligkeiten nicht doppelt zaehlen:**
+
+* In `buildPeriodAlignedComponentSeries()` belegt ein `lt_noncurrent`-Wert,
+  der aus `LongTermDebt` stammt, jetzt **beide** Alias-Gruppen
+  (`lt_noncurrent` *und* `lt_current`) fuer seine Perioden; solche Felder
+  werden zuerst verarbeitet (`_orderedFields`).
+* Gegenstueck auf der kurzfristigen Seite: ein `debt_short_term` aus
+  `DebtCurrent` belegt ebenfalls `lt_current`.
+* Treffen `DebtCurrent` und `LongTermDebt` aufeinander (beide enthalten die
+  laufende Tranche) und ist `LongTermDebtCurrent` gemeldet, wird der Betrag
+  genau einmal abgezogen. Ist er **nicht** gemeldet, ist die Ueberschneidung
+  nicht aufloesbar: die Periode wird verworfen und der direkte Wert bleibt
+  stehen — statt eine scheinpraezise Summe zu bilden.
+
+**O-2 — periodengetreue Working-Capital-Historie:**
+
+* `_computeOwcHistory()` verknuepft die Stichtagsgroessen ueber
+  `_joinPeriodKeyed()` (dieselbe Periodenlogik wie Nettoschuldenbruecke
+  V1.0.39 und Bruttomarge V1.0.52), gefuehrt von `current_liabilities`.
+* Die **Zeitraumgroesse Umsatz** wird ueber das Geschaeftsjahr des
+  Periodenendes zugeordnet und zusaetzlich mit `_secPeriodDaysApart()` gegen
+  den Bilanzstichtag geprueft (max. 45 Tage). Damit werden Zeitraum- und
+  Stichtagsgroesse einander zugeordnet, ohne sie im Join zu vermischen (den
+  `_joinPeriodKeyed` zu Recht verweigert).
+* Jedes Jahr traegt sein `period`-Kennzeichen; `periodKeyed` weist den Modus
+  aus.
+* **Bestehende Regel fuer Altdaten bleibt:** ohne jeden Periodenkontext
+  (manueller Import) gilt weiterhin der Positionsbezug. Er ist ausdruecklich
+  kenntlich (`periodKeyed: false`, `status: 'derived'`). Traegt ein einzelnes
+  Feld keine Periodenmetadaten, waehrend die uebrigen periodengetreu laufen,
+  wird der erzwungene Rueckfall auf die Position als Warnung ausgewiesen.
+
+---
+
+### 3 · Gemessene Wirkung
+
+Alle Zahlen unabhaengig nachgerechnet; die Handrechnung steht jeweils im Test.
+
+| Fall | vorher | nachher |
+|---|---|---|
+| A-4, `total_debt = LongTermDebt` (700), `debt_short_term = 300` | OWC −20 % „gemessen", Fair Value 25,26 | OWC **+10 %**, Fair Value 22,62, Widerspruch ausgewiesen |
+| A-4, dieselbe Bilanz vollstaendig (`total_debt = 1.000`) | OWC +10 %, Fair Value 19,62 | OWC +10 %, Fair Value 19,62 (unveraendert) |
+| ⇒ operativer Unternehmenswert je Aktie beider Darstellungen | 31,26 vs. 28,62 | **28,62 = 28,62** |
+| A-4 am Importweg, ST-Anteil 20 von 720 | `total_debt` 700, OWC −20 % | `total_debt` **720**, OWC −18 % aus `debt_short_term` |
+| A-4 am Importweg, Komponente nur FY2025 | 4 Jahre, Median kippt negativ | **1 Jahr**, keine belastbare Quote ⇒ Nutzereingabe noetig |
+| A-4 am Importweg, Komponente veraltet | 4 Jahre, 0 „gemessen" | **0 Jahre**, Begruendung genannt |
+| O-1, `LongTermDebt` 1.000 + `LongTermDebtCurrent` 100 | `total_debt` **1.100**, Nettoschulden 1.000 | `total_debt` **1.000**, Nettoschulden **900** |
+| O-1, Gegenprobe `Noncurrent` 900 + `Current` 100 | 1.000 / 900 | 1.000 / 900 (unveraendert) |
+| O-1, mit zusaetzlich `ShortTermBorrowings` 50 | 1.100 bzw. 1.050 (uneinheitlich) | **1.050 = 1.050** |
+| O-2, Luecke in `LongTermDebtNoncurrent` (FY2024 fehlt) | 3 Jahre; Position 1 = 900 (FY2024) − 500 (FY2023) = **400** | **1 Jahr** (FY2025 = 300); FY2024 als unbestimmbar benannt |
+
+---
+
+### 4 · Tests
+
+`B5` (der Nachweis zu A-4) ist in **Regressionstests des richtigen
+Verhaltens** umgewandelt worden — `R10`–`R15` in
+`tests/audit-chat12.test.mjs`. `B6`–`B8` bleiben **ausdruecklich
+Befund-Nachweise**: A-5 bis A-7 sind offen und wurden nicht angefasst.
+`A1`–`A5` und `R1`–`R9` sind unveraendert.
+
+| Test | sichert ab |
+|---|---|
+| `R10` | A-4: gemeldete Komponenten schlagen die Restgroesse; dieselbe Bilanz ergibt unabhaengig von der Tag-Darstellung dieselbe Working-Capital-Quote und denselben operativen Wert; der Widerspruch wird benannt |
+| `R11` | belegte Null, ausdrueckliche 0 als Komponente, fehlender Wert, abgeleitete Restgroesse und Inkonsistenz bleiben **getrennt** |
+| `R12` | A-4 am **echten Importweg**: Rebuild greift / 5-%-Schwelle / Komponente nur im aktuellen Jahr / veraltete Komponente |
+| `R13` | O-1: kein Doppelzaehlen der laufenden Faelligkeiten; Gegenprobe mit `DebtCurrent`; nicht aufloesbare Ueberschneidung erzeugt keinen Summenwert |
+| `R14` | O-2: periodengetreue Verknuepfung, kein stiller Jahresmix; Gegenprobe mit lueckenlosen Perioden; Altdatenpfad bleibt zulaessig und gekennzeichnet |
+| `R15` | drei zulaessige Tag-Darstellungen derselben Bilanz ⇒ identische `total_debt`, Nettoschulden, OWC-Quote und Bewertung |
+
+Neu in `tests/audit-chat12.mjs`: `importSecFacts()`, `secFactsWithDebt()`,
+`secFlow()`/`secInst()`/`secShares()` und `evalInApp()`. Sie bauen
+synthetische SEC-Facts und schicken sie durch den **ausgelieferten**
+Importweg — keine Kopie der Logik, keine von Hand gebauten `fundamentals`.
+
+**`npm test` nach der Aenderung: 1700 Rechen-Assertions · 434
+Fixture-Assertions · 172 Node-Tests · Exit 0.** Keine bestehende
+Testerwartung wurde gelockert oder geaendert; die 1700 Rechen-Assertions und
+alle 434 Fixture-Assertions sind unveraendert gruen (darunter die
+Working-Capital-Faelle `W-1a`–`W-1j` und die Debt-Rebuild-Fixtures
+`T-DEBT-DEDUP1`–`3`, `T-TXRH-DEBT4`). Die Node-Testzahl geht von 167 auf 172
+(−1 umgewandelter B-Test, +6 Regressionstests). Die Korrekturen aus 12A sind
+ueber `R1`–`R9` unveraendert abgesichert.
+
+### 5 · Browserpruefung (durchgefuehrt)
+
+Mit dem vorinstallierten Chromium (Playwright) wurde die ausgelieferte
+HTML-Datei geladen und der A-4-Datensatz in beiden Tag-Darstellungen ueber
+den regulaeren Importweg (`importMasterJsonFromTextarea()`) eingelesen:
+
+* beide Darstellungen: kurzfristige Finanzschulden **300**,
+  `status: 'measured'`, Quelle `debt_short_term`, OWC-Quote **+10 %**,
+  operativer Wert je Aktie **28,6191** — identisch.
+* `LongTermDebt`-Darstellung zusaetzlich: „gemeldete Schuldenkomponenten
+  (300.0M) und die Restgroesse total_debt − long_term_debt (0.0M)
+  widersprechen sich; die gemeldeten Komponenten haben Vorrang."
+* Keine JavaScript-Fehler; die einzige Konsolenmeldung ist ein
+  fehlgeschlagener externer Ressourcenabruf (kein Netz in der Umgebung) und
+  steht in keinem Zusammenhang mit der Aenderung.
+
+### 6 · Grenzen dieses Schrittes
+
+* **Kein Live-Abruf bei SEC oder Yahoo.** `data.sec.gov`, `www.sec.gov`,
+  `xbrl.fasb.org` und `www.fasb.org` sind vom Egress-Proxy dieser Umgebung
+  gesperrt (HTTP 403 auf CONNECT). Die synthetischen Faelle laufen deshalb
+  durch den produktiven Importweg, aber nicht gegen echte Filings.
+* **O-1: die Tag-Semantik ist nicht an der primaeren Quelle belegt.**
+  `us-gaap:LongTermDebt` schliesst nach allen verfuegbaren (sekundaeren)
+  Quellen die laufenden Faelligkeiten ein; die FASB-Taxonomiedatei war nicht
+  erreichbar. Zwei code-interne Argumente tragen unabhaengig davon (siehe
+  AUDIT-CHAT12.md, Abschnitt O-1). Ein realer Filing-Fall wurde **nicht**
+  geprueft. Waere die Lesart entgegen allen Quellen anders, betraefe die
+  Ruecknahme genau `_coversCurrentMaturities()` und `DEBT_TAG_SCOPE`.
+* `DebtAndCapitalLeaseObligations` steht bewusst **nicht** in
+  `DEBT_TAG_SCOPE` / `_TD_DIRECT_TAG_SCOPE`: sein Umfang war hier nicht
+  zweifelsfrei belegbar, deshalb bleibt fuer dieses Tag das bisherige
+  Verhalten.
+* Die Browserpruefung deckt den FY-Pfad mit manuellem Import ab. Der
+  SEC-Importweg ist ueber die Node-Tests (`R12`–`R15`) gedeckt, nicht
+  zusaetzlich im Browser (kein Netz).
+* Bleibt eine Schuldenkomponente ausserhalb des Umfangs des direkten
+  `total_debt`-Tags und laesst sich der Rebuild nicht anwenden, rechnet die
+  Nettoschuldenbruecke weiterhin mit dem gemeldeten `total_debt`. Das
+  Werkzeug erfindet dort keinen Ersatzwert, weist die Luecke aber aus.
+* Die beiden DOM-Formulartests (`_testManualAssumptionOverride`,
+  `_testMarketDataOverrides`) bleiben wie bisher ausgewiesen uebersprungen.
+
+### 7 · Bearbeitungsstand nach diesem Schritt
+
+**Behoben und abgesichert**
+
+* **A-1, A-2, A-3** (Korrekturchat 12A, V1.0.58) — `R1`–`R9`, unveraendert gruen
+* **A-4** kurzfristige Finanzschulden nur als Restgroesse — `R10`–`R15`
+
+**Bestaetigt und behoben**
+
+* **O-1** Doppelzaehlung laufender Faelligkeiten im Komponenten-Rebuild —
+  bestaetigt am echten Parser-/Rebuild-Pfad, behoben, `R13`
+  (verbleibende Unsicherheit siehe Abschnitt 6)
+* **O-2** Working-Capital-Historie ohne Periodenabgleich — bestaetigt mit
+  reproduzierendem Datensatz, behoben, `R14`
+
+**Weiterhin offen (nicht angefasst)**
+
+* **A-5** Verwaesserung endet im Terminalwert bei Jahr 10 (`B6` gruen)
+* **A-6** `computeMidCycleFcf()` setzt fehlende D&A still auf 0 (`B7` gruen)
+* **A-7** Buyback-MoS-Zuschlag greift im Mid-Cycle-Pfad nie (`B8` gruen)
+* **O-3** Randfaelle der Nullstellensuche im Reverse DCF — unbestaetigt
+
+Die Einschraenkungen der Vorschritte bleiben offen.
+
+**Ausgangsbasis fuer Korrekturchat 12C: `claude/chat12b-debt-periods`.**
+
+---
+
 ## Korrekturchat 12A: Konsistenz von DCF-Kern, Margenbasis und Reverse DCF (V1.0.58)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch

@@ -21,7 +21,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { app, refMj, scOf, refValuePerShare } from './audit-chat12.mjs';
+import { app, refMj, scOf, refValuePerShare,
+         evalInApp, importSecFacts, secFactsWithDebt, secInst, allYears } from './audit-chat12.mjs';
 
 const S = app();
 
@@ -650,57 +651,369 @@ test('R9 (A-3) fehlendes oder nichtpositives FCF sperrt die verfuegbare Kernrech
   assert.equal(S.buildReverseDcfOverviewCard(mjFin, v), '', 'keine Karte fuer Financials');
 });
 
-test('B5 BEFUND: kurzfristige Finanzschulden nur als Restgroesse — total_debt = long_term_debt kippt Working Capital und Wert', () => {
-  // Befund A-4: _computeOwcHistory() bildet die kurzfristigen Finanzschulden
-  // ausschliesslich als total_debt − long_term_debt und ignoriert das
-  // separat extrahierte Feld debt_short_term. Faellt die Tag-Kette fuer
-  // total_debt auf LongTermDebt (Kettenplatz 2, identisch mit long_term_debt),
-  // gilt 0 als GEMESSEN — ohne Warnung.
-  const base = {
-    revenue: [1000, 1000, 1000, 1000], ebit: [200, 200, 200, 200],
-    ebitda: [250, 250, 250, 250], capex: [50, 50, 50, 50],
-    shares_diluted: [100, 100, 100, 100],
-    current_assets: [400, 400, 400, 400],
-    current_liabilities: [500, 500, 500, 500],   // enthaelt 300 kurzfristige Finanzschulden
-    cash_and_equivalents: [100, 100, 100, 100],
-    long_term_debt: [700, 700, 700, 700],
-    debt_short_term: [300, 300, 300, 300]        // extrahiert, aber ungenutzt
-  };
-  const mk = (td) => ({
-    meta: { sub_classification: 'standard_nonfin' },
-    fundamentals: Object.assign({}, base, { total_debt: td }),
-    valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false },
-                 wacc_derived: 10, growth_terminal: 2, growth_stage1: 8 },
-    market: { price: 20 }
-  });
+// ═══════════════════════════════════════════════════════════════════════════
+// R10–R15 (Regression, Korrekturchat 12B) — ersetzen `B5`.
+// Befund A-4 ist behoben, die Pruefpunkte O-1 und O-2 sind bestaetigt und
+// behoben. Diese Tests sichern das RICHTIGE Verhalten ab.
+// ═══════════════════════════════════════════════════════════════════════════
 
-  const mjLt = mk([700, 700, 700, 700]);    // total_debt aus LongTermDebt
-  const mjOk = mk([1000, 1000, 1000, 1000]); // total_debt vollstaendig
+// Gemeinsame Bilanz fuer die Handrechnungen:
+//   Umlaufvermoegen 400, Zahlungsmittel 100, kurzfristige Verbindlichkeiten 500,
+//   davon 300 kurzfristige Finanzschulden, langfristige Schulden 700.
+//   OWC = (400 − 100) − (500 − 300) = 100 ⇒ Quote +10 % vom Umsatz 1.000.
+// Reihen aus dem vm-Kontext tragen dessen Array-Prototyp; fuer den
+// Strukturvergleich werden sie in den Realm des Tests geholt.
+const sameRealm = (a) => Array.isArray(a) || (a && typeof a.length === 'number')
+  ? Array.from(a) : a;
+const eqSeries = (actual, expected, msg) =>
+  assert.deepEqual(sameRealm(actual), expected, msg);
+
+const A4_BASE = {
+  revenue: [1000, 1000, 1000, 1000], ebit: [200, 200, 200, 200],
+  ebitda: [250, 250, 250, 250], capex: [50, 50, 50, 50],
+  shares_diluted: [100, 100, 100, 100],
+  current_assets: [400, 400, 400, 400],
+  current_liabilities: [500, 500, 500, 500],
+  cash_and_equivalents: [100, 100, 100, 100],
+  long_term_debt: [700, 700, 700, 700],
+  debt_short_term: [300, 300, 300, 300]
+};
+const a4Mj = (fundOverrides) => ({
+  meta: { sub_classification: 'standard_nonfin' },
+  fundamentals: Object.assign({}, A4_BASE, fundOverrides || {}),
+  valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false },
+               wacc_derived: 10, growth_terminal: 2, growth_stage1: 8 },
+  market: { price: 20 }
+});
+
+test('R10 A-4: gemeldete Schuldenkomponenten schlagen die Restgroesse — Tag-Darstellung aendert das Working Capital nicht', () => {
+  // Bis V1.0.58 bildete _computeOwcHistory() die kurzfristigen Finanzschulden
+  // NUR als total_debt − long_term_debt. Faellt die total_debt-Kette auf
+  // `LongTermDebt` (identisch mit long_term_debt), war die Restgroesse 0 und
+  // galt als GEMESSEN — obwohl debt_short_term[0] = 300 im selben Datensatz
+  // steht. Jetzt hat die gemeldete Komponente Vorrang.
+  const mjLt = a4Mj({ total_debt: [700, 700, 700, 700] });    // total_debt aus LongTermDebt
+  const mjOk = a4Mj({ total_debt: [1000, 1000, 1000, 1000] }); // total_debt vollstaendig
 
   const hLt = S._computeOwcHistory(mjLt.fundamentals);
   const hOk = S._computeOwcHistory(mjOk.fundamentals);
-  assert.equal(hLt.years[0].shortTermDebt, 0, 'BEFUND A-4: 0 gilt als gemessen');
-  assert.equal(hOk.years[0].shortTermDebt, 300);
-  // Von Hand: OWC = (400 − 100) − (500 − STD)
-  assert.equal(hLt.years[0].owc, -200);   // Quote −20 %
-  assert.equal(hOk.years[0].owc, 100);    // Quote +10 %
 
+  // Von Hand: OWC = (400 − 100) − (500 − 300) = 100 ⇒ Quote +10 %.
+  for (const [name, h] of [['LongTermDebt-Darstellung', hLt], ['vollstaendige Darstellung', hOk]]) {
+    assert.equal(h.years[0].shortTermDebt, 300, name + ': gemeldete Komponente wird verwendet');
+    assert.equal(h.years[0].shortTermDebtStatus, 'measured', name);
+    assert.match(h.years[0].shortTermDebtSource, /debt_short_term/, name);
+    assert.equal(h.years[0].owc, 100, name);
+    assert.equal(h.years[0].ratio, 0.10, name);
+  }
+  // Kernforderung: dieselbe Bilanz, dieselbe Working-Capital-Quote.
+  assert.equal(hLt.years[0].ratio, hOk.years[0].ratio);
+  assert.equal(hLt.years.length, hOk.years.length);
+
+  // Die Restgroesse 0 wird nicht mehr als Messung ausgegeben; der Widerspruch
+  // zu debt_short_term = 300 wird als solcher gemeldet.
+  assert.equal(hLt.years[0].shortTermDebtDiscrepancyM, -300,
+    'Restgroesse 0 gegen gemeldete 300 wird als Widerspruch gefuehrt');
+  assert.ok((hLt.warnings || []).some(w => /widersprechen sich/.test(w)),
+    'Widerspruch wird benannt: ' + JSON.stringify(hLt.warnings));
+  assert.equal(hOk.years[0].shortTermDebtDiscrepancyM, null,
+    'widerspruchsfreier Datensatz erzeugt keine Widerspruchsmeldung');
+
+  // Wirkung im Bewertungsweg: die Working-Capital-Quote ist in beiden
+  // Darstellungen +10 %. Der verbleibende Unterschied im Fair Value stammt
+  // AUSSCHLIESSLICH aus der Nettoschuldenbruecke, weil der manuelle Import
+  // total_debt = 700 ausdruecklich behauptet — das Werkzeug erfindet dort
+  // keinen Ersatzwert, weist den Widerspruch aber aus.
   const rLt = S.modelDcf(mjLt, scOf(8, 2, 10, 20));
   const rOk = S.modelDcf(mjOk, scOf(8, 2, 10, 20));
+  assert.equal(rLt._owcRatio, 0.10);
+  assert.equal(rOk._owcRatio, 0.10);
   assert.equal(rLt._netDebtM, 600);
   assert.equal(rOk._netDebtM, 900);
-  // Gemessene Wirkung: derselbe Abschluss, +28,7 % Fair Value.
-  assert.ok(rLt.base / rOk.base > 1.28,
-    'BEFUND A-4: ' + rLt.base.toFixed(2) + ' vs. ' + rOk.base.toFixed(2));
-  // Die Restgroesse 0 wird als gemessene kurzfristige Finanzschuld gefuehrt,
-  // obwohl debt_short_term[0] = 300 im selben Datensatz steht. Keine Warnung
-  // nennt diesen Widerspruch.
-  assert.equal(hLt.years[0].shortTermDebtSource, 'total_debt \u2212 long_term_debt');
-  assert.equal(mjLt.fundamentals.debt_short_term[0], 300);
-  assert.ok(!(rLt.warnings || []).some(w => /debt_short_term/.test(w)),
-    'BEFUND A-4: kein Hinweis auf den Widerspruch zu debt_short_term');
-  assert.ok((rLt.warnings || []).some(w => /Working Capital/.test(w) && /gemessen aus Bilanzdaten/.test(w)),
-    'BEFUND A-4: die gekippte Quote wird als \u201egemessen\u201c ausgewiesen');
+  // operativer Unternehmenswert je Aktie identisch ⇒ nur der Abzug trennt sie
+  assert.ok(Math.abs(rLt._operatingValuePerShareBase - rOk._operatingValuePerShareBase) < 1e-9,
+    'gleiche Working-Capital-Basis ⇒ gleicher operativer Wert');
+  assert.ok(Math.abs((rLt.base - rOk.base) - 3.00) < 1e-9,
+    'Differenz = 300M Nettoschulden / 100M Aktien = 3,00 je Aktie, erhalten ' + (rLt.base - rOk.base));
+  assert.ok((rLt.warnings || []).some(w => /widersprechen sich/.test(w)),
+    'der Widerspruch erreicht den Bewertungsausweis');
+  assert.ok((rLt.warnings || []).some(w => /Kurzfristige Finanzschulden im Working Capital/.test(w)),
+    'die Herkunft der kurzfristigen Finanzschulden wird ausgewiesen');
+});
+
+test('R11 A-4: belegte Null, fehlende Komponente und Widerspruch bleiben getrennt', () => {
+  // (a) Belegte Null: gar keine Finanzschulden ⇒ 0 ist GEMESSEN.
+  const hZero = S._computeOwcHistory(Object.assign({}, A4_BASE, {
+    total_debt: [0, 0, 0, 0], long_term_debt: [0, 0, 0, 0], debt_short_term: undefined
+  }));
+  assert.equal(hZero.years.length, 4);
+  assert.equal(hZero.years[0].shortTermDebt, 0);
+  assert.equal(hZero.years[0].shortTermDebtStatus, 'measured');
+  assert.match(hZero.years[0].shortTermDebtSource, /keine Finanzschulden/);
+
+  // (b) Ausdrueckliche 0 als gemeldete Komponente ist ebenfalls eine Messung.
+  const hZeroComp = S._computeOwcHistory(Object.assign({}, A4_BASE, {
+    total_debt: [700, 700, 700, 700], debt_short_term: [0, 0, 0, 0]
+  }));
+  assert.equal(hZeroComp.years[0].shortTermDebt, 0);
+  assert.equal(hZeroComp.years[0].shortTermDebtStatus, 'measured');
+  assert.equal(hZeroComp.years[0].owc, -200, 'OWC = (400−100) − (500−0)');
+
+  // (c) Fehlender Wert ist NICHT 0: ohne jede Komponente und ohne verwertbare
+  //     Restgroesse bleibt das Jahr unvollstaendig.
+  const hMissing = S._computeOwcHistory(Object.assign({}, A4_BASE, {
+    total_debt: undefined, debt_short_term: undefined
+  }));
+  assert.equal(hMissing.years.length, 0);
+  assert.ok(hMissing.missing.some(m => /short_term_debt/.test(m)), JSON.stringify(hMissing.missing));
+
+  // (d) Restgroesse als Rueckfall ohne jede Komponente: zulaessig, aber
+  //     ausdruecklich ABGELEITET — nicht als Messung ausgewiesen.
+  const hDerived = S._computeOwcHistory(Object.assign({}, A4_BASE, {
+    total_debt: [1000, 1000, 1000, 1000], debt_short_term: undefined
+  }));
+  assert.equal(hDerived.years[0].shortTermDebt, 300);
+  assert.equal(hDerived.years[0].shortTermDebtStatus, 'derived');
+  assert.equal(hDerived.years[0].shortTermDebtDerived, true);
+  assert.match(hDerived.years[0].shortTermDebtSource, /total_debt − long_term_debt/);
+
+  // (e) Inkonsistenz total_debt < long_term_debt ohne Komponente ⇒ kein Wert.
+  const hNeg = S._computeOwcHistory(Object.assign({}, A4_BASE, {
+    total_debt: [600, 600, 600, 600], debt_short_term: undefined
+  }));
+  assert.equal(hNeg.years.length, 0);
+  assert.ok(hNeg.missing.some(m => /inkonsistent/.test(m)), JSON.stringify(hNeg.missing));
+});
+
+test('R12 A-4 am echten Importweg: die Restgroesse aus demselben Tag ist keine Messung', () => {
+  // Tag-Kette: LongTermDebtAndCapitalLeaseObligations fehlt ⇒ total_debt faellt
+  // auf `LongTermDebt`, mit dem die long_term_debt-Kette beginnt. Die
+  // Restgroesse ist dann strukturell 0.
+
+  // (a) Komponente periodengleich vorhanden ⇒ sie wird verwendet, und der
+  //     Komponenten-Rebuild fuehrt total_debt auf den vollen Umfang.
+  const mjA = importSecFacts(secFactsWithDebt({
+    LongTermDebt:        secInst(allYears(700)),
+    ShortTermBorrowings: secInst(allYears(300))
+  }));
+  eqSeries(mjA.fundamentals.total_debt, [1000, 1000, 1000, 1000],
+    'Rebuild ergaenzt die kurzfristigen Finanzschulden');
+  const hA = S._computeOwcHistory(mjA.fundamentals);
+  assert.equal(hA.years[0].shortTermDebt, 300);
+  assert.equal(hA.years[0].shortTermDebtStatus, 'measured');
+  assert.equal(hA.years[0].owc, 100);
+  assert.equal(hA.years[0].period, '2025-12-31');
+
+  // (b) Kurzfristige Finanzschulden klein (20 von 720): die 5-%-Schwelle des
+  //     Rebuilds greift nicht mehr blind — `LongTermDebt` kann kurzfristige
+  //     Finanzschulden nachweislich nicht enthalten, also haben die
+  //     Komponenten Vorrang. OWC = (400−100) − (500−20) = −180.
+  const mjB = importSecFacts(secFactsWithDebt({
+    LongTermDebt:        secInst(allYears(700)),
+    ShortTermBorrowings: secInst(allYears(20))
+  }));
+  eqSeries(mjB.fundamentals.total_debt, [720, 720, 720, 720]);
+  const hB = S._computeOwcHistory(mjB.fundamentals);
+  assert.equal(hB.years[0].shortTermDebt, 20);
+  assert.equal(hB.years[0].shortTermDebtStatus, 'measured');
+  assert.equal(hB.years[0].owc, -180);
+
+  // (c) Komponente NUR fuer das aktuelle Jahr gemeldet: die Vorjahre sind
+  //     unbekannt und werden nicht als 0 gefuehrt — die Historie bricht ab.
+  const mjC = importSecFacts(secFactsWithDebt({
+    LongTermDebt:        secInst(allYears(700)),
+    ShortTermBorrowings: secInst({ 2025: 300 })
+  }));
+  const hC = S._computeOwcHistory(mjC.fundamentals);
+  assert.equal(hC.years.length, 1, 'nur das belegte Jahr');
+  assert.equal(hC.years[0].shortTermDebt, 300);
+  assert.ok(hC.missing.some(m => /2024-12-31/.test(m)), JSON.stringify(hC.missing));
+
+  // (d) Komponente nur fuer AELTERE Jahre (stale): fuer den aktuellen Stichtag
+  //     liegt nichts vor; die Restgroesse aus demselben Tag ist keine Messung.
+  const mjD = importSecFacts(secFactsWithDebt({
+    LongTermDebt:        secInst(allYears(700)),
+    ShortTermBorrowings: secInst({ 2024: 300, 2023: 300, 2022: 300 })
+  }));
+  const hD = S._computeOwcHistory(mjD.fundamentals);
+  assert.equal(hD.years.length, 0, 'kein Jahr mit belegtem Stichtagswert');
+  assert.ok(hD.missing.some(m => /strukturell 0/.test(m)), JSON.stringify(hD.missing));
+
+  // Ohne belastbare Historie gibt es keine scheinpraezise Ersatzquote.
+  const owcD = S._resolveOwcForForecast(mjD);
+  assert.equal(owcD.measured, false);
+  assert.equal(owcD.assumptionRequired, true);
+  assert.equal(owcD.available, false);
+});
+
+test('R13 O-1: `LongTermDebt` als Noncurrent-Fallback zaehlt die laufenden Faelligkeiten nicht doppelt', () => {
+  // us-gaap:LongTermDebt ist die GESAMTE langfristige Verschuldung
+  // EINSCHLIESSLICH der laufenden Faelligkeiten. Es steht an dritter Stelle
+  // der Kette SEC_TAG_MAP.debt_long_term_noncurrent. Meldet ein Filer
+  // LongTermDebt und LongTermDebtCurrent, aber kein LongTermDebtNoncurrent,
+  // addierte der Rebuild die laufende Tranche bis V1.0.58 zweimal.
+  const TAGS = evalInApp('SEC_TAG_MAP');
+  assert.equal(TAGS.debt_long_term_noncurrent[2], 'LongTermDebt',
+    'Ausgangslage des Pruefpunkts unveraendert');
+  assert.equal(TAGS.long_term_debt[0], 'LongTermDebt');
+
+  // Wirtschaftlich EIN Sachverhalt, zwei zulaessige Tag-Darstellungen:
+  //   langfristige Schulden gesamt 1.000, davon 100 laufende Faelligkeiten.
+  const viaTotal = importSecFacts(secFactsWithDebt({
+    LongTermDebt:        secInst(allYears(1000)),
+    LongTermDebtCurrent: secInst(allYears(100))
+  }));
+  const viaSplit = importSecFacts(secFactsWithDebt({
+    LongTermDebtNoncurrent: secInst(allYears(900)),
+    LongTermDebtCurrent:    secInst(allYears(100))
+  }));
+  assert.equal(viaTotal.fundamentals.debt_long_term_noncurrent[0], 1000, 'Fallback greift wie beschrieben');
+  eqSeries(viaTotal.fundamentals.total_debt, [1000, 1000, 1000, 1000],
+    'kein Doppelzaehlen der laufenden Faelligkeiten (frueher 1.100)');
+  eqSeries(viaSplit.fundamentals.total_debt, [1000, 1000, 1000, 1000]);
+  assert.equal(S._resolveNetDebtForDcfBridge(viaTotal.fundamentals).netDebtM,
+               S._resolveNetDebtForDcfBridge(viaSplit.fundamentals).netDebtM,
+               'gleiche Bilanz ⇒ gleiche Nettoschulden');
+  assert.equal(S._resolveNetDebtForDcfBridge(viaTotal.fundamentals).netDebtM, 900);
+  // kurzfristige Finanzschulden = laufende Tranche 100 in beiden Darstellungen
+  assert.equal(S._computeOwcHistory(viaTotal.fundamentals).years[0].shortTermDebt, 100);
+  assert.equal(S._computeOwcHistory(viaSplit.fundamentals).years[0].shortTermDebt, 100);
+
+  // Mit zusaetzlichen kurzfristigen Bankschulden (50) — wahre Gesamtschuld 1.050.
+  const stTotal = importSecFacts(secFactsWithDebt({
+    LongTermDebt:        secInst(allYears(1000)),
+    LongTermDebtCurrent: secInst(allYears(100)),
+    ShortTermBorrowings: secInst(allYears(50))
+  }));
+  const stSplit = importSecFacts(secFactsWithDebt({
+    LongTermDebtNoncurrent: secInst(allYears(900)),
+    LongTermDebtCurrent:    secInst(allYears(100)),
+    ShortTermBorrowings:    secInst(allYears(50))
+  }));
+  eqSeries(stTotal.fundamentals.total_debt, [1050, 1050, 1050, 1050]);
+  eqSeries(stSplit.fundamentals.total_debt, [1050, 1050, 1050, 1050]);
+  assert.equal(S._computeOwcHistory(stTotal.fundamentals).years[0].shortTermDebt, 150);
+  assert.equal(S._computeOwcHistory(stSplit.fundamentals).years[0].shortTermDebt, 150);
+
+  // Gegenprobe zur Ueberschneidung auf der kurzfristigen Seite:
+  // us-gaap:DebtCurrent enthaelt die laufenden Faelligkeiten bereits.
+  const viaDebtCurrent = importSecFacts(secFactsWithDebt({
+    LongTermDebtNoncurrent: secInst(allYears(900)),
+    LongTermDebtCurrent:    secInst(allYears(100)),
+    DebtCurrent:            secInst(allYears(150))   // = 50 Bank + 100 laufend
+  }));
+  eqSeries(viaDebtCurrent.fundamentals.total_debt, [1050, 1050, 1050, 1050],
+    'DebtCurrent deckt die laufende Tranche ab — keine Doppelzaehlung');
+  assert.equal(S._computeOwcHistory(viaDebtCurrent.fundamentals).years[0].shortTermDebt, 150);
+  assert.equal(S._resolveNetDebtForDcfBridge(viaDebtCurrent.fundamentals).netDebtM, 950);
+
+  // Nicht aufloesbare Ueberschneidung (DebtCurrent + LongTermDebt, laufende
+  // Tranche nicht gemeldet): kein erfundener Summenwert, sondern ein Hinweis.
+  const unresolvable = importSecFacts(secFactsWithDebt({
+    LongTermDebt: secInst(allYears(1000)),
+    DebtCurrent:  secInst(allYears(150))
+  }));
+  eqSeries(unresolvable.fundamentals.total_debt, [1000, 1000, 1000, 1000],
+    'direkter Wert bleibt stehen, keine Summe aus ueberschneidenden Tags');
+  assert.ok((unresolvable.meta._debt_warnings || []).some(w => /Ueberschneidung nicht aufloesbar/.test(w)),
+    JSON.stringify(unresolvable.meta._debt_warnings));
+});
+
+test('R14 O-2: Working-Capital-Historie verknuepft periodengetreu, nicht ueber den Array-Index', () => {
+  // Filer mit einer Luecke in LongTermDebtNoncurrent (FY2024 fehlt). Dadurch
+  // stehen an derselben Array-Position unterschiedliche Geschaeftsjahre:
+  //   total_debt     [FY2025, FY2024, FY2023, FY2022] = 1000, 900, 800, 700
+  //   long_term_debt [FY2025,         FY2023, FY2022] =  700,      500, 400
+  // Bis V1.0.58 ergab die Indexverknuepfung fuer Position 1
+  // 900 (FY2024) − 500 (FY2023) = 400 — ein plausibel aussehender, aber aus
+  // zwei Geschaeftsjahren zusammengesetzter Wert.
+  const mj = importSecFacts(secFactsWithDebt({
+    LongTermDebtAndCapitalLeaseObligations: secInst({ 2025: 1000, 2024: 900, 2023: 800, 2022: 700 }),
+    LongTermDebtNoncurrent:                 secInst({ 2025: 700,             2023: 500, 2022: 400 })
+  }));
+  const f = mj.fundamentals;
+  eqSeries(f.total_debt, [1000, 900, 800, 700]);
+  eqSeries(f.long_term_debt, [700, 500, 400], 'Ausgangslage: Reihen unterschiedlich lang');
+  eqSeries(f._v4_meta.long_term_debt.periods, ['2025-12-31', '2023-12-31', '2022-12-31']);
+
+  const h = S._computeOwcHistory(f);
+  assert.equal(h.periodKeyed, true);
+  assert.equal(h.years.length, 1, 'nur das periodengleich belegte Jahr FY2025');
+  assert.equal(h.years[0].period, '2025-12-31');
+  assert.equal(h.years[0].shortTermDebt, 300, '1000 − 700, beide FY2025');
+  assert.ok(h.missing.some(m => /2024-12-31/.test(m)),
+    'FY2024 wird als unbestimmbar benannt: ' + JSON.stringify(h.missing));
+  // Der frueher still erzeugte Mischwert 400 darf nirgends mehr auftreten.
+  assert.equal(h.years.some(y => y.shortTermDebt === 400), false);
+
+  // Gegenprobe: lueckenlose Perioden ⇒ alle vier Jahre, jeweils periodengleich.
+  const full = importSecFacts(secFactsWithDebt({
+    LongTermDebtAndCapitalLeaseObligations: secInst({ 2025: 1000, 2024: 900, 2023: 800, 2022: 700 }),
+    LongTermDebtNoncurrent:                 secInst({ 2025: 700,  2024: 600, 2023: 500, 2022: 400 })
+  }));
+  const hFull = S._computeOwcHistory(full.fundamentals);
+  assert.equal(hFull.years.length, 4);
+  eqSeries(hFull.years.map(y => y.period),
+    ['2025-12-31', '2024-12-31', '2023-12-31', '2022-12-31']);
+  eqSeries(hFull.years.map(y => y.shortTermDebt), [300, 300, 300, 300]);
+  eqSeries(hFull.years.map(y => y.owc), [100, 100, 100, 100]);
+
+  // Ohne jeden Periodenkontext (manueller Import) bleibt die Positionslogik
+  // ausdruecklich zulaessig — sonst waeren Altdaten nicht mehr verwertbar.
+  const legacy = S._computeOwcHistory(Object.assign({}, A4_BASE, {
+    total_debt: [1000, 1000, 1000, 1000], debt_short_term: undefined
+  }));
+  assert.equal(legacy.periodKeyed, false);
+  assert.equal(legacy.years.length, 4);
+  assert.equal(legacy.years[0].period, null);
+  assert.equal(legacy.years[0].shortTermDebtStatus, 'derived',
+    'der Positionsbezug wird als abgeleitet gekennzeichnet');
+});
+
+test('R15 O-1/A-4: gleiche Bilanz, verschiedene zulaessige Tags ⇒ gleiche Bewertung', () => {
+  // Wirtschaftlich identische, vollstaendig belegte Bilanz in drei zulaessigen
+  // Tag-Darstellungen. Gesamtschuld 1.000, davon 300 kurzfristig.
+  const variants = {
+    'Noncurrent + Current': {
+      LongTermDebtNoncurrent: secInst(allYears(700)),
+      LongTermDebtCurrent:    secInst(allYears(300))
+    },
+    'LongTermDebt (gesamt) + Current': {
+      LongTermDebt:        secInst(allYears(1000)),
+      LongTermDebtCurrent: secInst(allYears(300))
+    },
+    'LongTermDebt (nur nichtlaufend) + ShortTermBorrowings': {
+      LongTermDebt:        secInst(allYears(700)),
+      ShortTermBorrowings: secInst(allYears(300))
+    }
+  };
+  const results = {};
+  for (const [name, tags] of Object.entries(variants)) {
+    const mj = importSecFacts(secFactsWithDebt(tags));
+    const h  = S._computeOwcHistory(mj.fundamentals);
+    const nd = S._resolveNetDebtForDcfBridge(mj.fundamentals);
+    const r  = S.modelDcf(mj, scOf(8, 2, 10, 20));
+    results[name] = {
+      totalDebt: mj.fundamentals.total_debt[0],
+      shortTermDebt: h.years[0] && h.years[0].shortTermDebt,
+      owcRatio: h.years[0] && h.years[0].ratio,
+      netDebtM: nd.netDebtM,
+      fairValue: r.base
+    };
+  }
+  const names = Object.keys(results);
+  const ref = results[names[0]];
+  // Von Hand: total_debt 1.000, Zahlungsmittel 100 ⇒ Nettoschulden 900.
+  // OWC = (400 − 100) − (500 − 300) = 100 ⇒ Quote +10 %.
+  assert.equal(ref.totalDebt, 1000);
+  assert.equal(ref.shortTermDebt, 300);
+  assert.equal(ref.owcRatio, 0.10);
+  assert.equal(ref.netDebtM, 900);
+  for (const n of names.slice(1)) {
+    assert.deepEqual(results[n], ref,
+      'Tag-Darstellung "' + n + '" weicht ab: ' + JSON.stringify(results[n]) +
+      ' vs. ' + JSON.stringify(ref));
+  }
 });
 
 test('B6 BEFUND: Verwaesserung endet im Terminalwert bei Jahr 10', () => {

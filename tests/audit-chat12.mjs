@@ -117,3 +117,88 @@ export function refValuePerShare({ rev0, marginPct, taxPct, daRatio, capexRatio,
 
 export const nearly = (a, b, tol = 1e-9) =>
   a != null && Number.isFinite(a) && Math.abs(a - b) <= tol;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// V1.0.59 (Korrekturchat 12B) — synthetische SEC-Facts durch den ECHTEN
+// Importweg. Genutzt werden ausschliesslich die ausgelieferten Funktionen
+// (_extractWithFallback → _applySecDerivations → _buildSecMasterJson →
+// applyDerivedFieldsV4/normalizeSharesInPlace/applyConservativeHeuristics),
+// also derselbe Pfad wie beim Live-Abruf in secFetchAll(). Damit werden
+// Tag-Auswahl, Komponenten-Rebuild und Periodenmetadaten mitgeprueft und
+// nicht durch von Hand gebaute fundamentals umgangen.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Top-Level-`const` (z.B. SEC_TAG_MAP) liegen nicht auf dem Sandbox-Objekt;
+// sie werden im selben Kontext ausgewertet.
+export function evalInApp(code) { return vm.runInContext(code, app()); }
+
+const _M = 1e6;
+const _YEARS_DESC = [2025, 2024, 2023, 2022];
+const _entries = (perYear, make) => _YEARS_DESC.slice().reverse()
+  .filter(y => perYear[y] != null).map(y => make(y, perYear[y]));
+
+// Jahresabschlusswerte (10-K). `flow` = Zeitraum-, `inst` = Stichtagsgroesse.
+export const secFlow = (perYear) => ({ units: { USD: _entries(perYear, (y, v) => ({
+  start: y + '-01-01', end: y + '-12-31', val: v * _M,
+  form: '10-K', filed: (y + 1) + '-02-15', accn: 'f' + y })) } });
+export const secInst = (perYear) => ({ units: { USD: _entries(perYear, (y, v) => ({
+  end: y + '-12-31', val: v * _M,
+  form: '10-K', filed: (y + 1) + '-02-15', accn: 'i' + y })) } });
+export const secShares = (perYear) => ({ units: { shares: _entries(perYear, (y, v) => ({
+  start: y + '-01-01', end: y + '-12-31', val: v * _M,
+  form: '10-K', filed: (y + 1) + '-02-15', accn: 's' + y })) } });
+
+export const allYears = (v) => ({ 2025: v, 2024: v, 2023: v, 2022: v });
+
+// Referenzbilanz: Umsatz 1.000, EBIT 200, D&A 50, CapEx 50, 100M Aktien,
+// Umlaufvermoegen 400, Zahlungsmittel 100, kurzfristige Verbindlichkeiten 500.
+// `debtTags` ergaenzt ausschliesslich die Schulden-Tags des jeweiligen Falls.
+export function secFactsWithDebt(debtTags) {
+  const g = { 'us-gaap': {
+    Revenues:                                       secFlow(allYears(1000)),
+    OperatingIncomeLoss:                            secFlow(allYears(200)),
+    NetIncomeLoss:                                  secFlow(allYears(150)),
+    NetCashProvidedByUsedInOperatingActivities:     secFlow(allYears(200)),
+    PaymentsToAcquirePropertyPlantAndEquipment:     secFlow(allYears(50)),
+    DepreciationDepletionAndAmortization:           secFlow(allYears(50)),
+    CashAndCashEquivalentsAtCarryingValue:          secInst(allYears(100)),
+    AssetsCurrent:                                  secInst(allYears(400)),
+    LiabilitiesCurrent:                             secInst(allYears(500)),
+    StockholdersEquity:                             secInst(allYears(3000)),
+    Assets:                                         secInst(allYears(7000)),
+    WeightedAverageNumberOfDilutedSharesOutstanding: secShares(allYears(100))
+  }, dei: { EntityCommonStockSharesOutstanding: { units: { shares: [
+    { end: '2025-12-31', val: 100 * _M, form: '10-K', filed: '2026-02-15' } ] } } } };
+  Object.assign(g['us-gaap'], debtTags || {});
+  return g;
+}
+
+const _IMPORT_FIELDS = [
+  'revenue', 'ebit', 'net_income', 'cfo', 'capex', 'da', 'total_debt', 'long_term_debt',
+  'debt_short_term', 'debt_long_term_current', 'debt_long_term_noncurrent',
+  'finance_lease_current', 'finance_lease_noncurrent',
+  'cash_and_equivalents', 'current_assets', 'current_liabilities', 'total_equity',
+  'total_assets', 'shares_diluted', 'eps_diluted'
+];
+
+// Fuehrt den produktiven Importweg aus und liefert das fertige Master-JSON.
+export function importSecFacts(facts, opts) {
+  const S = app();
+  const o = opts || {};
+  const TAGS = evalInApp('SEC_TAG_MAP');
+  const extracted = {};
+  _IMPORT_FIELDS.forEach(k => { if (TAGS[k]) extracted[k] = S._extractWithFallback(facts, TAGS[k], 10); });
+  S._applySecDerivations(extracted);
+  const mj = S._buildSecMasterJson({
+    ticker: o.ticker || 'SYNT', cik: '0000001', companyName: 'Synthetik AG',
+    sic: '3674', fiscalYearEnd: '1231', exchange: 'NASDAQ',
+    sicMapping: S._sicToSector('3674'), extracted, yahooData: null,
+    secFacts: facts, derivationNotes: []
+  });
+  mj.market = { price: o.price != null ? o.price : 20, price_currency: 'USD' };
+  S.applyDerivedFieldsV4(mj);
+  S.normalizeSharesInPlace(mj);
+  S.applyDerivedFieldsV4(mj);
+  S.applyConservativeHeuristics(mj);
+  return mj;
+}

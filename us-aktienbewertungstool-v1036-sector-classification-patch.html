@@ -3854,10 +3854,14 @@ function checkPerShareSanity(synthesis, masterJson) {
 // (operativer Unternehmenswert → Eigenkapitalwert) und würden sonst doppelt
 // erfasst: einmal als Cashflow-Bindung im Forecast und einmal im Abzug.
 //
-// Ein eigenes Feld `short_term_debt` existiert im Schema nicht; die
-// kurzfristigen Finanzschulden werden deshalb aus
-// `total_debt − long_term_debt` abgeleitet. Ist die Ableitung nicht möglich,
-// gilt das Jahr als unvollständig. Es wird NICHT unterstellt, dass keine
+// Ein eigenes Feld `short_term_debt` existiert im Schema nicht. Bis V1.0.58
+// wurden die kurzfristigen Finanzschulden ausschliesslich als Restgroesse
+// `total_debt − long_term_debt` gebildet (Befund A-4). V1.0.59 loest sie
+// stattdessen aus den separat extrahierten Schuldenkomponenten auf; die
+// Restgroesse ist nur noch ein ausdruecklich als ABGELEITET gekennzeichneter
+// Rueckfall und nur dort zulaessig, wo Umfang und Stichtag zusammenpassen
+// (siehe _resolveShortTermDebtHistory). Ist die Aufloesung nicht moeglich,
+// gilt das Jahr als unvollstaendig. Es wird NICHT unterstellt, dass keine
 // kurzfristigen Finanzschulden bestehen (fehlende Werte sind nicht 0).
 // ╔══════════════════════════════════════════════════════════════════════════╗
 // ║ DCF-CORE-BLOCK START                                                     ║
@@ -3902,6 +3906,325 @@ const OWC_STOCK_SIMPLIFICATION_NOTE =
 // KEINE Nutzerannahme und kein gemessener Nullbedarf.
 const OWC_PROVISIONAL_LABEL = 'Vorläufige Modellannahme: 0; Nutzereingabe erforderlich';
 
+// ── V1.0.59 · Kurzfristige Finanzschulden: Tag-Semantik statt Restgroesse ──
+// Befund A-4 (und Pruefpunkt O-2). Die bisherige Restgroesse
+// `total_debt − long_term_debt` ist aus zwei Gruenden keine Messung:
+//
+//  1. UMFANG. Die Tag-Kette von `total_debt`
+//     (LongTermDebtAndCapitalLeaseObligations → LongTermDebt →
+//     DebtAndCapitalLeaseObligations) enthaelt KEIN Konzept, das kurzfristige
+//     Bankschulden/Commercial Paper abdeckt — alle drei sind langfristige
+//     Schuldkonzepte. Faellt die Kette auf `LongTermDebt`, ist `total_debt`
+//     sogar tagidentisch mit `long_term_debt` (dessen Kette mit `LongTermDebt`
+//     beginnt); die Restgroesse ist dann strukturell 0 und nie ein Messwert.
+//  2. STICHTAG. Die Restgroesse wurde ueber Array-Indizes gebildet, auch wenn
+//     `_v4_meta.periods` beider Reihen unterschiedliche Geschaeftsjahre an
+//     derselben Position fuehrt (Pruefpunkt O-2).
+//
+// Vorrang je Berichtsperiode:
+//   1. gemeldete Komponenten (period-keyed, ueberschneidungsbewusst) ⇒ gemessen
+//   2. Restgroesse total_debt − long_term_debt, nur bei passendem Umfang
+//      (unterschiedliche Quell-Tags) und gleicher Periode ⇒ ABGELEITET
+//   3. belegte Null (total_debt = 0, kein widersprechender Komponentenwert)
+//   4. sonst: unbekannt mit Begruendung — kein scheinbar gemessener Wert.
+//
+// Ueberschneidungen der Komponenten-Tags (us-gaap):
+//   · DebtCurrent  = "debt classified as current", schliesst die laufenden
+//     Faelligkeiten langfristiger Schulden BEREITS ein ⇒ `debt_long_term_current`
+//     darf dann NICHT zusaetzlich addiert werden.
+//   · ShortTermBorrowings / CommercialPaper decken die laufenden Faelligkeiten
+//     NICHT ab ⇒ `debt_long_term_current` wird addiert.
+//   · FinanceLeaseLiabilityCurrent ist kein Debt*-Konzept und ueberschneidet
+//     sich mit keinem der beiden ⇒ wird addiert.
+// Tag-Definitionen (us-gaap), soweit fuer die Abgrenzung maszgeblich:
+//  · DebtCurrent  = "debt classified as current" — enthaelt kurzfristige
+//    Bankschulden UND die laufenden Faelligkeiten langfristiger Schulden.
+//    `debt_long_term_current` darf dann NICHT zusaetzlich addiert werden.
+//  · ShortTermBorrowings / ShortTermDebt / CommercialPaper decken die
+//    laufenden Faelligkeiten NICHT ab ⇒ sie werden addiert.
+//  · FinanceLeaseLiabilityCurrent ist kein Debt*-Konzept und ueberschneidet
+//    sich mit keinem der beiden ⇒ wird addiert, ausser die Restgroesse
+//    enthaelt die Leasingkomponente bereits (siehe unten).
+const STD_TAGS_INCLUDING_CURRENT_LTD = Object.freeze(['DebtCurrent']);
+
+// Umfang der Tags, aus denen `total_debt` bzw. `long_term_debt` stammen
+// koennen. `currentPortion` sagt, ob das Konzept die laufenden Faelligkeiten
+// enthaelt, `leases`, ob Leasing-/Capital-Lease-Verbindlichkeiten enthalten
+// sind. Nur wenn sich zwei Tags GENAU um die laufende Tranche unterscheiden,
+// ist die Restgroesse `total_debt − long_term_debt` eine Messung dieser
+// Tranche. Tags ohne belegbaren Umfang stehen bewusst nicht in der Tabelle.
+const DEBT_TAG_SCOPE = Object.freeze({
+  LongTermDebtNoncurrent:                 { currentPortion: false, leases: false },
+  LongTermNotesPayable:                   { currentPortion: false, leases: false },
+  LongTermDebt:                           { currentPortion: true,  leases: false },
+  LongTermDebtAndCapitalLeaseObligations: { currentPortion: true,  leases: true  }
+});
+
+// Quell-Tag einer Reihe aus den Importmetadaten (nur SEC-Reihen tragen es).
+function _secSourceTag(metaEntry) {
+  const ref = metaEntry && typeof metaEntry.source_reference === 'string'
+    ? metaEntry.source_reference : null;
+  if (!ref) return null;
+  const m = ref.match(/^SEC EDGAR XBRL:\s*([A-Za-z0-9_]+)$/);
+  return m ? m[1] : null;
+}
+
+// Kurzfristige Finanzschulden je Berichtsperiode bzw. — nur ohne jeden
+// Periodenkontext (manueller Import, Altdaten) — je Array-Index.
+// Rueckgabe: { mode: 'period'|'index', at(i), periodAt(i), warnings }
+//   at(i) → { value, status: 'measured'|'derived'|'unknown', source, reason,
+//             parts, discrepancyM }
+function _resolveShortTermDebtHistory(f) {
+  f = f || {};
+  const meta = f._v4_meta || {};
+  const warnings = [];
+  const addW = (w) => { if (warnings.indexOf(w) === -1) warnings.push(w); };
+  const num = (v) => (v != null && isFinite(v)) ? Number(v) : null;
+  const arr = (k) => Array.isArray(f[k]) ? f[k] : [];
+
+  const stdTag = _secSourceTag(meta['debt_short_term']);
+  const stdCoversCurrentLtd = stdTag != null &&
+    STD_TAGS_INCLUDING_CURRENT_LTD.indexOf(stdTag) >= 0;
+  if (stdCoversCurrentLtd) {
+    addW('debt_short_term stammt aus us-gaap:' + stdTag + ' und enthaelt die laufenden ' +
+      'Faelligkeiten langfristiger Schulden bereits — debt_long_term_current wird nicht ' +
+      'zusaetzlich addiert.');
+  }
+
+  // ── Zulaessigkeit der Restgroesse total_debt − long_term_debt ────────
+  // Sie misst nur dann etwas, wenn sich die beiden Quellkonzepte GENAU um die
+  // laufende Tranche unterscheiden. Beide Reihen aus demselben Tag (typisch:
+  // die total_debt-Kette faellt auf `LongTermDebt`, mit dem die
+  // long_term_debt-Kette beginnt) ergeben strukturell 0 — keine Messung
+  // (Befund A-4). Ein period-keyed Komponenten-Rebuild als total_debt-Quelle
+  // ist ebenfalls unzulaessig: dort SIND die Komponenten die Quelle, und ihr
+  // Fehlen in einer Periode heiszt "nicht gemeldet", nicht "null".
+  const tdTag  = _secSourceTag(meta['total_debt']);
+  const ltdTag = _secSourceTag(meta['long_term_debt']);
+  const tdScope  = tdTag  ? DEBT_TAG_SCOPE[tdTag]  : null;
+  const ltdScope = ltdTag ? DEBT_TAG_SCOPE[ltdTag] : null;
+  const tdIsRebuild = (meta['total_debt'] &&
+    typeof meta['total_debt'].source_reference === 'string' &&
+    /component rebuild/.test(meta['total_debt'].source_reference)) === true;
+
+  let residualMode, residualReason, residualCoversLeases = false;
+  if (tdTag == null && ltdTag == null && !tdIsRebuild) {
+    // Kein Importkontext (manueller Import / Altdaten): der bisherige
+    // Rueckfall bleibt zulaessig, ist aber ausdruecklich ABGELEITET.
+    residualMode = 'legacy';
+    residualReason = 'ohne Quellen-/Periodenmetadaten (manueller Import)';
+  } else if (tdIsRebuild) {
+    residualMode = 'blocked';
+    residualReason = 'total_debt stammt aus dem period-keyed Komponenten-Rebuild; ' +
+      'maszgeblich sind dort die gemeldeten Komponenten — eine fehlende Komponente ist ' +
+      'nicht gemeldet und nicht null';
+  } else if (tdTag != null && ltdTag != null && tdTag === ltdTag) {
+    residualMode = 'blocked';
+    residualReason = 'total_debt und long_term_debt stammen aus demselben us-gaap-Konzept (' +
+      tdTag + '); die Restgroesse ist strukturell 0 und keine Messung';
+    addW(residualReason + '.');
+  } else if (tdScope && ltdScope && tdScope.currentPortion === true && ltdScope.currentPortion === false) {
+    residualMode = 'current_portion';
+    residualCoversLeases = tdScope.leases === true && ltdScope.leases === false;
+    residualReason = 'Restgroesse ' + tdTag + ' − ' + ltdTag + ' = laufende Tranche' +
+      (residualCoversLeases ? ' (einschlieszlich laufender Leasingverbindlichkeiten)' : '');
+  } else {
+    residualMode = 'blocked';
+    residualReason = 'Umfang von total_debt (' + (tdTag || 'unbekannt') + ') und long_term_debt (' +
+      (ltdTag || 'unbekannt') + ') unterscheidet sich nicht nachweisbar genau um die laufende Tranche';
+  }
+
+  // ── Zusammensetzung je Periode/Position ────────────────────────────
+  // std = kurzfristige Bankschulden + laufende Faelligkeiten + laufendes
+  //       Finanzierungsleasing, jeweils ohne Ueberschneidung.
+  const compose = (v, label) => {
+    const stRaw = num(v['debt_short_term']);
+    const lcRaw = num(v['debt_long_term_current']);
+    const flRaw = num(v['finance_lease_current']);
+    const td    = num(v['total_debt']);
+    const ltd   = num(v['long_term_debt']);
+
+    let residual = null;
+    if (td != null && ltd != null &&
+        (residualMode === 'current_portion' || residualMode === 'legacy')) {
+      const d = td - ltd;
+      if (d >= 0) residual = d;
+    }
+
+    const parts = [];
+    let sum = null, anyDerived = false, residualUsedAsCurrentPortion = false;
+    const add = (value, src, derived) => {
+      sum = (sum == null ? 0 : sum) + value;
+      parts.push(src);
+      if (derived) anyDerived = true;
+    };
+
+    // 1) kurzfristige Bankschulden / Commercial Paper
+    if (stRaw != null) add(stRaw, 'debt_short_term' + (stdTag ? ' (' + stdTag + ')' : ''), false);
+
+    // 2) laufende Faelligkeiten langfristiger Schulden
+    let currentPortionKnown = stdCoversCurrentLtd && stRaw != null;   // bereits enthalten
+    if (!currentPortionKnown) {
+      if (lcRaw != null) {
+        add(lcRaw, 'debt_long_term_current', false);
+        currentPortionKnown = true;
+      } else if (residualMode === 'current_portion' && residual != null) {
+        add(residual, 'total_debt − long_term_debt (' + residualReason + ')', true);
+        currentPortionKnown = true;
+        residualUsedAsCurrentPortion = true;
+      }
+    }
+
+    // 3) laufendes Finanzierungsleasing — nicht doppelt, wenn die als laufende
+    //    Tranche verwendete Restgroesse es bereits enthaelt.
+    if (flRaw != null && !(residualUsedAsCurrentPortion && residualCoversLeases)) {
+      add(flRaw, 'finance_lease_current', false);
+    }
+
+    // 3b) Belegte Null: `total_debt = 0` heiszt, es gibt ueberhaupt keine
+    //     Finanzschulden — also auch keine kurzfristigen. Das ist ein
+    //     gemessener Wert, keine Annahme (unveraendert seit V1.0.39).
+    if (sum == null && td != null && td === 0) {
+      return { value: 0, status: 'measured',
+               source: 'total_debt = 0 (keine Finanzschulden)', parts: [] };
+    }
+
+    // 4) Altpfad ohne jede gemeldete Komponente: die Restgroesse als Ganzes.
+    //    Mit Komponenten wird sie NICHT zusaetzlich addiert — ohne Quell-Tags
+    //    ist nicht belegbar, dass sie eine andere Tranche misst.
+    if (sum == null && residualMode === 'legacy' && residual != null) {
+      add(residual, 'total_debt − long_term_debt (' + residualReason + ')', true);
+    }
+
+    if (sum == null) return null;
+
+    const out = {
+      value: sum,
+      status: anyDerived ? 'derived' : 'measured',
+      source: parts.join(' + '),
+      parts
+    };
+    // Konsistenz zur Nettoschuldenbasis: wurde die Restgroesse als laufende
+    // Tranche verwendet UND daneben eine kurzfristige Bankschuld gemeldet, dann
+    // enthaelt `total_debt` diese Bankschuld nachweislich nicht (alle Tags der
+    // total_debt-Kette sind langfristige Konzepte). Die Nettoschuldenbruecke
+    // rechnet dann mit einer zu niedrigen Gesamtverschuldung.
+    if (tdScope != null && stRaw != null && stRaw > 0) {
+      out.totalDebtUnderstatedByM = stRaw;
+      addW((label ? label + ': ' : '') + 'total_debt stammt aus us-gaap:' + tdTag +
+        ' — einem langfristigen Schuldkonzept, das die gemeldeten kurzfristigen ' +
+        'Finanzschulden (' + stRaw.toFixed(1) + 'M) nicht enthaelt. Das operative Working ' +
+        'Capital beruecksichtigt sie; die Nettoschuldenbruecke rechnet insoweit mit einer ' +
+        'zu niedrigen Gesamtverschuldung.');
+    }
+    if (!currentPortionKnown) {
+      out.currentPortionUnknown = true;
+      addW((label ? label + ': ' : '') + 'laufende Faelligkeiten langfristiger Schulden sind ' +
+        'nicht gemeldet und aus den vorhandenen Tags nicht abgrenzbar — die kurzfristigen ' +
+        'Finanzschulden koennen dadurch zu niedrig ausgewiesen sein.');
+    }
+
+    // ── Gegenprobe gegen die Restgroesse ──────────────────────────────
+    let expected = null;
+    if (!anyDerived && residual != null) {
+      if (residualMode === 'legacy') {
+        expected = sum;                                  // Restgroesse = gesamte kurzfr. Finanzschuld
+      } else if (residualMode === 'current_portion' && lcRaw != null) {
+        expected = lcRaw + (residualCoversLeases && flRaw != null ? flRaw : 0);
+      }
+    }
+    if (expected != null) {
+      const d = Math.abs(residual - expected);
+      if (d > 1e-6 && d > 0.01 * Math.max(Math.abs(expected), Math.abs(residual))) {
+        addW((label ? label + ': ' : '') + 'gemeldete Schuldenkomponenten (' + expected.toFixed(1) +
+          'M) und die Restgroesse total_debt \u2212 long_term_debt (' + residual.toFixed(1) +
+          'M) widersprechen sich; die gemeldeten Komponenten haben Vorrang.');
+        out.discrepancyM = residual - expected;
+      }
+    }
+    return out;
+  };
+
+  // Belegte Null bzw. unbekannt.
+  const fallback = (v, label) => {
+    const td = num(v['total_debt']), ltd = num(v['long_term_debt']);
+    if (td != null && td === 0) {
+      return { value: 0, status: 'measured', source: 'total_debt = 0 (keine Finanzschulden)' };
+    }
+    if (td != null && ltd != null && td - ltd < 0 &&
+        (residualMode === 'current_portion' || residualMode === 'legacy')) {
+      return { value: null, status: 'unknown',
+        reason: (label ? label + ': ' : '') + 'total_debt < long_term_debt — inkonsistent' };
+    }
+    return { value: null, status: 'unknown',
+      reason: (label ? label + ': ' : '') + 'keine gemeldete Schuldenkomponente und ' +
+        (residualMode === 'blocked'
+          ? residualReason
+          : (td == null ? 'total_debt fehlt' : (ltd == null ? 'long_term_debt fehlt'
+             : 'keine verwertbare Restgroesse'))) };
+  };
+
+  const resolveFrom = (v, label) => compose(v, label) || fallback(v, label);
+
+  // ── Periodenkontext? ────────────────────────────────────────────────
+  const ctxFields = ['total_debt', 'long_term_debt', 'debt_short_term',
+                     'debt_long_term_current', 'finance_lease_current'];
+  const hasCtx = (typeof _seriesHasPeriodContext === 'function') &&
+    ctxFields.some(k => _seriesHasPeriodContext(f, k));
+
+  if (!hasCtx) {
+    // ── Altpfad: keinerlei Periodenmetadaten (manueller Import) ────────
+    // Die Indexverknuepfung ist hier die einzige verfuegbare Zuordnung.
+    return {
+      mode: 'index', warnings, periodAt: () => null,
+      at(i) {
+        const v = {};
+        ['debt_short_term', 'debt_long_term_current', 'finance_lease_current',
+         'total_debt', 'long_term_debt'].forEach(k => { v[k] = arr(k)[i]; });
+        return resolveFrom(v, null);
+      }
+    };
+  }
+
+  // ── Periodengetreuer Pfad ──────────────────────────────────────────
+  // Leitserie ist current_liabilities: das OWC wird gegen genau diesen
+  // Bilanzstichtag gebildet. Fehlt sie, fuehrt total_debt.
+  const leadField = (Array.isArray(f.current_liabilities) && f.current_liabilities.length > 0 &&
+                     meta['current_liabilities'] && Array.isArray(meta['current_liabilities'].periods))
+    ? 'current_liabilities' : 'total_debt';
+  const inputs = [{ name: leadField, values: f[leadField], meta: meta[leadField] || {}, required: true }];
+  ['total_debt', 'long_term_debt', 'debt_short_term', 'debt_long_term_current', 'finance_lease_current']
+    .filter(k => k !== leadField)
+    .forEach(k => inputs.push({ name: k, values: f[k], meta: meta[k] || {}, required: false }));
+
+  const join = (typeof _joinPeriodKeyed === 'function')
+    ? _joinPeriodKeyed(inputs, (v, ctx) => resolveFrom(v, ctx.period),
+        { label: 'kurzfristige Finanzschulden (period-keyed)', requireSameUnit: false })
+    : { ok: false, values: [], meta: {} };
+
+  if (join.warnings) join.warnings.forEach(addW);
+  const jPeriods = (join.meta && Array.isArray(join.meta.periods)) ? join.meta.periods : [];
+
+  return {
+    mode: 'period', warnings,
+    periodAt: (i) => (jPeriods[i] != null ? jPeriods[i] : null),
+    at(i) {
+      if (!join.ok) {
+        return { value: null, status: 'unknown',
+          reason: (join.meta && join.meta.unavailable_reason) ||
+                  'kurzfristige Finanzschulden periodengetreu nicht bestimmbar' };
+      }
+      const e = join.values[i];
+      if (e == null) {
+        return { value: null, status: 'unknown',
+          reason: (jPeriods[i] ? jPeriods[i] + ': ' : '') +
+                  'kurzfristige Finanzschulden periodengetreu nicht bestimmbar' };
+      }
+      return e;
+    }
+  };
+}
+
 // Historische OWC-Reihe. Nur zeitlich zusammenhängende, vollständige Jahre ab
 // Index 0 (aktuellstes Geschäftsjahr) — die Reihe bricht beim ersten
 // unvollständigen Jahr ab, damit die Quote zum aktuellen Umsatzniveau passt
@@ -3912,60 +4235,154 @@ function _computeOwcHistory(f) {
   const years = [];
   const missing = [];
   const addMissing = (m) => { if (missing.indexOf(m) === -1) missing.push(m); };
-  const maxLen = Math.min(
-    (f.revenue || []).length,
-    (f.current_assets || []).length,
-    (f.current_liabilities || []).length,
-    10
-  );
+  const meta = f._v4_meta || {};
+
+  const std = _resolveShortTermDebtHistory(f);
+  // Bewusst dieselbe Liste, nicht eine Kopie: die Aufloesung je Periode laeuft
+  // erst waehrend der Schleife unten und traegt ihre Hinweise nach.
+  const warnings = std.warnings || [];
+  const periodMode = std.mode === 'period';
+
+  // ── Stichtagsgroessen ──────────────────────────────────────────────
+  // Im Periodenmodus fuehrt die Reihe der kurzfristigen Finanzschulden die
+  // Berichtsperioden; Umlaufvermoegen, Liquiditaet und kurzfristige
+  // Verbindlichkeiten werden ueber denselben Periodenschluessel gelesen.
+  const _byPeriod = (field) => {
+    const m = meta[field];
+    const values = Array.isArray(f[field]) ? f[field] : [];
+    const periods = (m && Array.isArray(m.periods)) ? m.periods : null;
+    if (!periods) return null;
+    const map = new Map();
+    for (let i = 0; i < values.length && i < periods.length; i++) {
+      if (periods[i] == null) continue;
+      if (!map.has(periods[i])) map.set(periods[i], values[i]);
+    }
+    return map;
+  };
+  const _stockMaps = periodMode
+    ? { current_assets: _byPeriod('current_assets'), current_liabilities: _byPeriod('current_liabilities'),
+        cash_and_equivalents: _byPeriod('cash_and_equivalents'), cash: _byPeriod('cash') }
+    : null;
+  const _stockAt = (field, i, period) => {
+    if (periodMode && period != null) {
+      const map = _stockMaps[field];
+      if (map != null) {
+        if (!map.has(period)) return { value: null, mismatch: true };
+        const v = map.get(period);
+        return { value: (v != null && isFinite(v)) ? Number(v) : null, mismatch: false };
+      }
+      // Reihe ohne Periodenmetadaten neben periodengefuehrten Reihen:
+      // ausdruecklicher Rueckfall auf die Position, kenntlich gemacht.
+      if (Array.isArray(f[field]) && f[field].length > 0) {
+        const w = 'Rueckfall auf die Array-Position: ' + field + ' fuehrt keine ' +
+          'Periodenmetadaten, waehrend die uebrigen Bilanzreihen periodengetreu ' +
+          'zugeordnet werden. Die Zuordnung ist damit fuer dieses Feld nicht belegt.';
+        if (warnings.indexOf(w) === -1) warnings.push(w);
+        return { value: at(f[field], i), mismatch: false, indexFallback: true };
+      }
+      return { value: null, mismatch: false };
+    }
+    return { value: at(f[field], i), mismatch: false };
+  };
+
+  // ── Zeitraumgroesse Umsatz ─────────────────────────────────────────
+  // Umsatz ist eine Zeitraum-, das OWC eine Stichtagsgroesse. Beide werden
+  // ueber das Geschaeftsjahr des Periodenendes zugeordnet; zusaetzlich wird
+  // der Abstand der Periodenenden geprueft (kein Rumpfjahr-Mix). Ohne
+  // Periodenmetadaten bleibt es beim Positionsbezug.
+  const _revMeta = meta['revenue'];
+  const _revPeriods = (_revMeta && Array.isArray(_revMeta.periods)) ? _revMeta.periods : null;
+  const _revByYear = new Map();
+  if (periodMode && _revPeriods && typeof _secPeriodYear === 'function') {
+    const rv = Array.isArray(f.revenue) ? f.revenue : [];
+    for (let i = 0; i < rv.length && i < _revPeriods.length; i++) {
+      const y = _secPeriodYear(_revPeriods[i]);
+      if (y == null || _revByYear.has(y)) continue;
+      _revByYear.set(y, { value: rv[i], period: _revPeriods[i] });
+    }
+  }
+  const _revAt = (i, period) => {
+    if (periodMode && _revPeriods && period != null && typeof _secPeriodYear === 'function') {
+      const y = _secPeriodYear(period);
+      const e = (y != null) ? _revByYear.get(y) : null;
+      if (!e) return { value: null, mismatch: true, reason: 'kein Umsatz fuer das Geschaeftsjahr von ' + period };
+      if (typeof _secPeriodDaysApart === 'function') {
+        const d = _secPeriodDaysApart(period, e.period);
+        if (d != null && d > 45) {
+          return { value: null, mismatch: true,
+            reason: 'Umsatzperiode ' + e.period + ' liegt ' + Math.round(d) + ' Tage neben dem Bilanzstichtag ' + period };
+        }
+      }
+      return { value: (e.value != null && isFinite(e.value)) ? Number(e.value) : null, mismatch: false };
+    }
+    if (periodMode && period != null && Array.isArray(f.revenue) && f.revenue.length > 0 && !_revPeriods) {
+      const w = 'Rueckfall auf die Array-Position: revenue fuehrt keine ' +
+        'Periodenmetadaten, waehrend die Bilanzreihen periodengetreu zugeordnet ' +
+        'werden. Die Zuordnung von Zeitraum- und Stichtagsgroesse ist damit nicht belegt.';
+      if (warnings.indexOf(w) === -1) warnings.push(w);
+      return { value: at(f.revenue, i), mismatch: false, indexFallback: true };
+    }
+    return { value: at(f.revenue, i), mismatch: false };
+  };
+
+  const maxLen = periodMode
+    ? Math.min(10, Math.max((f.revenue || []).length, (f.current_liabilities || []).length,
+                            (f.current_assets || []).length))
+    : Math.min((f.revenue || []).length, (f.current_assets || []).length,
+               (f.current_liabilities || []).length, 10);
   if (maxLen === 0) {
     if (!Array.isArray(f.current_assets) || f.current_assets.length === 0) addMissing('current_assets');
     if (!Array.isArray(f.current_liabilities) || f.current_liabilities.length === 0) addMissing('current_liabilities');
     if (!Array.isArray(f.revenue) || f.revenue.length === 0) addMissing('revenue');
-    return { years, missing };
+    return { years, missing, warnings };
   }
+
   for (let i = 0; i < maxLen; i++) {
-    const rev  = at(f.revenue, i);
-    const ca   = at(f.current_assets, i);
-    const cl   = at(f.current_liabilities, i);
-    const cae  = at(f.cash_and_equivalents, i);
-    const csh  = at(f.cash, i);
-    const cash = cae != null ? cae : csh;
-    const td   = at(f.total_debt, i);
-    const ltd  = at(f.long_term_debt, i);
+    const period = periodMode ? std.periodAt(i) : null;
+    if (periodMode && period == null) {
+      addMissing('Berichtsperiode[' + i + '] (keine periodengetreue Zuordnung)');
+      break;
+    }
+    const label = period != null ? period : String(i);
+
+    const revE = _revAt(i, period);
+    const caE  = _stockAt('current_assets', i, period);
+    const clE  = _stockAt('current_liabilities', i, period);
+    const caeE = _stockAt('cash_and_equivalents', i, period);
+    const cshE = caeE.value != null ? { value: null } : _stockAt('cash', i, period);
+    const rev  = revE.value;
+    const ca   = caE.value;
+    const cl   = clE.value;
+    const cash = caeE.value != null ? caeE.value : cshE.value;
 
     const gaps = [];
-    if (rev == null || !(rev > 0)) gaps.push(`revenue[${i}]`);
-    if (ca == null)   gaps.push(`current_assets[${i}]`);
-    if (cl == null)   gaps.push(`current_liabilities[${i}]`);
-    if (cash == null) gaps.push(`cash_and_equivalents[${i}]/cash[${i}]`);
+    if (rev == null || !(rev > 0)) gaps.push('revenue[' + label + ']' + (revE.reason ? ' (' + revE.reason + ')' : ''));
+    if (ca == null)   gaps.push('current_assets[' + label + ']');
+    if (cl == null)   gaps.push('current_liabilities[' + label + ']');
+    if (cash == null) gaps.push('cash_and_equivalents[' + label + ']/cash[' + label + ']');
 
-    // Kurzfristige Finanzschulden aus total_debt − long_term_debt.
-    let std = null, stdSource = null;
-    if (td != null && ltd != null) {
-      const d = td - ltd;
-      if (d >= 0) { std = d; stdSource = 'total_debt − long_term_debt'; }
-      else gaps.push(`short_term_debt[${i}] (total_debt < long_term_debt — inkonsistent)`);
-    } else if (td != null && td === 0) {
-      // Keinerlei Finanzschulden ⇒ auch keine kurzfristigen. Das ist ein
-      // gemessener Wert, keine Annahme.
-      std = 0; stdSource = 'total_debt = 0 (keine Finanzschulden)';
-    } else {
-      gaps.push(td == null ? `total_debt[${i}]` : `long_term_debt[${i}]`);
+    const stdE = std.at(i);
+    if (stdE == null || stdE.value == null) {
+      gaps.push('short_term_debt[' + label + ']' +
+        ((stdE && stdE.reason) ? ' (' + stdE.reason + ')' : ''));
     }
 
     if (gaps.length > 0) {
       gaps.forEach(addMissing);
       break;   // Abbruch — nur lückenlose, zeitlich passende Jahre verwenden
     }
-    const owc = (ca - cash) - (cl - std);
+    const owc = (ca - cash) - (cl - stdE.value);
     years.push({
-      index: i, revenue: rev, currentAssets: ca, cash, currentLiabilities: cl,
-      shortTermDebt: std, shortTermDebtSource: stdSource,
+      index: i, period, revenue: rev, currentAssets: ca, cash, currentLiabilities: cl,
+      shortTermDebt: stdE.value,
+      shortTermDebtSource: stdE.source || null,
+      shortTermDebtStatus: stdE.status || null,
+      shortTermDebtDerived: stdE.status === 'derived',
+      shortTermDebtDiscrepancyM: stdE.discrepancyM != null ? stdE.discrepancyM : null,
       owc, ratio: owc / rev
     });
   }
-  return { years, missing };
+  return { years, missing, warnings, periodKeyed: periodMode };
 }
 
 // Auflösung des Prognoseparameters "operatives Working Capital / Umsatz".
@@ -3992,12 +4409,23 @@ function _resolveOwcForForecast(mj) {
   else if (entry != null) ovRaw = entry;
   if (ovRaw == null && val.owc_pct_of_revenue != null) ovRaw = val.owc_pct_of_revenue;
 
+  const _stdSources = [];
+  hist.years.forEach(y => {
+    const lbl = (y.shortTermDebtSource || 'unbekannt');
+    if (_stdSources.indexOf(lbl) === -1) _stdSources.push(lbl);
+  });
   const base = {
     historicalRatio: histRatio,
     historyYears: hist.years,
     yearsAvailable: hist.years.length,
     minYears: OWC_MIN_YEARS,
-    missing: hist.missing
+    missing: hist.missing,
+    // V1.0.59: Herkunft der kurzfristigen Finanzschulden und alle
+    // Datenwiderspruechte, die bei ihrer Aufloesung aufgetreten sind.
+    shortTermDebtSources: _stdSources,
+    shortTermDebtDerived: hist.years.some(y => y.shortTermDebtDerived === true),
+    periodKeyed: hist.periodKeyed === true,
+    debtWarnings: (hist.warnings || []).slice()
   };
 
   if (ovRaw != null && isFinite(Number(ovRaw))) {
@@ -7104,7 +7532,56 @@ function _applyDebtComponentRebuild(mj, anchorYearHint) {
       }
       return null;
     };
-    for (const field of componentFields) {
+
+    // ── V1.0.59 · O-1: laufende Faelligkeiten nicht doppelt zaehlen ──────
+    // `us-gaap:LongTermDebt` ist die GESAMTE langfristige Verschuldung
+    // EINSCHLIESSLICH der laufenden Faelligkeiten (LongTermDebtCurrent +
+    // LongTermDebtNoncurrent). Die Tag-Kette von `debt_long_term_noncurrent`
+    // faellt an dritter Stelle auf genau dieses Konzept zurueck; `long_term_debt`
+    // beginnt sogar damit. Stammt der Wert der Gruppe `lt_noncurrent` aus
+    // `LongTermDebt`, deckt er die Gruppe `lt_current` bereits ab — sonst
+    // wuerde `debt_long_term_current` fuer dieselbe Periode ein zweites Mal
+    // addiert. Solche Felder werden deshalb ZUERST verarbeitet und belegen
+    // beide Gruppen fuer ihre Perioden.
+    const _sourceTag = (field) => {
+      const m = fundamentals._v4_meta && fundamentals._v4_meta[field];
+      const ref = m && typeof m.source_reference === 'string' ? m.source_reference : null;
+      if (!ref) return null;
+      const mm = ref.match(/^SEC EDGAR XBRL:\s*([A-Za-z0-9_]+)$/);
+      return mm ? mm[1] : null;
+    };
+    const _coversCurrentMaturities = (field) =>
+      _groupFor(field) === 'lt_noncurrent' && _sourceTag(field) === 'LongTermDebt';
+
+    // Gegenstueck: `us-gaap:DebtCurrent` ist "debt classified as current" und
+    // enthaelt die laufenden Faelligkeiten langfristiger Schulden BEREITS.
+    // Trifft ein solcher Kurzfristwert auf einen `LongTermDebt`-Wert (der sie
+    // ebenfalls enthaelt), ueberschneiden sich beide um genau diesen Betrag.
+    const _stCoversCurrentMaturities = (field) =>
+      _groupFor(field) === 'st' && _sourceTag(field) === 'DebtCurrent';
+    const _ltCurrentByPeriod = new Map();
+    {
+      const _lcVals = Array.isArray(fundamentals.debt_long_term_current)
+        ? fundamentals.debt_long_term_current : [];
+      const _lcMeta = fundamentals._v4_meta && fundamentals._v4_meta.debt_long_term_current;
+      const _lcPer  = _lcMeta && Array.isArray(_lcMeta.periods) ? _lcMeta.periods : null;
+      if (_lcPer) {
+        for (let i = 0; i < _lcVals.length && i < _lcPer.length; i++) {
+          if (_lcVals[i] == null || _lcPer[i] == null) continue;
+          if (!_ltCurrentByPeriod.has(_lcPer[i])) _ltCurrentByPeriod.set(_lcPer[i], _lcVals[i]);
+        }
+      }
+    }
+    const _inclusiveLtPeriods = new Set();
+    const _conflictPeriods    = new Map();
+
+    const _orderedFields = componentFields.slice().sort((a, b) => {
+      const ia = _coversCurrentMaturities(a) ? 0 : 1;
+      const ib = _coversCurrentMaturities(b) ? 0 : 1;
+      return ia - ib;
+    });
+
+    for (const field of _orderedFields) {
       const arr  = Array.isArray(fundamentals[field]) ? fundamentals[field] : [];
       const meta = fundamentals._v4_meta && fundamentals._v4_meta[field];
       const periods = meta && Array.isArray(meta.periods) ? meta.periods : null;
@@ -7137,6 +7614,41 @@ function _applyDebtComponentRebuild(mj, anchorYearHint) {
         if (group && !group.usedPerPeriod.has(period)) {
           group.usedPerPeriod.set(period, field);
         }
+        // Ein `LongTermDebt`-Wert deckt auch die laufenden Faelligkeiten ab:
+        // die Gruppe `lt_current` gilt fuer diese Periode als belegt.
+        if (_coversCurrentMaturities(field)) {
+          _inclusiveLtPeriods.add(period);
+          if (!_aliasGroups.lt_current.usedPerPeriod.has(period)) {
+            _aliasGroups.lt_current.usedPerPeriod.set(period, field);
+            warnings.push(field + ': period=' + period + ' stammt aus us-gaap:LongTermDebt ' +
+              '(enthaelt die laufenden Faelligkeiten bereits) — Gruppe lt_current gilt als belegt, ' +
+              'laufende Faelligkeiten werden nicht doppelt gezaehlt');
+          }
+        }
+        // Ueberschneidung DebtCurrent x LongTermDebt: beide enthalten die
+        // laufenden Faelligkeiten. Sind sie separat gemeldet, wird der Betrag
+        // genau einmal abgezogen; sonst ist die Ueberschneidung unbekannt und
+        // die Periode wird verworfen, statt einen Summenwert zu erfinden.
+        if (_stCoversCurrentMaturities(field) && !_aliasGroups.lt_current.usedPerPeriod.has(period)) {
+          // `DebtCurrent` enthaelt die laufenden Faelligkeiten bereits:
+          // `debt_long_term_current` darf fuer diese Periode nicht erneut
+          // addiert werden (sonst Doppelzaehlung wie bei O-1, nur kurzfristig).
+          _aliasGroups.lt_current.usedPerPeriod.set(period, field);
+          warnings.push(field + ': period=' + period + ' stammt aus us-gaap:DebtCurrent ' +
+            '(enthaelt die laufenden Faelligkeiten bereits) — Gruppe lt_current gilt als belegt');
+        }
+        if (_stCoversCurrentMaturities(field) && _inclusiveLtPeriods.has(period)) {
+          if (_ltCurrentByPeriod.has(period)) {
+            const _ov = _ltCurrentByPeriod.get(period);
+            periodMap.set(period, periodMap.get(period) - _ov);
+            warnings.push(field + ': period=' + period + ' (us-gaap:DebtCurrent) ueberschneidet sich ' +
+              'mit LongTermDebt um die laufenden Faelligkeiten (' + _ov + ') — einmal abgezogen');
+          } else {
+            _conflictPeriods.set(period, field + ' (us-gaap:DebtCurrent) und LongTermDebt enthalten ' +
+              'beide die laufenden Faelligkeiten; ihre Hoehe ist nicht gemeldet ' +
+              '(debt_long_term_current fehlt) — Ueberschneidung nicht aufloesbar');
+          }
+        }
         if (!metaMap.has(period)) {
           metaMap.set(period, {
             forms:     meta.forms     && meta.forms[i]     != null ? meta.forms[i]     : null,
@@ -7149,6 +7661,12 @@ function _applyDebtComponentRebuild(mj, anchorYearHint) {
       }
       if (addedAny) usedFields.push(field);
       else if (!droppedFields.find(d => d.startsWith(field))) droppedFields.push(field + ':no-anchor-match');
+    }
+    for (const [per, reason] of _conflictPeriods) {
+      if (periodMap.delete(per)) {
+        metaMap.delete(per);
+        warnings.push('period=' + per + ' verworfen: ' + reason);
+      }
     }
     const sortedPeriods = Array.from(periodMap.keys()).sort((a, b) => b.localeCompare(a));
     const series2    = sortedPeriods.map(p => periodMap.get(p));
@@ -7224,20 +7742,66 @@ function _applyDebtComponentRebuild(mj, anchorYearHint) {
 
   const _pkValid = _pkResult.series.length > 0 && _pkResult.series[0] != null && _pkResult.series[0] >= 0;
 
+  // ── V1.0.59 · O-1/A-4: Umfang des direkten Tags gegen die Komponenten ──
+  // Die 5-%-Schwelle unten schuetzt einen guten Direktwert vor einer
+  // verrauschten Komponentensumme. Sie darf aber nicht greifen, wenn das
+  // direkte Tag den Umfang der verwendeten Komponenten NACHWEISLICH nicht
+  // abdecken kann: alle Tags der `total_debt`-Kette sind langfristige
+  // Schuldkonzepte und enthalten weder kurzfristige Bankschulden/Commercial
+  // Paper (`debt_short_term`, `current_debt`) noch — ausser
+  // LongTermDebtAndCapitalLeaseObligations — Leasingverbindlichkeiten.
+  // Sonst ergaebe dieselbe Bilanz je nach zulaessiger Tag-Darstellung eine
+  // andere Gesamtverschuldung (und damit andere Nettoschulden).
+  const _TD_DIRECT_TAG_SCOPE = {
+    LongTermDebt:                           { shortTerm: false, leases: false },
+    LongTermDebtNoncurrent:                 { shortTerm: false, leases: false },
+    LongTermNotesPayable:                   { shortTerm: false, leases: false },
+    LongTermDebtAndCapitalLeaseObligations: { shortTerm: false, leases: true  }
+    // DebtAndCapitalLeaseObligations bewusst NICHT gelistet: Umfang aus der
+    // Taxonomie hier nicht zweifelsfrei belegbar ⇒ kein Vorrang, bisheriges
+    // Verhalten bleibt.
+  };
+  const _tdDirectTag = (() => {
+    const ref = _tdDirectMeta && typeof _tdDirectMeta.source_reference === 'string'
+      ? _tdDirectMeta.source_reference : null;
+    if (!ref) return null;
+    const m = ref.match(/^SEC EDGAR XBRL:\s*([A-Za-z0-9_]+)$/);
+    return m ? m[1] : null;
+  })();
+  const _tdScope = _tdDirectTag ? _TD_DIRECT_TAG_SCOPE[_tdDirectTag] : null;
+  const _usedShortTerm = (_pkResult.usedFields || [])
+    .some(k => k === 'debt_short_term' || k === 'current_debt');
+  const _usedLeases = (_pkResult.usedFields || [])
+    .some(k => k === 'finance_lease_current' || k === 'finance_lease_noncurrent');
+  const _scopeShortfall = [];
+  if (_tdScope) {
+    if (_usedShortTerm && !_tdScope.shortTerm) _scopeShortfall.push('kurzfristige Finanzschulden');
+    if (_usedLeases    && !_tdScope.leases)    _scopeShortfall.push('Leasingverbindlichkeiten');
+  }
+  const _tdScopeTooNarrow = _scopeShortfall.length > 0;
+
   if (_pkValid) {
     const compSeries = _pkResult.series;
     const comp0      = compSeries[0];
     const directTd0  = f.total_debt && f.total_debt[0];
     if (directTd0 != null && directTd0 > 0 && comp0 > 0 && _tdDirectIsCurrent) {
       const deviation = Math.abs(comp0 - directTd0) / directTd0;
-      if (comp0 > directTd0 && deviation > 0.05) {
+      if (comp0 > directTd0 && (deviation > 0.05 || _tdScopeTooNarrow)) {
+        if (_tdScopeTooNarrow && deviation <= 0.05) {
+          if (!mj.meta._debt_warnings) mj.meta._debt_warnings = [];
+          mj.meta._debt_warnings.push(
+            'Direktes Tag ' + _tdDirectTag + ' deckt ' + _scopeShortfall.join(' und ') +
+            ' nicht ab — period-keyed Komponenten haben Vorrang trotz Abweichung von nur ' +
+            (deviation * 100).toFixed(1) + '%.'
+          );
+        }
         f.total_debt = compSeries;
         totalDebtTouched = true;
         f._v4_meta['total_debt'] = {
           source_type: 'derived',
           source_reference: 'SEC EDGAR XBRL: period-keyed component rebuild',
           confidence: 'high',
-          notes: 'period-keyed Rebuild usedFields:' + _pkResult.usedFields.join('+') + ' anchor=' + _effectiveAnchor + ' deviation=' + (deviation*100).toFixed(1) + '%',
+          notes: 'period-keyed Rebuild usedFields:' + _pkResult.usedFields.join('+') + ' anchor=' + _effectiveAnchor + ' deviation=' + (deviation*100).toFixed(1) + '%' + (_tdScopeTooNarrow ? ' scope:' + _tdDirectTag + ' deckt ' + _scopeShortfall.join('+') + ' nicht ab' : ''),
           periods: _pkResult.periods || null, forms: _pkResult.forms || null,
           frames: _pkResult.frames || null, durations: _pkResult.durations || null, filed: _pkResult.filed || null,
         };
@@ -11699,6 +12263,18 @@ function modelDcf(mj, scenarios, fcfStartOverride, fcfStartMeta) {
         `Bei wachsenden, working-capital-intensiven Geschäftsmodellen ist der Fair Value dadurch zu hoch.`
       );
     }
+
+    // V1.0.59: Herkunft der kurzfristigen Finanzschulden und jeder bei ihrer
+    // Aufloesung festgestellte Datenwiderspruch werden ausgewiesen — eine
+    // abgeleitete Restgroesse darf nicht als Messung erscheinen (Befund A-4).
+    if ((owcInfo.shortTermDebtSources || []).length > 0) {
+      warnings.push(
+        `Kurzfristige Finanzschulden im Working Capital: ${owcInfo.shortTermDebtSources.join(' · ')}` +
+        (owcInfo.shortTermDebtDerived ? ' — enthält eine ABGELEITETE Restgröße, keine gemeldete Komponente' : '') +
+        (owcInfo.periodKeyed ? ' · periodengetreu zugeordnet' : '')
+      );
+    }
+    (owcInfo.debtWarnings || []).slice(0, 4).forEach(w => warnings.push('⚠ Schuldenabgrenzung: ' + w));
 
     // Vereinfachung ausdrücklich kennzeichnen (gilt in ALLEN Quellen-Zweigen).
     warnings.push(`⚠ ${OWC_STOCK_SIMPLIFICATION_NOTE}`);

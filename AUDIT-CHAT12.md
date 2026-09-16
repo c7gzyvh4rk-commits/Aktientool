@@ -21,16 +21,19 @@ und diese Auswertung.
 | A-1 | **behoben** | Korrekturchat 12A, V1.0.58, Branch `claude/chat12a-dcf-consistency` |
 | A-2 | **behoben** | Korrekturchat 12A, V1.0.58, Branch `claude/chat12a-dcf-consistency` |
 | A-3 | **behoben** | Korrekturchat 12A, V1.0.58, Branch `claude/chat12a-dcf-consistency` |
-| A-4 | **offen** | — (Nachweis `B5` bleibt als Fehlernachweis grün) |
+| A-4 | **behoben** | Korrekturchat 12B, V1.0.59, Branch `claude/chat12b-debt-periods` |
 | A-5 | **offen** | — (Nachweis `B6` bleibt als Fehlernachweis grün) |
 | A-6 | **offen** | — (Nachweis `B7` bleibt als Fehlernachweis grün) |
 | A-7 | **offen** | — (Nachweis `B8` bleibt als Fehlernachweis grün) |
-| O-1 bis O-3 | **unverändert offen** | nicht bestätigt, nicht angefasst |
+| O-1 | **bestätigt und behoben** | Korrekturchat 12B, V1.0.59 (Reproduktion am echten Importweg) |
+| O-2 | **bestätigt und behoben** | Korrekturchat 12B, V1.0.59 (Reproduktion am echten Importweg) |
+| O-3 | **unverändert offen** | nicht bestätigt, nicht angefasst |
 
 Die Nachweise `B1`–`B4` (A-1, A-2, A-3) wurden in Korrekturchat 12A in
 **Regressionstests des richtigen Verhaltens** umgewandelt (`R1`–`R9` in
-`tests/audit-chat12.test.mjs`). `B5`–`B8` bleiben ausdrücklich
-Befund-Nachweise: die zugehörigen Befunde sind offen.
+`tests/audit-chat12.test.mjs`). `B5` (A-4) wurde in Korrekturchat 12B ebenso
+umgewandelt — in `R10`–`R15`, die zusätzlich O-1 und O-2 absichern. `B6`–`B8`
+bleiben ausdrücklich Befund-Nachweise: A-5 bis A-7 sind offen.
 
 ---
 
@@ -65,6 +68,7 @@ und keine Laufzeit- oder Sicherheitsprüfung.
 | `npm test` auf `3544bcf` (Baseline, selbst ausgeführt) | 1700 Rechen-Assertions · 434 Fixture-Assertions · 148 Node-Tests · **Exit 0** |
 | `npm test` nach Ergänzung der Audittests | 1700 Rechen-Assertions · **162 Node-Tests** (148 + 14 neu) · **Exit 0** |
 | `npm test` nach Korrekturchat 12A (A-1/A-2/A-3 behoben, B1–B4 → R1–R9) | 1700 Rechen-Assertions · 434 Fixture-Assertions · **167 Node-Tests** · **Exit 0** |
+| `npm test` nach Korrekturchat 12B (A-4/O-1/O-2 behoben, B5 → R10–R15) | 1700 Rechen-Assertions · 434 Fixture-Assertions · **172 Node-Tests** · **Exit 0** |
 
 Keine bestehende Testerwartung wurde geändert. Die neuen Tests sind in zwei
 Gruppen getrennt:
@@ -77,8 +81,14 @@ Gruppen getrennt:
   gelten muss.
 * **R1–R9 (Regression, ergänzt in Korrekturchat 12A)** — ersetzen `B1`–`B4`,
   nachdem A-1, A-2 und A-3 behoben sind, und sichern das richtige Verhalten ab.
-  `B5`–`B8` bleiben unverändert Befund-Nachweise der weiterhin offenen
-  Befunde A-4 bis A-7.
+* **R10–R15 (Regression, ergänzt in Korrekturchat 12B)** — ersetzen `B5`,
+  nachdem A-4 behoben ist, und sichern zusätzlich die bestätigten und
+  behobenen Prüfpunkte O-1 und O-2 ab. `R12`–`R15` laufen über den
+  **produktiven Importweg** (`_extractWithFallback` → `_applySecDerivations`
+  → `_buildSecMasterJson` → `applyDerivedFieldsV4`), also über dieselbe
+  Kette wie der Live-Abruf, statt über von Hand gebaute `fundamentals`.
+  `B6`–`B8` bleiben unverändert Befund-Nachweise der weiterhin offenen
+  Befunde A-5 bis A-7.
 
 ---
 
@@ -207,6 +217,18 @@ Gruppen getrennt:
 
 ### A-4 · Kurzfristige Finanzschulden nur als Restgröße — kippt Working Capital und Fair Value
 
+* **Status: BEHOBEN** in Korrekturchat 12B (V1.0.59). Der Befund wurde
+  zunächst am unveränderten Code reproduziert und anschließend über den
+  **produktiven Importweg** als echter Importfehler nachgewiesen — nicht nur
+  als synthetisch inkonsistenter Datensatz (siehe „Ursache am Importpfad"
+  unten). Neu ist `_resolveShortTermDebtHistory()` im `DCF-CORE-BLOCK`:
+  die kurzfristigen Finanzschulden entstehen vorrangig aus den gemeldeten
+  Komponenten (`debt_short_term` + laufende Fälligkeiten + laufendes
+  Finanzierungsleasing), überschneidungsbewusst nach den tatsächlichen
+  Tag-Definitionen. Die Restgröße `total_debt − long_term_debt` ist nur noch
+  ein ausdrücklich als **abgeleitet** gekennzeichneter Rückfall und nur dort
+  zulässig, wo Umfang **und** Stichtag zusammenpassen. Regressionstests
+  `R10`–`R15`; im Browser geprüft.
 * **Schweregrad:** hoch (Prioritäten 1, 4)
 * **Funktion:** `_computeOwcHistory()` (Z. 3943–3955, Bestand in Z. 3961):
   `std = total_debt[i] − long_term_debt[i]`. Das separat extrahierte Feld
@@ -236,6 +258,69 @@ Gruppen getrennt:
   als abgeleitet kennzeichnen. Zusätzlich eine Plausibilitätssperre:
   `total_debt ≤ long_term_debt` bei gleichzeitig vorhandenem
   `debt_short_term > 0` ist ein Datenwiderspruch und keine gemessene Null.
+
+#### Ursache am Importpfad (Korrekturchat 12B)
+
+Der Auditfall wurde zunächst unverändert reproduziert (Restgröße 0 „gemessen",
+OWC −20 %, Fair Value +28,7 %). Anschließend wurde geprüft, ob der Importweg
+diese Konstellation überhaupt erzeugt. Dazu wurden synthetische SEC-Facts
+durch die **produktive Kette** geschickt (`_extractWithFallback` →
+`_applySecDerivations` → `_buildSecMasterJson` → `applyDerivedFieldsV4`).
+Ergebnis:
+
+| Fall | Filing-Tags | Verhalten vor der Korrektur |
+|---|---|---|
+| Rebuild greift | `LongTermDebt` 700 + `ShortTermBorrowings` 300 | `total_debt` wird auf 1.000 zurückgebaut — **kein** Fehler |
+| **ST-Anteil < 5 %** | `LongTermDebt` 700 + `ShortTermBorrowings` 20 | Rebuild-Schwelle greift nicht ⇒ `total_debt = 700`, Restgröße 0 „gemessen", obwohl `debt_short_term[0] = 20` für **dieselbe** Periode vorliegt |
+| **Komponente nur im aktuellen Jahr** | `ShortTermBorrowings` nur FY2025 | Jahr 0 richtig, Jahre 1–3 als 0 „gemessen"; der Median kippt ins Negative |
+| **Komponente veraltet** | `ShortTermBorrowings` nur FY2024–FY2022 | Für den aktuellen Stichtag liegt nichts vor; Restgröße 0 galt trotzdem als Messung |
+
+Damit ist A-4 ein **nachgewiesener Importfehler**, kein bloß synthetisch
+inkonsistenter Datensatz. Die eigentliche Ursache liegt tiefer als im Audit
+vermutet: **alle drei Tags der Kette `SEC_TAG_MAP.total_debt`**
+(`LongTermDebtAndCapitalLeaseObligations`, `LongTermDebt`,
+`DebtAndCapitalLeaseObligations`) sind *langfristige* Schuldkonzepte; keines
+enthält kurzfristige Bankschulden oder Commercial Paper. Die Restgröße misst
+deshalb bestenfalls die **laufende Tranche** langfristiger Schulden — und
+wenn `total_debt` und `long_term_debt` auf **dasselbe** Tag fallen
+(`LongTermDebt` ist Kettenplatz 2 bzw. 1), ist sie strukturell 0 und nie eine
+Messung.
+
+#### Was geändert wurde
+
+* **neu** `_resolveShortTermDebtHistory(f)` und `_secSourceTag(meta)` im
+  `DCF-CORE-BLOCK` (nutzen nur bereits deklarierte Helfer aus
+  `DCF_CORE_REQUIRED_HELPERS`; die Isolationsprüfung bleibt grün).
+  Vorrang je Berichtsperiode:
+  1. **gemeldete Komponenten** ⇒ `status: 'measured'`,
+  2. **Restgröße** `total_debt − long_term_debt`, nur bei nachweislich
+     passendem Umfang ⇒ `status: 'derived'`,
+  3. **belegte Null** (`total_debt = 0`) ⇒ gemessene 0,
+  4. sonst **unbekannt mit Begründung** — das Jahr gilt als unvollständig.
+* **Überschneidungen nach Tag-Definition**, statt pauschaler Addition:
+  `us-gaap:DebtCurrent` enthält die laufenden Fälligkeiten bereits, also wird
+  `debt_long_term_current` dann *nicht* zusätzlich addiert;
+  `ShortTermBorrowings`/`CommercialPaper` decken sie nicht ab, also schon;
+  `FinanceLeaseLiabilityCurrent` ist ein eigenes Konzept und wird addiert —
+  außer die als laufende Tranche verwendete Restgröße enthält es bereits
+  (`LongTermDebtAndCapitalLeaseObligations`).
+* **Belegte Null, fehlender Wert und Widerspruch bleiben getrennt.** Ein
+  Widerspruch zwischen Komponenten und Restgröße erzeugt keinen scheinbar
+  gemessenen Wert mehr: die gemeldeten Komponenten haben Vorrang, und die
+  Abweichung wird als `shortTermDebtDiscrepancyM` geführt und im
+  Bewertungsausweis genannt.
+* **Gleiche Schuldenbasis für OWC und Nettoschulden.** Der
+  Komponenten-Rebuild ersetzt den direkten `total_debt`-Wert jetzt auch
+  unterhalb der 5-%-Schwelle, wenn das direkte Tag den Umfang der verwendeten
+  Komponenten nachweislich nicht abdecken kann. Bleibt eine Lücke bestehen
+  (Restgröße als laufende Tranche *und* separat gemeldete kurzfristige
+  Bankschulden), wird ausdrücklich ausgewiesen, dass die Nettoschuldenbrücke
+  insoweit mit einer zu niedrigen Gesamtverschuldung rechnet.
+* **Altdaten ohne Periodenmetadaten** (manueller Import) behalten den
+  Positionsbezug; er wird als `status: 'derived'` und `periodKeyed: false`
+  kenntlich gemacht. Ohne Metadaten wird die Restgröße **nicht** zusätzlich
+  zu einer gemeldeten Komponente addiert — sonst entstünde eine
+  Doppelzählung.
 
 ### A-5 · Verwässerung endet im Terminalwert bei Jahr 10
 
@@ -294,34 +379,119 @@ Gruppen getrennt:
 
 ---
 
-## 3 · Offene Prüfpunkte (nicht bestätigt)
+## 3 · Prüfpunkte
 
-### O-1 · Mögliche Doppelzählung laufender Fälligkeiten im Debt-Komponenten-Rebuild
+### O-1 · Doppelzählung laufender Fälligkeiten im Debt-Komponenten-Rebuild
 
-`SEC_TAG_MAP.debt_long_term_noncurrent` (Z. 24668) enthält an dritter Stelle
-`LongTermDebt`. Dieses us-gaap-Konzept schließt die laufenden Fälligkeiten
-ein. `debt_long_term_current` (`LongTermDebtCurrent`) liegt in einer anderen
-Alias-Gruppe, sodass die Dedup-Logik in
-`buildPeriodAlignedComponentSeries()` (Z. 6991 ff.) nicht greift. Bei einem
-Filer, der `LongTermDebt` und `LongTermDebtCurrent` meldet, aber kein
-`LongTermDebtNoncurrent`, würde der Rebuild die laufenden Fälligkeiten doppelt
-zählen und (bei Abweichung > 5 %) den direkten Wert ersetzen.
-**Nicht bestätigt** — dafür wären echte SEC-Facts eines solchen Filers nötig;
-in dieser Sitzung wurde kein Live-Abruf ausgeführt.
+* **Status: BESTÄTIGT und BEHOBEN** in Korrekturchat 12B (V1.0.59).
+
+**Ausgangsvermutung (Chat 12).** `SEC_TAG_MAP.debt_long_term_noncurrent`
+enthält an dritter Stelle `LongTermDebt`. Dieses us-gaap-Konzept schließt die
+laufenden Fälligkeiten ein. `debt_long_term_current` (`LongTermDebtCurrent`)
+liegt in einer anderen Alias-Gruppe, sodass die Dedup-Logik in
+`buildPeriodAlignedComponentSeries()` nicht greift.
+
+**Reproduktion am echten Parser-/Rebuild-Pfad.** Ein synthetischer
+SEC-Facts-Fall wurde durch die produktive Kette geschickt. Dieselbe
+wirtschaftliche Lage — langfristige Schulden 1.000, davon 100 laufend —
+in zwei zulässigen Tag-Darstellungen:
+
+| Darstellung | `total_debt` vorher | `total_debt` nachher |
+|---|---|---|
+| `LongTermDebt` 1.000 + `LongTermDebtCurrent` 100 | **1.100** ❌ | 1.000 ✅ |
+| `LongTermDebtNoncurrent` 900 + `LongTermDebtCurrent` 100 | 1.000 ✅ | 1.000 ✅ |
+
+Die laufende Tranche wurde also doppelt gezählt, und die Nettoschulden
+unterschieden sich um 100M, obwohl die Bilanz identisch ist. Mit zusätzlich
+gemeldeten `ShortTermBorrowings` 50 ergaben beide Darstellungen vorher 1.100
+bzw. 1.050 und jetzt übereinstimmend **1.050**. Regressionstest `R13`.
+
+**Korrektur.** Ein `lt_noncurrent`-Wert, der aus `LongTermDebt` stammt, belegt
+in `buildPeriodAlignedComponentSeries()` jetzt **beide** Alias-Gruppen
+(`lt_noncurrent` *und* `lt_current`) für seine Perioden; solche Felder werden
+zuerst verarbeitet. Das Gegenstück auf der kurzfristigen Seite ist ebenfalls
+behandelt: `us-gaap:DebtCurrent` enthält die laufenden Fälligkeiten bereits
+und belegt deshalb ebenfalls `lt_current`. Treffen `DebtCurrent` und
+`LongTermDebt` aufeinander (beide enthalten die laufende Tranche) und ist
+`LongTermDebtCurrent` **nicht** gemeldet, ist die Überschneidung nicht
+auflösbar: die Periode wird verworfen und der direkte Wert bleibt stehen —
+statt eine scheinpräzise Summe zu bilden.
+
+**Verbleibende Unsicherheit — ausdrücklich benannt.** Die Tag-Semantik
+(`LongTermDebt` = gesamte langfristige Verschuldung **einschließlich** der
+laufenden Fälligkeiten, `LongTermDebtCurrent` + `LongTermDebtNoncurrent` =
+`LongTermDebt`) konnte in dieser Sitzung **nicht an der primären Quelle**
+belegt werden: `xbrl.fasb.org`, `www.fasb.org`, `www.sec.gov` und
+`data.sec.gov` sind vom Egress-Proxy dieser Umgebung gesperrt (HTTP 403 auf
+CONNECT), ein Live-Abruf war nicht möglich. Die Definition stützt sich daher
+auf **sekundäre Quellen** (übereinstimmende Wiedergaben der
+FASB-Dokumentationsbeschriftung) sowie auf zwei Argumente aus dem Code
+selbst, die unabhängig von der Taxonomie tragen:
+
+1. Die Ketten `long_term_debt = ['LongTermDebt','LongTermDebtNoncurrent',…]`
+   und `debt_long_term_noncurrent = ['LongTermDebtNoncurrent',…,'LongTermDebt']`
+   behandeln `LongTermDebt` und `LongTermDebtNoncurrent` bereits als
+   austauschbar; gleichzeitig steht `LongTermDebt` in der `total_debt`-Kette
+   als Stellvertreter für die **Gesamt**verschuldung. Beides kann nicht
+   zugleich gelten.
+2. Unabhängig davon, welche Lesart richtig ist, lieferten zwei zulässige
+   Tag-Darstellungen derselben Bilanz vorher **unterschiedliche**
+   Gesamtschulden. Das ist für sich ein Fehler.
+
+Ein realer Filing-Fall wurde **nicht** geprüft, weil kein Netzzugriff auf
+SEC-Daten bestand. Was fehlt, ist damit die Bestätigung an echten Facts eines
+Filers, der `LongTermDebt` und `LongTermDebtCurrent` ohne
+`LongTermDebtNoncurrent` meldet. Sollte sich die Tag-Semantik entgegen allen
+verfügbaren Quellen anders darstellen, wäre die Korrektur an genau einer
+Stelle zurückzunehmen (`_coversCurrentMaturities()` in
+`buildPeriodAlignedComponentSeries()` und `DEBT_TAG_SCOPE`).
 
 ### O-2 · Working-Capital-Historie ohne Periodenabgleich
 
-`_computeOwcHistory()` gleicht `revenue` (Zeitraumgröße) und
-`current_assets`/`current_liabilities`/`cash`/`total_debt`/`long_term_debt`
-(Stichtagsgrößen) ausschließlich über den Array-Index ab — ohne
-`_v4_meta.periods` und ohne `_joinPeriodKeyed()`, anders als die
-Nettoschuldenbrücke (V1.0.39) und die Bruttomarge (V1.0.52). In der
-TTM-Sicht ist die Ausrichtung konstruktionsbedingt gegeben (Fluss- und
-Stichtagsreihen entstehen alles-oder-nichts auf demselben Fensterraster).
-Für die FY-Sicht nach einem Komponenten-Rebuild mit abweichender
-Jahresabdeckung wurde **kein** reproduzierender Datensatz konstruiert.
+* **Status: BESTÄTIGT und BEHOBEN** in Korrekturchat 12B (V1.0.59).
+
+**Ausgangsvermutung (Chat 12).** `_computeOwcHistory()` glich `revenue`
+(Zeitraumgröße) und `current_assets`/`current_liabilities`/`cash`/
+`total_debt`/`long_term_debt` (Stichtagsgrößen) ausschließlich über den
+Array-Index ab — ohne `_v4_meta.periods` und ohne `_joinPeriodKeyed()`.
+Chat 12 konnte dafür keinen reproduzierenden Datensatz konstruieren.
+
+**Reproduktion.** Ein Filer mit einer Lücke in `LongTermDebtNoncurrent`
+(FY2024 fehlt) erzeugt über den echten Importweg Reihen unterschiedlicher
+Länge an derselben Position:
+
+```
+total_debt      [FY2025, FY2024, FY2023, FY2022] = 1000, 900, 800, 700
+long_term_debt  [FY2025,         FY2023, FY2022] =  700,      500, 400
+```
+
+Die Indexverknüpfung bildete für Position 1 `900 (FY2024) − 500 (FY2023) = 400`
+und für Position 2 `800 (FY2023) − 400 (FY2022) = 400`. Beide Werte sehen
+plausibel aus, mischen aber **zwei Geschäftsjahre** — ohne Warnung, obwohl
+`_v4_meta.periods` beider Reihen den Widerspruch ausweist. Richtig wäre:
+FY2025 = 300, FY2024 unbestimmbar. Regressionstest `R14`.
+
+**Korrektur.** `_computeOwcHistory()` verknüpft jetzt periodengetreu:
+
+* Die Stichtagsgrößen laufen über `_joinPeriodKeyed()` (dieselbe
+  Periodenlogik wie Nettoschuldenbrücke und Bruttomarge), geführt von
+  `current_liabilities`.
+* Die **Zeitraumgröße Umsatz** wird über das Geschäftsjahr des Periodenendes
+  zugeordnet und zusätzlich mit `_secPeriodDaysApart()` gegen den
+  Bilanzstichtag geprüft (max. 45 Tage) — so werden Zeitraum- und
+  Stichtagsgröße einander zugeordnet, ohne sie im Join zu vermischen.
+* Jedes Jahr trägt sein `period`-Kennzeichen; `periodKeyed: true` weist den
+  Modus aus.
+* **Bestehende Regel für Altdaten bleibt:** ohne jeden Periodenkontext
+  (manueller Import) gilt weiterhin der Positionsbezug. Er ist ausdrücklich
+  kenntlich (`periodKeyed: false`, `status: 'derived'`). Trägt ein einzelnes
+  Feld keine Periodenmetadaten, während die übrigen periodengetreu laufen,
+  wird der erzwungene Rückfall auf die Position als Warnung ausgewiesen.
 
 ### O-3 · Randfälle der Nullstellensuche im Reverse DCF
+
+* **Status: unverändert offen**, in Korrekturchat 12B nicht angefasst.
+
 
 In `solveReverseDcfGrowth()` (Z. 4757–4771):
 (a) Die Intervallhalbierung legt auch nach `if (vm == null) break` über
@@ -349,6 +519,12 @@ Marge 0,8–10 %, Kursen 1–12).
   Damit sind Tag-Auswahl, Einheiten und Periodenzuordnung realer Filings
   (Priorität 4) nur so weit geprüft, wie sie sich aus dem Code ergeben —
   siehe O-1.
+  **Nachtrag Korrekturchat 12B:** Die synthetischen Fälle laufen seitdem
+  durch den *produktiven Importweg* (Tag-Auswahl, Komponenten-Rebuild,
+  Periodenmetadaten) statt über von Hand gebaute `fundamentals`. Ein
+  **Live-Abruf** bei SEC war weiterhin nicht möglich — `data.sec.gov`,
+  `www.sec.gov` und `xbrl.fasb.org` sind vom Egress-Proxy dieser Umgebung
+  gesperrt. Die verbleibende Unsicherheit ist bei O-1 genau benannt.
 * Keine Browser-/DOM-Prüfung. Die beiden DOM-Tests
   (`_testManualAssumptionOverride`, `_testMarketDataOverrides`) bleiben
   ausgewiesen übersprungen; die Anzeigepfade wurden über die
