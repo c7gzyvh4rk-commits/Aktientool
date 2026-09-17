@@ -16,24 +16,53 @@ und diese Auswertung.
 
 ## 0 · Bearbeitungsstand der Befunde
 
-| Befund | Status | Erledigt in |
-|---|---|---|
-| A-1 | **behoben** | Korrekturchat 12A, V1.0.58, Branch `claude/chat12a-dcf-consistency` |
-| A-2 | **behoben** | Korrekturchat 12A, V1.0.58, Branch `claude/chat12a-dcf-consistency` |
-| A-3 | **behoben** | Korrekturchat 12A, V1.0.58, Branch `claude/chat12a-dcf-consistency` |
-| A-4 | **behoben** | Korrekturchat 12B (V1.0.59), **berichtigt** in 12B.1 (V1.0.60, Branch `claude/chat12b1-debt-scope-fixes`) |
-| A-5 | **offen** | — (Nachweis `B6` bleibt als Fehlernachweis grün) |
-| A-6 | **offen** | — (Nachweis `B7` bleibt als Fehlernachweis grün) |
-| A-7 | **offen** | — (Nachweis `B8` bleibt als Fehlernachweis grün) |
-| O-1 | **bestätigt und behoben** | Korrekturchat 12B (V1.0.59), **erweitert** in 12B.1 (V1.0.60) |
-| O-2 | **bestätigt und behoben** | Korrekturchat 12B (V1.0.59), Nachweis in 12B.1 auf fachlich passende Daten umgestellt |
-| O-3 | **unverändert offen** | nicht bestätigt, nicht angefasst |
+**Endstand nach Korrekturchat 12C (V1.0.63).** Die Spalte *Art* unterscheidet,
+was tatsächlich geschehen ist — ein behobener Rechen- oder Logikfehler, eine
+offengelegte Modellannahme oder ein abgesicherter Prüfpunkt. Die Bezeichnung
+„behoben" wird **nur** für nachweislich falsches Verhalten verwendet.
+
+| Befund | Status | Art | Erledigt in |
+|---|---|---|---|
+| A-1 | **behoben** | Fehler behoben | Korrekturchat 12A, V1.0.58, Branch `claude/chat12a-dcf-consistency` |
+| A-2 | **behoben** | Fehler behoben | Korrekturchat 12A, V1.0.58, Branch `claude/chat12a-dcf-consistency` |
+| A-3 | **behoben** | Fehler behoben | Korrekturchat 12A, V1.0.58, Branch `claude/chat12a-dcf-consistency` |
+| A-4 | **behoben** | Fehler behoben | Korrekturchat 12B (V1.0.59), **berichtigt** in 12B.1 (V1.0.60, Branch `claude/chat12b1-debt-scope-fixes`) |
+| A-5 | **offengelegt, NICHT wegkorrigiert** | Modellannahme offengelegt | Korrekturchat 12C, V1.0.63 (`R33`) |
+| A-6 | **behoben** | Fehler behoben | Korrekturchat 12C, V1.0.63 (`R34`) |
+| A-7 | **behoben** | Fehler behoben | Korrekturchat 12C, V1.0.63 (`R35`) |
+| O-1 | **bestätigt und behoben** | Fehler behoben | Korrekturchat 12B (V1.0.59), **erweitert** in 12B.1 (V1.0.60) |
+| O-2 | **bestätigt und behoben** | Fehler behoben | Korrekturchat 12B (V1.0.59), Nachweis in 12B.1 auf fachlich passende Daten umgestellt |
+| O-3 (b) | **bestätigt und behoben** | Fehler behoben | Korrekturchat 12C, V1.0.63 (`R36`, Fall A/B) |
+| O-3 (a) | **nicht mit Daten erreichbar, defensiv abgesichert** | Absicherung ohne belegten Fehlerfall | Korrekturchat 12C, V1.0.63 (`R36`, Fall D) |
+
+**Was A-5 ausdrücklich NICHT ist.** A-5 wurde **nicht** numerisch beseitigt.
+Die Rechnung ist bit-genau unverändert (in `R33` gegen die auf V1.0.62
+gemessenen Referenzzahlen geprüft). Geändert wurde ausschließlich, dass die
+zugrunde liegende Annahme benannt und mitgeführt wird. Ob eine dauerhaft
+fortgesetzte Verwässerung für ein bestimmtes Unternehmen die richtige Annahme
+wäre, ist damit **nicht** entschieden — bei anhaltend verwässernden
+Geschäftsmodellen bleibt der Wert je Aktie tendenziell zu hoch. Das ist eine
+offengelegte Modellvereinfachung, kein geschlossener Befund.
+
+**Weiterhin offen.** Alle in Abschnitt 4 genannten Prüfgrenzen des Audits
+bleiben bestehen; sie wurden in 12A–12C nicht geschlossen. Insbesondere: kein
+Live-Abruf bei SEC/Yahoo, kein reales Filing, keine Prüfung der Nicht-DCF-
+Modelle auf innere Konsistenz, keine Prüfung der Sektor-/
+Klassifikationstabellen, keine Laufzeit- oder Sicherheitsprüfung. Die
+Browser-Prüfungen in 12B.3 und 12C sind **punktuell** und decken nur die
+jeweils geänderten Anzeigen ab — keine Prüfung der gesamten Oberfläche.
 
 Die Nachweise `B1`–`B4` (A-1, A-2, A-3) wurden in Korrekturchat 12A in
 **Regressionstests des richtigen Verhaltens** umgewandelt (`R1`–`R9` in
 `tests/audit-chat12.test.mjs`). `B5` (A-4) wurde in Korrekturchat 12B ebenso
-umgewandelt — in `R10`–`R15`, die zusätzlich O-1 und O-2 absichern. `B6`–`B8`
-bleiben ausdrücklich Befund-Nachweise: A-5 bis A-7 sind offen.
+umgewandelt — in `R10`–`R15`, die zusätzlich O-1 und O-2 absichern. In
+Korrekturchat 12C wurden `B6`, `B7` und `B8` ersetzt: `B6` → `R33` (Test der
+erklärten Modellkonvention und ihres sichtbaren Hinweises), `B7` → `R34`,
+`B8` → `R35` (über den echten Engine-/Synthesizer-Pfad statt einer
+nachgebildeten Schlüsselauswahl). **Damit enthält `tests/audit-chat12.test.mjs`
+keinen Charakterisierungstest mehr**; alle Tests dieser Datei prüfen richtiges
+Verhalten. Einzige Einordnung: `R33` prüft eine offengelegte Annahme, keine
+Wertkorrektur.
 
 ---
 
@@ -72,6 +101,7 @@ und keine Laufzeit- oder Sicherheitsprüfung.
 | `npm test` nach Korrekturchat 12B.1 (Schuldenumfang berichtigt, R12/R14/R15 korrigiert, R16–R20 neu) | 1700 Rechen-Assertions · 434 Fixture-Assertions · **177 Node-Tests** · **Exit 0** |
 | `npm test` nach Korrekturchat 12B.2 (Schuldenauflösung als Gleichungssystem, R21–R27 neu) | 1700 Rechen-Assertions · 434 Fixture-Assertions · **184 Node-Tests** · **Exit 0** |
 | `npm test` nach Korrekturchat 12B.3 (Nichtnegativität im Solver, R28–R32 neu) | 1700 Rechen-Assertions · 434 Fixture-Assertions · **189 Node-Tests** · **Exit 0** |
+| `npm test` nach Korrekturchat 12C (A-5 offengelegt, A-6/A-7 behoben, O-3 abgesichert; B6–B8 → R33–R36) | 1700 Rechen-Assertions · 434 Fixture-Assertions · **190 Node-Tests** · **Exit 0** |
 
 Keine bestehende Testerwartung wurde geändert. Die neuen Tests sind in zwei
 Gruppen getrennt:
@@ -84,6 +114,17 @@ Gruppen getrennt:
   gelten muss.
 * **R1–R9 (Regression, ergänzt in Korrekturchat 12A)** — ersetzen `B1`–`B4`,
   nachdem A-1, A-2 und A-3 behoben sind, und sichern das richtige Verhalten ab.
+* **R33–R36 (Regression, ergänzt in Korrekturchat 12C)** — sie ersetzen
+  `B6`–`B8`: `R33` (A-5: erklärte Terminalannahme der Aktienprojektion samt
+  sichtbarem Hinweis, Herkunfts- und Snapshotinformation; Rechnung
+  unverändert), `R34` (A-6: direkte Werte, echte Null, zulässige Ableitung,
+  gesetzte Annahme, widersprechende Perioden, Nichtverfügbarkeit),
+  `R35` (A-7: echter Engine-/Synthesizer-Pfad, Schwellen unterhalb/auf/
+  oberhalb, nicht anwendbares DCF-Modell, kein doppelter Zuschlag, Fair Value
+  unverändert), `R36` (O-3: Nullstelle im Lückenintervall wird gefunden und
+  nachgerechnet, unvollständige Suche wird als solche gemeldet,
+  Bereichsgrenzen und Nichtverfügbarkeit, Robustheit gegen einen künstlich
+  eingespeisten Funktionsfehler).
 * **R28–R32 (Regression, ergänzt in Korrekturchat 12B.3)** — die
   Nichtnegativitätsprüfung des Solvers: `R28` (unmögliche Aufteilung ⇒
   Widerspruch, inkl. Engine-/Synthesizer-Pfad), `R29` (belegte Gesamtschuld 0),
@@ -356,6 +397,16 @@ strukturell 0 und nie eine Messung.
 
 ### A-5 · Verwässerung endet im Terminalwert bei Jahr 10
 
+> **Erledigt in Korrekturchat 12C (V1.0.63) — als OFFENGELEGTE
+> MODELLVEREINFACHUNG, nicht als behobene Überbewertung.** Gewählt wurde die
+> zweite der beiden unten empfohlenen Möglichkeiten. Die Rechnung bleibt
+> unverändert (Aktienprojektion in der zehnjährigen Detailphase, ab dem
+> Terminalzeitpunkt konstante Aktienzahl); die Annahme wird jetzt benannt,
+> maschinenlesbar mitgeführt und in Herkunfts- und Snapshotinformationen
+> festgehalten. Siehe Abschnitt 3d. **Der Fair Value ist dadurch nicht
+> gesunken** — bei dauerhaft verwässernden Geschäftsmodellen bleibt er
+> tendenziell zu hoch, das ist jetzt nur sichtbar.
+
 * **Schweregrad:** mittel (Prioritäten 2, 5)
 * **Funktion:** `forecastDcfCore()` (Z. 4380):
   `buybackAdjPvTvPerShare = pvTvAbs / sharesYear[10]`. Bei
@@ -379,6 +430,10 @@ strukturell 0 und nie eine Messung.
 
 ### A-6 · `computeMidCycleFcf()` setzt fehlende Abschreibungen still auf 0
 
+> **Behoben in Korrekturchat 12C (V1.0.63).** Wie empfohlen über die zentrale
+> Auflösung; ein unbelegter Wert liefert jetzt `status: 'insufficient_data'`
+> mit Begründung statt einer Zahl. Siehe Abschnitt 3d.
+
 * **Schweregrad:** niedrig (Priorität 5)
 * **Funktion:** `computeMidCycleFcf()` (Z. 11285):
   `daTtm = (ebitda[0] != null && ebit[0] != null) ? ebitda[0] − ebit[0] : 0`.
@@ -393,6 +448,11 @@ strukturell 0 und nie eine Messung.
   `assumptionRequired` `status: 'insufficient_data'` mit Begründung liefern.
 
 ### A-7 · Buyback-Sicherheitszuschlag greift im Mid-Cycle-Pfad nie
+
+> **Behoben in Korrekturchat 12C (V1.0.63).** Wie in der zweiten Empfehlung:
+> der Zuschlag stammt aus dem tatsächlich aktiven, anwendbaren DCF-Modell des
+> Routers, `dcf_midcycle` eingeschlossen. Schwellen und Zuschlagshöhen sind
+> unverändert; der Fair Value bleibt unberührt. Siehe Abschnitt 3d.
 
 * **Schweregrad:** niedrig (Priorität 2)
 * **Funktion:** Synthesizer Z. 16285:
@@ -950,9 +1010,223 @@ sind unverändert.
 
 ---
 
+## 3d · Korrekturchat 12C — A-5, A-6, A-7 und O-3 (V1.0.63)
+
+**Ausgangsstand.** Branch `claude/chat12b3-debt-nonnegative`, Commit
+`d39209493b91265363cdd54ff7c3add63529fa4b` (V1.0.62). Ergebnisbranch
+`claude/chat12c-audit-completion`. Testbaseline vor der Änderung selbst
+ausgeführt: 1700 Rechen-Assertions · 434 Fixture-Assertions · 189 Node-Tests ·
+Exit 0.
+
+### Quellenlage (wahrheitsgemäß)
+
+Alle Nachweise sind **synthetische Datensätze über die produktiven
+Aufrufwege** — keine Live-Validierung, kein reales Filing. Zusätzlich wurden
+die geänderten **sichtbaren Hinweise im Browser** geprüft (vorinstalliertes
+Chromium, Import über `importMasterJsonFromTextarea()`). Diese Browserprüfung
+ist **punktuell**: sie deckt die vier geprüften Datensätze und die dort
+sichtbaren Texte ab, nicht die Oberfläche insgesamt.
+
+### Reproduktion am unveränderten Ausgangsstand
+
+Alle vier Punkte wurden zuerst auf `d392094` reproduziert.
+
+| # | gemessen auf V1.0.62 |
+|---|---|
+| A-5 | `modelDcf` weist „Dilution (Aktienanzahl steigt) — im Hauptwert berücksichtigt" **ohne jeden Zeitbezug** aus; kein Hinweis auf die Begrenzung; keine maschinenlesbare Angabe (`_dilutionHorizonYears` u. a. `undefined`) |
+| A-6 | `computeMidCycleFcf`: mit D&A 150M; `ebitda[0] = null` → **100M, `status: 'ok'`**; ohne EBITDA → **100M, `status: 'ok'`**; echte Null (EBITDA = EBIT) → 100M — die drei Fälle sind **nicht unterscheidbar** |
+| A-7 | zyklischer Titel, Uplift **94,4 %**: `runValuationEngine` → `modelResults` enthält nur `dcf_midcycle`; `runFairValueSynthesizer` liefert `buybackAddon: 0`, `_buybackUpliftPct: 0` |
+| O-3 (b) | Datensatz mit Rasterlücke ab 17,0 %, Kurs 20,02: `no_solution_in_range` mit der Begründung „der Markt preist ein Wachstum unter −20 % ein" — **falsch**, die Lösung liegt bei 16,65 % |
+| O-3 (a) | mit eingespeister Lücke im eingeschachtelten Intervall: `status: 'ok'`, `impliedGrowthPct: 0,375 %`, Residuum **0,0366** je Aktie (echte Nullstelle 0,3446 %) — ein Wert ohne Nachweis |
+
+### A-5 · Terminalannahme ausdrücklich gemacht (keine Wertkorrektur)
+
+Die Rechnung ist unverändert: Aktienprojektion in den Detailjahren 1–10,
+Terminalwert geteilt durch die Aktienzahl des Jahres 10, ab dem
+Terminalzeitpunkt konstante Aktienzahl. `R33` prüft die Referenzzahlen auf
+1e-12 gegen V1.0.62.
+
+Neu ist allein die Offenlegung:
+
+* **Eine** Deklaration `TERMINAL_DILUTION` (Horizont, Basis des Terminalwerts,
+  Flags, erklärender Text) — Zahl und Text können nicht auseinanderlaufen.
+* Der sichtbare Hinweis nennt den **zeitlichen Umfang**: „Dilution
+  (Aktienanzahl steigt) — im Hauptwert berücksichtigt für die Detailjahre
+  1–10; ab dem Terminalzeitpunkt konstante Aktienzahl". Zusätzlich eine
+  ausdrückliche ⚠-Vereinfachungsnotiz, analog zu
+  `OWC_STOCK_SIMPLIFICATION_NOTE`.
+* Maschinenlesbar am Modellergebnis: `_dilutionHorizonYears`,
+  `_dilutionAppliedInDetailYears`, `_dilutionAppliedInTerminalValue`,
+  `_terminalShareCountBasis`, `_terminalShareCountM`,
+  `_sharesGrowthPaProjected`, `_terminalSharesGrowthPa`,
+  `_historicalDilutionExtrapolatedToPerpetuity`,
+  `_terminalDilutionSimplification`.
+* Herkunft und Snapshot führen die Annahme mit: `buildDataBasisReport().dilution`
+  (samt Warnung) und `buildSnapshotForecastTargets().dilution` /
+  `.terminal.share_count_basis`.
+* Auch die Buyback-Diagnose nennt dieselbe Grenze („Aktienreduktion nur bis
+  Jahr 10").
+
+Bewusst **nicht** getan: keine automatische ewige Fortschreibung historischer
+Verwässerungs- oder Rückkaufraten (`_terminalSharesGrowthPa` ist immer 0),
+keine neue Einstellungsoberfläche (`R33` prüft, dass eine erfundene Annahme
+wirkungslos bleibt), keine Änderung des Terminalwerts.
+
+Die **alternative Rechnung** bleibt als **klar bedingte Sensitivität**
+dokumentiert: unter der zusätzlichen Annahme dauerhaft fortgesetzter
+Verwässerung wüchse der Wert je Aktie in der ewigen Rente mit
+(1+tg)/(1+d) − 1; im geprüften Fall ergibt das einen um den **Faktor > 2**
+niedrigeren Terminalwert je Aktie. Das ist eine Annahme über das einzelne
+Unternehmen — sie wird nachgerechnet, aber **nicht** als Sollwert gesetzt.
+
+### A-6 · Fehlende D&A nicht still auf null
+
+`computeMidCycleFcf()` löst D&A jetzt über `_resolveMidCycleDa(mj, revTtm)`
+auf — periodengleich zur bewerteten Periode (`revenue[0]`, derselbe Umsatz,
+auf den die Funktion auch Margen- und CapEx-Median anwendet), in der
+**bestehenden** Vorrangfolge:
+
+1. ausdrückliche Nutzerannahme `da_pct_of_revenue` (auch 0) — derselbe Vorrang
+   wie im Bewertungskern (`_resolveDaForForecast`);
+2. direkt gemeldeter Wert der bewerteten Periode `EBITDA[0] − EBIT[0]`
+   (unverändert; eine gemeldete 0 ist eine **Messung** und bleibt eine);
+3. zulässige Ableitung: gemessener Median der D&A-Quote aus anderen Perioden
+   derselben Sicht × `revenue[0]`, ausdrücklich als **abgeleitet**
+   gekennzeichnet;
+4. sonst `status: 'insufficient_data'` mit Begründung — **keine** Zahl.
+
+| Fall | vorher | nachher |
+|---|---|---|
+| D&A gemeldet | 150M, `ok` | 150M, `ok`, `daBasis: 'reported_period'` |
+| **echte Null** (EBITDA = EBIT) | 100M, `ok` | 100M, `ok`, `daM: 0` — als Messung gekennzeichnet |
+| `ebitda[0] = null`, andere Perioden vorhanden | **100M**, `ok` | **150M**, `ok`, `daBasis: 'measured_ratio'`, `daDerived: true` |
+| ohne EBITDA | **100M**, `ok` | **`insufficient_data`**, `value: null`, Begründung |
+| ohne EBITDA, `fcf[0] = 150` | **Abweichungswarnung >30 % gegen eine unbelegte Zahl** | **keine** Warnung |
+| gesetzte Annahme 10 % | ignoriert | 100M D&A, FCF 200M, `daBasis: 'manual_override'` |
+| widersprechende Perioden (EBITDA TTM, Umsatz FY) | stillschweigend verwendet | `insufficient_data`, `daBasis: 'period_conflict'` |
+
+Der Bewertungspfad war bei gar nicht messbarer D&A schon vorher gesperrt
+(`_resolveDaForForecast` → kein Ergebnis). Neu ist, dass **auch die Anzeige
+und die Abweichungswarnung** keine unbelegte Zahl mehr führen und dass der
+Mid-Cycle-Hinweis die D&A-Herkunft nennt.
+
+### A-7 · Buyback-MoS-Zuschlag auch im Mid-Cycle-Pfad
+
+Neu ist `_resolveActiveDcfModelResult(valuationResult)`: es liefert **genau
+ein** Modellergebnis — die Reihenfolge von `router.activeModels` entscheidet,
+ergänzt um die feste Ersatzreihenfolge `['dcf', 'DCF', 'dcf_midcycle']`; nicht
+anwendbare Modelle werden übersprungen. Weil nur ein Ergebnis zurückkommt, ist
+eine Doppelzählung ausgeschlossen.
+
+| Fall (echter Engine-/Synthesizer-Pfad) | Uplift | Zuschlag vorher | nachher |
+|---|---|---|---|
+| zyklisch, −1 %/y Rückkäufe | 7,98 % | 0 | **0** (unter der Schwelle) |
+| zyklisch, −2 %/y | 16,80 % | 0 | **+5 pp** |
+| zyklisch, −3 %/y | 26,57 % | 0 | **+10 pp** |
+| zyklisch, −8 %/y | 94,38 % | **0** | **+10 pp** |
+| Uplift genau 25,0 / 25,0001 | — | — | **+5 pp / +10 pp** (Schwellen unverändert strikt) |
+| Uplift genau 10,0 / 10,0001 | — | — | **0 / +5 pp** |
+| DCF nicht anwendbar (Nettoschulden unbekannt), RIM anwendbar | 94,38 % | 0 | **0** |
+| gar kein Modell anwendbar | — | — | keine Sicherheitsmarge, kein Zuschlag, kein Fehler |
+| beide Schlüssel `dcf` und `dcf_midcycle` vorhanden | 94,38 % | — | **genau ein** Zuschlag (+10 pp) |
+
+**Der Fair Value ändert sich nicht.** In allen drei Bändern ist
+`synthesis.range.base` identisch (12,796287825470817); nur die
+Sicherheitsmarge und damit der Buy Price werden konservativer. Der
+buyback-adjustierte Wert bleibt Diagnose und wird kein Anker.
+
+### O-3 · Reverse-DCF-Nullstellen gezielt abgesichert
+
+Drei Festlegungen; Raster, Schrittweite, Abbruchtoleranz und Einschachtelung
+selbst bleiben unverändert — der Solver wurde nicht neu entwickelt.
+
+1. **Nachrechnung mit der echten Bewertungsfunktion.** Jede Nullstelle muss
+   im Suchbereich auswertbar sein **und** eine Residualtoleranz erfüllen
+   (`REVERSE_DCF_SEARCH.residualRelTol = 1e-3`, also 0,1 % des Zielkurses,
+   Untergrenze `1e-9`). Die Einschachtelung liefert nur dann einen Wert, wenn
+   sie mit einem **bestätigten** Vorzeichenwechsel über einem Intervall
+   innerhalb der Abbruchtoleranz endet; der Abbruch bei nicht auswertbarem
+   Intervallmittel und das Erreichen der Iterationsgrenze liefern **keinen**
+   Wert mehr. Gemessene Residuen echter Nullstellen liegen bei 4·10⁻⁷ bis
+   3·10⁻⁵ je Aktie, die Toleranzen bei 0,005 bis 0,5 — die Toleranz ist also
+   eng genug, um das unbelegte Intervallmittel (Residuum 0,0366 bei Toleranz
+   0,017) zu verwerfen.
+2. **Lücken im Suchraster werden eingegrenzt, nicht übersprungen.** Ist genau
+   ein Rand eines Rasterintervalls auswertbar, wird die
+   Auswertbarkeitsgrenze eingeschachtelt; liegt zwischen dem auswertbaren
+   Rand und ihr ein Vorzeichenwechsel, wird die Nullstelle regulär gesucht.
+3. **Unvollständige Suche ist keine bewiesene Nichtexistenz.** Bleibt ein
+   Rasterintervall unaufgelöst, entsteht der neue Status
+   `search_incomplete` statt `no_solution_in_range`; das Ergebnis führt
+   `searchComplete`, `uniquenessProven`, `unresolvedIntervalsPct`,
+   `evaluableRangePct` und die Residualtoleranz mit. Wird eine Nullstelle
+   gefunden, während Lücken offen sind, steht die fehlende Eindeutigkeit als
+   `caveat` am Ergebnis. Die Begründungen benennen jetzt die **tatsächlich
+   auswertbaren** Ränder statt die Rasterränder.
+
+| Fall (Datensatz mit Lücke ab 17,0 %) | vorher | nachher |
+|---|---|---|
+| Kurs 20,02 | `no_solution_in_range`, Begründung „Wachstum unter −20 %" | **`ok`, 16,654 %**, Residuum 4,1·10⁻⁶, nachgerechnet |
+| Kurs 20,034 | `no_solution_in_range` | **`ok`, 16,510 %** |
+| Kurs 20,00 / 19,50 / 5,00 / 25,00 | `no_solution_in_range` mit falscher Begründung | **`search_incomplete`**, unaufgelöst: 16,50–17,00 %, auswertbar: −20 bis 16,50 % |
+| lückenloser Referenzfall, Kurse 12 / 14,8 / 17 | `ok` | **unverändert `ok`** (−4,66 % / −1,62 % / +0,34 %), `searchComplete: true` |
+| lückenlos, Kurs 500 bzw. 0,50 | `no_solution_in_range` | **unverändert** `no_solution_in_range`, `searchComplete: true` |
+| Nettoschulden unbekannt | `net_debt_unknown` | unverändert |
+| Kern im ganzen Bereich ohne Wert | `not_evaluable` | unverändert |
+| **eingespeiste** Lücke im eingeschachtelten Intervall | `ok`, 0,375 %, Residuum 0,0366 | **`search_incomplete`**, kein Wert |
+
+Die letzte Zeile ist eine **Robustheitsprüfung**, kein Beleg für einen real
+auftretenden Bewertungsfehler — siehe die Einordnung von O-3 (a) unten.
+
+### Berichtigte Testerwartungen
+
+Die festgeschriebene Liste `DATA_BASIS_REQUIRED_HELPERS` in
+`tests/sec-ttm.test.mjs` wurde um `TERMINAL_DILUTION` ergänzt, weil der Ausweis
+der Datenbasis die Terminalannahme jetzt als Modellkonvention nennt. Sonst
+wurde **keine** fachlich korrekte Testerwartung angepasst; `R1`–`R32` bestehen
+unverändert.
+
+### Verbleibende Prüfgrenzen dieses Schrittes
+
+* **A-5 ist nicht behoben, sondern offengelegt.** Ob eine dauerhaft
+  fortgesetzte Verwässerung für ein bestimmtes Unternehmen zutrifft, bleibt
+  ungeprüft und wird vom Werkzeug nicht geschätzt.
+* Die Aussage zu **O-3 (a)** beruht auf einem Parameter-Scan
+  (72.000 Parametersätze, dichtes Raster). Er zeigt, dass **in diesem Umfang**
+  kein Fehlerfall konstruierbar ist — er ist **kein Beweis**, dass die Menge
+  der auswertbaren Wachstumsraten für jede denkbare Eingabe zusammenhängend
+  ist.
+* Die **Residualtoleranz** ist auf den Zielkurs bezogen. Bei einem extrem
+  steilen Wertverlauf könnte eine regulär eingeschachtelte Nullstelle sie
+  verfehlen; das Ergebnis wäre dann `search_incomplete` statt `ok` — also
+  konservativ, aber nicht ideal. In den geprüften Fällen liegt der Abstand bei
+  mehr als drei Größenordnungen.
+* Die **Browserprüfung** deckt vier Datensätze und die dort sichtbaren Texte
+  ab, nicht die Oberfläche insgesamt.
+* Kein Live-Abruf, kein reales Filing. Die Grenzen aus 12A, 12B und 12B.1–12B.3
+  bleiben bestehen.
+* Dies ist **keine Bestätigung**, dass der Rest des Werkzeugs fehlerfrei ist,
+  und keine Aussage über die Qualität der erzeugten Bewertungen.
+
+---
+
 ### O-3 · Randfälle der Nullstellensuche im Reverse DCF
 
-* **Status: unverändert offen**, in Korrekturchat 12B nicht angefasst.
+* **Bearbeitet in Korrekturchat 12C (V1.0.63) — mit unterschiedlichem
+  Ergebnis für die beiden Teilbefunde:**
+  * **(b) bestätigt und behoben.** Der übersprungene Vorzeichenwechsel an
+    einer Rasterlücke ist mit Daten erreichbar und führte zu
+    `no_solution_in_range` samt einer sachlich falschen Begründung, obwohl
+    eine Lösung im Suchbereich existiert. Reproduktion und Korrektur siehe
+    Abschnitt 3d.
+  * **(a) nicht mit Daten erreichbar.** Über 72.000 Parametersätze (dichtes
+    Raster, Schritt 0,05 pp) war die Menge der auswertbaren Wachstumsraten
+    stets ein ZUSAMMENHÄNGENDES Intervall. Ein eingeschachtelter
+    Vorzeichenwechsel kann deshalb keine Lücke enthalten, und der Abbruch bei
+    nicht auswertbarem Intervallmittel wird nicht erreicht. Der Pfad ist
+    trotzdem defensiv abgesichert und mit einem **künstlich eingespeisten
+    Funktionsfehler** geprüft (`R36`, Fall D). Das ist ausdrücklich **kein**
+    Nachweis eines real auftretenden Bewertungsfehlers.
 
 
 In `solveReverseDcfGrowth()` (Z. 4757–4771):
@@ -991,10 +1265,20 @@ Marge 0,8–10 %, Kursen 1–12).
   (`_testManualAssumptionOverride`, `_testMarketDataOverrides`) bleiben
   ausgewiesen übersprungen; die Anzeigepfade wurden über die
   HTML-erzeugenden Funktionen geprüft, nicht im gerenderten Zustand.
+  **Nachtrag Korrekturchat 12B.3 und 12C:** In diesen Schritten wurden die
+  jeweils GEÄNDERTEN Anzeigen im vorinstallierten Chromium geprüft (Import
+  über `importMasterJsonFromTextarea()`). Das schließt diese Auditgrenze
+  **nicht**: geprüft wurden einzelne Datensätze und die dort sichtbaren Texte,
+  nicht die Oberfläche insgesamt und nicht die beiden übersprungenen
+  DOM-Tests.
 * Die Nicht-DCF-Modelle (RIM, RIM-Buyback, DDM, EPV-Floor, P/TBV-Gordon,
   Excess Return) wurden nicht auf innere Konsistenz geprüft.
 * Die Gewichtung im Synthesizer, die Einstiegszonen-Logik und die
   Datenqualitäts-Gates wurden nur dort berührt, wo Befund A-7 sie betrifft.
+  **Nachtrag Korrekturchat 12C:** A-7 ist behoben; geprüft wurde dabei die
+  Auswahl des aktiven DCF-Modells, die bestehenden Buyback-Schwellen und die
+  Unberührtheit des Fair Values. Gewichtung, Einstiegszonen-Logik und
+  Datenqualitäts-Gates selbst bleiben darüber hinaus **ungeprüft**.
 * Bestehende Tests und HANDOFF-Erfolgsmeldungen wurden als Behauptungen
   behandelt: die Baseline (1700/148, Exit 0) habe ich auf `3544bcf` selbst
   ausgeführt und bestätigt. Die Aussage „Haupt-DCF, Reverse DCF und

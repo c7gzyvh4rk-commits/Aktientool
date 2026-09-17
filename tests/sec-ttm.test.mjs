@@ -760,13 +760,20 @@ test('der DATENBASIS-BLOCK laeuft in einer leeren Sandbox', () => {
   // fuer IHREN Stichtag selbst — mit derselben gemeinsamen Aufloesung wie die
   // Jahressicht. Ohne diese Helfer wuerde sie die Sperre entweder umgehen oder
   // muesste pauschal sperren.
+  // V1.0.63 (Korrekturchat 12C, Auditbefund A-5): `TERMINAL_DILUTION` kam
+  // hinzu. Der Ausweis der Datenbasis nennt jetzt den ZEITLICHEN UMFANG der
+  // Aktienprojektion (Detailjahre 1-10, danach konstante Aktienzahl) als
+  // Modellkonvention. Die Konvention steht in EINER Deklaration im Kernblock,
+  // damit Zahl und erklaerender Text nicht auseinanderlaufen; der Ausweis
+  // zieht sie deshalb als Deklaration mit, statt den Text zu kopieren.
   assert.deepEqual(Array.from(isoliert.DATA_BASIS_REQUIRED_HELPERS),
     ['_median', '_explicitNumber', 'DA_PROVISIONAL_LABEL', '_resolveDaForForecast',
      '_secSourceTag',
      '_debtScopeTables', '_debtCellsOfField', '_cellsDisjoint', '_cellsSubset',
      '_cellsMinus', '_debtCellLabels', '_debtVec', '_solveDebtEvidence',
      '_resolveDebtHistory', '_resolveTotalDebtHistory', '_seriesHasPeriodContext',
-     '_secPeriodYear', '_secPeriodDaysApart', '_joinPeriodKeyed']);
+     '_secPeriodYear', '_secPeriodDaysApart', '_joinPeriodKeyed',
+     'TERMINAL_DILUTION']);
   assert.deepEqual(Array.from(isoliert.DATA_BASIS_REQUIRED_BLOCKS), ['SEC-QUARTALS-BLOCK']);
   // Die Helfer sind in der Sandbox wirklich vorhanden — der Ausweis nennt
   // den D&A-Status, statt ihn stillschweigend auszulassen.

@@ -3901,6 +3901,40 @@ const OWC_STOCK_SIMPLIFICATION_NOTE =
   'die Zielquote wird NICHT modelliert; ein daraus resultierender einmaliger Mittelzu- ' +
   'oder -abfluss fehlt im Cashflow.';
 
+// ══ V1.0.63 (Auditbefund A-5) · Zeitlicher Umfang der Verwaesserung ══════
+// Die Aktienprojektion (sharesGrowthPa) laeuft ueber die zehnjaehrige
+// DETAILPHASE. Der Terminalwert wird durch die Aktienzahl des Jahres 10
+// geteilt; ab dem Terminalzeitpunkt bleibt die Aktienzahl im Modell KONSTANT.
+// Die Verwaesserung wird also nicht ewig fortgeschrieben.
+//
+// Das ist eine MODELLVEREINFACHUNG, die hier ausdruecklich offengelegt wird —
+// keine Aussage darueber, dass die Aktienzahl eines Unternehmens ab Jahr 11
+// tatsaechlich konstant bleibt. Eine dauerhaft fortgesetzte Verwaesserung
+// waere eine ANDERE Annahme; sie wuerde den Terminalwert je Aktie mit der
+// effektiven Rate (1+tg)/(1+d) − 1 fortschreiben und bei anhaltend
+// verwaessernden Geschaeftsmodellen zu einem niedrigeren Wert je Aktie
+// fuehren. Welche der beiden Annahmen zutrifft, haengt vom Einzelfall ab
+// (SBC-Politik, Emissionen, Rueckkaeufe) und wird vom Werkzeug NICHT
+// geschaetzt: es wird weder eine historische Verwaesserungs- noch eine
+// Rueckkaufrate automatisch in die Ewigkeit verlaengert.
+// Eine einzige Deklaration der Konvention — Zahl und Text stehen zusammen,
+// damit sie nicht auseinanderlaufen koennen. Die Detailphase ist im Kern mit
+// zehn Jahren festgeschrieben (forecastDcfCore, Schleife 1..10); `horizonYears`
+// benennt genau diese Groesse.
+const TERMINAL_DILUTION = {
+  horizonYears: 10,
+  terminalShareCountBasis: 'shares_year_10_constant',
+  appliedInDetailYears: true,
+  appliedInTerminalValue: false,
+  extrapolatedToPerpetuity: false,
+  note:
+    'Verwässerungs-Vereinfachung: Die projizierte Veränderung der Aktienzahl wirkt NUR in den ' +
+    'Detailjahren 1–10. Der Terminalwert wird mit der Aktienzahl des Jahres 10 gerechnet; ab dem ' +
+    'Terminalzeitpunkt ist die Aktienzahl im Modell konstant. Eine dauerhaft fortgesetzte ' +
+    'Verwässerung wird NICHT fortgeschrieben — bei anhaltend verwässernden Geschäftsmodellen ' +
+    'ist der Wert je Aktie dadurch tendenziell zu hoch.'
+};
+
 // Ohne manuelle Eingabe und ohne ausreichende Historie rechnet der Forecast
 // vorläufig mit 0. Dieser Wert ist vom Modell gesetzt — er ist ausdrücklich
 // KEINE Nutzerannahme und kein gemessener Nullbedarf.
@@ -5180,7 +5214,16 @@ function forecastDcfCore(fi, g1, tg, wacc, fade, opMarginOverridePct) {
     _fcfPerYearAbs: fcfPerYearAbs,
     _opMarginUsed: margin,
     _cashflowDefinition: 'FCFF = EBIT × (1 − t) + D&A − CapEx − ΔOWC',
-    _discountRateBasis: 'WACC'
+    _discountRateBasis: 'WACC',
+    // ── V1.0.63 (Auditbefund A-5) · Terminalannahme maschinenlesbar ──────
+    // Die Aktienprojektion endet mit der Detailphase; der Terminalwert wird
+    // durch sharesYear[10] geteilt. Das steht jetzt am Ergebnis, statt nur im
+    // Kommentar — damit kann kein Verbraucher die Annahme uebersehen.
+    _dilutionHorizonYears: TERMINAL_DILUTION.horizonYears,
+    _dilutionAppliedInTerminalValue: false,
+    _terminalShareCountBasis: 'shares_year_10_constant',
+    _terminalShareCount: sharesYear[10],
+    _terminalDilutionSimplification: TERMINAL_DILUTION.note
   };
 }
 
@@ -5221,7 +5264,17 @@ const REVERSE_DCF_SEARCH = Object.freeze({
   gHiPct: 40,
   gridStepPct: 0.5,
   tolerancePp: 1e-4,
-  maxIter: 100
+  maxIter: 100,
+  // V1.0.63 (Pruefpunkt O-3) · Residualtoleranz der Nachrechnung.
+  // Jede gefundene Nullstelle wird mit der ECHTEN Bewertungsfunktion
+  // nachgerechnet; sie gilt nur als geloest, wenn |Modellwert − Kurs| die
+  // Toleranz erfuellt. Bezug ist der Zielkurs je Aktie, weil das Residuum
+  // dieselbe Einheit hat. 0,1 % des Kurses ist eng genug, um ein
+  // unbelegtes Intervallmittel auszuschliessen, und weit genug, um eine
+  // regulaer eingeschachtelte Nullstelle (Breite 1e-4 pp) nicht zu
+  // verwerfen.
+  residualRelTol: 1e-3,
+  residualAbsTol: 1e-9
 });
 
 // Annahmen, die der Reverse DCF NICHT löst, sondern konstant hält.
@@ -5403,6 +5456,17 @@ function solveReverseDcfGrowth(mj, opts) {
       tolerancePp: S.tolerancePp,
       rootsFound: 0,
       rootCandidatesPct: [],
+      // V1.0.63 (Pruefpunkt O-3): Vollstaendigkeit der Suche und die
+      // Nachrechnung der Nullstellen werden in JEDEM Status mitgefuehrt.
+      searchComplete: null,
+      uniquenessProven: null,
+      unresolvedIntervalsPct: [],
+      evaluableRangePct: null,
+      evaluablePoints: null,
+      gridPoints: null,
+      residualTolerancePerShare: null,
+      rootResidualsPerShare: [],
+      caveat: null,
       modelVersion: DCF_CORE_MODEL_VERSION,
       valuationBasis: 'core_equity_value_per_share',
       valuationBasisLabel: DCF_CORE_DEFINITION_LABEL,
@@ -5490,50 +5554,165 @@ function solveReverseDcfGrowth(mj, opts) {
   }
 
   // ── Nullstellen einsammeln ────────────────────────────────────────
+  // V1.0.63 (Prüfpunkt O-3) — drei Festlegungen:
+  //  (1) JEDE Nullstelle wird mit der ECHTEN Bewertungsfunktion nachgerechnet
+  //      und muss die Residualtoleranz erfüllen. Bis V1.0.62 legte die
+  //      Intervallhalbierung AUCH nach dem Abbruch bei nicht auswertbarem
+  //      Intervallmittel (`if (vm == null) break`) das Intervallmittel als
+  //      Nullstelle ab — ein Wert ohne Nachweis, obwohl der Kommentar an
+  //      genau dieser Stelle "kein belastbarer Wert" lautet. Dasselbe galt,
+  //      wenn die Iterationsgrenze vor der Toleranz erreicht war.
+  //  (2) Ein Vorzeichenwechsel, dessen einer Rand NICHT auswertbar ist, wird
+  //      nicht mehr übersprungen. Stattdessen wird die Auswertbarkeitsgrenze
+  //      im Rasterintervall eingegrenzt; liegt zwischen dem auswertbaren Rand
+  //      und ihr ein Vorzeichenwechsel, wird die Nullstelle regulär
+  //      eingeschachtelt. Das ist der real auftretende Fall — er führte zu
+  //      `no_solution_in_range` samt falscher Begründung, obwohl eine Lösung
+  //      im Suchbereich existiert.
+  //  (3) Bleibt ein Rasterintervall trotzdem unaufgelöst, wird das im
+  //      Ergebnis geführt. Eine UNVOLLSTÄNDIGE Suche gilt dann NICHT als
+  //      bewiesene Nichtexistenz einer Lösung.
+  // Raster, Schrittweite, Abbruchtoleranz und Einschachtelung selbst bleiben
+  // unverändert — es wird nichts neu entwickelt, sondern abgesichert.
   const roots = [];
-  const pushRoot = (g) => {
-    for (const r0 of roots) if (Math.abs(r0 - g) <= 1e-6) return;
-    roots.push(g);
+  const rootResiduals = [];
+  const unresolved = [];      // Rasterintervalle ohne belastbare Aussage
+  const residualTol = Math.max(S.residualAbsTol, S.residualRelTol * Math.abs(price));
+  const fAt = (g) => {
+    const v = coreEquityValuePerShare(ctx, g, tg, wacc, opMarginPct);
+    return (v == null) ? null : (v - price);
   };
+  // Nachrechnung mit der echten Bewertungsfunktion. Nur ein Kandidat, der im
+  // Suchbereich liegt, dort auswertbar ist UND die Residualtoleranz erfüllt,
+  // gilt als Nullstelle.
+  const pushRoot = (g) => {
+    if (!(g >= S.gLoPct - 1e-9 && g <= S.gHiPct + 1e-9)) return false;
+    const f = fAt(g);
+    if (f == null || !(Math.abs(f) <= residualTol)) return false;
+    for (const r0 of roots) if (Math.abs(r0 - g) <= 1e-6) return true;
+    roots.push(g);
+    rootResiduals.push(f);
+    return true;
+  };
+  // Einschachtelung in einem gesicherten Vorzeichenwechsel. Endet sie NICHT
+  // mit einem bestätigten Vorzeichenwechsel über einem Intervall innerhalb der
+  // Abbruchtoleranz, entsteht KEINE Nullstelle (Rückgabe null).
+  const bisect = (lo, hi, flo, fhi) => {
+    let iter = 0;
+    while (hi - lo > S.tolerancePp && iter < S.maxIter) {
+      const mid = (lo + hi) / 2;
+      const fm = fAt(mid);
+      if (fm == null) return null;             // Lücke im Intervall: kein Nachweis
+      if (fm === 0) return mid;
+      if ((flo < 0) === (fm < 0)) { lo = mid; flo = fm; } else { hi = mid; fhi = fm; }
+      iter++;
+    }
+    if (hi - lo > S.tolerancePp) return null;  // Iterationsgrenze vor der Toleranz
+    if (flo == null || fhi == null) return null;
+    if ((flo < 0) === (fhi < 0)) return null;  // kein bestätigter Wechsel
+    return (lo + hi) / 2;
+  };
+  // Grenze zwischen auswertbarem und nicht auswertbarem Bereich eingrenzen.
+  // `gOk` ist auswertbar, `gGap` nicht; zurück kommt die letzte auswertbare
+  // Stelle samt ihrem Funktionswert.
+  const narrowToEvaluableEdge = (gOk, fOk, gGap) => {
+    let lo = gOk, hi = gGap, fLo = fOk, it = 0;
+    while (Math.abs(hi - lo) > S.tolerancePp && it < S.maxIter) {
+      const mid = (lo + hi) / 2;
+      const fm = fAt(mid);
+      if (fm == null) hi = mid; else { lo = mid; fLo = fm; }
+      it++;
+    }
+    return { g: lo, f: fLo };
+  };
+
   for (let i = 0; i < fs.length; i++) {
     if (fs[i] === 0) pushRoot(gs[i]);
   }
   for (let i = 0; i < fs.length - 1; i++) {
     const a = fs[i], b = fs[i + 1];
-    if (a == null || b == null) continue;
-    if (!(a < 0 && b > 0) && !(a > 0 && b < 0)) continue;
-    // Intervallhalbierung im gesicherten Vorzeichenwechsel.
-    let lo = gs[i], hi = gs[i + 1], flo = a;
-    let iter = 0;
-    while (hi - lo > S.tolerancePp && iter < S.maxIter) {
-      const mid = (lo + hi) / 2;
-      const vm = coreEquityValuePerShare(ctx, mid, tg, wacc, opMarginPct);
-      if (vm == null) break;              // Lücke im Intervall: kein belastbarer Wert
-      const fm = vm - price;
-      if (fm === 0) { lo = hi = mid; break; }
-      if ((flo < 0) === (fm < 0)) { lo = mid; flo = fm; } else { hi = mid; }
-      iter++;
+    if (a != null && b != null) {
+      if (!(a < 0 && b > 0) && !(a > 0 && b < 0)) continue;
+      const g = bisect(gs[i], gs[i + 1], a, b);
+      if (g == null || !pushRoot(g)) unresolved.push([gs[i], gs[i + 1]]);
+      continue;
     }
-    pushRoot((lo + hi) / 2);
+    if (a == null && b == null) continue;
+    // ── Genau ein Rand auswertbar ───────────────────────────────────
+    const aFirst = (a != null);
+    const gOk  = aFirst ? gs[i]     : gs[i + 1];
+    const fOk  = aFirst ? a         : b;
+    const gGap = aFirst ? gs[i + 1] : gs[i];
+    if (fOk === 0 && pushRoot(gOk)) continue;
+    const edge = narrowToEvaluableEdge(gOk, fOk, gGap);
+    if (edge.f === 0 && pushRoot(edge.g)) continue;
+    if (edge.f != null && fOk !== 0 && ((fOk < 0) !== (edge.f < 0))) {
+      const g = aFirst ? bisect(gOk, edge.g, fOk, edge.f)
+                       : bisect(edge.g, gOk, edge.f, fOk);
+      if (g != null && pushRoot(g)) continue;
+    }
+    // Bis zur Auswertbarkeitsgrenze ist kein Vorzeichenwechsel nachweisbar.
+    // Was JENSEITS der Grenze liegt, ist mit dieser Bewertungsfunktion nicht
+    // bestimmbar (der Kern liefert dort keinen positiven operativen Wert) —
+    // das Intervall bleibt deshalb ausdrücklich offen.
+    unresolved.push([gs[i], gs[i + 1]]);
   }
 
-  const rootInfo = { rootsFound: roots.length, rootCandidatesPct: roots.slice() };
+  // Auswertbare Ränder BENENNEN, statt den Rasterrand zu behaupten: bei
+  // Lücken am Rand ist der letzte auswertbare Punkt nicht der Bereichsrand.
+  const _evalIdx = [];
+  for (let i = 0; i < fs.length; i++) if (fs[i] != null) _evalIdx.push(i);
+  const _iFirst = _evalIdx[0], _iLast = _evalIdx[_evalIdx.length - 1];
+  const gFirstEval = gs[_iFirst], gLastEval = gs[_iLast];
+  const fFirstEval = fs[_iFirst], fLastEval = fs[_iLast];
+
+  const rootInfo = {
+    rootsFound: roots.length, rootCandidatesPct: roots.slice(),
+    searchComplete: unresolved.length === 0,
+    uniquenessProven: unresolved.length === 0,
+    unresolvedIntervalsPct: unresolved.map(iv => iv.slice()),
+    evaluableRangePct: [gFirstEval, gLastEval],
+    evaluablePoints: evaluable,
+    gridPoints: fs.length,
+    residualTolerancePerShare: residualTol,
+    rootResidualsPerShare: rootResiduals.slice()
+  };
 
   if (roots.length === 0) {
-    const first = fs.find(x => x != null);
-    const last  = fs.slice().reverse().find(x => x != null);
+    // V1.0.63 (Prüfpunkt O-3): Eine unvollständige Suche ist KEIN Nachweis,
+    // dass keine Lösung existiert. Sie bekommt deshalb einen eigenen Status
+    // und wird nicht mehr als `no_solution_in_range` ausgegeben.
+    if (unresolved.length > 0) {
+      const _iv = unresolved.slice(0, 4)
+        .map(iv => iv[0].toFixed(2) + '–' + iv[1].toFixed(2) + '%').join(', ');
+      return res('search_incomplete',
+        `Der Suchbereich ist nicht durchgehend auswertbar: der Bewertungskern liefert nur ` +
+        `zwischen ${gFirstEval.toFixed(2)}% und ${gLastEval.toFixed(2)}% Umsatzwachstum einen ` +
+        `positiven operativen Wert. In ${unresolved.length} Rasterintervall(en) (${_iv}` +
+        `${unresolved.length > 4 ? ', …' : ''}) ließ sich eine Nullstelle weder nachweisen noch ` +
+        `ausschließen. Das ist AUSDRÜCKLICH KEIN Nachweis, dass keine Lösung existiert — ` +
+        `unvollständig ist die Suche, nicht das Ergebnis. Eine einzelne Zahl wäre hier ` +
+        `Scheingenauigkeit.`,
+        Object.assign({}, common, rootInfo));
+    }
+    // Ohne unaufgelöste Intervalle ist das Raster durchgehend auswertbar; die
+    // auswertbaren Ränder sind dann die Bereichsränder. Sie werden trotzdem
+    // benannt, statt sie zu behaupten.
     let why;
-    if (first != null && first > 0) {
-      why = `Schon beim unteren Rand des Suchbereichs (${S.gLoPct}% Umsatzwachstum) liegt der ` +
-            `Modellwert über dem Kurs — der Markt preist ein Wachstum unter ${S.gLoPct}% ein. ` +
-            'Das liegt außerhalb des als aussagekräftig definierten Bereichs.';
-    } else if (last != null && last < 0) {
-      why = `Selbst beim oberen Rand des Suchbereichs (${S.gHiPct}% Umsatzwachstum) bleibt der ` +
-            `Modellwert unter dem Kurs — der Markt preist mehr als ${S.gHiPct}% ein. ` +
-            'Eine DCF-Ableitung ist dann nicht mehr aussagekräftig.';
+    if (fFirstEval != null && fFirstEval > 0) {
+      why = `Schon beim unteren Rand des Suchbereichs (${gFirstEval.toFixed(2)}% Umsatzwachstum) ` +
+            `liegt der Modellwert über dem Kurs — der Markt preist ein Wachstum darunter ein. ` +
+            `Das liegt außerhalb des als aussagekräftig definierten Bereichs ` +
+            `(${S.gLoPct}% bis ${S.gHiPct}%).`;
+    } else if (fLastEval != null && fLastEval < 0) {
+      why = `Selbst beim oberen Rand des Suchbereichs (${gLastEval.toFixed(2)}% Umsatzwachstum) ` +
+            `bleibt der Modellwert unter dem Kurs — der Markt preist mehr ein. Eine ` +
+            `DCF-Ableitung ist dann nicht mehr aussagekräftig ` +
+            `(Suchbereich ${S.gLoPct}% bis ${S.gHiPct}%).`;
     } else {
-      why = `Im Suchbereich ${S.gLoPct}% bis ${S.gHiPct}% wechselt der Modellwert das Vorzeichen ` +
-            'gegenüber dem Kurs nicht — es existiert keine Lösung.';
+      why = `Im durchgehend auswertbaren Suchbereich ${gFirstEval.toFixed(2)}% bis ` +
+            `${gLastEval.toFixed(2)}% wechselt der Modellwert das Vorzeichen gegenüber dem Kurs ` +
+            'nicht — es existiert dort keine Lösung.';
     }
     return res('no_solution_in_range', why, Object.assign({}, common, rootInfo));
   }
@@ -5548,10 +5727,23 @@ function solveReverseDcfGrowth(mj, opts) {
 
   const g = roots[0];
   const detail = coreValuationDetail(ctx, g, tg, wacc, opMarginPct);
+  // V1.0.63 (Prüfpunkt O-3): Gegenprobe mit der ECHTEN Bewertungsfunktion.
+  // Sie ist in pushRoot() bereits Bedingung; hier wird sie ausgewiesen, damit
+  // die Erfüllung der Residualtoleranz am Ergebnis nachvollziehbar ist.
+  const _residual = detail ? (detail.equityValuePerShare - price) : null;
   return res('ok', null, Object.assign({}, common, rootInfo, {
     impliedGrowthPct: g,
     checkValuePerShare: detail ? detail.equityValuePerShare : null,
-    residualPerShare: detail ? (detail.equityValuePerShare - price) : null
+    residualPerShare: _residual,
+    residualWithinTolerance: (_residual != null) ? (Math.abs(_residual) <= residualTol) : null,
+    // Bei Lücken im Suchraster ist die EINDEUTIGKEIT nicht bewiesen: der
+    // gefundene Wert ist nachgerechnet, eine zweite Lösung im unaufgelösten
+    // Intervall aber nicht ausgeschlossen.
+    caveat: (unresolved.length > 0)
+      ? ('Der gefundene Wert ist mit der Bewertungsfunktion nachgerechnet. Die Suche ist aber ' +
+         'nicht vollständig: ' + unresolved.length + ' Rasterintervall(e) sind nicht durchgehend ' +
+         'auswertbar, eine weitere Lösung ist dort nicht ausgeschlossen.')
+      : null
   }));
 }
 
@@ -5833,7 +6025,13 @@ const DCF_CORE_REQUIRED_HELPERS = Object.freeze([
   '_secPeriodDaysApart',            // Abstand zweier Periodenenden
   '_joinPeriodKeyed',               // periodengetreuer Join (SEC-Datenschicht)
   '_resolveNetDebtForDcfBridge',    // Nettoschuldenbrücke zum Eigenkapitalwert
-  'computeMidCycleFcf'              // Mid-Cycle-Marge; V1.0.48 ergänzt, siehe unten
+  'computeMidCycleFcf',             // Mid-Cycle-Marge; V1.0.48 ergänzt, siehe unten
+  // V1.0.63 (Auditbefund A-6): computeMidCycleFcf loest D&A ueber dieselbe
+  // zentrale Funktion auf wie der Kern — kein stiller Nullwert mehr.
+  '_resolveMidCycleDa'
+  // TERMINAL_DILUTION (Auditbefund A-5) steht IM Kernblock selbst und ist
+  // deshalb KEIN Helfer aus der Datenschicht — nur der Ausweis der Datenbasis
+  // muss sie mitziehen (DATA_BASIS_REQUIRED_HELPERS).
 ]);
 
 // ── V1.0.48: unabhängige Datenbasis der Eingabegrenze ────────────────────
@@ -12195,6 +12393,82 @@ function rimCoreBuybackAdjusted(eps, bvps, dps, buybacksPerShare, g1, tg, coe, f
   };
 }
 
+// ── V1.0.63 (Auditbefund A-6) · D&A fuer den Mid-Cycle-Referenz-FCF ──────
+// Bis V1.0.62 galt in computeMidCycleFcf(): liegt (EBITDA − EBIT) der
+// bewerteten Periode nicht vor, ist D&A = 0. Eine ECHTE Null war damit von
+// einer FEHLENDEN Angabe nicht unterscheidbar — im Widerspruch zur erklaerten
+// Regel "ein unbelegter Nullwert ist keine Messung" (V1.0.56). Der
+// ausgewiesene Referenz-FCF war dadurch zu niedrig, ohne das zu kennzeichnen,
+// und die 30-%-Abweichungswarnung schlug gegen eine unbelegte Zahl an.
+//
+// Aufgeloest wird jetzt in der BESTEHENDEN Vorrangfolge, periodengleich zur
+// bewerteten Periode (revenue[0] — derselbe Umsatz, auf den diese Funktion
+// auch Margen- und CapEx-Median anwendet):
+//   1. ausdrueckliche Nutzerannahme (da_pct_of_revenue, auch 0) — derselbe
+//      Vorrang wie im Bewertungskern (_resolveDaForForecast)
+//   2. direkt gemeldeter Wert der bewerteten Periode: EBITDA[0] − EBIT[0]
+//      (unveraendert gegenueber V1.0.62; eine ausdrueckliche 0 ist hier eine
+//      Messung und bleibt eine)
+//   3. zulaessige Ableitung: gemessener Median der D&A-Quote aus anderen
+//      Perioden DERSELBEN Sicht × Umsatz[0] — ausdruecklich als abgeleitet
+//      gekennzeichnet
+//   4. sonst NICHT verfuegbar — kein stiller Nullwert
+// Widersprechen sich die Periodenarten von D&A-Quelle und bewerteter Periode,
+// ist der Wert nicht periodengleich und gilt ebenfalls als nicht verfuegbar.
+function _resolveMidCycleDa(mj, revTtm) {
+  const f  = (mj && mj.fundamentals) || {};
+  const v4 = f._v4_meta || {};
+  const da = _resolveDaForForecast(mj);
+
+  const _pt = (name) => {
+    const m = v4[name];
+    const t = m && m.period_type;
+    return (typeof t === 'string' && t.trim() !== '' && t.toLowerCase() !== 'unknown')
+      ? t.toUpperCase() : null;
+  };
+  const ptRevenue = _pt('revenue');
+  const ptDa      = _pt('ebitda');
+  const _conflict = () => ({
+    value: null, available: false, basis: 'period_conflict', derived: false,
+    label: 'EBITDA ist als ' + ptDa + ' gemeldet, der bewertete Umsatz als ' + ptRevenue +
+           ' — nicht periodengleich, deshalb keine verwertbare D&A-Angabe',
+    daSource: da.source
+  });
+  const periodConflict = !!(ptDa && ptRevenue && ptDa !== ptRevenue);
+
+  // 1) Ausdrueckliche Nutzerannahme — hat im gesamten Werkzeug Vorrang und
+  //    bezieht sich auf den Umsatz, ist also periodengleich zur Bewertung.
+  if (da.source === 'manual_override') {
+    return { value: revTtm * da.ratio, available: true, basis: 'manual_override',
+             derived: false, label: da.sourceLabel, daSource: da.source };
+  }
+
+  // 2) Direkt gemeldeter Wert der bewerteten Periode.
+  const ebitda0 = (Array.isArray(f.ebitda) && f.ebitda[0] != null) ? f.ebitda[0] : null;
+  const ebit0   = (Array.isArray(f.ebit)   && f.ebit[0]   != null) ? f.ebit[0]   : null;
+  if (ebitda0 != null && ebit0 != null) {
+    if (periodConflict) return _conflict();
+    return { value: ebitda0 - ebit0, available: true, basis: 'reported_period', derived: false,
+             label: 'direkt gemeldet: EBITDA − EBIT der bewerteten Periode' +
+                    (ptRevenue ? ' (' + ptRevenue + ')' : ''),
+             daSource: da.source };
+  }
+
+  // 3) Zulaessige Ableitung aus anderen Perioden derselben Sicht.
+  if (da.source === 'measured' && da.measuredRatio != null) {
+    if (periodConflict) return _conflict();
+    return { value: revTtm * da.measuredRatio, available: true, basis: 'measured_ratio',
+             derived: true,
+             label: 'abgeleitet: ' + da.sourceLabel +
+                    ' — die bewertete Periode selbst meldet kein EBITDA',
+             daSource: da.source };
+  }
+
+  // 4) Nicht belegt — kein stiller Nullwert.
+  return { value: null, available: false, basis: 'assumption_required', derived: false,
+           label: DA_PROVISIONAL_LABEL, daSource: da.source };
+}
+
 function computeMidCycleFcf(mj) {
   const f = mj.fundamentals || {};
   const v = mj.valuation || {};
@@ -12224,8 +12498,23 @@ function computeMidCycleFcf(mj) {
   const ebitNorm = revTtm * opMarginMed;
   const nopatNorm = ebitNorm * (1 - taxRate / 100);
   const capexNorm = revTtm * capexIntMed;
-  const daTtm = (f.ebitda && f.ebit && f.ebitda[0] != null && f.ebit[0] != null)
-    ? (f.ebitda[0] - f.ebit[0]) : 0;
+  // V1.0.63 (Auditbefund A-6): zentrale, periodengleiche D&A-Aufloesung statt
+  // eines stillen Nullwerts. Ein unbelegter Wert liefert einen begruendeten
+  // Nichtverfuegbarkeitsstatus — KEINE irrefuehrende Referenz-FCF-Zahl und
+  // damit auch keine daraus abgeleitete Abweichungswarnung.
+  const daInfo = _resolveMidCycleDa(mj, revTtm);
+  if (!daInfo.available) {
+    return {
+      value: null, status: 'insufficient_data',
+      reason: 'Abschreibungen (D&A) der bewerteten Periode nicht belegt (' + daInfo.label +
+              '). Ein unbelegter Nullwert ist keine Messung; ohne D&A entsteht hier kein ' +
+              'Referenz-FCF und keine Abweichungswarnung.',
+      opMarginMed: opMarginMed * 100, capexIntMed: capexIntMed * 100,
+      daAvailable: false, daBasis: daInfo.basis, daM: null,
+      daDerived: false, daLabel: daInfo.label, warning: null
+    };
+  }
+  const daTtm = daInfo.value;
   const fcfNorm = nopatNorm + daTtm - capexNorm;
 
   const fcfTtm = (f.fcf && f.fcf[0]) || null;
@@ -12234,7 +12523,9 @@ function computeMidCycleFcf(mj) {
     const dev = Math.abs(fcfTtm - fcfNorm) / Math.abs(fcfNorm);
     if (dev > 0.30) warning = `Mid-cycle FCF ${fcfNorm.toFixed(0)} weicht >30% vom TTM-FCF ${fcfTtm.toFixed(0)} ab`;
   }
-  return { value: fcfNorm, status: 'ok', opMarginMed: opMarginMed * 100, capexIntMed: capexIntMed * 100, warning };
+  return { value: fcfNorm, status: 'ok', opMarginMed: opMarginMed * 100, capexIntMed: capexIntMed * 100,
+           daAvailable: true, daBasis: daInfo.basis, daM: daTtm, daDerived: !!daInfo.derived,
+           daLabel: daInfo.label, warning };
 }
 
 // ── Nettoschulden für die DCF-Eigenkapitalbrücke ────────────────────
@@ -12605,10 +12896,15 @@ function modelDcf(mj, scenarios, fcfStartOverride, fcfStartMeta) {
     );
     if ((fi.sharesGrowthPa || 0) > 0.5) {
       warnings.push(
-        'Trennung der Effekte: operativer Wert/Aktie ist jahresweise verwässerungsadjustiert ' +
+        'Trennung der Effekte: operativer Wert/Aktie ist in den Detailjahren 1–' +
+        TERMINAL_DILUTION.horizonYears + ' jahresweise verwässerungsadjustiert ' +
         '(künftige Cashflows), die Nettoschulden dagegen einmalig zum Stichtag mit heutiger ' +
         'Aktienzahl abgezogen — keine doppelte Erfassung der Verwässerung.'
       );
+      // V1.0.63 (Auditbefund A-5): Der zeitliche Umfang der Verwässerung wird
+      // ausdrücklich genannt. "Verwässerung berücksichtigt" allein wäre
+      // unvollständig — sie endet mit der Detailphase.
+      warnings.push(`⚠ ${TERMINAL_DILUTION.note}`);
     }
     // ── SBC vs. Verwässerung: bewusst getrennte Größen ─────────────
     // 1. Aufwandswirkung der aktienbasierten Vergütung steckt bereits im
@@ -12635,8 +12931,13 @@ function modelDcf(mj, scenarios, fcfStartOverride, fcfStartMeta) {
       const gPct = fi.sharesGrowthPa || 0;
       let label;
       if (fi._possibleStockSplit) label = 'Split/Restatement-Verdacht (neutralisiert)';
-      else if (gPct < -0.5)        label = 'Buybacks (Aktienanzahl sinkt) — Diagnose';
-      else if (gPct >  0.5)        label = 'Dilution (Aktienanzahl steigt) — im Hauptwert berücksichtigt';
+      else if (gPct < -0.5)        label = 'Buybacks (Aktienanzahl sinkt) — Diagnose, ebenfalls nur bis Jahr '
+                                           + TERMINAL_DILUTION.horizonYears;
+      // V1.0.63 (Auditbefund A-5): "im Hauptwert berücksichtigt" nennt jetzt
+      // den zeitlichen Umfang. Die Aussage ohne Zeitbezug war unvollständig.
+      else if (gPct >  0.5)        label = 'Dilution (Aktienanzahl steigt) — im Hauptwert berücksichtigt '
+                                           + 'für die Detailjahre 1–' + TERMINAL_DILUTION.horizonYears
+                                           + '; ab dem Terminalzeitpunkt konstante Aktienzahl';
       else                          label = 'neutral (≈konstante Aktienanzahl)';
       warnings.push(
         `Shares-Projektion: ${s0.toFixed(1)}M (Jahr 0) → ${s10.toFixed(1)}M (Jahr 10) ` +
@@ -12666,7 +12967,8 @@ function modelDcf(mj, scenarios, fcfStartOverride, fcfStartMeta) {
         `Buyback-adjusted DCF (Diagnose): ${rBase._buybackAdjustedTotal.toFixed(2)} ` +
         `vs. operativer Wert ${rBase.total.toFixed(2)} (+${upliftPct.toFixed(1)}%) — beide vor ` +
         `Nettoschuldenabzug. Der konservative Wert vermeidet mögliches Double Counting von ` +
-        `FCF und Share-Reduction.`
+        `FCF und Share-Reduction. Auch die Diagnose rechnet die Aktienreduktion nur bis ` +
+        `Jahr ${TERMINAL_DILUTION.horizonYears}; danach ist die Aktienzahl im Modell konstant.`
       );
     }
     // Expose buyback-adjusted base for MoS addon calculation in synthesizer (diagnostic only)
@@ -12764,8 +13066,21 @@ function modelDcf(mj, scenarios, fcfStartOverride, fcfStartMeta) {
       // ── SBC / Verwässerung: getrennt, kein doppelter Abschlag ────────
       _sbcTreatment: 'im EBIT enthalten — kein zusätzlicher FCFF-Abzug',
       _sbcDeductedFromFcff: false,
-      _dilutionTreatment: 'ausschließlich über Aktienprojektion (Nenner)',
-      _sbcAndDilutionDoubleCounted: false
+      _dilutionTreatment: 'ausschließlich über Aktienprojektion (Nenner), Detailjahre 1–'
+        + TERMINAL_DILUTION.horizonYears,
+      _sbcAndDilutionDoubleCounted: false,
+      // ── V1.0.63 (Auditbefund A-5) · Terminalannahme der Aktienzahl ──────
+      // Offengelegte MODELLVEREINFACHUNG, keine numerisch beseitigte
+      // Ueberbewertung: die Rechnung ist unveraendert, sie wird nur benannt.
+      _dilutionHorizonYears: TERMINAL_DILUTION.horizonYears,
+      _dilutionAppliedInDetailYears: true,
+      _dilutionAppliedInTerminalValue: false,
+      _terminalShareCountBasis: 'shares_year_10_constant',
+      _terminalShareCountM: (rBase && rBase._sharesYear10 != null) ? rBase._sharesYear10 : null,
+      _terminalDilutionSimplification: TERMINAL_DILUTION.note,
+      _sharesGrowthPaProjected: fi.sharesGrowthPa || 0,
+      _terminalSharesGrowthPa: 0,
+      _historicalDilutionExtrapolatedToPerpetuity: false
     };
   }
 
@@ -12854,9 +13169,17 @@ function modelDcfMidcycle(mj, scenarios) {
   result._midCycleOpMarginPct = mc.opMarginMed;
   result._midCycleCapexIntensityPct = mc.capexIntMed;
   result._midCycleReferenceFcfM = mc.value;
+  // V1.0.63 (Auditbefund A-6): Herkunft der D&A im Referenz-FCF mitfuehren
+  // und ausweisen — abgeleitete oder gesetzte Werte erscheinen nicht als
+  // direkte Messung.
+  result._midCycleDaM = mc.daM;
+  result._midCycleDaBasis = mc.daBasis;
+  result._midCycleDaDerived = !!mc.daDerived;
+  result._midCycleDaLabel = mc.daLabel;
   result.warnings.unshift(
     `Mid-Cycle: Betriebsmarge auf den Median ${mc.opMarginMed.toFixed(1)}% normalisiert ` +
-    `(CapEx/Umsatz-Median ${mc.capexIntMed.toFixed(1)}%, Referenz-FCF ${mc.value.toFixed(0)}M). ` +
+    `(CapEx/Umsatz-Median ${mc.capexIntMed.toFixed(1)}%, Referenz-FCF ${mc.value.toFixed(0)}M ` +
+    `inkl. D&A ${mc.daM != null ? mc.daM.toFixed(0) + 'M' : '–'} · ${mc.daLabel || 'Herkunft unbekannt'}). ` +
     `Gerechnet wird auf dem gemeinsamen Bewertungskern — gleiche Cashflow-Definition, ` +
     `gleiches Working Capital, gleiche Nettoschuldenbrücke wie im Haupt-DCF.`
   );
@@ -14676,7 +14999,10 @@ const DATA_BASIS_REQUIRED_HELPERS = Object.freeze([
   '_seriesHasPeriodContext',
   '_secPeriodYear',
   '_secPeriodDaysApart',
-  '_joinPeriodKeyed'
+  '_joinPeriodKeyed',
+  // V1.0.63 (Auditbefund A-5): Der Ausweis der Datenbasis nennt den
+  // zeitlichen Umfang der Aktienprojektion als Modellkonvention.
+  'TERMINAL_DILUTION'
 ]);
 // Seit V1.0.56 enthaelt dieser Block auch den Erzeugungsweg aus
 // SEC-companyfacts. Dafuer braucht er den Quartalsnormalisierer — als GANZEN
@@ -16209,6 +16535,21 @@ function buildDataBasisReport(mj, resolved) {
     rep.da = { source: 'unbekannt', assumption_required: null,
                label: 'D&A-Status nicht ermittelbar: ' + ((e && e.message) || String(e)) };
   }
+  // V1.0.63 (Auditbefund A-5): Zeitlicher Umfang der Aktienprojektion. Die
+  // Angabe gehoert in den Herkunftsausweis, weil sie eine MODELLKONVENTION
+  // ueber die bewertete Groesze "Wert je Aktie" ist — nicht bloss eine
+  // Anzeige. Sie ist eine feste Konvention des Bewertungskerns und braucht
+  // deshalb keinen Prognoseparameter: die tatsaechlich projizierte Rate steht
+  // am Modellergebnis (_sharesGrowthPaProjected) und im Snapshot.
+  rep.dilution = {
+    horizon_years: TERMINAL_DILUTION.horizonYears,
+    applied_in_detail_years: true,
+    applied_in_terminal_value: false,
+    extrapolated_to_perpetuity: false,
+    terminal_share_count_basis: 'shares_year_10_constant',
+    simplification: TERMINAL_DILUTION.note
+  };
+  rep.warnings = rep.warnings.concat([TERMINAL_DILUTION.note]);
   return rep;
 }
 // ── DATENBASIS-BLOCK ENDE ───────────────────────────────────────
@@ -16801,6 +17142,35 @@ function _resolveModelFitWeights(subClass, mj) {
     return { dcf: base.dcf / total, rim: base.rim / total, ddm: 0.0 };
   }
   return { dcf: base.dcf, rim: base.rim, ddm: base.ddm };
+}
+
+// ── V1.0.63 (Auditbefund A-7) · EIN aktives DCF-Modell der Bewertung ─────
+// Der DCF laeuft je nach Router-Entscheidung unter verschiedenen Schluesseln:
+// 'dcf' im Standardpfad, 'dcf_midcycle' im zyklischen Pfad ('DCF' nur als
+// Altschluessel). Wer einen Wert AUS dem DCF liest, muss den tatsaechlich
+// aktiven Schluessel nehmen — sonst greift die Regel im Mid-Cycle-Pfad nie.
+//
+// Rueckgabe: genau ein Modellergebnis oder null. Die Reihenfolge des Routers
+// entscheidet; sie wird um die feste Ersatzreihenfolge ergaenzt, damit auch
+// eine Bewertung ohne Routerangabe (Altaufrufe, Tests) bedient wird. Nicht
+// anwendbare Modelle werden uebersprungen — ein gesperrter DCF liefert keinen
+// Zuschlag. Weil nur EIN Ergebnis zurueckkommt, ist eine Doppelzaehlung
+// ausgeschlossen.
+const DCF_MODEL_KEYS = Object.freeze(['dcf', 'DCF', 'dcf_midcycle']);
+
+function _resolveActiveDcfModelResult(valuationResult) {
+  const mr = valuationResult && valuationResult.modelResults;
+  if (!mr) return null;
+  const am = (valuationResult.router && Array.isArray(valuationResult.router.activeModels))
+    ? valuationResult.router.activeModels : [];
+  const order = [];
+  for (const k of am) if (DCF_MODEL_KEYS.indexOf(k) >= 0 && order.indexOf(k) < 0) order.push(k);
+  for (const k of DCF_MODEL_KEYS) if (order.indexOf(k) < 0) order.push(k);
+  for (const k of order) {
+    const r = mr[k];
+    if (r && r.applicable === true) return r;
+  }
+  return null;
 }
 
 function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
@@ -17430,7 +17800,19 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
   // Starke Buyback-Abhängigkeit erhöht nur MoS (Kapitalallokationsrisiko).
   let mosBuybackAddon = 0;
   let _buybackUpliftPctSyn = 0;
-  const _dcfModelResult = valuationResult.modelResults && (valuationResult.modelResults['dcf'] || valuationResult.modelResults['DCF']);
+  // V1.0.63 (Auditbefund A-7): Der Zuschlag stammt aus dem TATSAECHLICH
+  // AKTIVEN, anwendbaren DCF-Modell dieser Bewertung. Bis V1.0.62 wurde
+  // ausschliesslich modelResults['dcf'] / ['DCF'] gelesen. Fuer zyklische
+  // Titel fuehrt der Router den DCF aber unter 'dcf_midcycle' — der
+  // Sicherheitszuschlag blieb dort stillschweigend aus, obwohl derselbe
+  // Uplift im Standardpfad +10 pp ausgeloest haette.
+  // _resolveActiveDcfModelResult() liefert GENAU EIN Modell (Vorrang: die
+  // Reihenfolge des Routers, dann die feste Ersatzreihenfolge) — damit kann
+  // der Zuschlag nicht doppelt anfallen. Schwellen (>25 % / >10 %) und
+  // Zuschlagshoehen (+10 pp / +5 pp) bleiben unveraendert; der Zuschlag wirkt
+  // wie bisher ausschliesslich auf die Sicherheitsmarge, NIE auf den Fair
+  // Value oder den Bewertungsanker.
+  const _dcfModelResult = _resolveActiveDcfModelResult(valuationResult);
   if (_dcfModelResult && _dcfModelResult.applicable && typeof _dcfModelResult._buybackUpliftPct === 'number') {
     _buybackUpliftPctSyn = _dcfModelResult._buybackUpliftPct;
     if (_buybackUpliftPctSyn > 25) {
@@ -18711,6 +19093,9 @@ function buildReverseDcfDiagnosticBlock(mj, v, baseRateWarnings) {
       wacc_le_terminal_growth: 'WACC ≤ Terminalwachstum',
       no_solution_in_range:    'keine Lösung im zulässigen Suchbereich',
       multiple_solutions:      'mehrdeutig — mehrere Lösungen',
+      // V1.0.63 (Prüfpunkt O-3): unvollständige Suche ist KEINE bewiesene
+      // Nichtexistenz einer Lösung und wird deshalb anders benannt.
+      search_incomplete:       'Suche unvollständig — Nichtexistenz nicht bewiesen',
       not_evaluable:           'nicht bewertbar'
     }[(_core && _core.status) || ''] || 'nicht berechenbar';
     return `
@@ -20548,6 +20933,8 @@ function buildReverseDcfOverviewCard(mj, v) {
       wacc_le_terminal_growth: 'WACC ≤ Terminalwachstum',
       no_solution_in_range:  'keine Lösung im zulässigen Suchbereich',
       multiple_solutions:    'mehrdeutig — mehrere Lösungen',
+      // V1.0.63 (Prüfpunkt O-3), siehe buildReverseDcfDiagnosticBlock.
+      search_incomplete:     'Suche unvollständig — Nichtexistenz nicht bewiesen',
       not_evaluable:         'nicht bewertbar'
     }[(_core && _core.status) || ''] || 'nicht berechenbar';
     return `<div class="ov-rdcf-card ov-rdcf-na">
@@ -24085,7 +24472,22 @@ function buildSnapshotForecastTargets(mj, valuationResult) {
                 tax_rate_pct: fi.taxRate, owc_ratio: r._owcRatio },
     years: years,
     terminal: { fcff: (r._terminalFcf != null && isFinite(r._terminalFcf)) ? r._terminalFcf : null,
-                revenue_year10: (r._revenueYear10 != null && isFinite(r._revenueYear10)) ? r._revenueYear10 : null }
+                revenue_year10: (r._revenueYear10 != null && isFinite(r._revenueYear10)) ? r._revenueYear10 : null,
+                // V1.0.63 (Auditbefund A-5): Der Snapshot haelt ausdruecklich
+                // fest, dass die Aktienprojektion mit der Detailphase endet.
+                // Ein spaeterer Soll-Ist-Vergleich soll die Annahme kennen,
+                // unter der der Pfad entstanden ist.
+                share_count: (r._terminalShareCount != null && isFinite(r._terminalShareCount))
+                  ? r._terminalShareCount : null,
+                share_count_basis: r._terminalShareCountBasis || 'shares_year_10_constant',
+                dilution_applied_in_terminal_value: false,
+                shares_growth_pa_terminal_pct: 0 },
+    dilution: { shares_growth_pa_pct: fi.sharesGrowthPa || 0,
+                horizon_years: TERMINAL_DILUTION.horizonYears,
+                applied_in_detail_years: true,
+                applied_in_terminal_value: false,
+                extrapolated_to_perpetuity: false,
+                simplification: TERMINAL_DILUTION.note }
   };
 }
 

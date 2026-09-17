@@ -12,12 +12,17 @@
 //      in audit-chat12.mjs bzw. von Hand im Test). Diese Tests sichern
 //      richtiges Verhalten ab.
 //
-//   B) BEFUND-NACHWEIS (characterization) — halten eine im Audit BESTAETIGTE
-//      Abweichung fest. Sie behaupten NICHT, dass das Verhalten richtig ist.
-//      Jeder dieser Tests nennt im Kommentar den Befund und die Erwartung,
-//      die nach der Korrektur gelten muss. Produktcode wurde in diesem
-//      Auftrag nicht geaendert (Auditauftrag), deshalb sind sie gruen.
+//   B) BEFUND-NACHWEIS (characterization) — hielten eine im Audit
+//      BESTAETIGTE Abweichung fest. Sie behaupteten NICHT, dass das Verhalten
+//      richtig ist. Nach Korrekturchat 12C existiert KEIN solcher Test mehr:
+//      B1-B4 wurden in 12A zu R1-R9, B5 in 12B zu R10-R15, B6/B7/B8 in 12C zu
+//      R33/R34/R35. Alle Tests dieser Datei pruefen jetzt richtiges Verhalten.
 //      Siehe AUDIT-CHAT12.md.
+//
+//   R) REGRESSION — pruefen das richtige Verhalten nach einer Korrektur.
+//      R33 ist dabei besonders einzuordnen: A-5 ist eine OFFENGELEGTE
+//      MODELLVEREINFACHUNG. Die Rechnung ist bit-genau unveraendert; geprueft
+//      wird die erklaerte Konvention und ihr sichtbarer Hinweis.
 // ═══════════════════════════════════════════════════════════════════════════
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -192,15 +197,15 @@ test('A5 Referenz: Sensitivitaetsmatrix-Mittelzelle ist der Haupt-DCF-Wert', () 
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// B) BEFUND-NACHWEISE — halten bestaetigte Abweichungen fest.
-//    Diese Tests behaupten NICHT, dass das Verhalten richtig ist.
+// B) BEFUND-NACHWEISE — hier steht keiner mehr.
 //
-// KORREKTURCHAT 12A (V1.0.58): Die Befunde A-1, A-2 und A-3 sind behoben.
-// Ihre Nachweise B1–B4 wurden deshalb in REGRESSIONSTESTS des richtigen
-// Verhaltens umgewandelt (R1–R9 unten) — sie sichern die Korrektur ab,
-// statt die Abweichung festzuhalten.
-// B5–B8 bleiben ausdruecklich BEFUND-NACHWEISE: die Befunde A-4 bis A-7
-// sind offen und in diesem Auftrag bewusst nicht angefasst worden.
+// KORREKTURCHAT 12A (V1.0.58): A-1, A-2, A-3 behoben, B1–B4 → R1–R9.
+// KORREKTURCHAT 12B (V1.0.59): A-4 behoben, B5 → R10–R15.
+// KORREKTURCHAT 12C (V1.0.63): B6 → R33 (A-5, offengelegte Modellannahme),
+//   B7 → R34 (A-6 behoben), B8 → R35 (A-7 behoben, echter Engine-/
+//   Synthesizer-Pfad statt nachgebildeter Schluesselauswahl).
+// Alle Tests dieser Datei pruefen damit richtiges Verhalten. Bleibt ein
+// Charakterisierungstest noetig, muss er im Namen "BEFUND" tragen.
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Zyklischer Referenzfall: aktuelle Marge 30 %, Mid-Cycle-Median 15 %.
@@ -1361,91 +1366,551 @@ test('R20 eine gemeinsame Semantiktabelle fuer Rebuild und Resolver', () => {
   assert.throws(() => evalInApp('STD_TAGS_INCLUDING_CURRENT_LTD'), /not defined/);
 });
 
-test('B6 BEFUND: Verwaesserung endet im Terminalwert bei Jahr 10', () => {
-  // Befund A-5: forecastDcfCore() teilt den Terminalwert durch sharesYear[10].
-  // Ab Jahr 11 wirkt die projizierte Verwaesserung nicht mehr, obwohl die
-  // Anzeige sie als "im Hauptwert beruecksichtigt" ausweist.
-  const sd = [125.971, 116.640, 108.0, 100.0];   // 3J-CAGR = +8 %/y (Clamp-Grenze)
-  const mj = refMj({ shares_diluted: sd, net_debt: [0] });
+// ═══════════════════════════════════════════════════════════════════════════
+// R33–R36 (Regression, Korrekturchat 12C) — sie ERSETZEN die Befund-Nachweise
+// `B6` (A-5), `B7` (A-6) und `B8` (A-7) und sichern zusaetzlich den Pruefpunkt
+// `O-3` ab. Erwartungswerte unabhaengig nachgerechnet bzw. gegen den
+// unveraenderten Ausgangsstand V1.0.62 gemessen.
+//
+// WICHTIG zur Einordnung von R33: A-5 ist eine OFFENGELEGTE
+// MODELLVEREINFACHUNG, keine numerisch beseitigte Ueberbewertung. Die
+// Rechnung ist bit-genau unveraendert; geprueft wird, dass die Annahme
+// ausdruecklich benannt und mitgefuehrt wird.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Zeitlicher Umfang der Verwaesserung: 3J-CAGR = +8 %/y (die Clamp-Obergrenze
+// aus buildForecastInputs). Derselbe Datensatz wie im frueheren Nachweis `B6`.
+const dilutionMj = () => refMj({ shares_diluted: [125.971, 116.640, 108.0, 100.0],
+                                 net_debt: [0] });
+
+test('R33 (A-5) erklaerte Modellkonvention: Verwaesserung in den Detailjahren, danach konstante Aktienzahl', () => {
+  const mj = dilutionMj();
   const fi = S.buildForecastInputs(mj);
-  assert.ok(Math.abs(fi.sharesGrowthPa - 8) < 1e-3);
+  assert.ok(Math.abs(fi.sharesGrowthPa - 8) < 1e-3, 'Verwaesserung 8 %/y');
 
   const r = S.forecastDcfCore(fi, 0, 2, 10, { enabled: false }, 20);
-  const s10 = r._sharesYear10;
-  assert.ok(Math.abs(r.pvTv - (r._pvTvAbs / s10)) < 1e-12,
-    'BEFUND A-5: Terminalwert wird durch die Aktienzahl des Jahres 10 geteilt');
 
-  // Unabhaengige Gegenrechnung mit fortlaufender Verwaesserung:
-  // Wert je Aktie waechst in der ewigen Rente mit (1+tg)/(1+d) − 1.
-  const w = 0.10, tg = 0.02, d = 0.08;
-  const fcff11 = 150 * (1 + tg);                 // FCFF Jahr 11 (kein Umsatzwachstum in Phase 1)
-  const gEff = (1 + tg) / (1 + d) - 1;
-  const pvTvDiluted = ((fcff11 / (s10 * (1 + d))) / (w - gEff)) / Math.pow(1 + w, 10);
-  assert.ok(r.pvTv / pvTvDiluted > 2.0,
-    'BEFUND A-5: Terminalwert je Aktie ' + r.pvTv.toFixed(4) +
-    ' vs. ' + pvTvDiluted.toFixed(4) + ' bei fortlaufender Verwaesserung');
+  // ── 1) Die Rechnung ist UNVERAENDERT ─────────────────────────────────
+  // Referenzzahlen auf dem Ausgangsstand V1.0.62 selbst gemessen
+  // (Commit d392094). A-5 wird offengelegt, nicht wegdefiniert: wer hier
+  // rechnet, bekommt genau dieselben Zahlen wie vorher.
+  assert.ok(Math.abs(r.total - 7.913941025347281) < 1e-12,
+    'Wert je Aktie unveraendert, erhalten ' + r.total);
+  assert.ok(Math.abs(r.pvTv - 2.711244966909631) < 1e-12,
+    'Terminalwert je Aktie unveraendert, erhalten ' + r.pvTv);
+  assert.ok(Math.abs(r._sharesYear10 - 271.9605015530696) < 1e-9);
+  // Der Terminalwert wird weiterhin durch die Aktienzahl des Jahres 10
+  // geteilt — das ist die erklaerte Konvention, kein stiller Nebeneffekt.
+  assert.ok(Math.abs(r.pvTv - (r._pvTvAbs / r._sharesYear10)) < 1e-12,
+    'Terminalwert je Aktie = PV(TV) / Aktienzahl Jahr 10');
+
+  // ── 2) Die Konvention steht maschinenlesbar am Ergebnis ──────────────
+  assert.equal(r._dilutionHorizonYears, 10);
+  assert.equal(r._dilutionAppliedInTerminalValue, false);
+  assert.equal(r._terminalShareCountBasis, 'shares_year_10_constant');
+  assert.ok(Math.abs(r._terminalShareCount - r._sharesYear10) < 1e-12);
+  assert.ok(/Detailjahren 1–10/.test(r._terminalDilutionSimplification));
+  assert.ok(/konstant/.test(r._terminalDilutionSimplification));
+  // Zahl und erklaerender Text stammen aus EINER Deklaration.
+  const konvention = evalInApp('TERMINAL_DILUTION');
+  assert.equal(konvention.horizonYears, 10);
+  assert.ok(konvention.note.indexOf('1–' + konvention.horizonYears) >= 0,
+    'der Text nennt genau den deklarierten Horizont');
 
   const dcf = S.modelDcf(mj, scOf(0, 2, 10, 20));
-  assert.ok((dcf.warnings || []).some(w2 => /im Hauptwert beruecksichtigt|im Hauptwert berücksichtigt/.test(w2)),
-    'Anzeige behauptet Beruecksichtigung');
-  assert.ok(!(dcf.warnings || []).some(w2 => /Terminalwert/.test(w2) && /Verw/.test(w2)),
-    'BEFUND A-5: kein Hinweis, dass die Verwaesserung im Terminalwert endet');
+  assert.equal(dcf.applicable, true);
+  assert.ok(Math.abs(dcf.base - 7.913941025347281) < 1e-12, 'Fair Value unveraendert');
+  assert.equal(dcf._dilutionHorizonYears, 10);
+  assert.equal(dcf._dilutionAppliedInDetailYears, true);
+  assert.equal(dcf._dilutionAppliedInTerminalValue, false);
+  assert.equal(dcf._terminalShareCountBasis, 'shares_year_10_constant');
+  assert.equal(dcf._terminalSharesGrowthPa, 0);
+  assert.equal(dcf._historicalDilutionExtrapolatedToPerpetuity, false);
+  assert.ok(Math.abs(dcf._sharesGrowthPaProjected - 8) < 1e-3);
+
+  // ── 3) SICHTBARER Hinweis nennt den zeitlichen Umfang ────────────────
+  const w = dcf.warnings || [];
+  const label = w.find(x => /Shares-Projektion/.test(x));
+  assert.ok(label, 'die Shares-Projektion wird ausgewiesen');
+  assert.ok(/im Hauptwert berücksichtigt/.test(label), 'Aussage bleibt erhalten');
+  assert.ok(/Detailjahre 1–10/.test(label) && /Terminalzeitpunkt/.test(label),
+    'die Aussage nennt jetzt den ZEITRAUM, erhalten: ' + label);
+  // Frueher (Befund A-5): "Dilution — im Hauptwert beruecksichtigt" ohne
+  // jeden Zeitbezug. Genau diese unvollstaendige Formulierung darf nicht
+  // mehr vorkommen.
+  assert.equal(/im Hauptwert berücksichtigt'?$/.test(label.trim()), false);
+  for (const x of w) {
+    if (!/im Hauptwert berücksichtigt/.test(x)) continue;
+    assert.ok(/Detailjahre 1–10|Detailjahren 1–10/.test(x),
+      'keine Beruecksichtigungsaussage ohne Zeitraum: ' + x);
+  }
+  assert.ok(w.some(x => /Verwässerungs-Vereinfachung/.test(x)
+                     && /Terminalwert/.test(x)
+                     && /NICHT fortgeschrieben/.test(x)),
+    'die Vereinfachung wird ausdruecklich als solche gekennzeichnet');
+  assert.ok(w.some(x => /verwässerungsadjustiert/.test(x) && /Detailjahren 1–10/.test(x)),
+    'auch die Trennung der Effekte nennt den Zeitraum');
+
+  // ── 4) Herkunfts- und Snapshotinformationen fuehren die Annahme mit ──
+  const rep = S.buildDataBasisReport(mj);
+  assert.equal(rep.dilution.horizon_years, 10);
+  assert.equal(rep.dilution.applied_in_detail_years, true);
+  assert.equal(rep.dilution.applied_in_terminal_value, false);
+  assert.equal(rep.dilution.extrapolated_to_perpetuity, false);
+  assert.equal(rep.dilution.terminal_share_count_basis, 'shares_year_10_constant');
+  assert.ok(/Verwässerungs-Vereinfachung/.test(rep.dilution.simplification));
+  assert.ok((rep.warnings || []).some(x => /Verwässerungs-Vereinfachung/.test(x)),
+    'der Ausweis der Datenbasis nennt die Vereinfachung');
+
+  const mjS = refMj({ shares_diluted: [125.971, 116.640, 108.0, 100.0], net_debt: [0] },
+    { wacc_components: { tax_rate: 25 }, fade: { enabled: false },
+      wacc_derived: 10, growth_terminal: 2, growth_stage1: 0 }, { price: 8 });
+  const v = S.runValuationEngine(mjS);
+  assert.equal(v.error, undefined, 'Engine laeuft: ' + (v.error || ''));
+  const snap = S.buildSnapshotForecastTargets(mjS, v);
+  assert.equal(snap.available, true, snap.reason || '');
+  assert.equal(snap.terminal.dilution_applied_in_terminal_value, false);
+  assert.equal(snap.terminal.share_count_basis, 'shares_year_10_constant');
+  assert.equal(snap.terminal.shares_growth_pa_terminal_pct, 0);
+  assert.ok(Math.abs(snap.dilution.shares_growth_pa_pct - 8) < 1e-3);
+  assert.equal(snap.dilution.horizon_years, 10);
+  assert.equal(snap.dilution.applied_in_terminal_value, false);
+  assert.equal(snap.dilution.extrapolated_to_perpetuity, false);
+  assert.ok(/Verwässerungs-Vereinfachung/.test(snap.dilution.simplification));
+
+  // ── 5) KEINE automatische ewige Fortschreibung ───────────────────────
+  // Weder eine Verwaesserungs- noch eine Rueckkaufrate wird in die Ewigkeit
+  // verlaengert — unabhaengig davon, was die Historie zeigt.
+  const buyback = refMj({ shares_diluted: [70, 76, 83, 90], net_debt: [0] });
+  const rB = S.modelDcf(buyback, scOf(0, 2, 10, 20));
+  assert.ok(rB._sharesGrowthPaProjected < -0.5, 'Historie zeigt Rueckkaeufe');
+  assert.equal(rB._terminalSharesGrowthPa, 0, 'auch Rueckkaeufe enden mit der Detailphase');
+  assert.equal(rB._historicalDilutionExtrapolatedToPerpetuity, false);
+  assert.ok((rB.warnings || []).some(x => /Aktienreduktion nur bis/.test(x)
+                                       && /Jahr 10/.test(x)),
+    'die Buyback-Diagnose nennt dieselbe Grenze');
+
+  // ── 6) KEINE neue Einstellungsoberflaeche ────────────────────────────
+  // Es gibt keinen Schalter fuer die Terminalannahme: eine erfundene
+  // Annahme aendert am Ergebnis nichts.
+  const mjX = dilutionMj();
+  mjX.valuation.assumptions = { terminal_dilution_pct: 8, shares_growth_terminal_pa: 8 };
+  const rX = S.modelDcf(mjX, scOf(0, 2, 10, 20));
+  assert.ok(Math.abs(rX.base - dcf.base) < 1e-12,
+    'keine Einstellung veraendert die Terminalannahme');
+  assert.equal(rX._terminalSharesGrowthPa, 0);
+
+  // ── 7) Die ALTERNATIVE Rechnung bleibt als BEDINGTE Sensitivitaet ────
+  // Sie gilt NUR unter der zusaetzlichen Annahme, dass die Verwaesserung
+  // dauerhaft mit derselben Rate weiterlaeuft. Das ist eine Annahme ueber
+  // das einzelne Unternehmen, keine Korrektur des Modells — sie wird hier
+  // ausdruecklich als Sensitivitaet nachgerechnet und NICHT als Sollwert.
+  const s10 = r._sharesYear10;
+  const wacc = 0.10, tg = 0.02, d = 0.08;
+  const fcff11 = 150 * (1 + tg);            // kein Umsatzwachstum in Phase 1
+  const gEff = (1 + tg) / (1 + d) - 1;      // Wert je Aktie in der ewigen Rente
+  const pvTvDauerhaft = ((fcff11 / (s10 * (1 + d))) / (wacc - gEff)) / Math.pow(1 + wacc, 10);
+  assert.ok(r.pvTv / pvTvDauerhaft > 2.0,
+    'BEDINGTE Sensitivitaet: Terminalwert je Aktie ' + r.pvTv.toFixed(4) +
+    ' gegen ' + pvTvDauerhaft.toFixed(4) + ' bei dauerhaft fortgesetzter Verwaesserung');
+  // Das Modell rechnet ausdruecklich NICHT so — und sagt das auch.
+  assert.ok(Math.abs(r.pvTv - (r._pvTvAbs / s10)) < 1e-12);
 });
 
-test('B7 BEFUND: computeMidCycleFcf setzt fehlende D&A still auf 0', () => {
-  // Befund A-6: daTtm = (ebitda[0] − ebit[0]) sonst 0. Entgegen der
-  // V1.0.56-Regel ("fehlende Werte sind nicht 0") geht der ausgewiesene
-  // Referenz-FCF und die 30-%-Abweichungswarnung damit von D&A = 0 aus.
-  const mk = (ebitda) => ({
+test('R34 (A-6) Mid-Cycle-D&A: direkte Werte, zulaessige Ableitung, gesetzte Annahme, sonst Nichtverfuegbarkeit', () => {
+  // Frueher (Befund A-6): daTtm = (ebitda[0] − ebit[0]), sonst 0. Eine ECHTE
+  // Null war damit von einer FEHLENDEN Angabe nicht unterscheidbar; der
+  // ausgewiesene Referenz-FCF war zu niedrig und konnte eine falsche
+  // 30-%-Abweichungswarnung ausloesen.
+  const mk = (ebitda, extra) => ({
     meta: { sub_classification: 'cyclical' },
-    fundamentals: {
+    fundamentals: Object.assign({
       revenue: [1000, 1000, 1000, 1000, 1000], ebit: [200, 200, 200, 200, 200],
       ebitda, capex: [50, 50, 50, 50, 50], shares_diluted: [100, 100, 100, 100, 100]
-    },
-    valuation: { wacc_components: { tax_rate: 25 } }, market: {}
+    }, (extra && extra.f) || {}),
+    valuation: Object.assign({ wacc_components: { tax_rate: 25 } }, (extra && extra.v) || {}),
+    market: {}
   });
-  const mitDa  = S.computeMidCycleFcf(mk([250, 250, 250, 250, 250]));
-  const ohneDa = S.computeMidCycleFcf(mk([null, 250, 250, 250, 250]));
-  assert.equal(mitDa.status, 'ok');
-  assert.equal(ohneDa.status, 'ok', 'BEFUND A-6: kein Status "nicht belegt"');
-  // Von Hand: NOPAT 150 + D&A 50 − CapEx 50 = 150 gegen 150 + 0 − 50 = 100.
-  assert.ok(Math.abs(mitDa.value - 150) < 1e-9, 'erhalten ' + mitDa.value);
-  assert.ok(Math.abs(ohneDa.value - 100) < 1e-9,
-    'BEFUND A-6: stille Nullannahme, erhalten ' + ohneDa.value);
+
+  // 1) Direkt gemeldeter Wert der bewerteten Periode — unveraendert.
+  // Von Hand: NOPAT 150 + D&A 50 − CapEx 50 = 150M.
+  const direkt = S.computeMidCycleFcf(mk([250, 250, 250, 250, 250]));
+  assert.equal(direkt.status, 'ok');
+  assert.ok(Math.abs(direkt.value - 150) < 1e-9, 'erhalten ' + direkt.value);
+  assert.equal(direkt.daAvailable, true);
+  assert.equal(direkt.daBasis, 'reported_period');
+  assert.equal(direkt.daDerived, false);
+  assert.ok(Math.abs(direkt.daM - 50) < 1e-9);
+
+  // 2) ECHTE NULL bleibt eine Messung: EBITDA = EBIT ⇒ D&A = 0.
+  // Von Hand: 150 + 0 − 50 = 100M — richtig, und ausdruecklich gemessen.
+  const echteNull = S.computeMidCycleFcf(mk([200, 200, 200, 200, 200]));
+  assert.equal(echteNull.status, 'ok');
+  assert.ok(Math.abs(echteNull.value - 100) < 1e-9);
+  assert.equal(echteNull.daAvailable, true);
+  assert.equal(echteNull.daBasis, 'reported_period');
+  assert.equal(echteNull.daM, 0, 'die gemeldete Null ist eine Messung');
+
+  // 3) FEHLENDE D&A ⇒ begruendeter Nichtverfuegbarkeitsstatus, KEINE Zahl.
+  const fehlt = S.computeMidCycleFcf(mk(undefined, { f: { fcf: [150, 150, 150, 150, 150] } }));
+  assert.equal(fehlt.status, 'insufficient_data');
+  assert.equal(fehlt.value, null, 'keine irrefuehrende Referenz-FCF-Zahl');
+  assert.equal(fehlt.daAvailable, false);
+  assert.equal(fehlt.daBasis, 'assumption_required');
+  assert.ok(/nicht belegt/.test(fehlt.reason) && /keine Messung/.test(fehlt.reason),
+    'Begruendung: ' + fehlt.reason);
+  // Frueher waere hier fcfNorm = 100 gegen fcfTtm = 150 gelaufen, also eine
+  // Abweichung von 50 % — und damit eine Warnung gegen eine unbelegte Zahl.
+  assert.equal(fehlt.warning, null, 'keine daraus abgeleitete Abweichungswarnung');
+  // Gegenprobe am belegten Datensatz: dieselbe Warnung greift weiterhin.
+  const belegtMitAbweichung = S.computeMidCycleFcf(
+    mk([250, 250, 250, 250, 250], { f: { fcf: [400, 400, 400, 400, 400] } }));
+  assert.equal(belegtMitAbweichung.status, 'ok');
+  assert.ok(/weicht >30%/.test(belegtMitAbweichung.warning || ''),
+    'die Abweichungswarnung selbst bleibt erhalten');
+
+  // 4) ZULAESSIGE ALTERNATIVE QUELLE: die bewertete Periode meldet kein
+  //    EBITDA, andere Perioden derselben Sicht schon ⇒ abgeleiteter Median.
+  //    Median von (250 − 200)/1000 = 5 % ⇒ D&A = 50M ⇒ FCF = 150M.
+  const abgeleitet = S.computeMidCycleFcf(mk([null, 250, 250, 250, 250]));
+  assert.equal(abgeleitet.status, 'ok');
+  assert.ok(Math.abs(abgeleitet.value - 150) < 1e-9, 'erhalten ' + abgeleitet.value);
+  assert.equal(abgeleitet.daAvailable, true);
+  assert.equal(abgeleitet.daBasis, 'measured_ratio');
+  assert.equal(abgeleitet.daDerived, true, 'ausdruecklich als abgeleitet gekennzeichnet');
+  assert.ok(/abgeleitet/.test(abgeleitet.daLabel));
+
+  // 5) AUSDRUECKLICH GESETZTE ANNAHME hat Vorrang — bestehende Prioritaet
+  //    von _resolveDaForForecast, auch eine ausdrueckliche 0.
+  const gesetzt = S.computeMidCycleFcf(mk([250, 250, 250, 250, 250],
+    { v: { assumptions: { da_pct_of_revenue: 10 } } }));
+  assert.equal(gesetzt.status, 'ok');
+  assert.equal(gesetzt.daBasis, 'manual_override');
+  assert.ok(Math.abs(gesetzt.daM - 100) < 1e-9, '10 % von 1.000 = 100M');
+  assert.ok(Math.abs(gesetzt.value - 200) < 1e-9, '150 + 100 − 50');
+  const gesetztNull = S.computeMidCycleFcf(mk(undefined,
+    { v: { assumptions: { da_pct_of_revenue: 0 } } }));
+  assert.equal(gesetztNull.status, 'ok', 'eine ausdrueckliche Null ist zulaessig');
+  assert.equal(gesetztNull.daBasis, 'manual_override');
+  assert.ok(Math.abs(gesetztNull.value - 100) < 1e-9);
+
+  // 6) WIDERSPRECHENDE PERIODEN: EBITDA als TTM, bewerteter Umsatz als FY.
+  //    Der Wert ist nicht periodengleich und gilt deshalb als nicht belegt.
+  //    (_v4_meta wird hier unmittelbar gesetzt — genau dieser Datenzustand
+  //    entsteht, wenn eine Sicht Reihen unterschiedlicher Periodenart traegt.)
+  const konflikt = S.computeMidCycleFcf(mk([250, 250, 250, 250, 250], {
+    f: { _v4_meta: { revenue: { period_type: 'FY' }, ebitda: { period_type: 'TTM' } } }
+  }));
+  assert.equal(konflikt.status, 'insufficient_data');
+  assert.equal(konflikt.daBasis, 'period_conflict');
+  assert.ok(/nicht periodengleich/.test(konflikt.reason), konflikt.reason);
+  // Gegenprobe: gleiche Periodenart ⇒ unveraendert verwertbar.
+  const gleich = S.computeMidCycleFcf(mk([250, 250, 250, 250, 250], {
+    f: { _v4_meta: { revenue: { period_type: 'FY' }, ebitda: { period_type: 'FY' } } }
+  }));
+  assert.equal(gleich.status, 'ok');
+  assert.ok(Math.abs(gleich.value - 150) < 1e-9);
+
+  // 7) Wirkung auf den Bewertungspfad: ohne belegte D&A ist das Modell
+  //    nicht anwendbar — mit Begruendung, ohne Ersatzzahl.
+  const mjOhne = mk(undefined, { v: { fade: { enabled: false }, wacc_derived: 10,
+    growth_terminal: 2, growth_stage1: 5 }, f: { net_debt: [500] } });
+  mjOhne.market = { price: 20 };
+  const mOhne = S.modelDcfMidcycle(mjOhne, S.buildScenarios(mjOhne));
+  assert.equal(mOhne.applicable, false);
+  assert.ok(/nicht belegt/.test(mOhne.reason || ''), mOhne.reason);
+  // Mit belegter D&A laeuft derselbe Pfad und weist die Herkunft aus.
+  const mjMit = mk([250, 250, 250, 250, 250], { v: { fade: { enabled: false },
+    wacc_derived: 10, growth_terminal: 2, growth_stage1: 5 }, f: { net_debt: [500] } });
+  mjMit.market = { price: 20 };
+  const mMit = S.modelDcfMidcycle(mjMit, S.buildScenarios(mjMit));
+  assert.equal(mMit.applicable, true);
+  assert.equal(mMit._midCycleDaBasis, 'reported_period');
+  assert.ok(Math.abs(mMit._midCycleDaM - 50) < 1e-9);
+  assert.ok((mMit.warnings || []).some(x => /Referenz-FCF/.test(x) && /D&A/.test(x)),
+    'der sichtbare Hinweis nennt die D&A-Herkunft');
 });
 
-test('B8 BEFUND: Buyback-MoS-Zuschlag greift im Mid-Cycle-Pfad nie', () => {
-  // Befund A-7: Der Synthesizer liest den Rueckkauf-Zuschlag ausschliesslich
-  // aus modelResults['dcf'] / ['DCF']. Fuer zyklische Titel laeuft der DCF
-  // aber unter dem Schluessel 'dcf_midcycle' (router.activeModels), sodass
-  // ein starker Buyback-Uplift keinen Sicherheitszuschlag mehr ausloest.
-  const mj = {
-    meta: { sub_classification: 'cyclical' },
-    fundamentals: {
-      revenue: [1000, 1000, 1000, 1000, 1000, 1000],
-      ebit:    [300, 100, 150, 200, 150, 100],
-      ebitda:  [350, 150, 200, 250, 200, 150],
-      capex:   [50, 50, 50, 50, 50, 50],
-      shares_diluted: [70, 76, 83, 90, 98, 107],   // ca. −8 %/y (Clamp-Grenze)
-      net_debt: [500]
-    },
+test('R35 (A-7) ECHTER SYNTHESIZER-PFAD: Buyback-Zuschlag im aktiven DCF-Modell inkl. dcf_midcycle', () => {
+  // Frueher (Befund A-7): der Synthesizer las ausschliesslich
+  // modelResults['dcf'] / ['DCF']. Fuer zyklische Titel laeuft der DCF unter
+  // 'dcf_midcycle' — der Sicherheitszuschlag blieb dort stillschweigend aus.
+  // Geprueft wird hier der VOLLSTAENDIGE Weg runValuationEngine →
+  // runFairValueSynthesizer, nicht eine nachgebildete Schluesselauswahl.
+  const CFG = evalInApp('SYNTHESIS_CONFIG');
+  const cycMj = (buybackPaPct) => {
+    const sd = [];
+    for (let i = 0; i < 6; i++) sd.push(100 * Math.pow(1 + buybackPaPct / 100, -i));
+    return {
+      meta: { ticker: 'CYC', sub_classification: 'cyclical' },
+      fundamentals: { revenue: [1000, 1000, 1000, 1000, 1000, 1000],
+        ebit: [300, 100, 150, 200, 150, 100], ebitda: [350, 150, 200, 250, 200, 150],
+        capex: [50, 50, 50, 50, 50, 50], cfo: [200, 200, 200, 200, 200, 200],
+        shares_diluted: sd, net_debt: [500], total_debt: [800], cash_and_equivalents: [300] },
+      valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false },
+        wacc_derived: 10, growth_terminal: 2, growth_stage1: 5, midcycle_margin_pct: 15 },
+      market: { price: 20 }
+    };
+  };
+  const durch = (mj) => {
+    const v = S.runValuationEngine(mj);
+    assert.equal(v.error, undefined, 'Engine laeuft: ' + (v.error || ''));
+    const syn = S.runFairValueSynthesizer(mj, v, S.runQualityEngine(mj),
+      Object.assign({}, CFG, { _dqResult: S.computeDataQualityScore(mj) }));
+    return { v, syn };
+  };
+
+  // ── Der zyklische Pfad laeuft wirklich unter 'dcf_midcycle' ──────────
+  const stark = cycMj(-8);
+  const a = durch(stark);
+  assert.equal(a.v.router.activeModels.join(','), 'dcf_midcycle');
+  assert.equal(Object.keys(a.v.modelResults).join(','), 'dcf_midcycle');
+  assert.equal(a.v.modelResults.dcf, undefined, 'es gibt KEIN Ergebnis unter "dcf"');
+  assert.ok(a.v.modelResults.dcf_midcycle._buybackUpliftPct > 25);
+  // Frueher blieb der Zuschlag hier bei 0.
+  assert.equal(a.syn.mosComponents.buybackAddon, 0.10, 'Uplift > 25 % ⇒ +10 pp');
+  assert.ok(Math.abs(a.syn.mosComponents._buybackUpliftPct
+                     - a.v.modelResults.dcf_midcycle._buybackUpliftPct) < 1e-12,
+    'der Uplift stammt aus dem tatsaechlich aktiven Modell');
+
+  // ── Bestehende Schwellen: unterhalb, dazwischen, oberhalb ────────────
+  const keiner = durch(cycMj(-1));
+  assert.ok(keiner.v.modelResults.dcf_midcycle._buybackUpliftPct < 10,
+    'Uplift ' + keiner.v.modelResults.dcf_midcycle._buybackUpliftPct.toFixed(2) + ' %');
+  assert.equal(keiner.syn.mosComponents.buybackAddon, 0, 'unter 10 % ⇒ kein Zuschlag');
+  const mittel = durch(cycMj(-2));
+  const upMittel = mittel.v.modelResults.dcf_midcycle._buybackUpliftPct;
+  assert.ok(upMittel > 10 && upMittel <= 25, 'Uplift ' + upMittel.toFixed(2) + ' %');
+  assert.equal(mittel.syn.mosComponents.buybackAddon, 0.05, 'zwischen 10 und 25 % ⇒ +5 pp');
+
+  // Genau AUF den Schwellen. Der Weg bleibt der echte Synthesizer samt
+  // echter Schluesselauswahl; nur die Uplift-Zahl des aktiven Modells wird
+  // auf den Grenzwert gesetzt, weil sie sich nicht exakt aus Daten treffen
+  // laesst. Die Schwellen sind unveraendert als STRIKT groesser definiert.
+  const aufSchwelle = (uplift) => {
+    const mj = cycMj(-8);
+    const v = S.runValuationEngine(mj);
+    v.modelResults.dcf_midcycle._buybackUpliftPct = uplift;
+    return S.runFairValueSynthesizer(mj, v, S.runQualityEngine(mj),
+      Object.assign({}, CFG, { _dqResult: S.computeDataQualityScore(mj) }));
+  };
+  assert.equal(aufSchwelle(25).mosComponents.buybackAddon, 0.05, 'genau 25 % ⇒ noch +5 pp');
+  assert.equal(aufSchwelle(25.0001).mosComponents.buybackAddon, 0.10, 'ueber 25 % ⇒ +10 pp');
+  assert.equal(aufSchwelle(10).mosComponents.buybackAddon, 0, 'genau 10 % ⇒ kein Zuschlag');
+  assert.equal(aufSchwelle(10.0001).mosComponents.buybackAddon, 0.05, 'ueber 10 % ⇒ +5 pp');
+
+  // ── NICHT anwendbares DCF-Modell ⇒ kein Zuschlag ─────────────────────
+  // Standardpfad ohne Nettoschuldenangabe: `modelDcf` ist NICHT anwendbar
+  // (kein Eigenkapitalwert je Aktie), traegt aber weiterhin einen Uplift von
+  // 94 %. RIM bleibt anwendbar, der Synthesizer laeuft also mit
+  // Sicherheitsmarge — der Zuschlag muss trotzdem ausbleiben.
+  const sdB = [];
+  for (let i = 0; i < 6; i++) sdB.push(100 * Math.pow(1 - 0.08, -i));
+  const ohneNd = {
+    meta: { ticker: 'STD', sub_classification: 'standard_nonfin' },
+    fundamentals: { revenue: [1000, 1000, 1000, 1000, 1000, 1000],
+      ebit: [200, 200, 200, 200, 200, 200], ebitda: [250, 250, 250, 250, 250, 250],
+      capex: [50, 50, 50, 50, 50, 50], cfo: [200, 200, 200, 200, 200, 200],
+      shares_diluted: sdB, eps_diluted: [2, 2, 2, 2, 2, 2],
+      book_value: [500, 500, 500, 500, 500, 500], dps: [0.8, 0.8, 0.8, 0.8, 0.8, 0.8] },
     valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false },
-                 wacc_derived: 10, growth_terminal: 2, growth_stage1: 5 },
+      wacc_derived: 10, growth_terminal: 2, growth_stage1: 5 },
     market: { price: 20 }
   };
-  const sc = S.buildScenarios(mj);
-  const r = S.modelDcfMidcycle(mj, sc);
-  assert.ok(r._buybackUpliftPct > 25,
-    'Uplift ' + r._buybackUpliftPct.toFixed(1) + ' % wuerde +10pp MoS ausloesen');
-  // Der Synthesizer findet dieses Ergebnis unter 'dcf' nicht.
-  const modelResults = { dcf_midcycle: r };
-  const gefunden = modelResults['dcf'] || modelResults['DCF'];
-  assert.equal(gefunden, undefined, 'BEFUND A-7: Zuschlag bleibt aus');
+  const b = durch(ohneNd);
+  assert.equal(b.v.modelResults.dcf.applicable, false, 'DCF nicht anwendbar');
+  assert.ok(b.v.modelResults.dcf._buybackUpliftPct > 25, 'traegt dennoch einen hohen Uplift');
+  assert.equal(b.v.modelResults.rim.applicable, true, 'der Synthesizer hat ein anderes Modell');
+  assert.ok(b.syn.mosComponents, 'die Sicherheitsmarge wird wirklich gerechnet');
+  assert.equal(b.syn.mosComponents.buybackAddon, 0, 'gesperrtes Modell liefert keinen Zuschlag');
+  assert.equal(b.syn.mosComponents._buybackUpliftPct, 0);
+  // Ist ueberhaupt kein Modell anwendbar, entsteht gar keine Sicherheitsmarge
+  // — auch dann gibt es keinen Zuschlag und keinen Fehler.
+  const garNichts = cycMj(-8);
+  garNichts.fundamentals.ebitda = undefined;   // D&A nicht belegt ⇒ Mid-Cycle gesperrt
+  const c = durch(garNichts);
+  assert.equal(c.v.modelResults.dcf_midcycle.applicable, false);
+  assert.equal(c.syn.status, 'no_models_applicable');
+  assert.equal(c.syn.mosComponents, undefined, 'ohne Modell keine Sicherheitsmarge');
+  assert.equal(c.syn.buyPrice, null);
+
+  // ── KEIN doppelter Zuschlag ──────────────────────────────────────────
+  // Liegen beide Schluessel vor, wird GENAU EINER ausgewertet — die
+  // Reihenfolge des Routers entscheidet.
+  const beide = cycMj(-8);
+  const vBeide = S.runValuationEngine(beide);
+  vBeide.modelResults.dcf = Object.assign({}, vBeide.modelResults.dcf_midcycle);
+  const synBeide = S.runFairValueSynthesizer(beide, vBeide, S.runQualityEngine(beide),
+    Object.assign({}, CFG, { _dqResult: S.computeDataQualityScore(beide) }));
+  assert.equal(synBeide.mosComponents.buybackAddon, 0.10, 'hoechstens EIN Zuschlag');
+  assert.ok(synBeide.mosComponents.buybackAddon <= 0.10);
+  // Der Auswahlhelfer selbst liefert genau ein Ergebnis.
+  const aktiv = S.runValuationEngine(cycMj(-8));
+  const gewaehlt = S._resolveActiveDcfModelResult(aktiv);
+  assert.ok(gewaehlt === aktiv.modelResults.dcf_midcycle, 'das aktive Modell wird gewaehlt');
+  assert.equal(S._resolveActiveDcfModelResult({ modelResults: {} }), null);
+  assert.equal(S._resolveActiveDcfModelResult(null), null);
+
+  // ── Der Zuschlag veraendert den FAIR VALUE NICHT ─────────────────────
+  // Er wirkt ausschliesslich auf die Sicherheitsmarge und damit auf den
+  // Buy Price. Gemessen gegen den Fall ohne Zuschlag.
+  assert.ok(Math.abs(a.syn.range.base - keiner.syn.range.base) < 1e-12,
+    'Fair Value unabhaengig vom Zuschlag: ' + a.syn.range.base + ' vs. ' + keiner.syn.range.base);
+  assert.ok(Math.abs(a.syn.range.base - mittel.syn.range.base) < 1e-12);
+  assert.ok(a.syn.mosComponents.total > keiner.syn.mosComponents.total,
+    'die Sicherheitsmarge steigt');
+  assert.ok(a.syn.buyPrice < keiner.syn.buyPrice,
+    'nur der Buy Price wird konservativer: ' + a.syn.buyPrice + ' < ' + keiner.syn.buyPrice);
+  // Der Buyback-adjustierte Wert bleibt Diagnose und wird NICHT Anker.
+  assert.ok(Math.abs(a.syn.range.base - a.v.modelResults.dcf_midcycle.base) < 1e-9,
+    'Anker ist der konservative Hauptwert');
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-// R21–R25 (Regression, Korrekturchat 12B.2) — die fuenf Restbefunde nach
-// 12B.1. Erwartungswerte unabhaengig nachgerechnet.
+test('R36 (O-3) Nullstellen des Reverse DCF: Nachrechnung, Lücken im Raster, keine behauptete Nichtexistenz', () => {
+  // Zwei Randfaelle standen im Audit als UNBESTAETIGT:
+  //  (a) Abbruch bei nicht auswertbarem Intervallmittel, danach wurde das
+  //      Intervallmittel dennoch als Nullstelle abgelegt.
+  //  (b) Vorzeichenwechsel zwischen einem auswertbaren und einem nicht
+  //      auswertbaren Rasterpunkt wurden uebersprungen.
+  // (b) ist mit Daten erreichbar (unten, Fall A) und war ein echter Fehler.
+  // (a) ist mit Daten NICHT erreichbar — die Menge der auswertbaren
+  // Wachstumsraten ist in jedem geprueften Parametersatz ein
+  // zusammenhaengendes Intervall, sodass ein eingeschachtelter
+  // Vorzeichenwechsel keine Luecke enthaelt. (a) wird deshalb als
+  // ROBUSTHEITSPRUEFUNG mit kuenstlich eingespeistem Funktionsfehler
+  // abgesichert (Fall D) — ausdruecklich KEIN Nachweis eines real
+  // auftretenden Bewertungsfehlers.
+
+  // Cash-reicher, knapp profitabler Titel mit hoher Working-Capital-Quote:
+  // der operative Wert faellt mit steigendem Wachstum und wird oberhalb von
+  // ca. 16,86 % negativ ⇒ der Kern liefert dort keinen Wert mehr.
+  const luecke = (price) => ({
+    meta: { ticker: 'O3', sub_classification: 'standard_nonfin' },
+    fundamentals: { revenue: [1000, 1000, 1000, 1000], ebit: [8, 8, 8, 8],
+      ebitda: [58, 58, 58, 58], capex: [46, 46, 46, 46],
+      shares_diluted: [100, 100, 100, 100], net_debt: [-2000] },
+    valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false },
+      wacc_derived: 10, growth_terminal: 2, owc_pct_of_revenue: 15 },
+    market: { price }
+  });
+
+  // Das Suchraster hat hier wirklich eine Luecke.
+  const ctx = S.buildCoreValuationContext(luecke(20), {});
+  assert.equal(ctx.ok, true);
+  assert.ok(S.coreEquityValuePerShare(ctx, 16.5, 2, 10, null) != null, 'bei 16,5 % auswertbar');
+  assert.equal(S.coreEquityValuePerShare(ctx, 17.0, 2, 10, null), null, 'bei 17,0 % nicht mehr');
+
+  // ── Fall A · die Loesung liegt IM Lueckenintervall ───────────────────
+  // Unabhaengige Gegenrechnung: bei 16,65 % liegt der Modellwert bei 20,0204,
+  // bei 16,70 % bei 20,0155 — ein Kurs von 20,02 wird also dazwischen
+  // erklaert. V1.0.62 meldete hier `no_solution_in_range` mit der FALSCHEN
+  // Begruendung, der Markt preise ein Wachstum unter −20 % ein.
+  const A = S.solveReverseDcfGrowth(luecke(20.02), {});
+  assert.equal(A.status, 'ok', A.reason || '');
+  assert.ok(A.impliedGrowthPct > 16.6 && A.impliedGrowthPct < 16.7,
+    'implizites Wachstum ' + A.impliedGrowthPct);
+  assert.equal(A.rootsFound, 1);
+  // Nachgerechnet mit der ECHTEN Bewertungsfunktion, Residualtoleranz erfuellt.
+  assert.equal(A.residualWithinTolerance, true);
+  assert.ok(Math.abs(A.residualPerShare) <= A.residualTolerancePerShare);
+  assert.ok(Math.abs(A.residualPerShare) < 1e-3, 'Residuum ' + A.residualPerShare);
+  const nach = S.coreEquityValuePerShare(ctx, A.impliedGrowthPct, 2, 10, null);
+  assert.ok(Math.abs(nach - 20.02) <= A.residualTolerancePerShare,
+    'unabhaengig nachgerechnet: ' + nach);
+  assert.equal(A.searchComplete, true, 'das Lueckenintervall ist aufgeloest');
+
+  // ── Fall B · keine Loesung bis zur Auswertbarkeitsgrenze ─────────────
+  // Der Kurs liegt unter dem Wert an der Grenze. Jenseits der Grenze ist der
+  // Verlauf mit dieser Bewertungsfunktion nicht bestimmbar — die Suche ist
+  // also UNVOLLSTAENDIG und wird nicht als bewiesene Nichtexistenz
+  // ausgegeben.
+  for (const price of [20.00, 19.50, 5.00, 25.00]) {
+    const r = S.solveReverseDcfGrowth(luecke(price), {});
+    assert.equal(r.status, 'search_incomplete', 'Kurs ' + price + ': ' + r.status);
+    assert.equal(r.impliedGrowthPct, null, 'keine Scheingenauigkeit');
+    assert.equal(r.searchComplete, false);
+    assert.equal(r.uniquenessProven, false);
+    assert.equal(JSON.stringify(r.unresolvedIntervalsPct), '[[16.5,17]]');
+    assert.equal(JSON.stringify(r.evaluableRangePct), '[-20,16.5]');
+    assert.ok(/KEIN Nachweis, dass keine Lösung existiert/.test(r.reason), r.reason);
+    // Die frueheren, hier sachlich falschen Begruendungen kommen nicht mehr.
+    assert.equal(/es existiert keine Lösung/.test(r.reason), false);
+    assert.equal(/Wachstum unter -20% ein/.test(r.reason), false);
+  }
+
+  // ── Fall C · lueckenloser Suchbereich bleibt unveraendert ────────────
+  const glatt = (price) => refMj({ net_debt: [0] },
+    { wacc_components: { tax_rate: 25 }, fade: { enabled: false },
+      wacc_derived: 10, growth_terminal: 2 }, { price });
+  // Negative und positive Wachstumswerte, jeweils nachgerechnet.
+  for (const [price, lo, hi] of [[12, -5.0, -4.0], [14.8, -2.0, -1.0], [17, 0.0, 1.0]]) {
+    const r = S.solveReverseDcfGrowth(glatt(price), {});
+    assert.equal(r.status, 'ok', 'Kurs ' + price + ': ' + (r.reason || ''));
+    assert.ok(r.impliedGrowthPct > lo && r.impliedGrowthPct < hi,
+      'Kurs ' + price + ' ⇒ ' + r.impliedGrowthPct);
+    assert.equal(r.searchComplete, true);
+    assert.equal(r.uniquenessProven, true);
+    assert.equal(r.caveat, null);
+    assert.equal(r.residualWithinTolerance, true);
+    assert.ok(Math.abs(r.residualPerShare) <= r.residualTolerancePerShare);
+    assert.equal(JSON.stringify(r.evaluableRangePct), '[-20,40]');
+  }
+  // Bereichsgrenzen: ausserhalb bleibt es bei `no_solution_in_range` — hier
+  // ist die Suche VOLLSTAENDIG, die Aussage also belegt.
+  for (const price of [500, 0.5]) {
+    const r = S.solveReverseDcfGrowth(glatt(price), {});
+    assert.equal(r.status, 'no_solution_in_range', 'Kurs ' + price + ': ' + r.status);
+    assert.equal(r.searchComplete, true, 'vollstaendig auswertbar');
+    assert.equal(JSON.stringify(r.unresolvedIntervalsPct), '[]');
+    assert.equal(JSON.stringify(r.evaluableRangePct), '[-20,40]');
+  }
+  // Nichtverfuegbarkeit: ohne bekannte Nettoschulden gibt es keinen
+  // Eigenkapitalwert und damit auch kein implizites Wachstum.
+  const ohneNd = S.solveReverseDcfGrowth(refMj({},
+    { wacc_components: { tax_rate: 25 }, fade: { enabled: false },
+      wacc_derived: 10, growth_terminal: 2 }, { price: 17 }), {});
+  assert.equal(ohneNd.status, 'net_debt_unknown');
+  assert.equal(ohneNd.impliedGrowthPct, null);
+  // Und wenn der Kern im GESAMTEN Bereich nichts liefert: eigener Status.
+  const garNichts = S.solveReverseDcfGrowth(refMj({ ebit: [-900, -900, -900, -900],
+    ebitda: [-850, -850, -850, -850], net_debt: [0] },
+    { wacc_components: { tax_rate: 25 }, fade: { enabled: false },
+      wacc_derived: 10, growth_terminal: 2 }, { price: 17 }), {});
+  assert.equal(garNichts.status, 'not_evaluable');
+
+  // ── Fall D · ROBUSTHEITSPRUEFUNG mit eingespeistem Funktionsfehler ───
+  // Die Bewertungsfunktion liefert innerhalb eines eingeschachtelten
+  // Vorzeichenwechsels keinen Wert mehr. V1.0.62 gab dort das
+  // Intervallmittel 0,375 % als geloest aus (Residuum 0,0366 — mehr als das
+  // Doppelte der Toleranz), obwohl die echte Nullstelle bei 0,3446 % liegt.
+  // Jetzt entsteht kein unbelegter Wert. Das ist eine Pruefung der
+  // Absicherung, KEIN mit Daten erreichbarer Bewertungsfehler.
+  const mjD = glatt(17);
+  const ungestoert = S.solveReverseDcfGrowth(mjD, {});
+  assert.equal(ungestoert.status, 'ok');
+  const echteFn = S.coreEquityValuePerShare;
+  try {
+    S.coreEquityValuePerShare = function (c, g, tg, wacc, m) {
+      if (g > 0.3 && g < 0.4) return null;      // kuenstliche Luecke IM Intervall
+      return echteFn(c, g, tg, wacc, m);
+    };
+    const r = S.solveReverseDcfGrowth(mjD, {});
+    assert.equal(r.status, 'search_incomplete', 'kein unbelegtes Intervallmittel');
+    assert.equal(r.impliedGrowthPct, null);
+    assert.equal(r.rootsFound, 0);
+    assert.equal(r.searchComplete, false);
+    assert.equal(JSON.stringify(r.unresolvedIntervalsPct), '[[0,0.5]]');
+  } finally {
+    S.coreEquityValuePerShare = echteFn;
+  }
+  // Die Einspeisung ist zurueckgenommen — der Pfad rechnet wieder normal.
+  assert.equal(S.coreEquityValuePerShare, echteFn);
+  const danach = S.solveReverseDcfGrowth(mjD, {});
+  assert.equal(danach.status, 'ok');
+  assert.ok(Math.abs(danach.impliedGrowthPct - ungestoert.impliedGrowthPct) < 1e-12);
+});
+
+
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Bewertungsgroeszen eines Datensatzes in einem Griff.
