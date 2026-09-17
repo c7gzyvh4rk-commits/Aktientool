@@ -3940,63 +3940,79 @@ const OWC_PROVISIONAL_LABEL = 'Vorläufige Modellannahme: 0; Nutzereingabe erfor
 //
 // Diese Tabelle ist die EINZIGE Semantikquelle; Komponenten-Rebuild und
 // `_resolveShortTermDebtHistory()` lesen beide aus ihr.
-const DEBT_CELL_ST_BORROW = 'stBorrow';   // originär kurzfristige Bankschulden / Commercial Paper
-const DEBT_CELL_LT_CUR    = 'ltCurMat';   // laufende Fälligkeiten langfristiger Schulden
-const DEBT_CELL_LT_NC     = 'debtNC';     // langfristige Schulden (ohne Leasing)
-const DEBT_CELL_LEASE_CUR = 'leaseCur';   // kurzfristige Leasingverpflichtungen
-const DEBT_CELL_LEASE_NC  = 'leaseNC';    // langfristige Leasingverpflichtungen
+// Die Tabellen stehen in EINER Funktion, damit sie der Modul-Lader der
+// Datenschicht (src/sec-ttm.js, src/dcf-core.js) als Deklaration mitziehen
+// kann; die Konstanten darunter leiten sich daraus ab. Es gibt damit weiterhin
+// genau eine Semantikquelle.
+function _debtScopeTables() {
+  if (_debtScopeTables._cache) return _debtScopeTables._cache;
+  const ST_BORROW = 'stBorrow';   // originär kurzfristige Bankschulden / Commercial Paper
+  const LT_CUR    = 'ltCurMat';   // laufende Fälligkeiten langfristiger Schulden
+  const LT_NC     = 'debtNC';     // langfristige Schulden (ohne Leasing)
+  const LEASE_CUR = 'leaseCur';   // kurzfristige Leasingverpflichtungen
+  const LEASE_NC  = 'leaseNC';    // langfristige Leasingverpflichtungen
+  const t = {
+    ids: { ST_BORROW, LT_CUR, LT_NC, LEASE_CUR, LEASE_NC },
+    order: [ST_BORROW, LT_CUR, LT_NC, LEASE_CUR, LEASE_NC],
+    shortTerm: [ST_BORROW, LT_CUR, LEASE_CUR],
+    labels: {
+      stBorrow: 'kurzfristige Bankschulden',
+      ltCurMat: 'laufende Fälligkeiten langfristiger Schulden',
+      debtNC:   'langfristige Schulden',
+      leaseCur: 'kurzfristige Leasingverpflichtungen',
+      leaseNC:  'langfristige Leasingverpflichtungen'
+    },
+    tagCells: {
+      ShortTermBorrowings:                    [ST_BORROW],
+      ShortTermDebt:                          [ST_BORROW],
+      CommercialPaper:                        [ST_BORROW],
+      LongTermDebtCurrent:                    [LT_CUR],
+      CurrentPortionOfLongTermDebt:           [LT_CUR],
+      CurrentMaturitiesOfLongTermDebt:        [LT_CUR],
+      LongTermDebtNoncurrent:                 [LT_NC],
+      LongTermNotesPayable:                   [LT_NC],
+      LongTermDebt:                           [LT_CUR, LT_NC],
+      LongTermDebtAndCapitalLeaseObligations: [LT_NC, LEASE_NC],
+      DebtCurrent:                            [ST_BORROW, LT_CUR, LEASE_CUR],
+      DebtAndCapitalLeaseObligations:         [ST_BORROW, LT_CUR, LT_NC, LEASE_CUR, LEASE_NC],
+      FinanceLeaseLiabilityCurrent:           [LEASE_CUR],
+      FinanceLeaseLiabilityNoncurrent:        [LEASE_NC],
+      CapitalLeaseObligationsCurrent:         [LEASE_CUR],
+      CapitalLeaseObligationsNoncurrent:      [LEASE_NC]
+    },
+    fieldDefaults: {
+      debt_short_term:           [ST_BORROW],
+      current_debt:              [ST_BORROW],
+      debt_long_term_current:    [LT_CUR],
+      long_term_debt_current:    [LT_CUR],
+      debt_long_term_noncurrent: [LT_NC],
+      long_term_debt_noncurrent: [LT_NC],
+      long_term_debt:            [LT_NC],
+      finance_lease_current:     [LEASE_CUR],
+      finance_lease_noncurrent:  [LEASE_NC]
+    },
+    scopeFields: ['total_debt', 'long_term_debt', 'debt_short_term',
+                  'debt_long_term_current', 'debt_long_term_noncurrent',
+                  'finance_lease_current', 'finance_lease_noncurrent']
+  };
+  _debtScopeTables._cache = t;
+  return t;
+}
 
-// Die kurzfristigen Finanzschulden des Working Capital bestehen aus genau
-// diesen drei Zellen. Fehlt eine davon nachweisbar nicht, ist der Betrag
-// unvollständig — und damit unbekannt.
-const DEBT_CELLS_SHORT_TERM = Object.freeze([
-  DEBT_CELL_ST_BORROW, DEBT_CELL_LT_CUR, DEBT_CELL_LEASE_CUR
-]);
-
-const DEBT_TAG_CELLS = Object.freeze({
-  // kurzfristige Bankschulden
-  ShortTermBorrowings:                    [DEBT_CELL_ST_BORROW],
-  ShortTermDebt:                          [DEBT_CELL_ST_BORROW],
-  CommercialPaper:                        [DEBT_CELL_ST_BORROW],
-  // laufende Fälligkeiten langfristiger Schulden (ohne Leasing)
-  LongTermDebtCurrent:                    [DEBT_CELL_LT_CUR],
-  CurrentPortionOfLongTermDebt:           [DEBT_CELL_LT_CUR],
-  CurrentMaturitiesOfLongTermDebt:        [DEBT_CELL_LT_CUR],
-  // langfristige Schulden ohne Leasing
-  LongTermDebtNoncurrent:                 [DEBT_CELL_LT_NC],
-  LongTermNotesPayable:                   [DEBT_CELL_LT_NC],
-  // langfristige Schulden einschließlich laufender Tranche, ohne Leasing
-  LongTermDebt:                           [DEBT_CELL_LT_CUR, DEBT_CELL_LT_NC],
-  // langfristige Schulden UND langfristiges Leasing — KEINE laufende Tranche
-  LongTermDebtAndCapitalLeaseObligations: [DEBT_CELL_LT_NC, DEBT_CELL_LEASE_NC],
-  // gesamte kurzfristige Schulden einschließlich Leasing
-  DebtCurrent:                            [DEBT_CELL_ST_BORROW, DEBT_CELL_LT_CUR, DEBT_CELL_LEASE_CUR],
-  // gesamte Schulden, kurz- und langfristig, einschließlich Leasing
-  DebtAndCapitalLeaseObligations:         [DEBT_CELL_ST_BORROW, DEBT_CELL_LT_CUR, DEBT_CELL_LT_NC,
-                                           DEBT_CELL_LEASE_CUR, DEBT_CELL_LEASE_NC],
-  // Leasing getrennt ausgewiesen
-  FinanceLeaseLiabilityCurrent:           [DEBT_CELL_LEASE_CUR],
-  FinanceLeaseLiabilityNoncurrent:        [DEBT_CELL_LEASE_NC],
-  CapitalLeaseObligationsCurrent:         [DEBT_CELL_LEASE_CUR],
-  CapitalLeaseObligationsNoncurrent:      [DEBT_CELL_LEASE_NC]
-});
+const DEBT_CELL_ST_BORROW = _debtScopeTables().ids.ST_BORROW;
+const DEBT_CELL_LT_CUR    = _debtScopeTables().ids.LT_CUR;
+const DEBT_CELL_LT_NC     = _debtScopeTables().ids.LT_NC;
+const DEBT_CELL_LEASE_CUR = _debtScopeTables().ids.LEASE_CUR;
+const DEBT_CELL_LEASE_NC  = _debtScopeTables().ids.LEASE_NC;
+const DEBT_CELLS_SHORT_TERM = Object.freeze(_debtScopeTables().shortTerm);
+const DEBT_TAG_CELLS = Object.freeze(_debtScopeTables().tagCells);
 
 // Rückfall, wenn KEIN Quell-Tag bekannt ist (manueller Import, fremde Quelle).
 // Er bildet die Bedeutung des Schemafeldes selbst ab und entspricht damit der
 // Alias-Gruppen-Logik vor V1.0.60. Ein bekanntes Tag hat immer Vorrang —
 // insbesondere `DebtCurrent`, das deutlich mehr abdeckt als `debt_short_term`
 // dem Feldnamen nach vermuten liesse.
-const DEBT_FIELD_DEFAULT_CELLS = Object.freeze({
-  debt_short_term:           [DEBT_CELL_ST_BORROW],
-  current_debt:              [DEBT_CELL_ST_BORROW],
-  debt_long_term_current:    [DEBT_CELL_LT_CUR],
-  long_term_debt_current:    [DEBT_CELL_LT_CUR],
-  debt_long_term_noncurrent: [DEBT_CELL_LT_NC],
-  long_term_debt_noncurrent: [DEBT_CELL_LT_NC],
-  long_term_debt:            [DEBT_CELL_LT_NC],
-  finance_lease_current:     [DEBT_CELL_LEASE_CUR],
-  finance_lease_noncurrent:  [DEBT_CELL_LEASE_NC]
-});
+const DEBT_FIELD_DEFAULT_CELLS = Object.freeze(_debtScopeTables().fieldDefaults);
 
 // Quell-Tag einer Reihe. `source_tag` hat Vorrang: die TTM-Sicht schreibt
 // `source_reference` auf „TTM aus normalisierten Quartalsdaten (…)" um und
@@ -4015,189 +4031,256 @@ function _secSourceTag(metaEntry) {
 // „Umfang nicht bestimmbar" — damit darf weder addiert noch subtrahiert werden.
 function _debtCellsOfField(fundamentals, field) {
   const meta = (fundamentals && fundamentals._v4_meta) || {};
+  // V1.0.61: Eine bereits aufgeloeste Reihe fuehrt ihren NACHGEWIESENEN Umfang
+  // mit (`scopeCells`). Sie ist damit vollwertige Evidenz — genau das fehlte
+  // dem Rebuild bis V1.0.60 fuer zusammengefasste Betraege.
+  // Nur ein NACHGEWIESEN vollstaendiger Umfang ist Evidenz. Ein Teilbetrag
+  // traegt weiterhin das Quell-Tag; sonst wuerde eine erneute Aufbereitung
+  // seinem Wert einen zu weiten Umfang zuschreiben.
+  const declaredMeta = meta[field];
+  if (declaredMeta && declaredMeta.scopeComplete === true &&
+      Array.isArray(declaredMeta.scopeCells) && declaredMeta.scopeCells.length > 0) {
+    return declaredMeta.scopeCells;
+  }
   const tag  = _secSourceTag(meta[field]);
-  if (tag && DEBT_TAG_CELLS[tag]) return DEBT_TAG_CELLS[tag];
+  const T = _debtScopeTables();
+  if (tag && T.tagCells[tag]) return T.tagCells[tag];
   if (tag) return null;                       // Tag bekannt, aber Umfang nicht belegt
   const ref = meta[field] && meta[field].source_reference;
   if (typeof ref === 'string' && /component rebuild/.test(ref)) return null;
-  return DEBT_FIELD_DEFAULT_CELLS[field] || null;
+  return T.fieldDefaults[field] || null;
 }
 
-const _cellsDisjoint = (a, b) => !a.some(c => b.indexOf(c) >= 0);
-const _cellsSubset   = (a, b) => a.every(c => b.indexOf(c) >= 0);
-const _cellsProperSubset = (a, b) => a.length < b.length && _cellsSubset(a, b);
-const _cellsMinus = (a, b) => a.filter(c => b.indexOf(c) < 0);
+// Mehrzeilig geschrieben, damit der Modul-Lader der Datenschicht die
+// Deklaration eindeutig abgrenzen kann (er sucht die schliessende Zeile).
+function _cellsDisjoint(a, b) {
+  return !a.some(c => b.indexOf(c) >= 0);
+}
+function _cellsSubset(a, b) {
+  return a.every(c => b.indexOf(c) >= 0);
+}
+function _cellsMinus(a, b) {
+  return a.filter(c => b.indexOf(c) < 0);
+}
+
+// Feste Spaltenreihenfolge der Bilanzzellen für das Gleichungssystem;
+// die Gesamtverschuldung sind alle fünf Zellen.
+const DEBT_CELL_ORDER = Object.freeze(_debtScopeTables().order);
+const DEBT_CELLS_ALL = DEBT_CELL_ORDER;
+const DEBT_CELL_LABEL = Object.freeze(_debtScopeTables().labels);
+
+function _debtCellLabels(cells) {
+  const lab = _debtScopeTables().labels;
+  return cells.map(c => lab[c] || c).join(' und ');
+}
+
+function _debtVec(cells) {
+  return _debtScopeTables().order.map(c => (cells.indexOf(c) >= 0 ? 1 : 0));
+}
+
+// ══ V1.0.61 · Schuldenauflösung als Gleichungssystem (Korrekturchat 12B.2) ══
+// Bis V1.0.60 wurden Angaben nacheinander „belegt oder übersprungen". Das
+// konnte drei Dinge nicht:
+//   · einen zusammengefassten Betrag (z. B. LongTermDebtAndCapitalLeaseObligations)
+//     mit disjunkten Einzelangaben zusammenführen,
+//   · eine BEKANNTE Überschneidung herausrechnen
+//     (LongTermDebt + DebtCurrent − LongTermDebtCurrent),
+//   · einen Widerspruch erkennen, wenn ein enthaltener Teilbetrag größer ist
+//     als die Gesamtheit.
+//
+// Jede gemeldete Angabe ist eine Gleichung „Summe ihrer Zellen = Wert". Die
+// gesuchte Größe (kurzfristige Finanzschulden bzw. Gesamtverschuldung) ist
+// genau dann bestimmt, wenn ihr Zellvektor im Zeilenraum des Systems liegt.
+// Damit entscheidet die nachgewiesene ABDECKUNG, nicht das Vorhandensein
+// irgendeines Zahlenwerts — und weder Reihenfolge, noch „größerer Wert", noch
+// die Anzahl vorhandener Komponenten beeinflussen das Ergebnis.
+//
+// Nichtnegativität: Bilanzbestandteile sind nicht negativ. Daraus folgen zwei
+// prüfbare Widersprüche — ein enthaltener Teilbetrag größer als die Gesamtheit,
+// und ein rechnerisch bestimmter Zellwert unter null.
+function _solveDebtEvidence(evidence) {
+  const CELL_ORDER = _debtScopeTables().order;
+  const CELL_LABEL = _debtScopeTables().labels;
+  const n = CELL_ORDER.length;
+  const ev = Array.isArray(evidence) ? evidence : [];
+  // Enge, begründete Toleranz: gemeldete Beträge sind auf Millionen gerundet;
+  // 0,01 % der größten Angabe deckt die Rundung ab, ohne einen materiellen
+  // Widerspruch zu verdecken.
+  const scale = ev.reduce((m, e) => Math.max(m, Math.abs(e.value)), 0);
+  const tol = Math.max(1e-6, 1e-4 * scale);
+  const EPS = 1e-9;
+
+  const R = ev.map(e => _debtVec(e.cells).concat([e.value]));
+  const pivots = [];
+  let pr = 0;
+  for (let col = 0; col < n && pr < R.length; col++) {
+    let sel = -1, best = EPS;
+    for (let r = pr; r < R.length; r++) {
+      if (Math.abs(R[r][col]) > best) { best = Math.abs(R[r][col]); sel = r; }
+    }
+    if (sel < 0) continue;
+    const tmp = R[pr]; R[pr] = R[sel]; R[sel] = tmp;
+    const pv = R[pr][col];
+    for (let k = 0; k <= n; k++) R[pr][k] /= pv;
+    for (let r = 0; r < R.length; r++) {
+      if (r === pr) continue;
+      const fct = R[r][col];
+      if (Math.abs(fct) < 1e-12) continue;
+      for (let k = 0; k <= n; k++) R[r][k] -= fct * R[pr][k];
+    }
+    pivots.push(col); pr++;
+  }
+
+  // Zielgröße über den Zeilenraum bestimmen.
+  const sumOf = (cells) => {
+    const red = _debtVec(cells);
+    let val = 0;
+    for (let i = 0; i < pivots.length; i++) {
+      const c = pivots[i];
+      const fct = red[c];
+      if (Math.abs(fct) < 1e-12) continue;
+      for (let k = 0; k < n; k++) red[k] -= fct * R[i][k];
+      val += fct * R[i][n];
+    }
+    const open = CELL_ORDER.filter((c, idx) => Math.abs(red[idx]) > EPS);
+    return open.length === 0
+      ? { determined: true, value: val, open: [] }
+      : { determined: false, value: null, open };
+  };
+
+  // ── Widersprüche ───────────────────────────────────────────────────
+  let contradiction = null;
+  for (let r = pr; r < R.length && !contradiction; r++) {
+    const allZero = R[r].slice(0, n).every(x => Math.abs(x) < EPS);
+    if (allZero && Math.abs(R[r][n]) > tol) {
+      contradiction = 'die gemeldeten Schuldenangaben sind rechnerisch unvereinbar ' +
+        '(Abweichung ' + Math.abs(R[r][n]).toFixed(1) + 'M)';
+    }
+  }
+  if (!contradiction) {
+    for (const a of ev) {
+      for (const b of ev) {
+        if (a === b || a.cells.length >= b.cells.length) continue;
+        if (!_cellsSubset(a.cells, b.cells)) continue;
+        if (a.value > b.value + tol) {
+          contradiction = a.name + ' (' + a.value.toFixed(1) + 'M) ist in ' + b.name +
+            ' (' + b.value.toFixed(1) + 'M) enthalten, kann als nichtnegativer Teilbetrag ' +
+            'aber nicht größer sein';
+          break;
+        }
+      }
+      if (contradiction) break;
+    }
+  }
+  if (!contradiction) {
+    for (const c of CELL_ORDER) {
+      const one = sumOf([c]);
+      if (one.determined && one.value < -tol) {
+        contradiction = 'rechnerisch ergäbe sich für ' + (CELL_LABEL[c] || c) +
+          ' ein negativer Betrag (' + one.value.toFixed(1) + 'M) — die Angaben sind unvereinbar';
+        break;
+      }
+    }
+  }
+  return { contradiction, sumOf, tol, evidenceNames: ev.map(e => e.name) };
+}
 
 // Reihen, die überhaupt Schuldenzellen belegen können.
-const DEBT_SCOPE_FIELDS = Object.freeze([
-  'total_debt', 'long_term_debt', 'debt_short_term', 'debt_long_term_current',
-  'debt_long_term_noncurrent', 'finance_lease_current', 'finance_lease_noncurrent'
-]);
+const DEBT_SCOPE_FIELDS = Object.freeze(_debtScopeTables().scopeFields);
 
-// Kurzfristige Finanzschulden je Berichtsperiode bzw. — nur ohne JEDEN
-// Periodenkontext (manueller Import, Altdaten) — je Array-Index.
-// Rueckgabe: { mode: 'period'|'index', at(i), periodAt(i), warnings }
-//   at(i) → { value, status: 'measured'|'derived'|'unknown', source, reason }
-function _resolveShortTermDebtHistory(f) {
+// Gemeinsame Auflösung. `targetCells` ist entweder DEBT_CELLS_SHORT_TERM
+// (kurzfristige Finanzschulden des Working Capital) oder DEBT_CELLS_ALL
+// (Gesamtverschuldung der Nettoschuldenbrücke). Rebuild, OWC und Brücke
+// verwenden damit DIESELBE Evidenz.
+//   at(i) → { value, status: 'measured'|'derived'|'unknown'|'contradictory',
+//             source, reason, openCells }
+function _resolveDebtHistory(f, targetCells, targetLabel) {
   f = f || {};
+  const SCOPE_FIELDS = _debtScopeTables().scopeFields;
   const meta = f._v4_meta || {};
   const warnings = [];
   const addW = (w) => { if (warnings.indexOf(w) === -1) warnings.push(w); };
   const num = (v) => (v != null && isFinite(v)) ? Number(v) : null;
   const arr = (k) => Array.isArray(f[k]) ? f[k] : [];
 
-  const tagOf   = {};
-  const cellsOf = {};
-  DEBT_SCOPE_FIELDS.forEach(k => {
+  const tagOf = {}, cellsOf = {};
+  SCOPE_FIELDS.forEach(k => {
     tagOf[k]   = _secSourceTag(meta[k]);
     cellsOf[k] = _debtCellsOfField(f, k);
   });
 
   const hasCtx = (typeof _seriesHasPeriodContext === 'function') &&
-    DEBT_SCOPE_FIELDS.some(k => _seriesHasPeriodContext(f, k));
+    SCOPE_FIELDS.some(k => _seriesHasPeriodContext(f, k));
 
-  // ── Altdatenregel ──────────────────────────────────────────────────
-  // Sie gilt NUR ohne jeden Periodenkontext. Eine Reihe mit Perioden, deren
-  // Quell-Tag unbekannt ist (z. B. eine TTM-Reihe ohne `source_tag`), ist
-  // ausdruecklich KEIN Altdatenfall: dort bleibt der Umfang unbestimmt und es
-  // wird nicht ersatzweise subtrahiert.
+  // Die Altdatenregel gilt NUR ohne jeden Periodenkontext. Eine Reihe mit
+  // Perioden, deren Umfang unbekannt ist, ist ausdrücklich kein Altdatenfall.
   const legacy = !hasCtx;
 
-  // ── Auflösung je Periode bzw. Position ─────────────────────────────
   const resolveFrom = (v, label) => {
     const pre = label ? label + ': ' : '';
-
-    // 1) Gemeldete Evidenz mit bestimmbarem Umfang.
     const ev = [];
-    DEBT_SCOPE_FIELDS.forEach(k => {
+    SCOPE_FIELDS.forEach(k => {
       const val = num(v[k]);
       if (val == null) return;
       const cells = cellsOf[k];
-      if (cells == null) return;
-      ev.push({ name: tagOf[k] ? k + ' (' + tagOf[k] + ')' : k, cells, value: val, derived: false });
+      if (cells == null || cells.length === 0) return;
+      ev.push({ name: tagOf[k] ? k + ' (' + tagOf[k] + ')' : k, cells, value: val, field: k });
     });
-
-    // 2) Zulässige Subtraktionen: A − B mit cells(B) ⊊ cells(A).
-    //    Nur so entsteht aus zwei Angaben eine dritte Größe; gleicher
-    //    Stichtag allein genügt nicht.
-    const derivedEv = [];
-    for (const a of ev) {
-      for (const b of ev) {
-        if (a === b) continue;
-        if (!_cellsProperSubset(b.cells, a.cells)) continue;
-        const d = a.value - b.value;
-        if (d < 0) continue;
-        derivedEv.push({
-          name: a.name + ' − ' + b.name, cells: _cellsMinus(a.cells, b.cells),
-          value: d, derived: true
-        });
-      }
-    }
-
-    // 3) Auswahl: nur Evidenz, die AUSSCHLIESSLICH Zellen der kurzfristigen
-    //    Finanzschulden belegt, breiteste zuerst, ohne Überschneidung.
-    const byWidth = (x, y) => y.cells.length - x.cells.length;
-    const pool = ev.slice().sort(byWidth).concat(derivedEv.slice().sort(byWidth));
-    const claimed = [], chosen = [];
-    for (const e of pool) {
-      if (!_cellsSubset(e.cells, DEBT_CELLS_SHORT_TERM)) continue;
-      if (!_cellsDisjoint(e.cells, claimed)) continue;
-      e.cells.forEach(c => claimed.push(c));
-      chosen.push(e);
-    }
-
-    // 4) Nicht belegte Zellen: nachweisbar leer oder unbekannt?
-    //    Eine vorhandene Teilkomponente macht die Summe NICHT vollständig.
-    const coveredZero = (cell) => ev.some(e => e.cells.indexOf(cell) >= 0 && e.value === 0);
-    const positiveIn  = (cell) => ev.some(e => e.cells.indexOf(cell) >= 0 && e.value > 0);
-    const evidenceFor = (cell) => ev.some(e => e.cells.indexOf(cell) >= 0);
-
-    const missing = DEBT_CELLS_SHORT_TERM.filter(c => claimed.indexOf(c) < 0);
-    const unresolved = [], assumedEmpty = [];
-    missing.forEach(cell => {
-      // Eine Angabe mit Wert 0, die diese Zelle umfasst, belegt sie als 0
-      // (die Bestandteile sind nicht negativ).
-      if (coveredZero(cell)) { assumedEmpty.push(cell); return; }
-      if (cell === DEBT_CELL_LT_CUR) {
-        // Laufende Faelligkeiten sind der kurzfristige Teil eines bekannten
-        // langfristigen Bestandes: gibt es langfristige Schulden, ist ihre
-        // laufende Tranche nicht als 0 unterstellbar.
-        if (positiveIn(DEBT_CELL_LT_NC)) unresolved.push(cell); else assumedEmpty.push(cell);
-        return;
-      }
-      if (cell === DEBT_CELL_LEASE_CUR) {
-        // Dasselbe fuer Leasing: nur wenn im Abschluss ueberhaupt keine
-        // Leasingverpflichtung auftaucht, ist die laufende Tranche 0.
-        if (positiveIn(DEBT_CELL_LEASE_NC) || positiveIn(DEBT_CELL_LEASE_CUR) ||
-            evidenceFor(DEBT_CELL_LEASE_CUR)) unresolved.push(cell);
-        else assumedEmpty.push(cell);
-        return;
-      }
-      // Originaer kurzfristige Bankschulden haben keinen langfristigen
-      // Bestand, aus dem sie folgen. Wird kein solcher Posten gemeldet, gilt
-      // er als nicht vorhanden — das ist die seit jeher geltende Lesart.
-      assumedEmpty.push(cell);
-    });
-
-    if (unresolved.length > 0) {
+    if (ev.length === 0) {
       return { value: null, status: 'unknown',
-        reason: pre + 'kurzfristige Finanzschulden unvollständig — ' +
-          unresolved.map(c => c === DEBT_CELL_LT_CUR
-            ? 'laufende Fälligkeiten langfristiger Schulden'
-            : 'kurzfristige Leasingverpflichtungen').join(' und ') +
-          ' sind weder gemeldet noch aus den vorhandenen Tags (' +
-          (ev.map(e => e.name).join(', ') || 'keine') + ') bestimmbar. ' +
-          'Eine vorhandene Teilkomponente macht die Summe nicht vollständig.' };
+        reason: pre + 'keine Schuldenangabe mit bestimmbarem Umfang' };
     }
 
-    if (chosen.length === 0) {
-      // Keine einzige belegte Zelle: nur eine ausdrücklich belegte Null ist
-      // hier eine Messung.
-      if (assumedEmpty.length === DEBT_CELLS_SHORT_TERM.length &&
-          DEBT_CELLS_SHORT_TERM.some(c => coveredZero(c))) {
-        return { value: 0, status: 'measured',
-                 source: 'gemeldete Schulden = 0 (keine Finanzschulden)' };
-      }
-      return { value: null, status: 'unknown',
-        reason: pre + 'keine Angabe, die die kurzfristigen Finanzschulden bestimmt' };
+    const sys = _solveDebtEvidence(ev);
+    if (sys.contradiction) {
+      addW(pre + sys.contradiction + '.');
+      return { value: null, status: 'contradictory',
+        reason: pre + sys.contradiction };
     }
-
-    let sum = 0, anyDerived = false;
-    chosen.forEach(e => { sum += e.value; if (e.derived) anyDerived = true; });
-    const out = {
-      value: sum,
-      status: anyDerived ? 'derived' : 'measured',
-      source: chosen.map(e => e.name).join(' + '),
-      cellsCovered: claimed.slice(),
-      cellsAssumedEmpty: assumedEmpty.slice()
-    };
-    if (assumedEmpty.length > 0) {
-      out.assumedEmptyNote = assumedEmpty.join(', ');
+    const res = sys.sumOf(targetCells);
+    if (!res.determined) {
+      // Für die Begründung zählt, welcher GESUCHTE Bestandteil offen ist —
+      // nicht, über welche Kopplung die Unbestimmtheit rechnerisch entsteht.
+      const openTarget = targetCells.filter(c => !sys.sumOf([c]).determined);
+      const open = openTarget.length > 0 ? openTarget : res.open;
+      return { value: null, status: 'unknown', openCells: open,
+        reason: pre + targetLabel + ' nicht bestimmt — offen bleibt ' +
+          _debtCellLabels(open) + '. Belegt sind nur ' +
+          sys.evidenceNames.join(', ') +
+          '. Eine vorhandene Teilangabe macht die Summe nicht vollständig.' };
     }
-    return out;
+    return { value: res.value, status: 'measured',
+      source: sys.evidenceNames.join(' + '), cellsCovered: targetCells.slice() };
   };
 
-  // ── Altpfad: Zusammensetzung ohne Umfangswissen ─────────────────────
-  // Unveraendert gegenueber V1.0.59: gemeldete Komponenten zuerst, die
-  // Restgroesse nur ersatzweise und ausdruecklich als ABGELEITET. Bekannte
-  // Widersprueche werden weiterhin gemeldet.
+  // ── Altpfad: keinerlei Periodenmetadaten (manueller Import) ─────────
+  // Unverändert dokumentierte Regel. Bekannte Umfangsinformationen werden
+  // trotzdem genutzt: liegt ein Quell-Tag vor, gilt der reguläre Weg.
   const resolveLegacy = (v, label) => {
     const pre = label ? label + ': ' : '';
+    const anyScope = SCOPE_FIELDS.some(k => cellsOf[k] != null && num(v[k]) != null &&
+      tagOf[k] != null);
+    if (anyScope) return resolveFrom(v, label);
+
     const st  = num(v['debt_short_term']);
     const lc  = num(v['debt_long_term_current']);
     const fl  = num(v['finance_lease_current']);
     const td  = num(v['total_debt']);
     const ltd = num(v['long_term_debt']);
+    const wantsAll = targetCells.length === _debtScopeTables().order.length;
+    if (wantsAll) {
+      if (td != null) return { value: td, status: 'derived',
+        source: 'total_debt (manueller Import, Umfang nicht belegt)' };
+      return { value: null, status: 'unknown', reason: pre + 'total_debt fehlt' };
+    }
     let residual = null;
     if (td != null && ltd != null) { const d = td - ltd; if (d >= 0) residual = d; }
-
     const parts = [];
     let sum = null;
     const add = (value, src) => { sum = (sum == null ? 0 : sum) + value; parts.push(src); };
     if (st != null) add(st, 'debt_short_term');
     if (lc != null) add(lc, 'debt_long_term_current');
     if (fl != null) add(fl, 'finance_lease_current');
-
     if (sum == null && td != null && td === 0) {
       return { value: 0, status: 'measured', source: 'total_debt = 0 (keine Finanzschulden)' };
     }
@@ -4233,25 +4316,23 @@ function _resolveShortTermDebtHistory(f) {
       mode: 'index', warnings, periodAt: () => null,
       at(i) {
         const v = {};
-        DEBT_SCOPE_FIELDS.forEach(k => { v[k] = arr(k)[i]; });
+        SCOPE_FIELDS.forEach(k => { v[k] = arr(k)[i]; });
         return resolve(v, null);
       }
     };
   }
 
   // ── Periodengetreuer Pfad ──────────────────────────────────────────
-  // Leitserie ist current_liabilities: das OWC wird gegen genau diesen
-  // Bilanzstichtag gebildet. Fehlt sie, fuehrt total_debt.
   const leadField = (Array.isArray(f.current_liabilities) && f.current_liabilities.length > 0 &&
                      meta['current_liabilities'] && Array.isArray(meta['current_liabilities'].periods))
     ? 'current_liabilities' : 'total_debt';
   const inputs = [{ name: leadField, values: f[leadField], meta: meta[leadField] || {}, required: true }];
-  DEBT_SCOPE_FIELDS.filter(k => k !== leadField)
+  SCOPE_FIELDS.filter(k => k !== leadField)
     .forEach(k => inputs.push({ name: k, values: f[k], meta: meta[k] || {}, required: false }));
 
   const join = (typeof _joinPeriodKeyed === 'function')
     ? _joinPeriodKeyed(inputs, (v, ctx) => resolve(v, ctx.period),
-        { label: 'kurzfristige Finanzschulden (period-keyed)', requireSameUnit: false })
+        { label: targetLabel + ' (period-keyed)', requireSameUnit: false })
     : { ok: false, values: [], meta: {} };
 
   if (join.warnings) join.warnings.forEach(addW);
@@ -4264,17 +4345,27 @@ function _resolveShortTermDebtHistory(f) {
       if (!join.ok) {
         return { value: null, status: 'unknown',
           reason: (join.meta && join.meta.unavailable_reason) ||
-                  'kurzfristige Finanzschulden periodengetreu nicht bestimmbar' };
+                  (targetLabel + ' periodengetreu nicht bestimmbar') };
       }
       const e = join.values[i];
       if (e == null) {
         return { value: null, status: 'unknown',
-          reason: (jPeriods[i] ? jPeriods[i] + ': ' : '') +
-                  'kurzfristige Finanzschulden periodengetreu nicht bestimmbar' };
+          reason: (jPeriods[i] ? jPeriods[i] + ': ' : '') + targetLabel +
+                  ' periodengetreu nicht bestimmbar' };
       }
       return e;
     }
   };
+}
+
+// Kurzfristige Finanzschulden des Working Capital.
+function _resolveShortTermDebtHistory(f) {
+  return _resolveDebtHistory(f, _debtScopeTables().shortTerm, 'kurzfristige Finanzschulden');
+}
+
+// Gesamtverschuldung für die Nettoschuldenbrücke.
+function _resolveTotalDebtHistory(f) {
+  return _resolveDebtHistory(f, _debtScopeTables().order, 'Gesamtverschuldung');
 }
 
 // Historische OWC-Reihe. Nur zeitlich zusammenhängende, vollständige Jahre ab
@@ -7555,101 +7646,63 @@ function _applyDebtComponentRebuild(mj, anchorYearHint) {
   };
 
   // period-keyed component series builder (Alias-Dedup-Logik)
-  // period-keyed component series builder.
-  // V1.0.60: Die Dedup-Logik beruht nicht mehr auf Alias-Gruppen, sondern auf
-  // DEMSELBEN Zellmodell wie `_resolveShortTermDebtHistory()`
-  // (`DEBT_TAG_CELLS`). Damit gilt hier und dort genau eine Semantik:
-  //   · Zellmengen disjunkt        ⇒ addieren
-  //   · neue Zellen Teilmenge      ⇒ bereits abgedeckt, überspringen
-  //   · Überschneidung mit Zuwachs ⇒ nicht auflösbar, Periode verwerfen
-  // Die breiteste Angabe wird zuerst verarbeitet, damit eine feinere
-  // Aufschlüsselung (z. B. FinanceLeaseLiabilityCurrent neben DebtCurrent)
-  // als Teilmenge erkannt und nicht doppelt gezählt wird.
-  const buildPeriodAlignedComponentSeries = (fundamentals, componentFields, anchorYear) => {
-    const periodMap   = new Map();
-    const metaMap     = new Map();
-    const usedFields  = [];
+  // ══ V1.0.61 · Gesamtverschuldung period-keyed über die GEMEINSAME Evidenz ══
+  // Korrekturchat 12B.2. Bis V1.0.60 summierte der Rebuild ausschließlich
+  // „Komponentenfelder" und verglich das Ergebnis anschließend über eine
+  // Prozentschwelle mit dem direkten Wert. Damit konnte er
+  //   · einen direkt gemeldeten, zusammengefassten Betrag nicht als Evidenz
+  //     verwenden (LongTermDebtAndCapitalLeaseObligations + DebtCurrent ergab
+  //     1.000 statt 1.300),
+  //   · eine BEKANNTE Überschneidung nicht herausrechnen
+  //     (LongTermDebt + DebtCurrent − LongTermDebtCurrent),
+  //   · und einen Widerspruch nicht erkennen.
+  // Jetzt entscheidet je Periode dasselbe Gleichungssystem wie bei den
+  // kurzfristigen Finanzschulden (`_solveDebtEvidence`). Weder Reihenfolge noch
+  // „größerer Wert" noch die Anzahl der Komponenten beeinflussen das Ergebnis.
+  const buildDebtScopeSeries = (fundamentals, fields, anchorYear) => {
+    const warnings = [];
     const droppedFields = [];
-    const warnings    = [];
-    const claimedCells   = new Map();   // period → belegte Zellen
-    const claimedBy      = new Map();   // period → { cell: field }
-    const conflictPeriods = new Map();  // period → Grund
+    const usedFields = [];
+    const byPeriod = new Map();   // period → [{name, cells, value, field}]
+    const metaMap  = new Map();
 
-    const fieldCells = {};
-    componentFields.forEach(k => { fieldCells[k] = _debtCellsOfField(fundamentals, k); });
-    const fieldTag = (k) => {
-      const m = fundamentals._v4_meta && fundamentals._v4_meta[k];
-      return _secSourceTag(m);
-    };
-    // Breiteste Angabe zuerst; bei gleicher Breite bleibt die Reihenfolge der
-    // Aufrufliste erhalten (stabile Sortierung).
-    const orderedFields = componentFields.slice().sort((a, b) => {
-      const ca = fieldCells[a] ? fieldCells[a].length : 0;
-      const cb = fieldCells[b] ? fieldCells[b].length : 0;
-      return cb - ca;
-    });
-
-    for (const field of orderedFields) {
+    for (const field of fields) {
       const arr  = Array.isArray(fundamentals[field]) ? fundamentals[field] : [];
       const meta = fundamentals._v4_meta && fundamentals._v4_meta[field];
       const periods = meta && Array.isArray(meta.periods) ? meta.periods : null;
       if (arr.length === 0 || arr[0] == null) { droppedFields.push(field + ':empty'); continue; }
       if (!periods || periods.length === 0)    { droppedFields.push(field + ':no-periods'); continue; }
-      const cells = fieldCells[field];
-      if (cells == null) {
-        // Ohne bestimmbaren Umfang laesst sich weder Ueberschneidung noch
-        // Vollstaendigkeit pruefen — die Reihe wird nicht aufsummiert.
+      const cells = _debtCellsOfField(fundamentals, field);
+      const tag   = _secSourceTag(meta);
+      if (cells == null || cells.length === 0) {
         warnings.push(field + ': Umfang aus der Herkunft nicht bestimmbar (' +
-          (fieldTag(field) || (meta && meta.source_reference) || 'ohne Herkunft') +
-          ') — nicht in die Komponentensumme uebernommen');
+          (tag || (meta && meta.source_reference) || 'ohne Herkunft') +
+          ') — nicht als Evidenz verwendet');
         droppedFields.push(field + ':scope-unknown');
         continue;
       }
       let addedAny = false;
-      for (let i = 0; i < arr.length; i++) {
-        if (i >= periods.length) break;
-        const val2   = arr[i];
-        const period = periods[i];
-        if (val2 == null || period == null) continue;
+      for (let i = 0; i < arr.length && i < periods.length; i++) {
+        const val = arr[i], period = periods[i];
+        if (val == null || period == null || !isFinite(val)) continue;
         if (i === 0 && anchorYear != null) {
-          const periodYr = parseInt(String(period).slice(0,4), 10);
-          if (periodYr !== anchorYear) {
+          const yr = parseInt(String(period).slice(0, 4), 10);
+          if (yr !== anchorYear) {
             warnings.push(field + ': periods[0]=' + period + ' nicht anchorYear=' + anchorYear + ' — ignoriert');
-            droppedFields.push(field + ':stale(' + periodYr + ')');
+            droppedFields.push(field + ':stale(' + yr + ')');
             break;
           }
         }
-        const already = claimedCells.get(period) || [];
-        if (!_cellsDisjoint(cells, already)) {
-          const by = claimedBy.get(period) || {};
-          const overlap = cells.filter(c => already.indexOf(c) >= 0);
-          if (_cellsSubset(cells, already)) {
-            // Feinere Aufschluesselung eines bereits erfassten Betrages.
-            warnings.push(field + ': period=' + period + ' ist in ' +
-              (by[overlap[0]] || 'einer breiteren Angabe') + ' bereits enthalten (' +
-              overlap.join('+') + ') — nicht erneut addiert');
-            continue;
-          }
-          // Teilweise Ueberschneidung mit Zuwachs: der gemeinsame Anteil ist
-          // nicht bekannt, die Summe waere erfunden.
-          conflictPeriods.set(period, field + ' (' + (fieldTag(field) || 'ohne Tag') + ') und ' +
-            (by[overlap[0]] || 'eine bereits erfasste Angabe') + ' ueberschneiden sich in ' +
-            overlap.join('+') + '; der gemeinsame Anteil ist nicht gemeldet — ' +
-            'Ueberschneidung nicht aufloesbar');
-          continue;
-        }
-        periodMap.set(period, (periodMap.get(period) || 0) + val2);
-        const mergedCells = already.concat(cells);
-        claimedCells.set(period, mergedCells);
-        const by = claimedBy.get(period) || {};
-        cells.forEach(c => { by[c] = field + (fieldTag(field) ? ' (' + fieldTag(field) + ')' : ''); });
-        claimedBy.set(period, by);
+        if (!byPeriod.has(period)) byPeriod.set(period, []);
+        byPeriod.get(period).push({
+          name: field + (tag ? ' (' + tag + ')' : ''), cells, value: Number(val), field
+        });
         if (!metaMap.has(period)) {
           metaMap.set(period, {
             forms:     meta.forms     && meta.forms[i]     != null ? meta.forms[i]     : null,
             frames:    meta.frames    && meta.frames[i]    != null ? meta.frames[i]    : null,
             durations: meta.durations && meta.durations[i] != null ? meta.durations[i] : null,
-            filed:     meta.filed     && meta.filed[i]     != null ? meta.filed[i]     : null,
+            filed:     meta.filed     && meta.filed[i]     != null ? meta.filed[i]     : null
           });
         }
         addedAny = true;
@@ -7658,35 +7711,65 @@ function _applyDebtComponentRebuild(mj, anchorYearHint) {
       else if (!droppedFields.find(d => d.startsWith(field))) droppedFields.push(field + ':no-anchor-match');
     }
 
-    for (const [per, reason] of conflictPeriods) {
-      if (periodMap.delete(per)) {
-        metaMap.delete(per);
-        claimedCells.delete(per);
-        warnings.push('period=' + per + ' verworfen: ' + reason);
+    const sortedPeriods = Array.from(byPeriod.keys()).sort((a, b) => b.localeCompare(a));
+    const series = [], periodsOut = [], statusOut = [];
+    let cells0 = [], open0 = [], contradiction0 = null, evidence0 = [];
+    for (let i = 0; i < sortedPeriods.length; i++) {
+      const per = sortedPeriods[i];
+      const ev  = byPeriod.get(per);
+      const sys = _solveDebtEvidence(ev);
+      const covered = [];
+      DEBT_CELLS_ALL.forEach(c => { if (ev.some(e => e.cells.indexOf(c) >= 0)) covered.push(c); });
+      let entry;
+      if (sys.contradiction) {
+        entry = { value: null, status: 'contradictory', reason: sys.contradiction };
+        warnings.push('period=' + per + ': ' + sys.contradiction);
+      } else {
+        const total = sys.sumOf(DEBT_CELLS_ALL);
+        const openTot = total.determined ? []
+          : DEBT_CELLS_ALL.filter(c => !sys.sumOf([c]).determined);
+        const openUse = openTot.length > 0 ? openTot : (total.open || []);
+        entry = total.determined
+          ? { value: total.value, status: 'complete' }
+          : { value: null, status: 'incomplete', open: openUse,
+              reason: 'Gesamtverschuldung nicht bestimmt — offen bleibt ' +
+                      _debtCellLabels(openUse) };
+        if (!total.determined) {
+          warnings.push('period=' + per + ': ' + entry.reason +
+            ' (belegt: ' + sys.evidenceNames.join(', ') + ')');
+        }
+      }
+      series.push(entry.value);
+      periodsOut.push(per);
+      statusOut.push(entry);
+      if (i === 0) {
+        cells0 = covered; evidence0 = sys.evidenceNames;
+        open0 = entry.open || [];
+        contradiction0 = sys.contradiction || null;
       }
     }
-    const sortedPeriods = Array.from(periodMap.keys()).sort((a, b) => b.localeCompare(a));
-    const series2    = sortedPeriods.map(p => periodMap.get(p));
-    const periods2   = sortedPeriods;
-    const forms2     = sortedPeriods.map(p => (metaMap.get(p) || {}).forms     || null);
-    const frames2    = sortedPeriods.map(p => (metaMap.get(p) || {}).frames    || null);
-    const durations2 = sortedPeriods.map(p => (metaMap.get(p) || {}).durations || null);
-    const filed2     = sortedPeriods.map(p => (metaMap.get(p) || {}).filed     || null);
-    const cells0     = sortedPeriods.length > 0 ? (claimedCells.get(sortedPeriods[0]) || []) : [];
+
+    const mapMeta = (key) => periodsOut.map(p => (metaMap.get(p) || {})[key] || null);
     const empty = {
       series: [], periods: [], forms: [], frames: [], durations: [], filed: [],
-      usedFields: [], droppedFields, warnings, cells0: [], conflictPeriods
+      usedFields: [], droppedFields, warnings, statuses: [],
+      cells0: [], open0: [], contradiction0: null, evidence0: []
     };
-    if (anchorYear != null && series2.length > 0) {
-      const firstYr = parseInt(String(periods2[0]).slice(0,4), 10);
+    if (anchorYear != null && periodsOut.length > 0) {
+      const firstYr = parseInt(String(periodsOut[0]).slice(0, 4), 10);
       if (firstYr !== anchorYear) {
-        warnings.push('period-keyed result: periods[0]=' + periods2[0] + ' nicht anchorYear=' + anchorYear + ' — Ergebnis verworfen');
+        warnings.push('period-keyed result: periods[0]=' + periodsOut[0] +
+          ' nicht anchorYear=' + anchorYear + ' — Ergebnis verworfen');
         return empty;
       }
     }
-    return { series: series2, periods: periods2, forms: forms2, frames: frames2,
-             durations: durations2, filed: filed2, usedFields, droppedFields, warnings,
-             cells0, conflictPeriods };
+    return {
+      series, periods: periodsOut, statuses: statusOut,
+      forms: mapMeta('forms'), frames: mapMeta('frames'),
+      durations: mapMeta('durations'), filed: mapMeta('filed'),
+      usedFields, droppedFields, warnings,
+      cells0, open0, contradiction0, evidence0
+    };
   };
 
   const _tdDirectMeta   = f._v4_meta['total_debt'];
@@ -7733,168 +7816,91 @@ function _applyDebtComponentRebuild(mj, anchorYearHint) {
     'long_term_debt_noncurrent'
   ];
 
-  const _pkResult = buildPeriodAlignedComponentSeries(f, _compFields, _effectiveAnchor);
+  // Alle Schuldenreihen sind Evidenz — auch der direkte, zusammengefasste
+  // `total_debt`-Wert. Er wurde bis V1.0.60 nur als Vergleichswert behandelt.
+  const _pkResult = buildDebtScopeSeries(f, DEBT_SCOPE_FIELDS.slice(), _effectiveAnchor);
 
   if (_pkResult.warnings && _pkResult.warnings.length > 0) {
     if (!mj.meta._debt_warnings) mj.meta._debt_warnings = [];
-    mj.meta._debt_warnings.push(..._pkResult.warnings);
+    // Wiederholte Aufbereitung darf Hinweise nicht unbegrenzt vervielfachen.
+    _pkResult.warnings.forEach(w => {
+      if (mj.meta._debt_warnings.indexOf(w) === -1) mj.meta._debt_warnings.push(w);
+    });
   }
   if (_pkResult.droppedFields && _pkResult.droppedFields.length > 0) {
     if (!mj.meta._debt_warnings) mj.meta._debt_warnings = [];
-    mj.meta._debt_warnings.push('debt-components dropped: ' + _pkResult.droppedFields.join(', '));
+    const _dw = 'debt-components dropped: ' + _pkResult.droppedFields.join(', ');
+    if (mj.meta._debt_warnings.indexOf(_dw) === -1) mj.meta._debt_warnings.push(_dw);
   }
 
-  const _pkValid = _pkResult.series.length > 0 && _pkResult.series[0] != null && _pkResult.series[0] >= 0;
+  const _st0 = (_pkResult.statuses && _pkResult.statuses[0]) || null;
+  const _noCurrentEvidence = !_st0;
+  const _scopeComplete = !!(_st0 && _st0.status === 'complete' && _st0.value != null && _st0.value >= 0);
+  const _scopeContradiction = _st0 && _st0.status === 'contradictory' ? _st0.reason : null;
 
-  // ── V1.0.60 · Umfang des direkten Tags gegen die Komponenten ──────────
-  // Die 5-%-Schwelle unten schuetzt einen guten Direktwert vor einer
-  // verrauschten Komponentensumme. Sie darf aber nicht greifen, wenn das
-  // direkte Tag den Umfang der verwendeten Komponenten nachweislich nicht
-  // abdeckt — sonst ergaebe dieselbe Bilanz je nach zulaessiger
-  // Tag-Darstellung eine andere Gesamtverschuldung.
-  // Grundlage ist DIESELBE Tabelle wie im Resolver (DEBT_TAG_CELLS);
-  // die fruehere eigene Tabelle `_TD_DIRECT_TAG_SCOPE` ist entfallen.
-  const _tdDirectTag = _secSourceTag(_tdDirectMeta);
-  const _tdDirectCells = (_tdDirectTag && DEBT_TAG_CELLS[_tdDirectTag]) || null;
-  const _compCells0 = _pkResult.cells0 || [];
-  const _scopeShortfallCells = _tdDirectCells
-    ? _compCells0.filter(c => _tdDirectCells.indexOf(c) < 0) : [];
-  const _tdScopeTooNarrow = _scopeShortfallCells.length > 0;
-  const _cellLabel = (c) => ({
-    stBorrow: 'kurzfristige Bankschulden', ltCurMat: 'laufende Faelligkeiten',
-    debtNC: 'langfristige Schulden', leaseCur: 'kurzfristiges Leasing',
-    leaseNC: 'langfristiges Leasing'
-  })[c] || c;
-  const _scopeShortfall = _scopeShortfallCells.map(_cellLabel);
+  const _writeDebtMeta = (extra) => {
+    f._v4_meta['total_debt'] = Object.assign({
+      periods: _pkResult.periods || null, forms: _pkResult.forms || null,
+      frames: _pkResult.frames || null, durations: _pkResult.durations || null,
+      filed: _pkResult.filed || null
+    }, extra);
+  };
 
-  // ── V1.0.60 · Unbestimmbarer Gesamtumfang (Korrekturchat 12B.1) ───────
-  // Der Rebuild erkennt nicht aufloesbare Ueberschneidungen und verwirft die
-  // betroffene Periode. Bis V1.0.59 blieb der direkte Wert danach
-  // UNGEKENNZEICHNET als vollstaendige Gesamtschuld stehen, obwohl er
-  // nachweislich nur ein Teilbetrag ist (Beispiel: LongTermDebt 1.000 neben
-  // DebtCurrent 150 — die Gesamtschuld liegt irgendwo zwischen 1.000 und
-  // 1.150). Ein solcher Teilbetrag darf keine Nettoschuldenbruecke tragen.
-  const _anchorPeriodConflict = (() => {
-    const cp = _pkResult.conflictPeriods;
-    if (!cp || cp.size === 0) return null;
-    if (_effectiveAnchor == null) return cp.values().next().value;
-    for (const [per, reason] of cp) {
-      if (parseInt(String(per).slice(0, 4), 10) === _effectiveAnchor) return reason;
-    }
-    return null;
-  })();
+  // Reihen ohne Periodenmetadaten sind der dokumentierte Altdatenfall: dort
+  // gab es noch nie einen period-keyed Rebuild, und er wird auch jetzt nicht
+  // erzwungen. Ein UNBEKANNTER Umfang bei vorhandenen Perioden ist dagegen
+  // kein Altdatenfall — dann bleibt die Gesamtschuld unbelegt.
+  const _droppedNoPeriods = (_pkResult.droppedFields || [])
+    .some(d => /:no-periods$/.test(d));
+  const _droppedScopeUnknown = (_pkResult.droppedFields || [])
+    .some(d => /:scope-unknown$/.test(d));
+  const _legacyNoPeriods = _noCurrentEvidence && !_tdDirectIsStale &&
+    !_droppedScopeUnknown && _droppedNoPeriods &&
+    f.total_debt && f.total_debt.length > 0 && f.total_debt[0] != null;
 
-  // V1.0.60: Deckt das direkte `total_debt`-Tag die KURZFRISTIGEN Zellen gar
-  // nicht ab (z. B. LongTermDebtAndCapitalLeaseObligations = nur noncurrent)
-  // und meldet der Filer auch keine kurzfristige Komponente, dann ist der Wert
-  // als Gesamtverschuldung nicht belegt. Er bleibt in Gebrauch — sonst waere
-  // die haeufigste zulaessige Darstellung ueberhaupt nicht bewertbar —, wird
-  // aber ausdruecklich als moeglicherweise unvollstaendig ausgewiesen.
-  if (_tdDirectCells && !_anchorPeriodConflict) {
-    const _currentCells = [DEBT_CELL_ST_BORROW, DEBT_CELL_LT_CUR, DEBT_CELL_LEASE_CUR];
-    const _tdCoversCurrent = _currentCells.some(c => _tdDirectCells.indexOf(c) >= 0);
-    const _compCoversCurrent = _currentCells.some(c => _compCells0.indexOf(c) >= 0);
-    if (!_tdCoversCurrent && !_compCoversCurrent) {
-      if (!mj.meta._debt_warnings) mj.meta._debt_warnings = [];
-      mj.meta._debt_warnings.push(
-        'total_debt stammt aus us-gaap:' + _tdDirectTag + ' und umfasst nur langfristig ' +
-        'klassifizierte Betraege. Kurzfristige Finanzschulden sind im Abschluss nicht ' +
-        'gesondert gemeldet; die ausgewiesene Gesamtverschuldung kann sie daher nicht ' +
-        'enthalten und insoweit zu niedrig sein.'
-      );
-      f._v4_meta['total_debt'] = Object.assign({}, f._v4_meta['total_debt'] || {}, {
-        scopeNoncurrentOnly: true,
-        scopeNoncurrentOnlyTag: _tdDirectTag
-      });
-    }
-  }
-
-  if (_pkValid) {
-    const compSeries = _pkResult.series;
-    const comp0      = compSeries[0];
-    const directTd0  = f.total_debt && f.total_debt[0];
-    if (directTd0 != null && directTd0 > 0 && comp0 > 0 && _tdDirectIsCurrent) {
-      const deviation = Math.abs(comp0 - directTd0) / directTd0;
-      if (comp0 > directTd0 && (deviation > 0.05 || _tdScopeTooNarrow)) {
-        if (_tdScopeTooNarrow && deviation <= 0.05) {
-          if (!mj.meta._debt_warnings) mj.meta._debt_warnings = [];
-          mj.meta._debt_warnings.push(
-            'Direktes Tag ' + _tdDirectTag + ' deckt ' + _scopeShortfall.join(' und ') +
-            ' nicht ab — period-keyed Komponenten haben Vorrang trotz Abweichung von nur ' +
-            (deviation * 100).toFixed(1) + '%.'
-          );
-        }
-        f.total_debt = compSeries;
-        totalDebtTouched = true;
-        f._v4_meta['total_debt'] = {
-          source_type: 'derived',
-          source_reference: 'SEC EDGAR XBRL: period-keyed component rebuild',
-          confidence: 'high',
-          notes: 'period-keyed Rebuild usedFields:' + _pkResult.usedFields.join('+') + ' anchor=' + _effectiveAnchor + ' deviation=' + (deviation*100).toFixed(1) + '%' + (_tdScopeTooNarrow ? ' scope:' + _tdDirectTag + ' deckt ' + _scopeShortfall.join('+') + ' nicht ab' : ''),
-          periods: _pkResult.periods || null, forms: _pkResult.forms || null,
-          frames: _pkResult.frames || null, durations: _pkResult.durations || null, filed: _pkResult.filed || null,
-        };
-      } else if (comp0 < directTd0 && deviation > 0.15) {
-        if (!mj.meta._debt_warnings) mj.meta._debt_warnings = [];
-        mj.meta._debt_warnings.push(
-          'Debt components lower than direct total_debt — direct retained. ' +
-          '(direkt=' + directTd0.toFixed(0) + 'M, komponenten=' + comp0.toFixed(0) + 'M, dev=' + (deviation*100).toFixed(1) + '%)'
-        );
-      }
-    } else if (directTd0 == null || directTd0 === 0 || _tdDirectIsStale) {
-      f.total_debt = compSeries;
+  if (_legacyNoPeriods) {
+    // Unveraendert: ohne Periodenmetadaten bleibt alles wie bisher, es werden
+    // KEINE Umfangsmarker gesetzt und die Bruecke verhaelt sich wie zuvor.
+  } else if (_noCurrentEvidence && !_tdDirectIsStale && _droppedScopeUnknown &&
+             f.total_debt && f.total_debt.length > 0 && f.total_debt[0] != null) {
+    // Perioden vorhanden, Herkunft aber nicht auf ein bekanntes Konzept
+    // abbildbar: der Wert bleibt erhalten, ist aber nicht als Gesamtschuld belegt.
+    const _r = 'Umfang der Schuldenangabe aus der Herkunft nicht bestimmbar — ' +
+      'die Gesamtverschuldung ist damit nicht belegt';
+    if (!mj.meta._debt_warnings) mj.meta._debt_warnings = [];
+    if (mj.meta._debt_warnings.indexOf(_r + '.') === -1) mj.meta._debt_warnings.push(_r + '.');
+    f._v4_meta['total_debt'] = Object.assign({}, f._v4_meta['total_debt'] || {}, {
+      scopeComplete: false, scopeIndeterminate: true, scopeIndeterminateReason: _r,
+      notes: _r
+    });
+  } else if (_noCurrentEvidence) {
+    // Keine einzige Angabe zum Stichtag des aktuellen Jahres (alle Reihen
+    // veraltet oder leer). Verhalten wie bisher: notfalls der gestashte
+    // Altwert mit Hinweis, sonst ausdrueckliche Nichtverfuegbarkeit.
+    if (!mj.meta._debt_warnings) mj.meta._debt_warnings = [];
+    if (_tdDirectStashedValue != null && _tdDirectStashedValue > 0) {
+      const _w = 'PATCH-1B: stale total_debt used as fallback (no current components) — ' +
+        'value=' + _tdDirectStashedValue.toFixed(0) + 'M, year=' + _tdDirectYear +
+        ', anchor=' + (_effectiveAnchor || '?');
+      if (mj.meta._debt_warnings.indexOf(_w) === -1) mj.meta._debt_warnings.push(_w);
+      f.total_debt = _tdDirectStashedSeries;
       totalDebtTouched = true;
       f._v4_meta['total_debt'] = {
         source_type: 'derived',
-        source_reference: 'SEC EDGAR XBRL: period-keyed component rebuild',
-        confidence: _pkResult.usedFields.length >= 2 ? 'high' : 'medium',
-        notes: 'period-keyed Rebuild usedFields:' + _pkResult.usedFields.join('+') + ' anchor=' + _effectiveAnchor,
-        periods: _pkResult.periods || null, forms: _pkResult.forms || null,
-        frames: _pkResult.frames || null, durations: _pkResult.durations || null, filed: _pkResult.filed || null,
+        source_reference: 'stale_total_debt_fallback',
+        confidence: 'low',
+        notes: 'Stale direct total_debt als Fallback verwendet (year=' + _tdDirectYear +
+               ', anchor=' + (_effectiveAnchor || '?') + '). Debt value stale.',
+        periods: (_tdDirectMeta && _tdDirectMeta.periods) || null,
+        scopeCells: [], scopeComplete: false,
+        scopeIndeterminate: true,
+        scopeIndeterminateReason: 'Gesamtverschuldung stammt aus einem veralteten Stichtag ' +
+          '(year=' + _tdDirectYear + ', anchor=' + (_effectiveAnchor || '?') + ')'
       };
-    }
-  } else if (_anchorPeriodConflict && f.total_debt && f.total_debt.length > 0 && f.total_debt[0] != null) {
-    // Direkter Wert vorhanden, aber sein Umfang ist durch die erkannte
-    // Ueberschneidung nicht als Gesamtschuld belegt: als Teilbetrag
-    // kennzeichnen, Reihe stehen lassen (Diagnose/Anzeige), Bewertung sperren.
-    if (!mj.meta._debt_warnings) mj.meta._debt_warnings = [];
-    mj.meta._debt_warnings.push(
-      'total_debt ist nur ein Teilbetrag: ' + _anchorPeriodConflict +
-      '. Die Gesamtverschuldung ist damit nicht bestimmt; die Nettoschuldenbruecke wird gesperrt.'
-    );
-    f._v4_meta['total_debt'] = Object.assign({}, f._v4_meta['total_debt'] || {}, {
-      scopeIndeterminate: true,
-      scopeIndeterminateReason: _anchorPeriodConflict,
-      notes: ((f._v4_meta['total_debt'] || {}).notes ? (f._v4_meta['total_debt'] || {}).notes + ' · ' : '') +
-        'Teilbetrag: ' + _anchorPeriodConflict
-    });
-  } else {
-    if (_tdDirectIsStale || (f.total_debt && f.total_debt.length === 0)) {
-      // PATCH 1B: Before giving up, check if we stashed a stale direct value.
-      // Use it as last-resort fallback (with warning) rather than leaving debt null.
-      if (_tdDirectStashedValue != null && _tdDirectStashedValue > 0) {
-        if (!mj.meta._debt_warnings) mj.meta._debt_warnings = [];
-        mj.meta._debt_warnings.push(
-          'PATCH-1B: stale total_debt used as fallback (no current components) — ' +
-          'value=' + _tdDirectStashedValue.toFixed(0) + 'M, year=' + _tdDirectYear +
-          ', anchor=' + (_effectiveAnchor || '?')
-        );
-        f.total_debt = _tdDirectStashedSeries;
-        totalDebtTouched = true;
-        f._v4_meta['total_debt'] = {
-          source_type: 'derived',
-          source_reference: 'stale_total_debt_fallback',
-          confidence: 'low',
-          notes: 'Stale direct total_debt als Fallback verwendet (year=' + _tdDirectYear +
-                 ', anchor=' + (_effectiveAnchor || '?') + '). Debt value stale.',
-          periods: (_tdDirectMeta && _tdDirectMeta.periods) || null
-        };
-      } else {
-      if (!mj.meta._debt_warnings) mj.meta._debt_warnings = [];
-      mj.meta._debt_warnings.push(
-        'total_debt current-year unavailable; stale debt components ignored — anchor=' +
-        (_effectiveAnchor || '?') + '; droppedFields=' + _pkResult.droppedFields.join(',')
-      );
+    } else {
+      const _w = 'total_debt current-year unavailable; stale debt components ignored — anchor=' +
+        (_effectiveAnchor || '?') + '; droppedFields=' + _pkResult.droppedFields.join(',');
+      if (mj.meta._debt_warnings.indexOf(_w) === -1) mj.meta._debt_warnings.push(_w);
       f.total_debt = [];
       totalDebtTouched = true;
       f._v4_meta['total_debt'] = {
@@ -7902,13 +7908,78 @@ function _applyDebtComponentRebuild(mj, anchorYearHint) {
         source_reference: 'no current-year debt fact; stale candidates ignored',
         confidence: 'none',
         notes: 'Current-year total_debt unavailable. anchor=' + (_effectiveAnchor || '?'),
-        periods: null
+        periods: null, scopeCells: [], scopeComplete: false
       };
       if (!mj.meta._sec_fetch._missing_debt_current) {
         mj.meta._sec_fetch._missing_debt_current = true;
       }
-      } // end else (no stale fallback available)
     }
+  } else if (_scopeComplete) {
+    // Vollständig belegte Gesamtverschuldung — der nachgewiesene Umfang wird
+    // mitgeführt, damit spätere Auflösungen sie als Evidenz verwenden können.
+    const _newSeries = _pkResult.series.map(v => (v != null ? v : null));
+    // Nur als "veraendert" melden, wenn sich die Reihe wirklich unterscheidet:
+    // sonst wuerde ein unveraenderter Rebuild ein ausdruecklich gesetztes
+    // net_debt neu ableiten und damit ueberschreiben.
+    const _oldSeries = Array.isArray(f.total_debt) ? f.total_debt : [];
+    const _changed = _oldSeries.length !== _newSeries.length ||
+      _newSeries.some((v, i) => v !== _oldSeries[i]);
+    f.total_debt = _newSeries;
+    if (_changed) totalDebtTouched = true;
+    _writeDebtMeta({
+      source_type: 'derived',
+      source_reference: 'SEC EDGAR XBRL: period-keyed component rebuild',
+      confidence: _pkResult.usedFields.length >= 2 ? 'high' : 'medium',
+      notes: 'period-keyed Rebuild usedFields:' + _pkResult.usedFields.join('+') +
+             ' anchor=' + _effectiveAnchor + ' evidenz:' + _pkResult.evidence0.join(' + '),
+      scopeCells: DEBT_CELLS_ALL.slice(),
+      scopeComplete: true
+    });
+  } else if (_scopeContradiction) {
+    // Ungeklärter materieller Widerspruch: kein Wert, begründete Sperre.
+    if (!mj.meta._debt_warnings) mj.meta._debt_warnings = [];
+    const _cw = 'Gesamtverschuldung nicht verwendbar: ' + _scopeContradiction + '.';
+    if (mj.meta._debt_warnings.indexOf(_cw) === -1) mj.meta._debt_warnings.push(_cw);
+    const _keepC = f._v4_meta['total_debt'] || {};
+    f._v4_meta['total_debt'] = Object.assign({}, _keepC, {
+      confidence: 'none',
+      notes: _scopeContradiction,
+      scopeComplete: false,
+      scopeIndeterminate: false,
+      scopeContradiction: _scopeContradiction
+    });
+  } else {
+    // Teilbetrag: die Reihe bleibt fuer Diagnose und Anzeige erhalten, ist aber
+    // als unvollstaendig gekennzeichnet. Ein Teilbetrag ist keine
+    // Gesamtverschuldung — die Bewertungsbruecke wird gesperrt.
+    const _open = (_st0 && _st0.open) || _pkResult.open0 || [];
+    const _openTxt = _open.length > 0 ? _debtCellLabels(_open) : 'nicht bestimmbare Bestandteile';
+    const _reason = 'Gesamtverschuldung nicht bestimmt — offen bleibt ' + _openTxt +
+      (_pkResult.evidence0 && _pkResult.evidence0.length
+        ? '. Belegt sind nur ' + _pkResult.evidence0.join(', ') : '');
+    if (!mj.meta._debt_warnings) mj.meta._debt_warnings = [];
+    if (mj.meta._debt_warnings.indexOf(_reason + '.') === -1) {
+      mj.meta._debt_warnings.push(_reason + '.');
+    }
+    // Vorhandenen Direktwert als Teilbetrag stehen lassen, sonst leer.
+    if (!(f.total_debt && f.total_debt.length > 0 && f.total_debt[0] != null)) {
+      if (_tdDirectStashedValue != null) {
+        f.total_debt = _tdDirectStashedSeries;
+        totalDebtTouched = true;
+      }
+    }
+    // Die HERKUNFT bleibt unveraendert erhalten: der gespeicherte Wert stammt
+    // weiterhin aus seinem urspruenglichen Tag und deckt nur dessen Umfang ab.
+    // Nur so liefert eine erneute Aufbereitung dasselbe Ergebnis.
+    const _keep = f._v4_meta['total_debt'] || {};
+    f._v4_meta['total_debt'] = Object.assign({}, _keep, {
+      notes: _reason,
+      scopeComplete: false,
+      scopeIndeterminate: true,
+      scopeIndeterminateReason: _reason,
+      scopeOpenCells: _open.slice(),
+      scopeContradiction: null
+    });
   }
 
   // net_debt neu berechnen nach Rebuild — nur wenn total_debt hier geändert wurde,
@@ -12036,18 +12107,27 @@ function _resolveNetDebtForDcfBridge(f) {
   // Gesamtschuld zusammenfuegen lassen. Ein solcher Teilbetrag darf die
   // Eigenkapitalbruecke nicht tragen — weder direkt noch ueber ein daraus
   // ABGELEITETES `net_debt`.
+  // V1.0.61 (Korrekturchat 12B.2): Maszgeblich ist die nachgewiesene ABDECKUNG
+  // der Gesamtverschuldung, nicht das Vorhandensein eines Zahlenwerts. Die
+  // Datenaufbereitung setzt `scopeComplete` nur, wenn die gemeldeten Angaben
+  // alle Bestandteile bestimmen. Ein Teilbetrag — auch ein rein langfristiger —
+  // traegt keine Eigenkapitalbruecke. Eine Warnung ersetzt diesen Status nicht.
   const tdMeta = meta.total_debt || null;
-  const tdScopeIndeterminate = !!(tdMeta && tdMeta.scopeIndeterminate === true);
+  const tdScopeKnown = !!(tdMeta && tdMeta.scopeComplete != null);
+  const tdScopeIncomplete = tdScopeKnown && tdMeta.scopeComplete !== true;
   const ndIsDerivedFromTotalDebt = !!(ndMeta &&
     (ndMeta.source_type === 'derived' || ndMeta.derivation != null ||
      (typeof ndMeta.source_reference === 'string' && /total_debt/.test(ndMeta.source_reference))));
-  if (tdScopeIndeterminate && (nd0 == null || ndIsDerivedFromTotalDebt)) {
-    return _unavailable(['total_debt (Umfang unbestimmt)'],
-      'Die gemeldeten Schuldenangaben lassen sich nicht ueberschneidungsfrei zu einer ' +
-      'Gesamtverschuldung zusammenfuegen: ' +
-      (tdMeta.scopeIndeterminateReason || 'Ueberschneidung nicht aufloesbar') +
-      '. Der vorliegende Wert ist ein Teilbetrag; ein daraus gebildeter Eigenkapitalwert ' +
-      'waere scheingenau. Eigenstaendig belegte oder manuell gesetzte Nettoschulden bleiben zulaessig.');
+  if (tdScopeIncomplete && (nd0 == null || ndIsDerivedFromTotalDebt)) {
+    const _why = tdMeta.scopeContradiction
+      ? ('Die gemeldeten Schuldenangaben widersprechen sich: ' + tdMeta.scopeContradiction)
+      : ('Die gemeldeten Schuldenangaben bestimmen die Gesamtverschuldung nicht: ' +
+         (tdMeta.scopeIndeterminateReason || tdMeta.notes || 'Umfang unvollstaendig'));
+    return _unavailable(['total_debt (Umfang unvollstaendig)'],
+      _why + '. Der vorliegende Wert ist ein Teilbetrag; ein daraus gebildeter ' +
+      'Eigenkapitalwert waere scheingenau. Der operative Unternehmenswert bleibt ' +
+      'getrennt verfuegbar. Eigenstaendig belegte oder ausdruecklich manuell gesetzte ' +
+      'Nettoschulden bleiben nach den bestehenden Vorrangregeln zulaessig.');
   }
 
   // 1) Bekannte Nettoschulden (einschließlich ausdrücklich gesetzter 0 und
@@ -13536,13 +13616,29 @@ const SEC_QUARTERLY_FIELDS = Object.freeze({
   long_term_debt:       'instant',  // Schulden (langfristiger Teil)
   cash_and_equivalents: 'instant',  // Liquiditaet
   current_assets:       'instant',  // operatives Working Capital
-  current_liabilities:  'instant'   // operatives Working Capital
+  current_liabilities:  'instant',  // operatives Working Capital
+  // V1.0.61 (Korrekturchat 12B.2): Die Schuldenkomponenten. Ohne sie liesse
+  // sich der UMFANG der Verschuldung am TTM-Stichtag nicht bestimmen — die
+  // Sicht muesste ihn entweder aus Jahresdaten ergaenzen (unzulaessig, andere
+  // Stichtage) oder pauschal sperren. Sie sind ausdruecklich OPTIONAL: fehlen
+  // sie, bleibt die TTM-Basis waehlbar, die Gesamtschuld gilt dann aber als
+  // nicht belegt.
+  debt_short_term:           'instant',
+  debt_long_term_current:    'instant',
+  debt_long_term_noncurrent: 'instant',
+  finance_lease_current:     'instant',
+  finance_lease_noncurrent:  'instant'
 });
 
 // Zuordnung auf die Feldnamen der SEC_TAG_MAP der Anwendung. Die Tag-Listen
 // werden NICHT kopiert, sondern aus der ausgelieferten HTML-Datei gelesen
 // (siehe appTagMap()) — eine zweite Fassung wuerde auseinanderlaufen.
 const APP_TAG_FIELD = Object.freeze({
+  debt_short_term:           'debt_short_term',
+  debt_long_term_current:    'debt_long_term_current',
+  debt_long_term_noncurrent: 'debt_long_term_noncurrent',
+  finance_lease_current:     'finance_lease_current',
+  finance_lease_noncurrent:  'finance_lease_noncurrent',
   revenue:              'revenue',
   operating_income:     'ebit',
   net_income:           'net_income',
@@ -14386,7 +14482,25 @@ const DATA_BASIS_REQUIRED_HELPERS = Object.freeze([
   '_explicitNumber',
   'DA_PROVISIONAL_LABEL',
   '_resolveDaForForecast',
-  '_secSourceTag'
+  '_secSourceTag',
+  // V1.0.61 (Korrekturchat 12B.2): Die TTM-Sicht bestimmt den Schuldenumfang
+  // fuer IHREN Stichtag selbst — mit derselben gemeinsamen Aufloesung wie die
+  // Jahressicht. Ohne diese Helfer waere die Sicht entweder ungeprueft (und
+  // wuerde die Sperre umgehen) oder muesste pauschal sperren.
+  '_debtScopeTables',
+  '_debtCellsOfField',
+  '_cellsDisjoint',
+  '_cellsSubset',
+  '_cellsMinus',
+  '_debtCellLabels',
+  '_debtVec',
+  '_solveDebtEvidence',
+  '_resolveDebtHistory',
+  '_resolveTotalDebtHistory',
+  '_seriesHasPeriodContext',
+  '_secPeriodYear',
+  '_secPeriodDaysApart',
+  '_joinPeriodKeyed'
 ]);
 // Seit V1.0.56 enthaelt dieser Block auch den Erzeugungsweg aus
 // SEC-companyfacts. Dafuer braucht er den Quartalsnormalisierer — als GANZEN
@@ -14425,8 +14539,21 @@ const TTM_INSTANT_FIELDS = Object.freeze({
   long_term_debt:       'long_term_debt',
   cash_and_equivalents: 'cash_and_equivalents',
   current_assets:       'current_assets',
-  current_liabilities:  'current_liabilities'
+  current_liabilities:  'current_liabilities',
+  // V1.0.61: Schuldenkomponenten — fuer die Umfangspruefung am TTM-Stichtag.
+  debt_short_term:           'debt_short_term',
+  debt_long_term_current:    'debt_long_term_current',
+  debt_long_term_noncurrent: 'debt_long_term_noncurrent',
+  finance_lease_current:     'finance_lease_current',
+  finance_lease_noncurrent:  'finance_lease_noncurrent'
 });
+// Stichtagsgroessen, deren Fehlen die TTM-Basis NICHT unbrauchbar macht.
+// Ohne sie bleibt die Gesamtschuld unbelegt — das ist ein begruendeter
+// Status, kein Grund, die ganze Datenbasis zu verwerfen.
+const TTM_OPTIONAL_INSTANT_FIELDS = Object.freeze([
+  'debt_short_term', 'debt_long_term_current', 'debt_long_term_noncurrent',
+  'finance_lease_current', 'finance_lease_noncurrent'
+]);
 
 // Dauerfenster in EINSCHLIESSLICH gezaehlten Tagen — identisch zu den
 // Fenstern der Quartalsnormalisierung (src/sec-quarterly.js).
@@ -15134,13 +15261,20 @@ function buildTtmDataset(payload, opts) {
     const key = instKeys[i];
     const fd = payload.fields[key];
     if (!fd) {
-      out.missing.push({ field: key, app_field: TTM_INSTANT_FIELDS[key], reason: 'Feld nicht in den Quartalsdaten enthalten' });
+      if (TTM_OPTIONAL_INSTANT_FIELDS.indexOf(key) >= 0) {
+        out.missing_optional.push({ field: key, app_field: TTM_INSTANT_FIELDS[key], reason: 'Feld nicht in den Quartalsdaten enthalten' });
+      } else {
+        out.missing.push({ field: key, app_field: TTM_INSTANT_FIELDS[key], reason: 'Feld nicht in den Quartalsdaten enthalten' });
+      }
       continue;
     }
     const series = buildTtmInstantSeries(key, fd, ends);
     out.instants[key] = series;
     Array.prototype.push.apply(out.warnings, series.warnings);
     if (series.ok) out.covered_fields.push(TTM_INSTANT_FIELDS[key]);
+    else if (TTM_OPTIONAL_INSTANT_FIELDS.indexOf(key) >= 0) {
+      out.missing_optional.push({ field: key, app_field: TTM_INSTANT_FIELDS[key], reason: series.reason });
+    }
     else out.missing.push({ field: key, app_field: TTM_INSTANT_FIELDS[key], reason: series.reason });
   }
 
@@ -15549,7 +15683,13 @@ function buildValuationBasisView(mj, resolved) {
     // manueller Altdatensatz behandelt, bei dem Ueberschneidungen nicht mehr
     // erkennbar sind. Der Tag der Jahresreihe desselben Feldes wird deshalb
     // ausdruecklich als `source_tag` mitgefuehrt (als uebernommen markiert).
-    const _srcTag = _secSourceTag((src._v4_meta || {})[appField]);
+    // V1.0.61 (Korrekturchat 12B.2): Maszgeblich ist der Tag, aus dem die
+    // QUARTALSDATEN dieses Fensters stammen (`used_tag` der TTM-Reihe), nicht
+    // der Tag der Jahresreihe. Wechselt ein Filer den Tag, waere die Uebernahme
+    // aus der Jahresreihe schlicht falsch. Nur wenn die TTM-Reihe keinen Tag
+    // nennt, wird der Jahres-Tag ausdruecklich als UEBERNOMMEN gekennzeichnet.
+    const _ttmTag = (extra && extra.ttm_used_tag) || null;
+    const _srcTag = _ttmTag || _secSourceTag((src._v4_meta || {})[appField]);
     f[appField] = values.slice();
     meta[appField] = Object.assign({
       source_type: 'derived',
@@ -15559,7 +15699,7 @@ function buildValuationBasisView(mj, resolved) {
       periods: periods.slice(),
       periodLocked: true,
       notes: note
-    }, _srcTag ? { source_tag: _srcTag, source_tag_inherited: true } : {}, extra || {});
+    }, _srcTag ? { source_tag: _srcTag, source_tag_inherited: !_ttmTag } : {}, extra || {});
     covered[appField] = true;
   };
 
@@ -15569,14 +15709,16 @@ function buildValuationBasisView(mj, resolved) {
     setSeries(s.app_field, s.values, s.ends, 'TTM',
       'Summe von vier vollstaendigen, aufeinanderfolgenden Quartalen je Fenster; '
       + 'Gegenprobe ueber Geschaeftsjahr + YTD − Vorjahres-YTD: ' + (s.cross_check ? s.cross_check.status : 'nicht gelaufen') + '.',
-      { ttm_method: s.method, ttm_cross_check: s.cross_check ? s.cross_check.status : null });
+      { ttm_method: s.method, ttm_cross_check: s.cross_check ? s.cross_check.status : null,
+        ttm_used_tag: s.used_tag || null });
   });
   Object.keys(TTM_INSTANT_FIELDS).forEach(key => {
     const s = ds.instants && ds.instants[key];
     if (!s || !s.ok) return;
     setSeries(s.app_field, s.values, s.dates, 'Stichtag',
       'Bilanzwert zum Stichtag am Ende des jeweiligen TTM-Fensters — nicht summiert, '
-      + 'nicht mit Jahreswerten gemischt.', { ttm_method: s.method });
+      + 'nicht mit Jahreswerten gemischt.',
+      { ttm_method: s.method, ttm_used_tag: s.used_tag || null });
   });
   if (ds.shares && ds.shares.ok) {
     setSeries('shares_diluted', ds.shares.values, ds.shares.ends, 'TTM (Durchschnitt)',
@@ -15618,8 +15760,6 @@ function buildValuationBasisView(mj, resolved) {
   };
   plus('ebit', 'da', 'ebitda', 'EBITDA je TTM-Fenster (ebit + da), gleiche Definition wie in der Jahressicht.');
   pairwise('cfo', 'capex', 'fcf', 'Freier Cashflow je TTM-Fenster (cfo − capex), gleiche Formel wie in der Jahressicht.');
-  pairwise('total_debt', 'cash_and_equivalents', 'net_debt',
-    'Nettoverschuldung zum Stichtag am Fensterende (total_debt − cash_and_equivalents).');
 
   // Alles Uebrige wird geleert statt gemischt.
   const cleared = [];
@@ -15640,6 +15780,69 @@ function buildValuationBasisView(mj, resolved) {
     };
     cleared.push(k);
   });
+
+  // ══ V1.0.61 · Schuldenumfang am TTM-Stichtag (Korrekturchat 12B.2) ══════
+  // Diese Pruefung laeuft ERST NACH dem Leeren der nicht gedeckten Reihen:
+  // sonst floessen Jahreswerte (mit ihren Jahresstichtagen) als Evidenz ein
+  // und wuerden eine am TTM-Stichtag gar nicht belegte Vollstaendigkeit
+  // vortaeuschen.
+  // Die Sperre der Jahressicht wird NICHT kopiert — neue Quartalsangaben
+  // koennen die Unklarheit tatsaechlich aufloesen. Umgekehrt darf die TTM-Sicht
+  // die Sperre auch nicht umgehen. Entschieden wird deshalb neu, anhand der
+  // Angaben, die fuer DIESEN Stichtag tatsaechlich verwendet wurden. Bewertet
+  // wird mit derselben gemeinsamen Aufloesung wie in der Jahressicht.
+  const _ttmScope = (typeof _resolveTotalDebtHistory === 'function')
+    ? _resolveTotalDebtHistory(f) : null;
+  const _ttmTd0 = _ttmScope ? _ttmScope.at(0) : null;
+  if (covered['total_debt'] && meta['total_debt']) {
+    if (_ttmTd0 && _ttmTd0.status === 'measured' && _ttmTd0.value != null) {
+      meta['total_debt'] = Object.assign({}, meta['total_debt'], {
+        scopeComplete: true, scopeCells: _debtScopeTables().order.slice(),
+        scopeIndeterminate: false, scopeIndeterminateReason: null
+      });
+      // Der bestimmte Betrag kann von der einzelnen Reihe abweichen, wenn
+      // mehrere periodengleiche Angaben zusammengefuehrt wurden. Das gilt fuer
+      // JEDES Fenster, nicht nur fuer das aktuelle.
+      if (Array.isArray(f.total_debt) && f.total_debt.length > 0) {
+        const _resolved = f.total_debt.slice();
+        for (let _i = 0; _i < _resolved.length; _i++) {
+          const _e = _ttmScope.at(_i);
+          _resolved[_i] = (_e && _e.status === 'measured' && _e.value != null)
+            ? _e.value : null;
+        }
+        f.total_debt = _resolved;
+      }
+    } else {
+      const _r = (_ttmTd0 && _ttmTd0.reason) ||
+        'Gesamtverschuldung am TTM-Stichtag nicht bestimmt';
+      meta['total_debt'] = Object.assign({}, meta['total_debt'], {
+        scopeComplete: false, scopeIndeterminate: true,
+        scopeIndeterminateReason: _r,
+        scopeContradiction: (_ttmTd0 && _ttmTd0.status === 'contradictory') ? _r : null,
+        notes: (meta['total_debt'].notes ? meta['total_debt'].notes + ' · ' : '') + _r
+      });
+    }
+  }
+
+  // Nettoverschuldung nur bei belegtem Umfang; sonst ausdrueckliche Sperre,
+  // damit ein neu abgeleitetes net_debt die Sperre nicht umgeht.
+  const _ttmScopeOk = !!(meta['total_debt'] && meta['total_debt'].scopeComplete === true);
+  if (_ttmScopeOk) {
+    pairwise('total_debt', 'cash_and_equivalents', 'net_debt',
+      'Nettoverschuldung zum Stichtag am Fensterende (total_debt − cash_and_equivalents).');
+  } else if (covered['total_debt']) {
+    f.net_debt = [];
+    meta['net_debt'] = {
+      source_type: 'unavailable',
+      source_reference: 'Datenbasis TTM',
+      confidence: 'none', period_type: 'Stichtag', periods: null, periodLocked: true,
+      notes: 'Nettoverschuldung am TTM-Stichtag nicht gebildet: ' +
+        ((meta['total_debt'] && meta['total_debt'].scopeIndeterminateReason) ||
+         'der Umfang der Gesamtverschuldung ist nicht belegt') +
+        '. Ein Teilbetrag traegt keine Eigenkapitalbruecke.'
+    };
+    covered['net_debt'] = true;
+  }
 
   // Vorgegebene Jahres-Ersatzreihen duerfen in der TTM-Sicht nicht greifen.
   if (src.derived && typeof src.derived === 'object') {
@@ -32543,6 +32746,8 @@ const REGRESSION_FIXTURES = [
         total_equity:[900,850,800,750,700], total_assets:[2000,1900,1800,1700,1600],
         debt_long_term_current:    [100, 90, 80, 70, 60],
         debt_long_term_noncurrent: [400, 380, 360, 340, 320],
+        debt_short_term:           [0, 0, 0, 0, 0],   // V1.0.61: ausdrueckliche Null
+        finance_lease_noncurrent:  [0, 0, 0, 0, 0],   // V1.0.61: ausdrueckliche Null
         _v4_meta: {
           revenue:{periods:['2025-12-30','2024-12-31','2023-12-31','2022-12-31','2021-12-31']},
           ebit:{periods:['2025-12-30','2024-12-31','2023-12-31','2022-12-31','2021-12-31']},
@@ -32870,11 +33075,15 @@ const REGRESSION_FIXTURES = [
       const f = Object.assign(_makeBaseFundamentals({}), {
         total_debt:                [], // kein direkter total_debt → Komponenten-Rebuild greift
         debt_long_term_noncurrent: [400, 380, 360, 340, 320],
+        debt_short_term:           [0, 0, 0, 0, 0],   // V1.0.61: ausdrueckliche Null
+        finance_lease_noncurrent:  [0, 0, 0, 0, 0],   // V1.0.61: ausdrueckliche Null
         long_term_debt:            [400, 380, 360, 340, 320], // identisch → würde ohne Dedup doppeln
         _v4_meta: Object.assign({}, _makeBaseFundamentals({})._v4_meta || {}, {
           revenue:                   { periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
           total_debt:                { source_type: 'unavailable', source_reference: 'dedup test: no direct total_debt', confidence: 'none', periods: null },
           debt_long_term_noncurrent: { periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
+          debt_short_term:           { source_type: 'reported', source_reference: 'SEC EDGAR XBRL: DebtCurrent', periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
+          finance_lease_noncurrent:  { source_type: 'reported', source_reference: 'SEC EDGAR XBRL: FinanceLeaseLiabilityNoncurrent', periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
           long_term_debt:            { periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
         })
       });
@@ -32898,11 +33107,19 @@ const REGRESSION_FIXTURES = [
           const f = Object.assign(_makeBaseFundamentals({}), {
             total_debt:                [],
             debt_long_term_noncurrent: [400, 380, 360, 340, 320],
+            debt_short_term:               [0, 0, 0, 0, 0],   // V1.0.61: ausdrueckliche Null
+            finance_lease_noncurrent:  [0, 0, 0, 0, 0],   // V1.0.61: ausdrueckliche Null
+        debt_short_term:           [0, 0, 0, 0, 0],   // V1.0.61: ausdrueckliche Null
+        finance_lease_noncurrent:  [0, 0, 0, 0, 0],   // V1.0.61: ausdrueckliche Null
             long_term_debt:            [400, 380, 360, 340, 320],
             _v4_meta: Object.assign({}, _makeBaseFundamentals({})._v4_meta || {}, {
               revenue:                   { periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
               total_debt:                { source_type: 'unavailable', source_reference: 'dedup test: no direct total_debt', confidence: 'none', periods: null },
               debt_long_term_noncurrent: { periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
+              debt_short_term:               { source_type: 'reported', source_reference: 'SEC EDGAR XBRL: DebtCurrent', periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
+              finance_lease_noncurrent:  { source_type: 'reported', source_reference: 'SEC EDGAR XBRL: FinanceLeaseLiabilityNoncurrent', periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
+          debt_short_term:           { source_type: 'reported', source_reference: 'SEC EDGAR XBRL: DebtCurrent', periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
+          finance_lease_noncurrent:  { source_type: 'reported', source_reference: 'SEC EDGAR XBRL: FinanceLeaseLiabilityNoncurrent', periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
               long_term_debt:            { periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
             })
           });
@@ -32940,10 +33157,14 @@ const REGRESSION_FIXTURES = [
         total_debt:     [], // kein direkter total_debt → Alias-Fallback-Pfad greift
         // debt_long_term_noncurrent fehlt absichtlich
         long_term_debt: [400, 380, 360, 340, 320], // alias, current-year 2025
+        debt_short_term:           [0, 0, 0, 0, 0],   // V1.0.61: ausdrueckliche Null
+        finance_lease_noncurrent:  [0, 0, 0, 0, 0],   // V1.0.61: ausdrueckliche Null
         _v4_meta: Object.assign({}, _makeBaseFundamentals({})._v4_meta || {}, {
           revenue:        { periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
           total_debt:     { source_type: 'unavailable', source_reference: 'dedup test: no direct total_debt', confidence: 'none', periods: null },
           long_term_debt: { periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
+          debt_short_term:           { source_type: 'reported', source_reference: 'SEC EDGAR XBRL: DebtCurrent', periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
+          finance_lease_noncurrent:  { source_type: 'reported', source_reference: 'SEC EDGAR XBRL: FinanceLeaseLiabilityNoncurrent', periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
         })
       });
       return {
@@ -32965,10 +33186,14 @@ const REGRESSION_FIXTURES = [
           const f = Object.assign(_makeBaseFundamentals({}), {
             total_debt:     [],
             long_term_debt: [400, 380, 360, 340, 320],
+            debt_short_term:           [0, 0, 0, 0, 0],   // V1.0.61: ausdrueckliche Null
+            finance_lease_noncurrent:  [0, 0, 0, 0, 0],   // V1.0.61: ausdrueckliche Null
             _v4_meta: Object.assign({}, _makeBaseFundamentals({})._v4_meta || {}, {
               revenue:        { periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
               total_debt:     { source_type: 'unavailable', source_reference: 'dedup test: no direct total_debt', confidence: 'none', periods: null },
               long_term_debt: { periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
+              debt_short_term:           { source_type: 'reported', source_reference: 'SEC EDGAR XBRL: DebtCurrent', periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
+              finance_lease_noncurrent:  { source_type: 'reported', source_reference: 'SEC EDGAR XBRL: FinanceLeaseLiabilityNoncurrent', periods: ['2025-12-31','2024-12-31','2023-12-31','2022-12-31','2021-12-31'] },
             })
           });
           return {
@@ -33004,11 +33229,15 @@ const REGRESSION_FIXTURES = [
       const f = Object.assign(_makeBaseFundamentals({}), {
         total_debt:                [], // kein direkter total_debt → Komponenten-Rebuild greift
         debt_long_term_noncurrent: [400, 380, 360],
+        debt_short_term:           [0, 0, 0],   // V1.0.61: ausdrueckliche Null
+        finance_lease_noncurrent:  [0, 0, 0],   // V1.0.61: ausdrueckliche Null
         long_term_debt:            [400, 380, 360], // gleiches Datum, gleicher Wert
         _v4_meta: Object.assign({}, _makeBaseFundamentals({})._v4_meta || {}, {
           revenue:                   { periods: ['2025-12-31','2024-12-31','2023-12-31'] },
           total_debt:                { source_type: 'unavailable', source_reference: 'dedup test: no direct total_debt', confidence: 'none', periods: null },
           debt_long_term_noncurrent: { periods: ['2025-12-31','2024-12-31','2023-12-31'] },
+          debt_short_term:           { source_type: 'reported', source_reference: 'SEC EDGAR XBRL: DebtCurrent', periods: ['2025-12-31','2024-12-31','2023-12-31'] },
+          finance_lease_noncurrent:  { source_type: 'reported', source_reference: 'SEC EDGAR XBRL: FinanceLeaseLiabilityNoncurrent', periods: ['2025-12-31','2024-12-31','2023-12-31'] },
           long_term_debt:            { periods: ['2025-12-31','2024-12-31','2023-12-31'] },
         })
       });
@@ -33031,11 +33260,19 @@ const REGRESSION_FIXTURES = [
           const f = Object.assign(_makeBaseFundamentals({}), {
             total_debt:                [],
             debt_long_term_noncurrent: [400, 380, 360],
+            debt_short_term:           [0, 0, 0],   // V1.0.61: ausdrueckliche Null
+            finance_lease_noncurrent:  [0, 0, 0],   // V1.0.61: ausdrueckliche Null
+        debt_short_term:           [0, 0, 0],   // V1.0.61: ausdrueckliche Null
+        finance_lease_noncurrent:  [0, 0, 0],   // V1.0.61: ausdrueckliche Null
             long_term_debt:            [400, 380, 360],
             _v4_meta: Object.assign({}, _makeBaseFundamentals({})._v4_meta || {}, {
               revenue:                   { periods: ['2025-12-31','2024-12-31','2023-12-31'] },
               total_debt:                { source_type: 'unavailable', source_reference: 'dedup test: no direct total_debt', confidence: 'none', periods: null },
               debt_long_term_noncurrent: { periods: ['2025-12-31','2024-12-31','2023-12-31'] },
+              debt_short_term:           { source_type: 'reported', source_reference: 'SEC EDGAR XBRL: DebtCurrent', periods: ['2025-12-31','2024-12-31','2023-12-31'] },
+              finance_lease_noncurrent:  { source_type: 'reported', source_reference: 'SEC EDGAR XBRL: FinanceLeaseLiabilityNoncurrent', periods: ['2025-12-31','2024-12-31','2023-12-31'] },
+          debt_short_term:           { source_type: 'reported', source_reference: 'SEC EDGAR XBRL: DebtCurrent', periods: ['2025-12-31','2024-12-31','2023-12-31'] },
+          finance_lease_noncurrent:  { source_type: 'reported', source_reference: 'SEC EDGAR XBRL: FinanceLeaseLiabilityNoncurrent', periods: ['2025-12-31','2024-12-31','2023-12-31'] },
               long_term_debt:            { periods: ['2025-12-31','2024-12-31','2023-12-31'] },
             })
           });
@@ -34974,8 +35211,15 @@ const REGRESSION_FIXTURES = [
 //   A2 — Sperre aktiv, Alignment-Gate still (Cash ohne Perioden-Meta). Erst
 //        hier lassen sich Synthese, Matrix und Monte Carlo beobachten.
 (function _registerNetDebtLockTests() {
-  const _per = (arr) => ({ source_type: 'reported', source_reference: 'SEC EDGAR XBRL: test',
+  // V1.0.61 (Korrekturchat 12B.2): Der Platzhalter-Tag 'test' hat keinen
+  // belegbaren Umfang; seit der Umfangspruefung traegt eine Reihe damit keine
+  // Gesamtschuld mehr. Dieser Fixture prueft die PERIODENSPERRE, nicht den
+  // Umfang — die Schuldenreihe erhaelt deshalb das Konzept, das sie meint:
+  // DebtAndCapitalLeaseObligations (current UND noncurrent, einschl. Leasing).
+  const _per = (arr, tag) => ({ source_type: 'reported',
+                           source_reference: 'SEC EDGAR XBRL: ' + (tag || 'test'),
                            confidence: 'high', periods: arr });
+  const _perTd = (arr) => _per(arr, 'DebtAndCapitalLeaseObligations');
 
   // 100 Mio Aktien; beide tatsächlichen Ableitungspässe wie in der Pipeline.
   const _mk = (fundOverrides, metaOverrides, mutate) => {
@@ -35001,7 +35245,7 @@ const REGRESSION_FIXTURES = [
   // ── A) Gemeldeter Fall: Schulden FY2024, Cash FY2021 ──────────────────────
   const _mjA = _mk(
     { total_debt: [600], cash_and_equivalents: [200], net_debt: [] },
-    { total_debt:           _per(['2024-12-31']),
+    { total_debt:           _perTd(['2024-12-31']),
       cash_and_equivalents: _per(['2021-12-31']) });
   const _fA      = _mjA.fundamentals;
   const _lockedA = !!(_fA._v4_meta.net_debt && _fA._v4_meta.net_debt.periodLocked === true);
@@ -35018,7 +35262,8 @@ const REGRESSION_FIXTURES = [
   const _P = ['2024-12-31'];
   const _metaAll = {};
   for (const k of ['revenue','ebit','net_income','cfo','capex','eps_diluted',
-                   'shares_diluted','total_assets','total_debt']) _metaAll[k] = _per(_P);
+                   'shares_diluted','total_assets']) _metaAll[k] = _per(_P);
+  _metaAll['total_debt'] = _perTd(_P);
   const _mjA2 = _mk(
     { total_debt: [600], cash_and_equivalents: [200], net_debt: [] },
     _metaAll,
@@ -35039,14 +35284,14 @@ const REGRESSION_FIXTURES = [
   // ── B) Cash-Alias: nur f.cash, Perioden unvereinbar ───────────────────────
   const _mjB = _mk(
     { total_debt: [600], cash_and_equivalents: [], net_debt: [] },
-    { total_debt: _per(['2024-12-31']), cash: _per(['2021-12-31']) },
+    { total_debt: _perTd(['2024-12-31']), cash: _per(['2021-12-31']) },
     (mj) => { mj.fundamentals.cash = [200]; });
   const _ndB = _resolveNetDebtForDcfBridge(_mjB.fundamentals);
 
   // ── C) Teilweise passende Reihe: net_debt[0] === null ─────────────────────
   const _mjC = _mk(
     { total_debt: [600, 500], cash_and_equivalents: [200, 50], net_debt: [] },
-    { total_debt:           _per(['2024-12-31', '2023-12-31']),
+    { total_debt:           _perTd(['2024-12-31', '2023-12-31']),
       cash_and_equivalents: _per(['2024-01-31', '2023-12-31']) });
   const _fC  = _mjC.fundamentals;
   const _ndC = _resolveNetDebtForDcfBridge(_fC);
@@ -35054,7 +35299,7 @@ const REGRESSION_FIXTURES = [
   // ── D) Gegenprobe: kompatible Perioden → 600 − 200 = 400 Mio ──────────────
   const _mjD = _mk(
     { total_debt: [600], cash_and_equivalents: [200], net_debt: [] },
-    { total_debt:           _per(['2024-12-31']),
+    { total_debt:           _perTd(['2024-12-31']),
       cash_and_equivalents: _per(['2024-12-31']) });
   const _ndD  = _resolveNetDebtForDcfBridge(_mjD.fundamentals);
   const _ctxD = buildCoreValuationContext(_mjD);
@@ -35064,7 +35309,7 @@ const REGRESSION_FIXTURES = [
   // ── E) Gegenprobe: ausdrücklich bekannte Nettoschulden 0 → 15 USD ─────────
   const _mjE = _mk(
     { total_debt: [600], cash_and_equivalents: [200], net_debt: [0] },
-    { total_debt:           _per(['2024-12-31']),
+    { total_debt:           _perTd(['2024-12-31']),
       cash_and_equivalents: _per(['2021-12-31']),
       net_debt:             _per(['2024-12-31']) });
   const _ndE  = _resolveNetDebtForDcfBridge(_mjE.fundamentals);
@@ -41023,9 +41268,14 @@ function _testDataBasis() {
   const QS = { 1: '-01-01', 2: '-04-01', 3: '-07-01', 4: '-10-01' };
   const QE = { 1: '-03-31', 2: '-06-30', 3: '-09-30', 4: '-12-31' };
   const _tage = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000) + 1;
-  const _quelle = (y, n) => ({ form: n === 4 ? '10-K' : '10-Q', accn: 'acc-' + y + '-' + n,
+  // V1.0.61 (Korrekturchat 12B.2): Der Platzhalter-Tag 'Test' hat keinen
+  // belegbaren Umfang. Seit der Umfangspruefung traegt eine Reihe damit keine
+  // Gesamtschuld; `_quelle` erlaubt deshalb einen echten Tag je Feld. Der
+  // synthetische Filer weist seine GESAMTVERSCHULDUNG aus
+  // (DebtAndCapitalLeaseObligations: current UND noncurrent, einschl. Leasing).
+  const _quelle = (y, n, tag) => ({ form: n === 4 ? '10-K' : '10-Q', accn: 'acc-' + y + '-' + n,
     filed: n === 4 ? (y + 1) + '-02-15' : y + '-' + String(n * 3 + 2).padStart(2, '0') + '-01',
-    frame: null, tag: 'Test' });
+    frame: null, tag: tag || 'Test' });
   // Zeitraumgröße: Einzelquartale UND die dazugehörigen Kumulierungen,
   // damit beide zulässigen Rechenwege geprüft werden können.
   const flow = (perYear) => {
@@ -41050,17 +41300,17 @@ function _testDataBasis() {
              quarters, cumulatives, gaps: [], conflicts: [], rejectedDerivations: [], notes: [] };
   };
   // Stichtagsgröße: je Quartalsende genau ein Wert.
-  const instant = (perYear) => {
+  const instant = (perYear, tag) => {
     const instants = [];
     Object.keys(perYear).forEach(y => {
       perYear[y].forEach((val, i) => {
         const n = i + 1;
         instants.push({ fiscalYear: +y, fiscalQuarter: n, periodKey: 'FY' + y + '-Q' + n,
           date: y + QE[n], fiscalYearEnd: '12-31', value: val, unit: 'USD',
-          basis: 'reported', source: _quelle(+y, n), restatement: { restated: false, supersedes: [] } });
+          basis: 'reported', source: _quelle(+y, n, tag), restatement: { restated: false, supersedes: [] } });
       });
     });
-    return { field: 'x', kind: 'instant', usedTag: 'Test', unit: 'USD',
+    return { field: 'x', kind: 'instant', usedTag: tag || 'Test', unit: 'USD',
              instants, conflicts: [], notes: [] };
   };
 
@@ -41105,7 +41355,8 @@ function _testDataBasis() {
     fields: {
       revenue: flow(REV), operating_income: flow(EBIT), net_income: flow(NI),
       cfo: flow(CFO), capex: flow(CPX), depreciation_amortization: flow(DA),
-      total_debt: instant(DEBT), long_term_debt: instant(LTD),
+      total_debt: instant(DEBT, 'DebtAndCapitalLeaseObligations'),
+      long_term_debt: instant(LTD, 'LongTermDebtNoncurrent'),
       cash_and_equivalents: instant(CASH), current_assets: instant(CA),
       current_liabilities: instant(CL)
     },
@@ -41493,7 +41744,13 @@ function _testTtmIntegrationFixes() {
       NetIncomeLoss: _flowU(mio(NI)),
       NetCashProvidedByUsedInOperatingActivities: _flowU(mio(CFO)),
       PaymentsToAcquirePropertyPlantAndEquipment: _flowU(mio(CPX)),
-      LongTermDebtAndCapitalLeaseObligations: _instU(mio(DEBT)),
+      // V1.0.61 (Korrekturchat 12B.2): Dieser synthetische Filer weist seine
+      // GESAMTVERSCHULDUNG aus (die Tests rechnen Nettoschulden = Schulden −
+      // Liquiditaet). Das dafuer richtige us-gaap-Konzept ist
+      // DebtAndCapitalLeaseObligations (current UND noncurrent, einschliesslich
+      // Leasing). LongTermDebtAndCapitalLeaseObligations erfasst nur noncurrent
+      // klassifizierte Betraege und belegt damit keine Gesamtschuld.
+      DebtAndCapitalLeaseObligations: _instU(mio(DEBT)),
       LongTermDebtNoncurrent: _instU(mio(LTD)),
       CashAndCashEquivalentsAtCarryingValue: _instU(mio(CASH)),
       AssetsCurrent: _instU(mio(CA)), LiabilitiesCurrent: _instU(mio(CL)),
@@ -42016,7 +42273,13 @@ function _testTtmSharePeriodFixes() {
       NetCashProvidedByUsedInOperatingActivities: _flowU(CFO),
       PaymentsToAcquirePropertyPlantAndEquipment: _flowU(CPX),
       DepreciationDepletionAndAmortization: _flowU(DA),
-      LongTermDebtAndCapitalLeaseObligations: _instU(DEBT), LongTermDebtNoncurrent: _instU(LTD),
+      // V1.0.61 (Korrekturchat 12B.2): Dieser synthetische Filer weist seine
+      // GESAMTVERSCHULDUNG aus (die Tests rechnen Nettoschulden = Schulden −
+      // Liquiditaet). Das dafuer richtige us-gaap-Konzept ist
+      // DebtAndCapitalLeaseObligations (current UND noncurrent, einschliesslich
+      // Leasing). LongTermDebtAndCapitalLeaseObligations erfasst nur noncurrent
+      // klassifizierte Betraege und belegt damit keine Gesamtschuld.
+      DebtAndCapitalLeaseObligations: _instU(DEBT), LongTermDebtNoncurrent: _instU(LTD),
       CashAndCashEquivalentsAtCarryingValue: _instU(CASH),
       AssetsCurrent: _instU(CA), LiabilitiesCurrent: _instU(CL),
       WeightedAverageNumberOfDilutedSharesOutstanding: _shareU(SHQ),

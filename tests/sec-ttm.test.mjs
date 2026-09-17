@@ -85,7 +85,10 @@ function buildFacts(opts = {}) {
       NetIncomeLoss: flowFacts('ni', NI, THROUGH),
       NetCashProvidedByUsedInOperatingActivities: flowFacts('cfo', CFO, THROUGH),
       PaymentsToAcquirePropertyPlantAndEquipment: flowFacts('capex', CAPEX, THROUGH),
-      LongTermDebtAndCapitalLeaseObligations: instantFacts('debt', DEBT, THROUGH),
+      // V1.0.61 (Korrekturchat 12B.2): Gesamtverschuldung des synthetischen Filers.
+      // DebtAndCapitalLeaseObligations umfasst current UND noncurrent einschliesslich
+      // Leasing; LongTermDebtAndCapitalLeaseObligations nur noncurrent.
+      DebtAndCapitalLeaseObligations: instantFacts('debt', DEBT, THROUGH),
       LongTermDebtNoncurrent: instantFacts('ltd', LTD, THROUGH),
       CashAndCashEquivalentsAtCarryingValue: instantFacts('cash', CASH, THROUGH),
       AssetsCurrent: instantFacts('ca', CA, THROUGH),
@@ -753,9 +756,17 @@ test('der DATENBASIS-BLOCK laeuft in einer leeren Sandbox', () => {
   // schreibt `source_reference` um und muss den urspruenglichen us-gaap-Tag
   // als `source_tag` mitfuehren — sonst saehen TTM-Schuldenreihen aus wie
   // Reihen ganz ohne Herkunft und Ueberschneidungen blieben unerkennbar.
+  // V1.0.61 (Korrekturchat 12B.2): Die TTM-Sicht bestimmt den Schuldenumfang
+  // fuer IHREN Stichtag selbst — mit derselben gemeinsamen Aufloesung wie die
+  // Jahressicht. Ohne diese Helfer wuerde sie die Sperre entweder umgehen oder
+  // muesste pauschal sperren.
   assert.deepEqual(Array.from(isoliert.DATA_BASIS_REQUIRED_HELPERS),
     ['_median', '_explicitNumber', 'DA_PROVISIONAL_LABEL', '_resolveDaForForecast',
-     '_secSourceTag']);
+     '_secSourceTag',
+     '_debtScopeTables', '_debtCellsOfField', '_cellsDisjoint', '_cellsSubset',
+     '_cellsMinus', '_debtCellLabels', '_debtVec', '_solveDebtEvidence',
+     '_resolveDebtHistory', '_resolveTotalDebtHistory', '_seriesHasPeriodContext',
+     '_secPeriodYear', '_secPeriodDaysApart', '_joinPeriodKeyed']);
   assert.deepEqual(Array.from(isoliert.DATA_BASIS_REQUIRED_BLOCKS), ['SEC-QUARTALS-BLOCK']);
   // Die Helfer sind in der Sandbox wirklich vorhanden — der Ausweis nennt
   // den D&A-Status, statt ihn stillschweigend auszulassen.

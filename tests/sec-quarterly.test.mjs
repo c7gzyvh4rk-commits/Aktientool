@@ -506,11 +506,20 @@ test('Umfang und Eingaben werden geprueft', () => {
   // periodengleiche Abschreibungen rechnete die TTM-Sicht die D&A-Quote des
   // FCFF mit einem unbelegten Nullwert. Es kommt KEIN neuer Tag hinzu — das
   // Feld verwendet die vorhandene Liste SEC_TAG_MAP.da der Anwendung.
+  // V1.0.61 (Korrekturchat 12B.2): Um die Schuldenkomponenten erweitert. Ohne
+  // sie liesse sich der UMFANG der Verschuldung am TTM-Stichtag nicht
+  // bestimmen; die Sicht muesste ihn aus Jahresdaten ergaenzen (unzulaessig,
+  // andere Stichtage) oder pauschal sperren. Es kommen KEINE neuen Tags hinzu —
+  // verwendet werden die vorhandenen Listen der SEC_TAG_MAP.
   assert.deepEqual(Object.keys(Q.SEC_QUARTERLY_FIELDS),
     ['revenue', 'operating_income', 'net_income', 'cfo', 'capex',
      'depreciation_amortization',
      'total_debt', 'long_term_debt', 'cash_and_equivalents',
-     'current_assets', 'current_liabilities']);
+     'current_assets', 'current_liabilities',
+     'debt_short_term', 'debt_long_term_current', 'debt_long_term_noncurrent',
+     'finance_lease_current', 'finance_lease_noncurrent']);
+  assert.equal(Q.SEC_QUARTERLY_FIELDS.debt_short_term, 'instant');
+  assert.equal(Q.APP_TAG_FIELD.debt_short_term, 'debt_short_term');
   assert.equal(Q.SEC_QUARTERLY_FIELDS.depreciation_amortization, 'flow');
   assert.equal(Q.APP_TAG_FIELD.depreciation_amortization, 'da');
   assert.equal(Q.appTagMap().depreciation_amortization[0], 'DepreciationDepletionAndAmortization');

@@ -202,3 +202,112 @@ export function importSecFacts(facts, opts) {
   S.applyConservativeHeuristics(mj);
   return mj;
 }
+
+// ── V1.0.61 (Korrekturchat 12B.2) ──────────────────────────────────────────
+// Seit der Umfangsprüfung ist die Gesamtverschuldung nur dann bestimmt, wenn
+// die gemeldeten Angaben ALLE Bestandteile belegen (kurzfristige Bankschulden,
+// laufende Fälligkeiten, langfristige Schulden, kurz- und langfristiges
+// Leasing). Ein Abschluss, der einen Bestandteil gar nicht erwähnt, belegt ihn
+// nicht — auch nicht als Null.
+//
+// `fullyDocumented()` beschreibt deshalb einen Filer, der die Bestandteile
+// ohne Bestand AUSDRÜCKLICH mit 0 meldet. Übergebene Tags haben Vorrang.
+export function fullyDocumented(debtTags) {
+  return Object.assign({
+    ShortTermBorrowings:             secInst(allYears(0)),
+    FinanceLeaseLiabilityCurrent:    secInst(allYears(0)),
+    FinanceLeaseLiabilityNoncurrent: secInst(allYears(0))
+  }, debtTags || {});
+}
+
+// Variante für Abschlüsse, deren KURZFRISTIGE Seite bereits durch
+// `DebtCurrent` vollständig belegt ist (es umfasst Bankschulden, laufende
+// Fälligkeiten und kurzfristiges Leasing). Dort fehlt nur noch die Aussage
+// zum langfristigen Leasing; zusätzliche Nullwerte auf der kurzfristigen
+// Seite würden die Aufteilung überbestimmen.
+export function noNoncurrentLeases(debtTags) {
+  return Object.assign({
+    FinanceLeaseLiabilityNoncurrent: secInst(allYears(0))
+  }, debtTags || {});
+}
+
+// ── Quartalsfacts für den ECHTEN TTM-Weg (Korrekturchat 12B.2) ─────────────
+// `buildTtmDatasetFromFacts()` braucht Quartalsdaten. Diese Helfer erzeugen
+// dieselbe Struktur wie ein SEC-companyfacts-Abruf: kumulierte YTD-Beträge für
+// Zeitraumgrößen, Stichtagswerte je Quartalsende für Bilanzgrößen.
+const _QE = { 1: '-03-31', 2: '-06-30', 3: '-09-30', 4: '-12-31' };
+const _QTHROUGH = { 2022: 4, 2023: 4, 2024: 4, 2025: 4 };
+const _qForm  = (n) => (n === 4 ? '10-K' : '10-Q');
+const _qFiled = (y, n) => (n === 4 ? (y + 1) + '-02-15' : y + '-' + String(n * 3 + 2).padStart(2, '0') + '-01');
+
+// Zeitraumgröße: gleichmäßig auf vier Quartale verteilt, kumuliert gemeldet.
+export function secQFlow(perYearTotal) {
+  const u = [];
+  Object.keys(perYearTotal).forEach(y => {
+    const q = perYearTotal[y] / 4;
+    for (let n = 1; n <= _QTHROUGH[y]; n++) {
+      u.push({ start: y + '-01-01', end: y + _QE[n], val: q * n * _M,
+               form: _qForm(n), filed: _qFiled(+y, n), accn: 'qf' + y + n });
+    }
+  });
+  return { units: { USD: u } };
+}
+
+// Stichtagsgröße: derselbe Wert zu jedem Quartalsende. `perYear` darf je Jahr
+// eine Zahl oder ein Array der vier Quartalswerte sein.
+export function secQInst(perYear) {
+  const u = [];
+  Object.keys(perYear).forEach(y => {
+    const v = perYear[y];
+    for (let n = 1; n <= _QTHROUGH[y]; n++) {
+      const val = Array.isArray(v) ? v[n - 1] : v;
+      if (val == null) continue;
+      u.push({ end: y + _QE[n], val: val * _M,
+               form: _qForm(n), filed: _qFiled(+y, n), accn: 'qi' + y + n });
+    }
+  });
+  return { units: { USD: u } };
+}
+
+export function secQShares(perYear) {
+  const u = [];
+  Object.keys(perYear).forEach(y => {
+    for (let n = 1; n <= _QTHROUGH[y]; n++) {
+      u.push({ start: y + '-' + String((n - 1) * 3 + 1).padStart(2, '0') + '-01',
+               end: y + _QE[n], val: perYear[y] * _M,
+               form: _qForm(n), filed: _qFiled(+y, n), accn: 'qs' + y + n });
+    }
+  });
+  return { units: { shares: u } };
+}
+
+const _qAll = (v) => ({ 2022: v, 2023: v, 2024: v, 2025: v });
+
+// Referenzfirma wie `secFactsWithDebt()`, aber mit Quartalsdaten, sodass der
+// produktive TTM-Weg sie tatsächlich bilden kann.
+export function secQuarterlyFactsWithDebt(debtTags) {
+  const g = { 'us-gaap': {
+    Revenues:                                        secQFlow(_qAll(1000)),
+    OperatingIncomeLoss:                             secQFlow(_qAll(200)),
+    NetIncomeLoss:                                   secQFlow(_qAll(150)),
+    NetCashProvidedByUsedInOperatingActivities:      secQFlow(_qAll(200)),
+    PaymentsToAcquirePropertyPlantAndEquipment:      secQFlow(_qAll(50)),
+    DepreciationDepletionAndAmortization:            secQFlow(_qAll(50)),
+    CashAndCashEquivalentsAtCarryingValue:           secQInst(_qAll(100)),
+    AssetsCurrent:                                   secQInst(_qAll(400)),
+    LiabilitiesCurrent:                              secQInst(_qAll(500)),
+    StockholdersEquity:                              secQInst(_qAll(3000)),
+    Assets:                                          secQInst(_qAll(7000)),
+    WeightedAverageNumberOfDilutedSharesOutstanding: secQShares(_qAll(100))
+  }, dei: { EntityCommonStockSharesOutstanding: { units: { shares: [
+    { end: '2025-12-31', val: 100 * _M, form: '10-K', filed: '2026-02-15' } ] } } } };
+  Object.assign(g['us-gaap'], debtTags || {});
+  return g;
+}
+
+// Produktiver TTM-Weg: Datensatz bilden, Basis auflösen, Sicht erzeugen.
+export function ttmViewOf(mj) {
+  const S = app();
+  const resolved = S.resolveDataBasis(mj, 'ttm');
+  return { resolved, view: S.buildValuationBasisView(mj, resolved) };
+}

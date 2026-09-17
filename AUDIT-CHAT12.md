@@ -70,6 +70,7 @@ und keine Laufzeit- oder Sicherheitsprüfung.
 | `npm test` nach Korrekturchat 12A (A-1/A-2/A-3 behoben, B1–B4 → R1–R9) | 1700 Rechen-Assertions · 434 Fixture-Assertions · **167 Node-Tests** · **Exit 0** |
 | `npm test` nach Korrekturchat 12B (A-4/O-1/O-2 behoben, B5 → R10–R15) | 1700 Rechen-Assertions · 434 Fixture-Assertions · **172 Node-Tests** · **Exit 0** |
 | `npm test` nach Korrekturchat 12B.1 (Schuldenumfang berichtigt, R12/R14/R15 korrigiert, R16–R20 neu) | 1700 Rechen-Assertions · 434 Fixture-Assertions · **177 Node-Tests** · **Exit 0** |
+| `npm test` nach Korrekturchat 12B.2 (Schuldenauflösung als Gleichungssystem, R21–R27 neu) | 1700 Rechen-Assertions · 434 Fixture-Assertions · **184 Node-Tests** · **Exit 0** |
 
 Keine bestehende Testerwartung wurde geändert. Die neuen Tests sind in zwei
 Gruppen getrennt:
@@ -82,6 +83,15 @@ Gruppen getrennt:
   gelten muss.
 * **R1–R9 (Regression, ergänzt in Korrekturchat 12A)** — ersetzen `B1`–`B4`,
   nachdem A-1, A-2 und A-3 behoben sind, und sichern das richtige Verhalten ab.
+* **R21–R27 (Regression, ergänzt in Korrekturchat 12B.2)** — die fünf
+  Restbefunde nach 12B.1: `R21` (zusammengefasste langfristige Beträge),
+  `R22` (TTM umgeht die Sperre nicht), `R23` (noncurrent-Teilbeträge sind
+  keine Gesamtschuld), `R24` (bekannte Überschneidungen werden aufgelöst),
+  `R25` (widersprüchliche Aufschlüsselungen), `R26` (kein Gewicht und keine
+  Einstiegszone für gesperrte DCF-Werte), `R27` (wiederholte Aufbereitung).
+  `R12`–`R18` wurden dabei auf **vollständig dokumentierte** Datensätze
+  umgestellt; die Ausnahme für noncurrent-Teilbeträge in `R16` ist
+  **berichtigt**.
 * **R16–R20 (Regression, ergänzt in Korrekturchat 12B.1)** — sichern die
   berichtigten Tag-Umfänge ab: `R16` (Restgröße zweier noncurrent-Tags ist
   langfristiges Leasing), `R17` (Leasing-Aufschlüsselung ändert nichts),
@@ -659,18 +669,153 @@ Regressionstest `R19`.
 * **Keine eigene Prüfung der Primärquelle.** Siehe „Quellenlage" oben.
 * **Kein realer Filing-Fall.** Alle Nachweise laufen über synthetische
   SEC-Facts durch den produktiven Importweg. Ein Live-Abruf war nicht möglich.
-* **Ein noncurrent-only Tag bleibt als Gesamtschuld in Gebrauch.** Meldet ein
-  Filer nur `LongTermDebtAndCapitalLeaseObligations` und keine kurzfristige
-  Komponente, ist der Wert streng genommen nur ein Teilbetrag. Er wird
-  weiterhin als `total_debt` verwendet — sonst wäre die häufigste zulässige
-  Darstellung überhaupt nicht bewertbar —, ist aber nicht mehr
-  ungekennzeichnet: `_v4_meta.total_debt.scopeNoncurrentOnly` und eine
-  ausdrückliche Warnung weisen aus, dass die Gesamtverschuldung insoweit zu
-  niedrig sein kann. Die Sperre greift nur bei einer **erkannten, nicht
-  auflösbaren Überschneidung** gemeldeter Angaben.
+* ~~**Ein noncurrent-only Tag bleibt als Gesamtschuld in Gebrauch.**~~
+  **BERICHTIGT in Korrekturchat 12B.2.** Diese Ausnahme war nicht zulässig:
+  eine Warnung ersetzt keinen Nichtverfügbarkeitsstatus, und „sonst wäre der
+  Fall nicht bewertbar" ist keine tragfähige Begründung. Seit V1.0.61 gilt ein
+  nachweislicher Teilbetrag nicht mehr als Gesamtschuld; die
+  Nettoschuldenbrücke liefert einen begründeten Nichtverfügbarkeitsstatus.
+  Siehe Abschnitt 3b.
 * Für `LongTermDebt` selbst enthält die Auftragsvorgabe keine Definition;
   verwendet wird `{ltCurMat, debtNC}` (langfristige Schulden einschließlich
   laufender Tranche, ohne Leasing) — die Lesart, auf der bereits O-1 beruht.
+
+---
+
+## 3b · Korrekturchat 12B.2 — Schuldenauflösung und TTM-Sperren
+
+Nach 12B.1 blieben fünf Restbefunde. Alle fünf haben dieselbe Ursache: der
+Umfang wurde zwar je Tag richtig beschrieben, die **Zusammenführung** der
+Angaben war aber ein Nacheinander von „belegt oder übersprungen" statt einer
+Auflösung.
+
+### Quellenlage (wahrheitsgemäß)
+
+Maßgeblich bleibt die Taxonomiebasis aus 12B.1 (FASB-Taxonomie 2025). Der
+Abruf der Primärquelle `https://xbrl.fasb.org/us-gaap/2025/elts/us-gaap-doc-2025.xml`
+war **auch in diesem Schritt nicht möglich** (Egress-Proxy: HTTP 403 auf
+CONNECT). Die Definitionen stammen aus der Auftragsvorgabe und sind hier
+**nicht selbst an der Quelle geprüft**. Alle Nachweise sind **synthetische
+Importtests** über den produktiven Pfad — **keine Live-Validierung** und kein
+reales Filing.
+
+### Die Auflösung als Gleichungssystem
+
+Jede gemeldete Angabe ist eine Gleichung „Summe ihrer Zellen = Wert"
+(`_solveDebtEvidence`). Die gesuchte Größe — kurzfristige Finanzschulden oder
+Gesamtverschuldung — ist genau dann bestimmt, wenn ihr Zellvektor im
+**Zeilenraum** des Systems liegt. Damit entscheidet die nachgewiesene
+**Abdeckung**, nicht das Vorhandensein irgendeines Zahlenwerts; Reihenfolge,
+„größerer Wert", Prozentabweichung und die Anzahl vorhandener Komponenten
+spielen keine Rolle mehr. Bilanzbestandteile sind nicht negativ — daraus
+folgen zwei prüfbare Widersprüche (ein enthaltener Teilbetrag größer als die
+Gesamtheit; ein rechnerisch negativer Zellwert). Toleranz: 0,01 % der größten
+Angabe, mindestens 1e-6.
+
+Rebuild, kurzfristige Finanzschulden und Nettoschuldenbrücke verwenden
+**dieselbe** Evidenz (`_resolveDebtHistory` mit unterschiedlichem Ziel).
+
+### Die fünf Befunde
+
+| # | Datensatz | vorher | nachher |
+|---|---|---|---|
+| **1** | `LTD&Cap` 1.000 + `DebtCurrent` 300 vs. `Noncurrent` 700 + `FLNoncurrent` 300 + `DebtCurrent` 300 | 1.000 / ND 900 / FV ~19,61913 **gegen** 1.300 / ND 1.200 / FV ~16,61913 | **beide 1.300 / ND 1.200 / FV 16,61913** |
+| **2** | `LongTermDebt` 1.000 + `DebtCurrent` 150, TTM-Weg | FY gesperrt, **TTM wieder verfügbar** (ND 900) | TTM ebenfalls gesperrt; mit zusätzlicher Quartalsangabe `LongTermDebtCurrent` **aufgelöst** (1.050 / ND 950) |
+| **3** | nur `LTD&Cap` 1.000 | ND 900 verfügbar, DCF anwendbar | **ND nicht verfügbar**, kein Eigenkapitalwert, operativer Wert bleibt |
+| **4** | `LongTermDebt` 1.000 + `DebtCurrent` 150 + `LongTermDebtCurrent` 100 | „Überschneidung nicht auflösbar" ⇒ gesperrt | **1.050** (1.000 + 150 − 100), ND 950 |
+| **5** | `Noncurrent` 700 + `DebtCurrent` 300 + `FLCurrent` **350** | Leasingwert nur übersprungen, alles verfügbar | **Widerspruch erkannt**, Schuldenbasis und Bewertung gesperrt |
+
+**Zu 1.** Der direkte, zusammengefasste Betrag zählt jetzt als Evidenz mit
+seinem tatsächlichen Umfang. Disjunkte current-/noncurrent-Angaben werden
+vollständig zusammengeführt; eine unvollständige Komponentensumme ersetzt
+einen vollständigeren Betrag nicht und verdeckt die fehlende Ergänzung nicht.
+Ein direkt gemeldeter vollständiger Gesamtbetrag mit ergänzenden
+Aufschlüsselungen zählt nicht doppelt. Test `R21`.
+
+**Zu 2.** Die TTM-Sicht bestimmt den Umfang **für ihren Stichtag selbst**:
+* Der us-gaap-Tag stammt aus den **Quartalsdaten** (`used_tag`), nicht blind
+  aus der Jahresreihe (in Fall (b) trägt die Jahresreihe nach dem Rebuild gar
+  keinen Tag mehr).
+* Die FY-Sperre wird **nicht** kopiert — neue Quartalsangaben lösen die
+  Unklarheit tatsächlich auf.
+* Bleibt sie offen, bleibt die Brücke gesperrt; ein neu abgeleitetes
+  `net_debt` entsteht dann gar nicht erst.
+* Die Prüfung läuft **nach** dem Leeren der nicht gedeckten Reihen — sonst
+  flössen Jahreswerte mit Jahresstichtagen als Evidenz ein.
+* Dafür sind die Schuldenkomponenten **optionale** TTM-Stichtagsgrößen
+  geworden (`TTM_OPTIONAL_INSTANT_FIELDS`). Fehlen sie, bleibt die TTM-Basis
+  wählbar, die Gesamtschuld gilt aber als nicht belegt. Es kommen **keine
+  neuen Tags** hinzu. Test `R22`.
+
+**Zu 3.** Die in 12B.1 bewusst belassene Ausnahme ist entfallen. Ergänzt wird
+ein Teilbetrag nur, wenn periodengleiche Angaben den fehlenden Umfang
+bestimmen; sonst begründete Nichtverfügbarkeit. Die heuristischen
+`assumedEmpty`-Regeln aus V1.0.60 sind **ersatzlos entfernt**: eine fehlende
+Angabe ist nicht deshalb Null, weil kein Tag gefunden wurde. Ausdrücklich
+belegte Nullwerte und eigenständig belegte Gesamtbeträge funktionieren
+weiterhin; manuell gesetzte Nettoschulden bleiben nach den bestehenden
+Vorrangregeln zulässig. Eine manuelle OWC-Annahme löst eine unklare
+Gesamtschuld **nicht** auf. Test `R23`, berichtigt in `R16`.
+
+**Zu 4.** Separat belegte Überschneidungsbeträge werden **vor** der
+Entscheidung „nicht auflösbar" verwendet. Reihenfolge und redundante
+Aufschlüsselungen ändern das Ergebnis nicht. Fehlt eine **andere** Angabe
+(im Beispiel das langfristige Leasing), wird genau das benannt — nicht
+fälschlich eine unbekannte Überschneidung. Test `R24`.
+
+**Zu 5.** Vor dem Überspringen einer Aufschlüsselung wird ihre Vereinbarkeit
+mit dem übergeordneten Betrag geprüft. Ein ungeklärter materieller
+Widerspruch läuft nicht als gemessene Schuldenbasis weiter; die
+beeinträchtigten Größen und ihre Bewertungsverbraucher erhalten den
+begründeten Status. Konsistente Aufschlüsselungen und ausdrückliche Nullwerte
+ändern nichts. Test `R25`.
+
+### Wirkung auf die Bewertung
+
+Ein gesperrter DCF ist `applicable: false` / `base: null` und trägt
+`_excludedFromSynthesis`. Der Synthesizer übergeht ihn damit in Gewichtung
+und Einstiegszone; Mid-Cycle, Reverse DCF, Sensitivitätsmatrix und Monte
+Carlo tragen denselben Status. Der **operative Unternehmenswert** bleibt
+getrennt verfügbar. Test `R26`. Wiederholte Aufbereitung ist stabil: keine
+vervielfachten Warnungen, keine veraltete Sperre nach behobener Datenlücke
+(`R27`).
+
+### Berichtigte Testerwartungen
+
+Mehrere Datensätze beschrieben Filer, die ihre **Gesamtverschuldung** meinten,
+sie aber mit einem rein langfristigen Tag auswiesen. Das ist fachlich falsch
+und wurde berichtigt, nicht durch gelockerte Toleranzen:
+
+* Die synthetischen Filer in `_testTtmIntegrationFixes`, `_testDataBasis`,
+  `_testTtmSharePeriodFixes` und `tests/sec-ttm.test.mjs` verwenden jetzt
+  `DebtAndCapitalLeaseObligations` statt
+  `LongTermDebtAndCapitalLeaseObligations`. Alle Erwartungswerte bleiben
+  unverändert.
+* Die Platzhalter-Tags `'test'` / `'Test'` (T-NDLOCK, `_testDataBasis`) haben
+  keinen belegbaren Umfang; die Schuldenreihen tragen jetzt das Konzept, das
+  sie meinen.
+* Die Fixtures `T-DEBT-DEDUP1`–`3` dokumentierten nur die langfristige Seite.
+  Sie melden jetzt ausdrückliche Nullwerte für die übrigen Bestandteile — die
+  Dedup-Aussage (kein Doppelzählen auf 800) bleibt prüfbar.
+* `SEC_QUARTERLY_FIELDS` und `DATA_BASIS_REQUIRED_HELPERS` sind gewachsen;
+  beide Listen werden von Tests festgeschrieben und wurden mit Begründung
+  aktualisiert.
+
+### Verbleibende Grenzen
+
+* **Keine eigene Prüfung der Primärquelle**, siehe oben.
+* **Kein reales Filing.** Alle Nachweise sind synthetische Importtests über
+  den produktiven Pfad.
+* Eine Bilanz, die einen Bestandteil gar nicht erwähnt, gilt als **nicht
+  belegt** — auch dann, wenn der Filer schlicht nichts davon hat. Solche
+  Abschlüsse sind ohne ausdrückliche Nullangabe oder ein Gesamt-Tag nicht mehr
+  über die Eigenkapitalbrücke bewertbar. Das ist die beabsichtigte Folge von
+  Befund 3; der operative Unternehmenswert bleibt verfügbar.
+* Für `LongTermDebt` enthält die Auftragsvorgabe die Lesart „einschließlich
+  laufender Fälligkeiten, ohne Leasing"; darauf beruht die Auflösung.
+* Der `source_tag` der TTM-Sicht stammt jetzt aus den Quartalsdaten. Nennt
+  eine TTM-Reihe keinen Tag, wird ersatzweise der Jahres-Tag übernommen und
+  ausdrücklich als `source_tag_inherited` gekennzeichnet.
 
 ---
 

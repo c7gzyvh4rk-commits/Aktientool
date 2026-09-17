@@ -22,7 +22,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { app, refMj, scOf, refValuePerShare,
-         evalInApp, importSecFacts, secFactsWithDebt, secInst, allYears } from './audit-chat12.mjs';
+         evalInApp, importSecFacts, secFactsWithDebt, secInst, allYears,
+         fullyDocumented, noNoncurrentLeases,
+         secQuarterlyFactsWithDebt, secQInst, ttmViewOf } from './audit-chat12.mjs';
+
+// Quartalswerte fuer alle vier Geschaeftsjahre des synthetischen Filers.
+const qAllYears = (v) => ({ 2022: v, 2023: v, 2024: v, 2025: v });
 
 const S = app();
 
@@ -792,10 +797,14 @@ test('R12 A-4/Vollstaendigkeit: eine gemeldete Teilkomponente macht die kurzfris
   // enthaelt die laufenden Faelligkeiten langfristiger Schulden, weist sie aber
   // nicht getrennt aus. Wie hoch der kurzfristige Anteil der 700 ist, bleibt
   // damit offen — die 300 sind nur EIN Bestandteil der kurzfristigen Schuld.
-  const mjA = importSecFacts(secFactsWithDebt({
+  // V1.0.61: Der Filer meldet ausdrueckliche Nullwerte fuer Leasing; ohne sie
+  // waere schon die GESAMTVERSCHULDUNG nicht bestimmt (siehe R21). Die
+  // Vollstaendigkeitsluecke, um die es hier geht, betrifft allein die in den
+  // 700 enthaltene, nicht bezifferte laufende Tranche.
+  const mjA = importSecFacts(secFactsWithDebt(fullyDocumented({
     LongTermDebt:        secInst(allYears(700)),
     ShortTermBorrowings: secInst(allYears(300))
-  }));
+  })));
   // Die Gesamtschuld bleibt bestimmt: {ltCurMat,debtNC} und {stBorrow} sind
   // disjunkt, also ist die Summe zulaessig.
   eqSeries(mjA.fundamentals.total_debt, [1000, 1000, 1000, 1000]);
@@ -814,11 +823,11 @@ test('R12 A-4/Vollstaendigkeit: eine gemeldete Teilkomponente macht die kurzfris
   // (b) Sobald die laufende Tranche gemeldet ist, ist die Summe vollstaendig.
   //     Von Hand: 300 (ShortTermBorrowings) + 100 (LongTermDebtCurrent) = 400;
   //     OWC = (400 − 100) − (500 − 400) = 200 ⇒ Quote +20 %.
-  const mjB = importSecFacts(secFactsWithDebt({
+  const mjB = importSecFacts(secFactsWithDebt(fullyDocumented({
     LongTermDebtNoncurrent: secInst(allYears(600)),
     LongTermDebtCurrent:    secInst(allYears(100)),
     ShortTermBorrowings:    secInst(allYears(300))
-  }));
+  })));
   eqSeries(mjB.fundamentals.total_debt, [1000, 1000, 1000, 1000]);
   const hB = S._computeOwcHistory(mjB.fundamentals);
   assert.equal(hB.years.length, 4);
@@ -830,10 +839,10 @@ test('R12 A-4/Vollstaendigkeit: eine gemeldete Teilkomponente macht die kurzfris
 
   // (c) `DebtCurrent` deckt die kurzfristige Schuld als GANZES ab — auch ohne
   //     getrennte Aufschluesselung ist sie damit vollstaendig bestimmt.
-  const mjC = importSecFacts(secFactsWithDebt({
+  const mjC = importSecFacts(secFactsWithDebt(noNoncurrentLeases({
     LongTermDebtNoncurrent: secInst(allYears(700)),
     DebtCurrent:            secInst(allYears(300))
-  }));
+  })));
   const hC = S._computeOwcHistory(mjC.fundamentals);
   assert.equal(hC.years.length, 4);
   assert.equal(hC.years[0].shortTermDebt, 300);
@@ -842,10 +851,10 @@ test('R12 A-4/Vollstaendigkeit: eine gemeldete Teilkomponente macht die kurzfris
 
   // (d) Dieselbe Angabe nur fuer das aktuelle Jahr: die Vorjahre sind
   //     unbekannt und werden nicht als 0 gefuehrt.
-  const mjD = importSecFacts(secFactsWithDebt({
+  const mjD = importSecFacts(secFactsWithDebt(noNoncurrentLeases({
     LongTermDebtNoncurrent: secInst(allYears(700)),
     DebtCurrent:            secInst({ 2025: 300 })
-  }));
+  })));
   const hD = S._computeOwcHistory(mjD.fundamentals);
   assert.equal(hD.years.length, 1, 'nur das belegte Jahr');
   assert.equal(hD.years[0].shortTermDebt, 300);
@@ -853,10 +862,10 @@ test('R12 A-4/Vollstaendigkeit: eine gemeldete Teilkomponente macht die kurzfris
 
   // (e) Angabe nur fuer AELTERE Jahre (stale): fuer den aktuellen Stichtag
   //     liegt nichts vor ⇒ keine Historie, keine Ersatzquote.
-  const mjE = importSecFacts(secFactsWithDebt({
+  const mjE = importSecFacts(secFactsWithDebt(noNoncurrentLeases({
     LongTermDebtNoncurrent: secInst(allYears(700)),
     DebtCurrent:            secInst({ 2024: 300, 2023: 300, 2022: 300 })
-  }));
+  })));
   const hE = S._computeOwcHistory(mjE.fundamentals);
   assert.equal(hE.years.length, 0);
   const owcE = S._resolveOwcForForecast(mjE);
@@ -878,14 +887,14 @@ test('R13 O-1: `LongTermDebt` als Noncurrent-Fallback zaehlt die laufenden Faell
 
   // Wirtschaftlich EIN Sachverhalt, zwei zulaessige Tag-Darstellungen:
   //   langfristige Schulden gesamt 1.000, davon 100 laufende Faelligkeiten.
-  const viaTotal = importSecFacts(secFactsWithDebt({
+  const viaTotal = importSecFacts(secFactsWithDebt(fullyDocumented({
     LongTermDebt:        secInst(allYears(1000)),
     LongTermDebtCurrent: secInst(allYears(100))
-  }));
-  const viaSplit = importSecFacts(secFactsWithDebt({
+  })));
+  const viaSplit = importSecFacts(secFactsWithDebt(fullyDocumented({
     LongTermDebtNoncurrent: secInst(allYears(900)),
     LongTermDebtCurrent:    secInst(allYears(100))
-  }));
+  })));
   assert.equal(viaTotal.fundamentals.debt_long_term_noncurrent[0], 1000, 'Fallback greift wie beschrieben');
   eqSeries(viaTotal.fundamentals.total_debt, [1000, 1000, 1000, 1000],
     'kein Doppelzaehlen der laufenden Faelligkeiten (frueher 1.100)');
@@ -899,16 +908,16 @@ test('R13 O-1: `LongTermDebt` als Noncurrent-Fallback zaehlt die laufenden Faell
   assert.equal(S._computeOwcHistory(viaSplit.fundamentals).years[0].shortTermDebt, 100);
 
   // Mit zusaetzlichen kurzfristigen Bankschulden (50) — wahre Gesamtschuld 1.050.
-  const stTotal = importSecFacts(secFactsWithDebt({
+  const stTotal = importSecFacts(secFactsWithDebt(fullyDocumented({
     LongTermDebt:        secInst(allYears(1000)),
     LongTermDebtCurrent: secInst(allYears(100)),
     ShortTermBorrowings: secInst(allYears(50))
-  }));
-  const stSplit = importSecFacts(secFactsWithDebt({
+  })));
+  const stSplit = importSecFacts(secFactsWithDebt(fullyDocumented({
     LongTermDebtNoncurrent: secInst(allYears(900)),
     LongTermDebtCurrent:    secInst(allYears(100)),
     ShortTermBorrowings:    secInst(allYears(50))
-  }));
+  })));
   eqSeries(stTotal.fundamentals.total_debt, [1050, 1050, 1050, 1050]);
   eqSeries(stSplit.fundamentals.total_debt, [1050, 1050, 1050, 1050]);
   assert.equal(S._computeOwcHistory(stTotal.fundamentals).years[0].shortTermDebt, 150);
@@ -916,11 +925,11 @@ test('R13 O-1: `LongTermDebt` als Noncurrent-Fallback zaehlt die laufenden Faell
 
   // Gegenprobe zur Ueberschneidung auf der kurzfristigen Seite:
   // us-gaap:DebtCurrent enthaelt die laufenden Faelligkeiten bereits.
-  const viaDebtCurrent = importSecFacts(secFactsWithDebt({
+  const viaDebtCurrent = importSecFacts(secFactsWithDebt(noNoncurrentLeases({
     LongTermDebtNoncurrent: secInst(allYears(900)),
     LongTermDebtCurrent:    secInst(allYears(100)),
     DebtCurrent:            secInst(allYears(150))   // = 50 Bank + 100 laufend
-  }));
+  })));
   eqSeries(viaDebtCurrent.fundamentals.total_debt, [1050, 1050, 1050, 1050],
     'DebtCurrent deckt die laufende Tranche ab — keine Doppelzaehlung');
   assert.equal(S._computeOwcHistory(viaDebtCurrent.fundamentals).years[0].shortTermDebt, 150);
@@ -928,14 +937,19 @@ test('R13 O-1: `LongTermDebt` als Noncurrent-Fallback zaehlt die laufenden Faell
 
   // Nicht aufloesbare Ueberschneidung (DebtCurrent + LongTermDebt, laufende
   // Tranche nicht gemeldet): kein erfundener Summenwert, sondern ein Hinweis.
-  const unresolvable = importSecFacts(secFactsWithDebt({
+  const unresolvable = importSecFacts(secFactsWithDebt(noNoncurrentLeases({
     LongTermDebt: secInst(allYears(1000)),
     DebtCurrent:  secInst(allYears(150))
-  }));
+  })));
   eqSeries(unresolvable.fundamentals.total_debt, [1000, 1000, 1000, 1000],
     'direkter Wert bleibt stehen, keine Summe aus ueberschneidenden Tags');
-  assert.ok((unresolvable.meta._debt_warnings || []).some(w => /Ueberschneidung nicht aufloesbar/.test(w)),
+  // V1.0.61: Die Ueberschneidung zeigt sich als Unterbestimmtheit des
+  // Gleichungssystems — inhaltlich derselbe Befund, praezisere Begruendung.
+  assert.ok((unresolvable.meta._debt_warnings || [])
+    .some(w => /Gesamtverschuldung nicht bestimmt/.test(w)),
     JSON.stringify(unresolvable.meta._debt_warnings));
+  assert.equal(unresolvable.fundamentals._v4_meta.total_debt.scopeComplete, false);
+  assert.equal(S._resolveNetDebtForDcfBridge(unresolvable.fundamentals).available, false);
 });
 
 test('R14 O-2: Working-Capital-Historie verknuepft periodengetreu, nicht ueber den Array-Index', () => {
@@ -1009,18 +1023,18 @@ test('R15 O-1/A-4: gleiche Bilanz, verschiedene zulaessige Tags ⇒ gleiche Bewe
   // Aufteilung. Ersetzt durch `DebtCurrent`, das die kurzfristige Schuld als
   // Ganzes ausweist.)
   const variants = {
-    'Noncurrent 700 + LongTermDebtCurrent 300': {
+    'Noncurrent 700 + LongTermDebtCurrent 300': fullyDocumented({
       LongTermDebtNoncurrent: secInst(allYears(700)),
       LongTermDebtCurrent:    secInst(allYears(300))
-    },
-    'LongTermDebt 1000 (gesamt) + LongTermDebtCurrent 300': {
+    }),
+    'LongTermDebt 1000 (gesamt) + LongTermDebtCurrent 300': fullyDocumented({
       LongTermDebt:        secInst(allYears(1000)),
       LongTermDebtCurrent: secInst(allYears(300))
-    },
-    'Noncurrent 700 + DebtCurrent 300': {
+    }),
+    'Noncurrent 700 + DebtCurrent 300': noNoncurrentLeases({
       LongTermDebtNoncurrent: secInst(allYears(700)),
       DebtCurrent:            secInst(allYears(300))
-    }
+    })
   };
   const results = {};
   for (const [name, tags] of Object.entries(variants)) {
@@ -1074,7 +1088,7 @@ test('R16 Schuldenumfang: LongTermDebtAndCapitalLeaseObligations − LongTermDeb
   assert.equal(h.years.length, 0,
     'die Differenz 300 darf keine kurzfristige Finanzschuld erzeugen');
   const reason = h.missing.join(' | ');
-  assert.ok(/unvollständig/.test(reason), reason);
+  assert.ok(/nicht bestimmt/.test(reason), reason);
   assert.ok(/laufende Fälligkeiten/.test(reason), reason);
   assert.ok(/Leasingverpflichtungen/.test(reason), reason);
 
@@ -1084,13 +1098,26 @@ test('R16 Schuldenumfang: LongTermDebtAndCapitalLeaseObligations − LongTermDeb
   assert.equal(owc.assumptionRequired, true);
   assert.equal(owc.setBy, 'model_provisional_default');
 
-  // Grenze dieses Schrittes, ausdruecklich gekennzeichnet: der Wert bleibt als
-  // Gesamtverschuldung in Gebrauch (sonst waere die haeufigste zulaessige
-  // Darstellung nicht bewertbar), ist aber als moeglicherweise unvollstaendig
-  // ausgewiesen — nicht ungekennzeichnet.
-  assert.equal(f._v4_meta.total_debt.scopeNoncurrentOnly, true);
-  assert.ok((mj.meta._debt_warnings || []).some(w => /nur langfristig klassifizierte/.test(w)),
-    JSON.stringify(mj.meta._debt_warnings));
+  // BERICHTIGT in Korrekturchat 12B.2: In V1.0.60 blieb der rein langfristige
+  // Teilbetrag ausdruecklich als Gesamtschuld in Gebrauch — begruendet damit,
+  // der Fall waere sonst nicht bewertbar. Das ist keine zulaessige Ausnahme:
+  // ein nachweislicher Teilbetrag ist keine Gesamtschuld. Die blosze Warnung
+  // ersetzt den Nichtverfuegbarkeitsstatus nicht.
+  assert.equal(f._v4_meta.total_debt.scopeComplete, false,
+    'der Teilbetrag ist nicht als Gesamtschuld belegt');
+  const ndR16 = S._resolveNetDebtForDcfBridge(f);
+  assert.equal(ndR16.available, false, 'Nettoschuldenbruecke gesperrt');
+  assert.equal(ndR16.netDebtM, null);
+  const rR16 = S.modelDcf(mj, scOf(8, 2, 10, 20));
+  assert.equal(rR16.applicable, false);
+  assert.equal(rR16.base, null);
+  assert.ok(rR16._operatingValuePerShareBase > 0,
+    'der operative Unternehmenswert bleibt getrennt verfuegbar');
+  // Eine manuelle OWC-Annahme loest die unklare Gesamtschuld NICHT auf.
+  const mjOv = JSON.parse(JSON.stringify(mj));
+  mjOv.valuation.assumptions = { owc_pct_of_revenue: { value: 12 } };
+  assert.equal(S.modelDcf(mjOv, scOf(8, 2, 10, 20)).applicable, false,
+    'manuelle OWC-Annahme ersetzt die fehlende Schuldenbasis nicht');
 
   // Gegenprobe: dieselbe Bilanz mit ausgewiesenem Leasing. Langfristiges
   // Leasing (300) gehoert NICHT ins Working Capital, kurzfristiges (40) schon.
@@ -1099,7 +1126,8 @@ test('R16 Schuldenumfang: LongTermDebtAndCapitalLeaseObligations − LongTermDeb
     LongTermDebtNoncurrent:          secInst(allYears(700)),
     FinanceLeaseLiabilityNoncurrent: secInst(allYears(300)),
     FinanceLeaseLiabilityCurrent:    secInst(allYears(40)),
-    LongTermDebtCurrent:             secInst(allYears(0))
+    LongTermDebtCurrent:             secInst(allYears(0)),
+    ShortTermBorrowings:             secInst(allYears(0))
   }));
   const h2 = S._computeOwcHistory(mj2.fundamentals);
   assert.equal(h2.years.length, 4);
@@ -1123,15 +1151,15 @@ test('R17 Leasing: eine zusaetzliche Aufschluesselung veraendert Schulden, OWC u
              owcRatio: h.years[0] && h.years[0].ratio,
              netDebtM: nd.netDebtM, fairValue: r.base };
   };
-  const ohne = mess({
+  const ohne = mess(noNoncurrentLeases({
     LongTermDebtNoncurrent: secInst(allYears(700)),
     DebtCurrent:            secInst(allYears(300))
-  });
-  const mit = mess({
+  }));
+  const mit = mess(noNoncurrentLeases({
     LongTermDebtNoncurrent:       secInst(allYears(700)),
     DebtCurrent:                  secInst(allYears(300)),
     FinanceLeaseLiabilityCurrent: secInst(allYears(50))   // in DebtCurrent enthalten
-  });
+  }));
   assert.equal(ohne.totalDebt, 1000);
   assert.equal(ohne.shortTermDebt, 300);
   assert.equal(ohne.owcRatio, 0.10);
@@ -1143,21 +1171,22 @@ test('R17 Leasing: eine zusaetzliche Aufschluesselung veraendert Schulden, OWC u
   // ShortTermBorrowings {stBorrow} + LongTermDebtCurrent {ltCurMat}
   // + FinanceLeaseLiabilityCurrent {leaseCur} = 300 + 100 + 50 = 450.
   const disjunkt = mess({
-    LongTermDebtNoncurrent:       secInst(allYears(700)),
-    ShortTermBorrowings:          secInst(allYears(300)),
-    LongTermDebtCurrent:          secInst(allYears(100)),
-    FinanceLeaseLiabilityCurrent: secInst(allYears(50))
+    LongTermDebtNoncurrent:          secInst(allYears(700)),
+    ShortTermBorrowings:             secInst(allYears(300)),
+    LongTermDebtCurrent:             secInst(allYears(100)),
+    FinanceLeaseLiabilityCurrent:    secInst(allYears(50)),
+    FinanceLeaseLiabilityNoncurrent: secInst(allYears(0))
   });
   assert.equal(disjunkt.shortTermDebt, 450);
   assert.equal(disjunkt.totalDebt, 1150);
   assert.equal(disjunkt.netDebtM, 1050);
 
   // Gegenprobe 2: ausdrueckliche Null in der Aufschluesselung aendert nichts.
-  const mitNull = mess({
+  const mitNull = mess(noNoncurrentLeases({
     LongTermDebtNoncurrent:       secInst(allYears(700)),
     DebtCurrent:                  secInst(allYears(300)),
     FinanceLeaseLiabilityCurrent: secInst(allYears(0))
-  });
+  }));
   assert.deepEqual(mitNull, ohne);
 
   // Gegenprobe 3: fehlende Aufschluesselung bei vorhandenem LANGFRISTIGEM
@@ -1175,13 +1204,14 @@ test('R17 Leasing: eine zusaetzliche Aufschluesselung veraendert Schulden, OWC u
 
   // Gegenprobe 4: widerspruechliche Komponenten — DebtCurrent neben
   // LongTermDebt, die sich in der laufenden Tranche ueberschneiden.
-  const widerspruch = importSecFacts(secFactsWithDebt({
+  const widerspruch = importSecFacts(secFactsWithDebt(noNoncurrentLeases({
     LongTermDebt: secInst(allYears(1000)),
     DebtCurrent:  secInst(allYears(150))
-  }));
+  })));
   assert.ok((widerspruch.meta._debt_warnings || [])
-    .some(w => /nicht aufloesbar/.test(w)),
+    .some(w => /Gesamtverschuldung nicht bestimmt/.test(w)),
     JSON.stringify(widerspruch.meta._debt_warnings));
+  assert.equal(S._resolveNetDebtForDcfBridge(widerspruch.fundamentals).available, false);
 });
 
 test('R18 unklare Gesamtschulden ergeben keine verfuegbare Nettoschuldenbruecke', () => {
@@ -1190,19 +1220,20 @@ test('R18 unklare Gesamtschulden ergeben keine verfuegbare Nettoschuldenbruecke'
   // Hoehe ist nicht gemeldet ⇒ die Gesamtschuld liegt irgendwo zwischen 1.000
   // und 1.150. V1.0.59 liess total_debt = 1.000 ungekennzeichnet stehen und
   // meldete netDebtM = 900 als verfuegbar.
-  const mj = importSecFacts(secFactsWithDebt({
+  const mj = importSecFacts(secFactsWithDebt(noNoncurrentLeases({
     LongTermDebt: secInst(allYears(1000)),
     DebtCurrent:  secInst(allYears(150))
-  }));
+  })));
   const f = mj.fundamentals;
-  assert.equal(f._v4_meta.total_debt.scopeIndeterminate, true,
+  assert.equal(f._v4_meta.total_debt.scopeComplete, false,
     'der Teilbetrag ist als solcher gekennzeichnet');
+  assert.equal(f._v4_meta.total_debt.scopeIndeterminate, true);
   assert.ok(f._v4_meta.total_debt.scopeIndeterminateReason);
 
   const nd = S._resolveNetDebtForDcfBridge(f);
   assert.equal(nd.available, false, 'Nettoschuldenbruecke gesperrt');
   assert.equal(nd.netDebtM, null);
-  assert.ok(/nicht ueberschneidungsfrei/.test(nd.reason || ''), nd.reason);
+  assert.ok(/bestimmen die Gesamtverschuldung nicht/.test(nd.reason || ''), nd.reason);
   // Ein bereits ABGELEITETES net_debt darf die Sperre nicht umgehen.
   assert.ok(Array.isArray(f.net_debt) && f.net_debt[0] != null,
     'die abgeleitete Reihe existiert weiterhin');
@@ -1232,10 +1263,10 @@ test('R18 unklare Gesamtschulden ergeben keine verfuegbare Nettoschuldenbruecke'
     'Monte Carlo liefert keinen Median: ' + JSON.stringify(mc && mc.median));
 
   // Eigenstaendig belegte Nettoschulden bleiben ausdruecklich zulaessig.
-  const manuell = importSecFacts(secFactsWithDebt({
+  const manuell = importSecFacts(secFactsWithDebt(noNoncurrentLeases({
     LongTermDebt: secInst(allYears(1000)),
     DebtCurrent:  secInst(allYears(150))
-  }));
+  })));
   manuell.fundamentals.net_debt = [850, 850, 850, 850];
   manuell.fundamentals._v4_meta.net_debt = {
     source_type: 'reported', source_reference: 'manuelle Angabe', confidence: 'high'
@@ -1245,11 +1276,11 @@ test('R18 unklare Gesamtschulden ergeben keine verfuegbare Nettoschuldenbruecke'
   assert.equal(ndM.netDebtM, 850);
 
   // Gegenprobe: ohne Ueberschneidung bleibt alles verfuegbar.
-  const klar = importSecFacts(secFactsWithDebt({
+  const klar = importSecFacts(secFactsWithDebt(noNoncurrentLeases({
     LongTermDebtNoncurrent: secInst(allYears(1000)),
     DebtCurrent:            secInst(allYears(150))
-  }));
-  assert.notEqual(klar.fundamentals._v4_meta.total_debt.scopeIndeterminate, true);
+  })));
+  assert.equal(klar.fundamentals._v4_meta.total_debt.scopeComplete, true);
   assert.equal(S._resolveNetDebtForDcfBridge(klar.fundamentals).available, true);
   assert.equal(S.modelDcf(klar, scOf(8, 2, 10, 20)).applicable, true);
 });
@@ -1410,4 +1441,385 @@ test('B8 BEFUND: Buyback-MoS-Zuschlag greift im Mid-Cycle-Pfad nie', () => {
   const modelResults = { dcf_midcycle: r };
   const gefunden = modelResults['dcf'] || modelResults['DCF'];
   assert.equal(gefunden, undefined, 'BEFUND A-7: Zuschlag bleibt aus');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// R21–R25 (Regression, Korrekturchat 12B.2) — die fuenf Restbefunde nach
+// 12B.1. Erwartungswerte unabhaengig nachgerechnet.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Bewertungsgroeszen eines Datensatzes in einem Griff.
+const messen = (tags) => {
+  const mj = importSecFacts(secFactsWithDebt(tags));
+  const f  = mj.fundamentals;
+  const h  = S._computeOwcHistory(f);
+  const nd = S._resolveNetDebtForDcfBridge(f);
+  const r  = S.modelDcf(mj, scOf(8, 2, 10, 20));
+  return {
+    mj, f,
+    totalDebt: (f.total_debt && f.total_debt[0] != null) ? f.total_debt[0] : null,
+    scopeComplete: (f._v4_meta.total_debt || {}).scopeComplete,
+    shortTermDebt: h.years[0] ? h.years[0].shortTermDebt : null,
+    owcRatio: h.years[0] ? h.years[0].ratio : null,
+    ndAvailable: nd.available, netDebtM: nd.netDebtM, ndReason: nd.reason || null,
+    applicable: r.applicable, fairValue: r.base,
+    operPerShare: r._operatingValuePerShareBase
+  };
+};
+
+test('R21 zusammengefasste langfristige Betraege werden vollstaendig einbezogen', () => {
+  // Wirtschaftlich EINE Bilanz in zwei zulaessigen Darstellungen.
+  // Von Hand: noncurrent Schulden 700 + noncurrent Leasing 300 + kurzfristig
+  // gesamt 300 = 1.300; Zahlungsmittel 100 ⇒ Nettoschulden 1.200.
+  // V1.0.60 bildete in Darstellung A nur 1.000 (Nettoschulden 900,
+  // Fair Value ~19,61913), weil der direkte, zusammengefasste Betrag nicht
+  // als Evidenz zaehlte, sondern nur als Vergleichswert.
+  const A = messen({
+    LongTermDebtAndCapitalLeaseObligations: secInst(allYears(1000)),
+    DebtCurrent:                            secInst(allYears(300))
+  });
+  const B = messen({
+    LongTermDebtNoncurrent:          secInst(allYears(700)),
+    FinanceLeaseLiabilityNoncurrent: secInst(allYears(300)),
+    DebtCurrent:                     secInst(allYears(300))
+  });
+  assert.equal(A.totalDebt, 1300, 'disjunkte current- und noncurrent-Angaben werden zusammengefuehrt');
+  assert.equal(A.netDebtM, 1200);
+  assert.equal(A.shortTermDebt, 300);
+  assert.equal(A.owcRatio, 0.10);
+  assert.equal(A.scopeComplete, true);
+  assert.ok(Math.abs(A.fairValue - 16.61913) < 1e-4, 'Fair Value ' + A.fairValue);
+  for (const k of ['totalDebt', 'netDebtM', 'shortTermDebt', 'owcRatio', 'applicable', 'fairValue']) {
+    assert.deepEqual(B[k], A[k], 'Darstellung B weicht in ' + k + ' ab: ' + B[k] + ' vs. ' + A[k]);
+  }
+
+  // Ein direkt gemeldeter VOLLSTAENDIGER Gesamtbetrag mit ergaenzenden
+  // Aufschluesselungen darf nicht doppelt zaehlen.
+  const redundant = messen({
+    LongTermDebtAndCapitalLeaseObligations: secInst(allYears(1000)),
+    DebtCurrent:                            secInst(allYears(300)),
+    LongTermDebtNoncurrent:                 secInst(allYears(700)),
+    FinanceLeaseLiabilityNoncurrent:        secInst(allYears(300))
+  });
+  assert.equal(redundant.totalDebt, 1300, 'kein Doppelzaehlen durch redundante Aufschluesselung');
+  assert.equal(redundant.netDebtM, 1200);
+  assert.equal(redundant.shortTermDebt, 300);
+
+  // Eine unvollstaendige Komponentensumme ersetzt den vollstaendigeren Betrag
+  // nicht und verdeckt die fehlende Ergaenzung nicht.
+  const nurNoncurrent = messen({
+    LongTermDebtAndCapitalLeaseObligations: secInst(allYears(1000)),
+    LongTermDebtNoncurrent:                 secInst(allYears(700))
+  });
+  assert.equal(nurNoncurrent.scopeComplete, false);
+  assert.equal(nurNoncurrent.ndAvailable, false);
+});
+
+test('R22 TTM umgeht die Schuldensperre nicht und uebernimmt den Tag nicht blind', () => {
+  // (a) Die Unklarheit bleibt am TTM-Stichtag bestehen ⇒ weiterhin gesperrt.
+  const mjA = importSecFacts(secQuarterlyFactsWithDebt(noNoncurrentLeases({
+    LongTermDebt: secQInst(qAllYears(1000)),
+    DebtCurrent:  secQInst(qAllYears(150))
+  })));
+  assert.equal(S._resolveNetDebtForDcfBridge(mjA.fundamentals).available, false,
+    'Jahressicht sperrt');
+  const vA = ttmViewOf(mjA);
+  assert.equal(vA.resolved.basis, 'ttm');
+  assert.notEqual(vA.view, mjA, 'eine TTM-Sicht ist entstanden');
+  const fA = vA.view.fundamentals;
+  assert.equal(fA._v4_meta.total_debt.scopeComplete, false,
+    'die Sicht bestimmt den Umfang fuer IHREN Stichtag — und er bleibt offen');
+  assert.equal(S._resolveNetDebtForDcfBridge(fA).available, false,
+    'die TTM-Sicht umgeht die Sperre nicht');
+  // Ein neu abgeleitetes net_debt darf die Sperre ebenfalls nicht umgehen.
+  assert.deepEqual(Array.from(fA.net_debt || []), [],
+    'kein abgeleitetes net_debt bei unbelegtem Umfang');
+  assert.equal(fA._v4_meta.net_debt.source_type, 'unavailable');
+  assert.equal(S.modelDcf(vA.view, scOf(8, 2, 10, 20)).applicable, false);
+
+  // (b) Zusaetzliche periodengleiche Quartalsangaben loesen sie auf.
+  //     Von Hand: 1.000 + 150 − 100 (bekannte Ueberschneidung) = 1.050;
+  //     Zahlungsmittel 100 ⇒ Nettoschulden 950.
+  const mjB = importSecFacts(secQuarterlyFactsWithDebt(noNoncurrentLeases({
+    LongTermDebt:        secQInst(qAllYears(1000)),
+    DebtCurrent:         secQInst(qAllYears(150)),
+    LongTermDebtCurrent: secQInst(qAllYears(100))
+  })));
+  const vB = ttmViewOf(mjB);
+  const fB = vB.view.fundamentals;
+  assert.equal(fB._v4_meta.total_debt.scopeComplete, true,
+    'die FY-Sperre wird nicht pauschal kopiert — neue Quartalsangaben loesen sie auf');
+  assert.equal(fB.total_debt[0], 1050);
+  const ndB = S._resolveNetDebtForDcfBridge(fB);
+  assert.equal(ndB.available, true);
+  assert.equal(ndB.netDebtM, 950);
+  assert.equal(S.modelDcf(vB.view, scOf(8, 2, 10, 20)).applicable, true);
+
+  // (c) Herkunft: die Sicht nennt den Tag der QUARTALSDATEN, nicht den der
+  //     Jahresreihe. In (b) traegt die Jahresreihe nach dem Rebuild gar keinen
+  //     Tag mehr — blind uebernommen waere die Herkunft verloren.
+  assert.equal(fB._v4_meta.total_debt.source_tag, 'LongTermDebt');
+  assert.equal(fB._v4_meta.total_debt.source_tag_inherited, false);
+  assert.equal(S._secSourceTag(mjB.fundamentals._v4_meta.total_debt), null,
+    'die Jahresreihe traegt nach dem Rebuild keinen Tag');
+
+  // Fehlende TTM-Komponenten werden nicht still aus Jahresdaten ergaenzt:
+  // die kurzfristige Reihe der Sicht traegt TTM-Stichtage, keine Jahresenden.
+  assert.equal(fB._v4_meta.debt_short_term.period_type, 'Stichtag');
+  assert.ok(Array.isArray(fB._v4_meta.debt_short_term.periods));
+});
+
+test('R23 noncurrent-Teilbetraege sind keine vollstaendige Gesamtschuld', () => {
+  // BERICHTIGT gegenueber 12B.1: dort blieb der rein langfristige Teilbetrag
+  // ausdruecklich als Gesamtschuld in Gebrauch, begruendet damit, der Fall
+  // waere sonst nicht bewertbar. Das ist keine zulaessige Ausnahme.
+  const nur = messen({ LongTermDebtAndCapitalLeaseObligations: secInst(allYears(1000)) });
+  assert.equal(nur.scopeComplete, false);
+  assert.equal(nur.ndAvailable, false, 'keine Nettoschulden aus einem Teilbetrag');
+  assert.equal(nur.netDebtM, null);
+  assert.equal(nur.applicable, false);
+  assert.equal(nur.fairValue, null);
+  assert.ok(nur.operPerShare > 0, 'der operative Unternehmenswert bleibt separat verfuegbar');
+
+  // Ergaenzung nur bei periodengleicher Bestimmung des fehlenden Umfangs.
+  const ergaenzt = messen({
+    LongTermDebtAndCapitalLeaseObligations: secInst(allYears(1000)),
+    DebtCurrent:                            secInst(allYears(300))
+  });
+  assert.equal(ergaenzt.scopeComplete, true);
+  assert.equal(ergaenzt.netDebtM, 1200);
+  // Eine Angabe zu einem ANDEREN Stichtag ergaenzt nichts.
+  const stale = messen({
+    LongTermDebtAndCapitalLeaseObligations: secInst(allYears(1000)),
+    DebtCurrent:                            secInst({ 2024: 300, 2023: 300, 2022: 300 })
+  });
+  assert.equal(stale.scopeComplete, false);
+  assert.equal(stale.ndAvailable, false);
+
+  // Fehlende Angaben sind nicht deshalb Null, weil kein Tag gefunden wurde.
+  // Ausdrueckliche Nullwerte funktionieren dagegen weiterhin.
+  const explizitNull = messen({
+    LongTermDebtAndCapitalLeaseObligations: secInst(allYears(1000)),
+    DebtCurrent:                            secInst(allYears(0))
+  });
+  assert.equal(explizitNull.scopeComplete, true);
+  assert.equal(explizitNull.totalDebt, 1000);
+  assert.equal(explizitNull.netDebtM, 900);
+  assert.equal(explizitNull.shortTermDebt, 0);
+
+  // Ein eigenstaendig belegter vollstaendiger Gesamtbetrag genuegt allein.
+  const gesamt = messen({ DebtAndCapitalLeaseObligations: secInst(allYears(1300)) });
+  assert.equal(gesamt.scopeComplete, true);
+  assert.equal(gesamt.netDebtM, 1200);
+
+  // Manuelle OWC-Annahme loest die unklare Gesamtschuld NICHT auf.
+  const mjOv = JSON.parse(JSON.stringify(nur.mj));
+  mjOv.valuation.assumptions = { owc_pct_of_revenue: { value: 12 } };
+  assert.equal(S.modelDcf(mjOv, scOf(8, 2, 10, 20)).applicable, false);
+
+  // Ausdruecklich manuell gesetzte Nettoschulden bleiben zulaessig.
+  const mjNd = JSON.parse(JSON.stringify(nur.mj));
+  mjNd.fundamentals.net_debt = [880, 880, 880, 880];
+  mjNd.fundamentals._v4_meta.net_debt = {
+    source_type: 'reported', source_reference: 'manuelle Angabe', confidence: 'high'
+  };
+  const ndM = S._resolveNetDebtForDcfBridge(mjNd.fundamentals);
+  assert.equal(ndM.available, true);
+  assert.equal(ndM.netDebtM, 880);
+});
+
+test('R24 bekannte Ueberschneidungen werden aufgeloest statt gesperrt', () => {
+  // us-gaap:LongTermDebt {laufende Tranche + langfristig} und DebtCurrent
+  // {kurzfristig gesamt} ueberschneiden sich in der laufenden Tranche. Ist
+  // LongTermDebtCurrent gemeldet, ist der gemeinsame Anteil BEKANNT:
+  // 1.000 + 150 − 100 = 1.050. Ohne Angabe zum langfristigen Leasing bleibt
+  // die Gesamtschuld allerdings ohnehin offen — der Fall wird deshalb mit
+  // einer ausdruecklichen Null dafuer geprueft.
+  const geloest = messen(noNoncurrentLeases({
+    LongTermDebt:        secInst(allYears(1000)),
+    DebtCurrent:         secInst(allYears(150)),
+    LongTermDebtCurrent: secInst(allYears(100))
+  }));
+  assert.equal(geloest.scopeComplete, true);
+  assert.equal(geloest.totalDebt, 1050);
+  assert.equal(geloest.netDebtM, 950);
+  assert.equal(geloest.shortTermDebt, 150);
+  assert.equal(geloest.applicable, true);
+
+  // Reihenfolge und zusaetzliche redundante Aufschluesselungen aendern nichts.
+  const andereReihenfolge = messen(noNoncurrentLeases({
+    LongTermDebtCurrent: secInst(allYears(100)),
+    DebtCurrent:         secInst(allYears(150)),
+    LongTermDebt:        secInst(allYears(1000))
+  }));
+  assert.equal(andereReihenfolge.totalDebt, 1050);
+  assert.equal(andereReihenfolge.netDebtM, 950);
+
+  // Zusaetzlich kurzfristiges Leasing, das in DebtCurrent bereits enthalten ist.
+  const mitLeasing = messen(noNoncurrentLeases({
+    LongTermDebt:                 secInst(allYears(1000)),
+    DebtCurrent:                  secInst(allYears(150)),
+    LongTermDebtCurrent:          secInst(allYears(100)),
+    FinanceLeaseLiabilityCurrent: secInst(allYears(30))
+  }));
+  assert.equal(mitLeasing.totalDebt, 1050, 'kein Doppelzaehlen des kurzfristigen Leasings');
+  assert.equal(mitLeasing.netDebtM, 950);
+  assert.equal(mitLeasing.shortTermDebt, 150);
+
+  // Gegenprobe ohne LongTermDebtCurrent: die Ueberschneidung bleibt unbekannt.
+  const offen = messen(noNoncurrentLeases({
+    LongTermDebt: secInst(allYears(1000)),
+    DebtCurrent:  secInst(allYears(150))
+  }));
+  assert.equal(offen.scopeComplete, false);
+  assert.equal(offen.ndAvailable, false);
+  assert.equal(offen.applicable, false);
+
+  // Eine anderweitige Datenluecke wird getrennt benannt und nicht faelschlich
+  // als unbekannte Ueberschneidung bezeichnet: hier fehlt das langfristige
+  // Leasing, die Ueberschneidung ist dagegen bekannt.
+  const nurLeasingOffen = messen({
+    LongTermDebt:        secInst(allYears(1000)),
+    DebtCurrent:         secInst(allYears(150)),
+    LongTermDebtCurrent: secInst(allYears(100))
+  });
+  assert.equal(nurLeasingOffen.scopeComplete, false);
+  assert.ok(/[Ll]angfristige Leasingverpflichtungen/.test(
+    nurLeasingOffen.f._v4_meta.total_debt.scopeIndeterminateReason || ''),
+    nurLeasingOffen.f._v4_meta.total_debt.scopeIndeterminateReason);
+});
+
+test('R25 widerspruechliche Aufschluesselungen werden erkannt', () => {
+  // Ein enthaltener nichtnegativer Teilbetrag kann nicht groesser sein als die
+  // Gesamtheit: FinanceLeaseLiabilityCurrent 350 liegt in DebtCurrent 300.
+  // V1.0.60 uebersprang den Wert nur als "bereits enthalten"; OWC und
+  // Bewertung blieben ohne Widerspruchsmeldung verfuegbar.
+  const w = messen({
+    LongTermDebtNoncurrent:       secInst(allYears(700)),
+    DebtCurrent:                  secInst(allYears(300)),
+    FinanceLeaseLiabilityCurrent: secInst(allYears(350))
+  });
+  assert.equal(w.scopeComplete, false);
+  assert.equal(w.ndAvailable, false, 'keine gemessene Schuldenbasis bei offenem Widerspruch');
+  assert.equal(w.applicable, false);
+  assert.equal(w.shortTermDebt, null, 'auch das Working Capital erhaelt den Status');
+  assert.ok((w.mj.meta._debt_warnings || []).some(x => /nicht größer sein/.test(x)),
+    JSON.stringify(w.mj.meta._debt_warnings));
+
+  // Aufschluesselung, die der Gesamtangabe widerspricht, ohne dass eine
+  // einzelne Teilangabe sie uebersteigt: DebtCurrent 300 umfasst
+  // {Bankschulden, laufende Faelligkeiten, kurzfristiges Leasing}; gemeldet
+  // sind laufende Faelligkeiten 100 und kurzfristiges Leasing 250 — zusammen
+  // 350. Rechnerisch waeren die Bankschulden −50, also unmoeglich.
+  // (Ohne ShortTermBorrowings, weil die Tag-Kette von `debt_short_term` sonst
+  //  dieses statt DebtCurrent waehlt und der Widerspruch gar nicht entstuende.)
+  const gleich = messen({
+    LongTermDebtNoncurrent:          secInst(allYears(700)),
+    FinanceLeaseLiabilityNoncurrent: secInst(allYears(0)),
+    DebtCurrent:                     secInst(allYears(300)),
+    LongTermDebtCurrent:             secInst(allYears(100)),
+    FinanceLeaseLiabilityCurrent:    secInst(allYears(250))
+  });
+  assert.equal(gleich.scopeComplete, false);
+  assert.equal(gleich.ndAvailable, false);
+  assert.ok((gleich.mj.meta._debt_warnings || []).some(x => /unvereinbar/.test(x)),
+    JSON.stringify(gleich.mj.meta._debt_warnings));
+  // Keine willkuerliche Auswahl nach Reihenfolge oder groesserem Wert:
+  // weder 300 noch 350 wird stillschweigend uebernommen.
+  assert.equal(gleich.totalDebt, null);
+
+  // Konsistente Aufschluesselung und ausdrueckliche Null aendern nichts.
+  const ref = messen(noNoncurrentLeases({
+    LongTermDebtNoncurrent: secInst(allYears(700)),
+    DebtCurrent:            secInst(allYears(300))
+  }));
+  const konsistent = messen(noNoncurrentLeases({
+    LongTermDebtNoncurrent:       secInst(allYears(700)),
+    DebtCurrent:                  secInst(allYears(300)),
+    FinanceLeaseLiabilityCurrent: secInst(allYears(50))
+  }));
+  const mitNull = messen(noNoncurrentLeases({
+    LongTermDebtNoncurrent:       secInst(allYears(700)),
+    DebtCurrent:                  secInst(allYears(300)),
+    FinanceLeaseLiabilityCurrent: secInst(allYears(0))
+  }));
+  assert.equal(ref.totalDebt, 1000);
+  assert.equal(ref.netDebtM, 900);
+  for (const k of ['totalDebt', 'netDebtM', 'shortTermDebt', 'owcRatio', 'fairValue']) {
+    assert.deepEqual(konsistent[k], ref[k], 'konsistente Aufschluesselung aendert ' + k);
+    assert.deepEqual(mitNull[k], ref[k], 'ausdrueckliche Null aendert ' + k);
+  }
+
+  // Zulaessige Rundung (0,01 % der groessten Angabe) bleibt zulaessig.
+  const rundung = messen(noNoncurrentLeases({
+    LongTermDebtNoncurrent:       secInst(allYears(700)),
+    DebtCurrent:                  secInst(allYears(300)),
+    FinanceLeaseLiabilityCurrent: secInst(allYears(300.05))
+  }));
+  assert.equal(rundung.scopeComplete, true, 'Rundung ist kein materieller Widerspruch');
+});
+
+test('R26 gesperrte DCF-Werte erhalten keine Gewichtung und keine Einstiegszone', () => {
+  // Echter Engine-/Synthesizer-Pfad.
+  const mj = importSecFacts(secFactsWithDebt({
+    LongTermDebtAndCapitalLeaseObligations: secInst(allYears(1000))
+  }), { price: 20 });
+  const v = S.runValuationEngine(mj);
+  const dcf = (v.modelResults || {}).dcf;
+  assert.ok(dcf, 'das DCF-Modell laeuft');
+  assert.equal(dcf.applicable, false);
+  assert.equal(dcf.base, null);
+  assert.equal(dcf._excludedFromSynthesis, true);
+  assert.ok(dcf._operatingValuePerShareBase > 0);
+
+  // SYNTHESIS_CONFIG ist eine Top-Level-Konstante und liegt nicht auf dem
+  // Sandbox-Objekt; sie wird im selben Kontext ausgewertet.
+  const CFG = evalInApp('SYNTHESIS_CONFIG');
+  const syn = S.runFairValueSynthesizer(mj, v, S.runQualityEngine(mj),
+    Object.assign({}, CFG, { _dqResult: S.computeDataQualityScore(mj) }));
+  const gewichtet = Array.isArray(syn && syn._modelWeightDiag)
+    ? syn._modelWeightDiag.some(d => d && d.model === 'dcf') : false;
+  assert.equal(gewichtet, false, 'der gesperrte DCF wird nicht gewichtet');
+
+  // Statusweitergabe an die uebrigen Wege.
+  assert.ok(S.modelDcfMidcycle(mj, S.buildScenarios(mj)).base == null,
+    'Mid-Cycle liefert keinen Eigenkapitalwert');
+  assert.notEqual(S.solveReverseDcfGrowth(mj, {}).status, 'ok');
+  const matrix = S.computeSensitivityMatrix(mj, v);
+  const zellen = (matrix && matrix.rows ? matrix.rows : []).flatMap(z => z.cells || []);
+  assert.equal(zellen.some(c => c && c.value != null), false);
+  const mc = S.runMonteCarloDcf(mj, v);
+  assert.ok(!mc || mc.ok !== true || mc.median == null);
+});
+
+test('R27 wiederholte Aufbereitung ist stabil', () => {
+  // Weder Warnungen vervielfachen sich noch bleiben ueberholte Sperren stehen.
+  const mj = importSecFacts(secFactsWithDebt({
+    LongTermDebtAndCapitalLeaseObligations: secInst(allYears(1000)),
+    DebtCurrent:                            secInst(allYears(300))
+  }));
+  const vorher = JSON.stringify(mj.fundamentals.total_debt);
+  const warnVorher = (mj.meta._debt_warnings || []).length;
+  S.applyDerivedFieldsV4(mj);
+  S.applyDerivedFieldsV4(mj);
+  assert.equal(JSON.stringify(mj.fundamentals.total_debt), vorher,
+    'die Gesamtschuld bleibt bei erneuter Aufbereitung gleich');
+  assert.equal(mj.fundamentals._v4_meta.total_debt.scopeComplete, true);
+  assert.equal((mj.meta._debt_warnings || []).length, warnVorher,
+    'keine vervielfachten Warnungen');
+
+  // Eine tatsaechlich behobene Datenluecke hebt die Sperre auf.
+  const luecke = importSecFacts(secFactsWithDebt({
+    LongTermDebtAndCapitalLeaseObligations: secInst(allYears(1000))
+  }));
+  assert.equal(luecke.fundamentals._v4_meta.total_debt.scopeComplete, false);
+  luecke.fundamentals.debt_short_term = [300, 300, 300, 300];
+  luecke.fundamentals._v4_meta.debt_short_term = {
+    source_type: 'reported', source_reference: 'SEC EDGAR XBRL: DebtCurrent',
+    confidence: 'high', periods: luecke.fundamentals._v4_meta.total_debt.periods.slice()
+  };
+  S.applyDerivedFieldsV4(luecke);
+  assert.equal(luecke.fundamentals._v4_meta.total_debt.scopeComplete, true,
+    'keine veraltete Sperre nach behobener Datenluecke');
+  assert.equal(S._resolveNetDebtForDcfBridge(luecke.fundamentals).netDebtM, 1200);
 });
