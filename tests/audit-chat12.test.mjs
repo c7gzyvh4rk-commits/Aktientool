@@ -1722,7 +1722,12 @@ test('R25 widerspruechliche Aufschluesselungen werden erkannt', () => {
   });
   assert.equal(gleich.scopeComplete, false);
   assert.equal(gleich.ndAvailable, false);
-  assert.ok((gleich.mj.meta._debt_warnings || []).some(x => /unvereinbar/.test(x)),
+  // V1.0.62 (Korrekturchat 12B.3): Derselbe Befund, praezisere Begruendung.
+  // Bis V1.0.61 fiel dieser Fall in die generische Meldung ueber einen
+  // negativen Zellwert („unvereinbar"); jetzt nennt die Pruefung auf disjunkte
+  // Teilangaben beide Bestandteile und die Gesamtangabe beim Namen.
+  assert.ok((gleich.mj.meta._debt_warnings || [])
+    .some(x => /uebersteigen zusammen|übersteigen zusammen|unvereinbar/.test(x)),
     JSON.stringify(gleich.mj.meta._debt_warnings));
   // Keine willkuerliche Auswahl nach Reihenfolge oder groesserem Wert:
   // weder 300 noch 350 wird stillschweigend uebernommen.
@@ -1822,4 +1827,220 @@ test('R27 wiederholte Aufbereitung ist stabil', () => {
   assert.equal(luecke.fundamentals._v4_meta.total_debt.scopeComplete, true,
     'keine veraltete Sperre nach behobener Datenluecke');
   assert.equal(S._resolveNetDebtForDcfBridge(luecke.fundamentals).netDebtM, 1200);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// R28–R31 (Regression, Korrekturchat 12B.3) — die Nichtnegativitaetspruefung
+// des gemeinsamen Schuldensolvers. Erwartungswerte von Hand nachgerechnet.
+// ═══════════════════════════════════════════════════════════════════════════
+
+test('R28 unmoegliche Schuldenaufteilung wird als Widerspruch erkannt', () => {
+  // Gesamtschulden 100, aber zwei DISJUNKTE langfristige Bestandteile
+  // 70 + 50 = 120. Es gibt keine nichtnegative Aufteilung: die kurzfristigen
+  // Bestandteile muessten zusammen −20 betragen.
+  // V1.0.61 akzeptierte das, weil keine EINZELNE Teilangabe groesser als die
+  // Gesamtangabe war: total_debt galt als vollstaendig, die kurzfristigen
+  // Finanzschulden wurden als −20 "measured" ausgegeben, die Referenzbilanz
+  // bekam eine OWC-Quote von −22 % und der DCF lieferte ~31,43082 je Aktie.
+  const w = messen({
+    DebtAndCapitalLeaseObligations:  secInst(allYears(100)),
+    LongTermDebtNoncurrent:          secInst(allYears(70)),
+    FinanceLeaseLiabilityNoncurrent: secInst(allYears(50))
+  });
+  assert.equal(w.scopeComplete, false, 'keine vollstaendige Gesamtschuld');
+  assert.equal(w.ndAvailable, false, 'Nettoschuldenbruecke gesperrt');
+  assert.equal(w.netDebtM, null);
+  assert.equal(w.applicable, false, 'kein Eigenkapitalwert');
+  assert.equal(w.fairValue, null);
+  assert.ok(w.operPerShare > 0, 'der operative Unternehmenswert bleibt getrennt verfuegbar');
+  // Keine gemessenen negativen Schulden und keine daraus gebildete Quote.
+  assert.equal(w.shortTermDebt, null);
+  assert.equal(w.owcRatio, null);
+  const owc = S._resolveOwcForForecast(w.mj);
+  assert.equal(owc.measured, false);
+  assert.equal(owc.assumptionRequired, true);
+  // Die Begruendung nennt beide Bestandteile und die Gesamtangabe.
+  const warn = (w.mj.meta._debt_warnings || []).join(' | ');
+  assert.ok(/übersteigen zusammen/.test(warn), warn);
+  assert.ok(/70\.0M/.test(warn) && /50\.0M/.test(warn) && /100\.0M/.test(warn), warn);
+
+  // Eigenstaendig belegte Nettoschulden bleiben unveraendert zulaessig.
+  const mjNd = JSON.parse(JSON.stringify(w.mj));
+  mjNd.fundamentals.net_debt = [42, 42, 42, 42];
+  mjNd.fundamentals._v4_meta.net_debt = {
+    source_type: 'reported', source_reference: 'manuelle Angabe', confidence: 'high'
+  };
+  const ndM = S._resolveNetDebtForDcfBridge(mjNd.fundamentals);
+  assert.equal(ndM.available, true);
+  assert.equal(ndM.netDebtM, 42);
+
+  // Echter Engine-/Synthesizer-Pfad: kein Gewicht, keine Einstiegszone.
+  const mjE = importSecFacts(secFactsWithDebt({
+    DebtAndCapitalLeaseObligations:  secInst(allYears(100)),
+    LongTermDebtNoncurrent:          secInst(allYears(70)),
+    FinanceLeaseLiabilityNoncurrent: secInst(allYears(50))
+  }), { price: 20 });
+  const v = S.runValuationEngine(mjE);
+  const dcf = (v.modelResults || {}).dcf;
+  assert.equal(dcf.applicable, false);
+  assert.equal(dcf._excludedFromSynthesis, true);
+  const CFG = evalInApp('SYNTHESIS_CONFIG');
+  const syn = S.runFairValueSynthesizer(mjE, v, S.runQualityEngine(mjE),
+    Object.assign({}, CFG, { _dqResult: S.computeDataQualityScore(mjE) }));
+  const gewichtet = Array.isArray(syn && syn._modelWeightDiag)
+    ? syn._modelWeightDiag.some(d => d && d.model === 'dcf') : false;
+  assert.equal(gewichtet, false, 'der gesperrte DCF wird nicht gewichtet');
+});
+
+test('R29 belegte Gesamtschuld 0 belegt alle Bestandteile als 0', () => {
+  // Alle enthaltenen Bestandteile sind nichtnegativ; ist ihre belegte Summe 0,
+  // sind sie einzeln 0. V1.0.61 erkannte zwar die Gesamtschuld 0, hielt die
+  // kurzfristigen Finanzschulden aber fuer unbekannt — der Zeilenraumtest
+  // allein reicht dafuer nicht.
+  const z = messen({ DebtAndCapitalLeaseObligations: secInst(allYears(0)) });
+  assert.equal(z.totalDebt, 0);
+  assert.equal(z.scopeComplete, true);
+  assert.equal(z.shortTermDebt, 0, 'kurzfristige Finanzschulden sind belegte 0');
+  // Von Hand: OWC = (400 − 100) − (500 − 0) = −200 ⇒ Quote −20 % vom Umsatz 1.000.
+  const h = S._computeOwcHistory(z.f);
+  assert.equal(h.years.length, 4, 'alle vier Jahre sind verwertbar');
+  assert.equal(h.years[0].shortTermDebtStatus, 'measured');
+  assert.equal(h.years[0].owc, -200);
+  assert.equal(z.owcRatio, -0.20);
+  const owc = S._resolveOwcForForecast(z.mj);
+  assert.equal(owc.available, true);
+  assert.equal(owc.measured, true);
+  assert.equal(owc.assumptionRequired, false, 'keine Nutzereingabe noetig');
+  assert.equal(owc.ratio, -0.20);
+  // Nettoschulden: 0 Schulden − 100 Liquiditaet = −100 (Nettoliquiditaet).
+  assert.equal(z.ndAvailable, true);
+  assert.equal(z.netDebtM, -100);
+  assert.equal(z.applicable, true);
+});
+
+test('R30 ein Teilbetrag 0 belegt nur seine eigenen Bestandteile', () => {
+  // ABGRENZUNG zu R29: `DebtCurrent` = 0 belegt die drei KURZFRISTIGEN Zellen
+  // als 0 — nicht die langfristigen. Ohne Aussage zum langfristigen Leasing
+  // bleibt die Gesamtschuld offen.
+  const teil = messen({
+    DebtCurrent:            secInst(allYears(0)),
+    LongTermDebtNoncurrent: secInst(allYears(70))
+  });
+  assert.equal(teil.shortTermDebt, 0, 'die kurzfristigen Bestandteile sind belegte 0');
+  assert.equal(teil.scopeComplete, false, 'die Gesamtschuld bleibt offen (langfr. Leasing)');
+  assert.equal(teil.ndAvailable, false);
+  assert.equal(teil.applicable, false);
+
+  // Erst die ausdrueckliche Null fuer das langfristige Leasing schliesst sie.
+  const voll = messen({
+    DebtCurrent:                     secInst(allYears(0)),
+    LongTermDebtNoncurrent:          secInst(allYears(70)),
+    FinanceLeaseLiabilityNoncurrent: secInst(allYears(0))
+  });
+  assert.equal(voll.scopeComplete, true);
+  assert.equal(voll.totalDebt, 70);
+  assert.equal(voll.netDebtM, -30, '70 Schulden − 100 Liquiditaet');
+  assert.equal(voll.shortTermDebt, 0);
+});
+
+test('R31 Mehrdeutigkeit, Bestimmtheit und Rundung im Solver', () => {
+  // (a) Zulaessige Loesungen vorhanden, Zielsumme aber nicht eindeutig:
+  //     Gesamt 1.000, langfristige Schulden 700 ⇒ die restlichen 300 koennen
+  //     beliebig auf kurzfristige Zellen und langfristiges Leasing entfallen.
+  //     Die kurzfristige Summe liegt irgendwo in [0, 300] ⇒ unbekannt.
+  const mehrdeutig = messen({
+    DebtAndCapitalLeaseObligations: secInst(allYears(1000)),
+    LongTermDebtNoncurrent:         secInst(allYears(700))
+  });
+  assert.equal(mehrdeutig.scopeComplete, true, 'die Gesamtschuld ist belegt');
+  assert.equal(mehrdeutig.totalDebt, 1000);
+  assert.equal(mehrdeutig.netDebtM, 900);
+  assert.equal(mehrdeutig.shortTermDebt, null, 'keine erfundene Eindeutigkeit');
+  assert.equal(mehrdeutig.owcRatio, null);
+
+  // (b) Zielsumme eindeutig, obwohl die Einzelzellen es nicht sind:
+  //     `DebtCurrent` 300 legt die kurzfristige SUMME fest, nicht ihre
+  //     Aufteilung in Bankschulden, laufende Faelligkeiten und Leasing.
+  //     Von Hand: OWC = (400 − 100) − (500 − 300) = 100 ⇒ Quote +10 %.
+  const bestimmt = messen({
+    DebtCurrent:                     secInst(allYears(300)),
+    LongTermDebtNoncurrent:          secInst(allYears(700)),
+    FinanceLeaseLiabilityNoncurrent: secInst(allYears(0))
+  });
+  assert.equal(bestimmt.shortTermDebt, 300);
+  assert.equal(bestimmt.owcRatio, 0.10);
+  assert.equal(bestimmt.totalDebt, 1000);
+  assert.equal(bestimmt.netDebtM, 900);
+
+  // (c) Kleine zulaessige Rundung (0,05 von 1.000 = 0,005 %) bleibt zulaessig
+  //     und erzeugt KEINE negative gemessene Schuld.
+  const rundung = messen({
+    DebtAndCapitalLeaseObligations:  secInst(allYears(1000)),
+    LongTermDebtNoncurrent:          secInst(allYears(700)),
+    FinanceLeaseLiabilityNoncurrent: secInst(allYears(300.05))
+  });
+  assert.equal(rundung.scopeComplete, true);
+  assert.equal(rundung.shortTermDebt, 0, 'nicht negativ, nicht willkuerlich geklemmt');
+  assert.ok(rundung.shortTermDebt >= 0);
+
+  // (d) Materiell unmoegliche Abweichung bleibt ein Widerspruch.
+  const materiell = messen({
+    DebtAndCapitalLeaseObligations:  secInst(allYears(1000)),
+    LongTermDebtNoncurrent:          secInst(allYears(700)),
+    FinanceLeaseLiabilityNoncurrent: secInst(allYears(350))
+  });
+  assert.equal(materiell.scopeComplete, false);
+  assert.equal(materiell.ndAvailable, false);
+
+  // (e) Konsistente Daten bleiben unveraendert verwertbar.
+  const konsistent = messen({
+    DebtAndCapitalLeaseObligations:  secInst(allYears(1000)),
+    LongTermDebtNoncurrent:          secInst(allYears(700)),
+    FinanceLeaseLiabilityNoncurrent: secInst(allYears(0)),
+    DebtCurrent:                     secInst(allYears(300))
+  });
+  assert.equal(konsistent.scopeComplete, true);
+  assert.equal(konsistent.totalDebt, 1000);
+  assert.equal(konsistent.shortTermDebt, 300);
+  assert.equal(konsistent.netDebtM, 900);
+});
+
+test('R32 die Solverkorrektur erreicht auch die TTM-Aufloesung', () => {
+  const qAll = (v) => ({ 2022: v, 2023: v, 2024: v, 2025: v });
+
+  // (a) Unmoegliche Aufteilung: in BEIDEN Sichten gesperrt.
+  const mjW = importSecFacts(secQuarterlyFactsWithDebt({
+    DebtAndCapitalLeaseObligations:  secQInst(qAll(100)),
+    LongTermDebtNoncurrent:          secQInst(qAll(70)),
+    FinanceLeaseLiabilityNoncurrent: secQInst(qAll(50))
+  }));
+  assert.equal(S._resolveNetDebtForDcfBridge(mjW.fundamentals).available, false,
+    'Jahressicht gesperrt');
+  const vW = ttmViewOf(mjW);
+  assert.equal(vW.resolved.basis, 'ttm');
+  assert.notEqual(vW.view, mjW, 'eine TTM-Sicht ist entstanden');
+  assert.equal(vW.view.fundamentals._v4_meta.total_debt.scopeComplete, false);
+  assert.equal(S._resolveNetDebtForDcfBridge(vW.view.fundamentals).available, false,
+    'die TTM-Sicht uebernimmt die Nichtnegativitaetspruefung');
+  assert.equal(S.modelDcf(vW.view, scOf(8, 2, 10, 20)).applicable, false);
+
+  // (b) Belegte Gesamtschuld 0: auch in der TTM-Sicht sind die kurzfristigen
+  //     Finanzschulden belegte 0. (`long_term_debt` ist eine Pflichtreihe der
+  //     TTM-Basis und wird vom Filer ausdruecklich mit 0 gemeldet.)
+  const mjZ = importSecFacts(secQuarterlyFactsWithDebt({
+    DebtAndCapitalLeaseObligations: secQInst(qAll(0)),
+    LongTermDebtNoncurrent:         secQInst(qAll(0))
+  }));
+  const vZ = ttmViewOf(mjZ);
+  assert.equal(vZ.resolved.basis, 'ttm');
+  assert.notEqual(vZ.view, mjZ);
+  const fZ = vZ.view.fundamentals;
+  assert.equal(fZ._v4_meta.total_debt.scopeComplete, true);
+  assert.equal(fZ.total_debt[0], 0);
+  const hZ = S._computeOwcHistory(fZ);
+  assert.ok(hZ.years.length > 0, 'die TTM-Sicht liefert eine Working-Capital-Historie');
+  assert.equal(hZ.years[0].shortTermDebt, 0);
+  assert.equal(hZ.years[0].shortTermDebtStatus, 'measured');
+  assert.equal(hZ.years[0].ratio, -0.20);
+  assert.equal(S._resolveNetDebtForDcfBridge(fZ).netDebtM, -100);
 });

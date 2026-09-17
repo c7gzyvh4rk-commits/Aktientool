@@ -4078,39 +4078,59 @@ function _debtVec(cells) {
   return _debtScopeTables().order.map(c => (cells.indexOf(c) >= 0 ? 1 : 0));
 }
 
-// ══ V1.0.61 · Schuldenauflösung als Gleichungssystem (Korrekturchat 12B.2) ══
-// Bis V1.0.60 wurden Angaben nacheinander „belegt oder übersprungen". Das
-// konnte drei Dinge nicht:
-//   · einen zusammengefassten Betrag (z. B. LongTermDebtAndCapitalLeaseObligations)
-//     mit disjunkten Einzelangaben zusammenführen,
-//   · eine BEKANNTE Überschneidung herausrechnen
-//     (LongTermDebt + DebtCurrent − LongTermDebtCurrent),
-//   · einen Widerspruch erkennen, wenn ein enthaltener Teilbetrag größer ist
-//     als die Gesamtheit.
+// ══ V1.0.62 · Schuldenauflösung unter Nichtnegativität (Chat 12B.3) ════════
+// Jede gemeldete Angabe ist eine Gleichung „Summe ihrer Zellen = Wert".
+// Gesucht ist eine Teilsumme (kurzfristige Finanzschulden bzw.
+// Gesamtverschuldung). Bilanzbestandteile sind NICHT NEGATIV — die zulässige
+// Menge ist also
+//        P = { x ∈ R⁵ :  A x = b ,  x ≥ 0 }.
 //
-// Jede gemeldete Angabe ist eine Gleichung „Summe ihrer Zellen = Wert". Die
-// gesuchte Größe (kurzfristige Finanzschulden bzw. Gesamtverschuldung) ist
-// genau dann bestimmt, wenn ihr Zellvektor im Zeilenraum des Systems liegt.
-// Damit entscheidet die nachgewiesene ABDECKUNG, nicht das Vorhandensein
-// irgendeines Zahlenwerts — und weder Reihenfolge, noch „größerer Wert", noch
-// die Anzahl vorhandener Komponenten beeinflussen das Ergebnis.
+// V1.0.61 prüfte nur, ob der Zielvektor im ZEILENRAUM von A liegt. Das ist
+// unter Nichtnegativität in beide Richtungen unzureichend:
+//   · Es akzeptierte Systeme OHNE zulässige Lösung, solange keine einzelne
+//     Teilangabe größer als ihre Gesamtangabe war (Befund 1: Gesamt 100 gegen
+//     disjunkte Bestandteile 70 + 50). Ergebnis waren „gemessene" negative
+//     Schulden.
+//   · Es hielt Zielsummen für unbekannt, die durch die Nichtnegativität
+//     eindeutig festliegen (Befund 2: belegte Gesamtschuld 0 ⇒ alle
+//     Bestandteile 0, also auch die kurzfristigen).
 //
-// Nichtnegativität: Bilanzbestandteile sind nicht negativ. Daraus folgen zwei
-// prüfbare Widersprüche — ein enthaltener Teilbetrag größer als die Gesamtheit,
-// und ein rechnerisch bestimmter Zellwert unter null.
+// Statt einer Optimierungsbibliothek wird die zulässige Menge für diese feste
+// kleine Dimension (n = 5) VOLLSTÄNDIG und exakt beschrieben:
+//   · P ist spitz (x ≥ 0 enthält keine Gerade) ⇒ P ≠ ∅ genau dann, wenn P eine
+//     Ecke besitzt. Ecken sind Basislösungen: Träger S mit linear unabhängigen
+//     Spalten, x_S eindeutig, x_S ≥ 0, x außerhalb S gleich 0.
+//   · Nach Minkowski/Weyl gilt P = conv(Ecken) + cone(Extremstrahlen);
+//     Extremstrahlen sind Träger S mit eindimensionalem Nullraum und
+//     vorzeichengleichem Erzeuger.
+// Beides entsteht durch Aufzählung ALLER 32 Träger — kein Näherungsverfahren,
+// keine neue Laufzeitabhängigkeit.
+//
+// Daraus folgt die geforderte Dreiteilung:
+//   1. keine Ecke          ⇒ keine zulässige Aufteilung  ⇒ Widerspruch
+//   2. Spannweite der Zielsumme über P größer als die Toleranz ⇒ unbekannt
+//   3. Spannweite null     ⇒ bestimmt (auch wenn einzelne Zellen offen sind
+//                             und der Zeilenraumtest allein nicht ausreicht)
+//
+// Toleranz: gemeldete Beträge sind auf Millionen gerundet; 0,01 % der größten
+// Angabe (mindestens 1e-6) deckt diese Rundung ab. Sie ist bewusst so eng,
+// dass eine materiell unmögliche Aufteilung nicht durchrutscht — Befund 1
+// verfehlt die Zulässigkeit um 20 von 100, also um das 200-fache der Toleranz.
 function _solveDebtEvidence(evidence) {
   const CELL_ORDER = _debtScopeTables().order;
   const CELL_LABEL = _debtScopeTables().labels;
   const n = CELL_ORDER.length;
   const ev = Array.isArray(evidence) ? evidence : [];
-  // Enge, begründete Toleranz: gemeldete Beträge sind auf Millionen gerundet;
-  // 0,01 % der größten Angabe deckt die Rundung ab, ohne einen materiellen
-  // Widerspruch zu verdecken.
   const scale = ev.reduce((m, e) => Math.max(m, Math.abs(e.value)), 0);
   const tol = Math.max(1e-6, 1e-4 * scale);
   const EPS = 1e-9;
 
-  const R = ev.map(e => _debtVec(e.cells).concat([e.value]));
+  const A = ev.map(e => _debtVec(e.cells));
+  const b = ev.map(e => e.value);
+  const m = ev.length;
+
+  // ── Zeilenraum-Reduktion (Begründungen, exakte Linearkombination) ────
+  const R = A.map((row, i) => row.slice().concat([b[i]]));
   const pivots = [];
   let pr = 0;
   for (let col = 0; col < n && pr < R.length; col++) {
@@ -4131,8 +4151,8 @@ function _solveDebtEvidence(evidence) {
     pivots.push(col); pr++;
   }
 
-  // Zielgröße über den Zeilenraum bestimmen.
-  const sumOf = (cells) => {
+  // Zielsumme als Linearkombination der gemeldeten Gleichungen, falls möglich.
+  const rowSum = (cells) => {
     const red = _debtVec(cells);
     let val = 0;
     for (let i = 0; i < pivots.length; i++) {
@@ -4148,8 +4168,123 @@ function _solveDebtEvidence(evidence) {
       : { determined: false, value: null, open };
   };
 
+  // ── Ecken und Extremstrahlen von P ──────────────────────────────────
+  // Gauß-Jordan auf dem auf `cols` eingeschränkten System.
+  const reduceSupport = (cols, homogeneous) => {
+    const k = cols.length;
+    const M = [];
+    for (let i = 0; i < m; i++) {
+      M.push(cols.map(c => A[i][c]).concat([homogeneous ? 0 : b[i]]));
+    }
+    const piv = [];
+    let p = 0;
+    for (let j = 0; j < k && p < m; j++) {
+      let sel = -1, best = EPS;
+      for (let i = p; i < m; i++) {
+        if (Math.abs(M[i][j]) > best) { best = Math.abs(M[i][j]); sel = i; }
+      }
+      if (sel < 0) continue;
+      const t = M[p]; M[p] = M[sel]; M[sel] = t;
+      const pv = M[p][j];
+      for (let q = 0; q <= k; q++) M[p][q] /= pv;
+      for (let i = 0; i < m; i++) {
+        if (i === p) continue;
+        const f = M[i][j];
+        if (Math.abs(f) < 1e-12) continue;
+        for (let q = 0; q <= k; q++) M[i][q] -= f * M[p][q];
+      }
+      piv.push(j); p++;
+    }
+    let consistent = true;
+    for (let i = p; i < m; i++) {
+      const allZero = M[i].slice(0, k).every(v => Math.abs(v) < EPS);
+      if (allZero && Math.abs(M[i][k]) > tol) { consistent = false; break; }
+    }
+    return { M, piv, rank: p, consistent, k };
+  };
+
+  const vertices = [], rays = [];
+  const total = 1 << n;
+  for (let mask = 0; mask < total; mask++) {
+    const cols = [];
+    for (let j = 0; j < n; j++) if (mask & (1 << j)) cols.push(j);
+
+    // Ecke: voller Spaltenrang ⇒ eindeutige Lösung auf diesem Träger.
+    const sol = reduceSupport(cols, false);
+    if (sol.consistent && sol.rank === cols.length) {
+      const x = new Array(n).fill(0);
+      let ok = true;
+      for (let i = 0; i < sol.piv.length; i++) {
+        const v = sol.M[i][cols.length];
+        if (v < -tol) { ok = false; break; }
+        x[cols[sol.piv[i]]] = v > 0 ? v : 0;   // Rundungsrauschen um 0
+      }
+      if (ok) vertices.push(x);
+    }
+
+    // Extremstrahl: Nullraum des Trägers genau eindimensional.
+    if (cols.length > 0) {
+      const hom = reduceSupport(cols, true);
+      if (hom.rank === cols.length - 1) {
+        const freeIdx = (() => {
+          for (let j = 0; j < cols.length; j++) if (hom.piv.indexOf(j) < 0) return j;
+          return -1;
+        })();
+        if (freeIdx >= 0) {
+          const v = new Array(n).fill(0);
+          v[cols[freeIdx]] = 1;
+          for (let i = 0; i < hom.piv.length; i++) {
+            v[cols[hom.piv[i]]] = -hom.M[i][freeIdx];
+          }
+          const maxAbs = v.reduce((a, x) => Math.max(a, Math.abs(x)), 0);
+          if (maxAbs > EPS) {
+            const pos = v.map(x => x / maxAbs);
+            const neg = pos.map(x => -x);
+            const kandidat = pos.every(x => x >= -EPS) ? pos
+                           : (neg.every(x => x >= -EPS) ? neg : null);
+            if (kandidat) rays.push(kandidat.map(x => (x > 0 ? x : 0)));
+          }
+        }
+      }
+    }
+  }
+  const feasible = vertices.length > 0;
+
+  // Spannweite der Zielsumme über P = conv(Ecken) + cone(Strahlen).
+  const range = (cells) => {
+    const c = _debtVec(cells);
+    const dot = (v) => { let sx = 0; for (let i = 0; i < n; i++) sx += c[i] * v[i]; return sx; };
+    let lo = Infinity, hi = -Infinity;
+    for (const v of vertices) { const t = dot(v); if (t < lo) lo = t; if (t > hi) hi = t; }
+    // Die Zielvektoren sind Indikatoren (0/1) und die Strahlen nichtnegativ:
+    // ein Strahl kann die Summe nur vergrößern, nie verkleinern.
+    for (const r of rays) { if (dot(r) > EPS) { hi = Infinity; break; } }
+    return { lo, hi };
+  };
+
+  const sumOf = (cells) => {
+    const rs = rowSum(cells);
+    if (!feasible) {
+      return { determined: false, value: null, open: rs.open, infeasible: true };
+    }
+    // Liegt die Zielsumme im Zeilenraum, ist sie die exakte Linearkombination
+    // der gemeldeten Zahlen — dieser Wert hat Vorrang vor dem Eckenvergleich.
+    // Ausnahme: eine Teilsumme nichtnegativer Bestandteile kann nicht kleiner
+    // als null sein. Ein rundungsbedingt leicht negativer Wert wird deshalb
+    // NICHT pauschal auf null geklemmt, sondern aus der zulässigen Menge
+    // genommen (deren Ecken x ≥ 0 erfüllen). Liegt er materiell unter null,
+    // ist P leer und der Fall oben bereits als unzulässig behandelt.
+    if (rs.determined && rs.value >= -EPS) return rs;
+    const rg = range(cells);
+    if (isFinite(rg.lo) && isFinite(rg.hi) && (rg.hi - rg.lo) <= tol) {
+      return { determined: true, value: rg.lo, open: [] };
+    }
+    return { determined: false, value: null, open: rs.open };
+  };
+
   // ── Widersprüche ───────────────────────────────────────────────────
   let contradiction = null;
+  // (1) Das Gleichungssystem allein ist unlösbar.
   for (let r = pr; r < R.length && !contradiction; r++) {
     const allZero = R[r].slice(0, n).every(x => Math.abs(x) < EPS);
     if (allZero && Math.abs(R[r][n]) > tol) {
@@ -4157,14 +4292,15 @@ function _solveDebtEvidence(evidence) {
         '(Abweichung ' + Math.abs(R[r][n]).toFixed(1) + 'M)';
     }
   }
+  // (2) Eine Teilangabe ist größer als die Gesamtangabe, die sie enthält.
   if (!contradiction) {
     for (const a of ev) {
-      for (const b of ev) {
-        if (a === b || a.cells.length >= b.cells.length) continue;
-        if (!_cellsSubset(a.cells, b.cells)) continue;
-        if (a.value > b.value + tol) {
-          contradiction = a.name + ' (' + a.value.toFixed(1) + 'M) ist in ' + b.name +
-            ' (' + b.value.toFixed(1) + 'M) enthalten, kann als nichtnegativer Teilbetrag ' +
+      for (const bb of ev) {
+        if (a === bb || a.cells.length >= bb.cells.length) continue;
+        if (!_cellsSubset(a.cells, bb.cells)) continue;
+        if (a.value > bb.value + tol) {
+          contradiction = a.name + ' (' + a.value.toFixed(1) + 'M) ist in ' + bb.name +
+            ' (' + bb.value.toFixed(1) + 'M) enthalten, kann als nichtnegativer Teilbetrag ' +
             'aber nicht größer sein';
           break;
         }
@@ -4172,9 +4308,42 @@ function _solveDebtEvidence(evidence) {
       if (contradiction) break;
     }
   }
+  // (3) MEHRERE paarweise disjunkte Teilangaben übersteigen zusammen die
+  //     Gesamtangabe, die sie enthält. (2) ist davon der Sonderfall mit einer
+  //     Teilangabe; genau diese Verallgemeinerung fehlte bis V1.0.61.
+  if (!contradiction) {
+    for (const whole of ev) {
+      const parts = ev.filter(pt => pt !== whole && _cellsSubset(pt.cells, whole.cells) &&
+                                    pt.cells.length < whole.cells.length);
+      if (parts.length < 2) continue;
+      const lim = 1 << Math.min(parts.length, 12);
+      let bestSum = 0, bestSel = null;
+      for (let sel = 1; sel < lim; sel++) {
+        const gewaehlt = [];
+        for (let i = 0; i < parts.length; i++) if (sel & (1 << i)) gewaehlt.push(parts[i]);
+        let disjunkt = true;
+        for (let i = 0; i < gewaehlt.length && disjunkt; i++) {
+          for (let j = i + 1; j < gewaehlt.length; j++) {
+            if (!_cellsDisjoint(gewaehlt[i].cells, gewaehlt[j].cells)) { disjunkt = false; break; }
+          }
+        }
+        if (!disjunkt) continue;
+        const summe = gewaehlt.reduce((acc, g) => acc + g.value, 0);
+        if (summe > bestSum) { bestSum = summe; bestSel = gewaehlt; }
+      }
+      if (bestSel && bestSel.length >= 2 && bestSum > whole.value + tol) {
+        contradiction = 'die gemeldeten Bestandteile ' +
+          bestSel.map(g => g.name + ' (' + g.value.toFixed(1) + 'M)').join(' + ') +
+          ' = ' + bestSum.toFixed(1) + 'M übersteigen zusammen ' + whole.name +
+          ' (' + whole.value.toFixed(1) + 'M); es gibt keine nichtnegative Aufteilung';
+        break;
+      }
+    }
+  }
+  // (4) Ein rechnerisch eindeutig bestimmter Zellwert wäre negativ.
   if (!contradiction) {
     for (const c of CELL_ORDER) {
-      const one = sumOf([c]);
+      const one = rowSum([c]);
       if (one.determined && one.value < -tol) {
         contradiction = 'rechnerisch ergäbe sich für ' + (CELL_LABEL[c] || c) +
           ' ein negativer Betrag (' + one.value.toFixed(1) + 'M) — die Angaben sind unvereinbar';
@@ -4182,7 +4351,14 @@ function _solveDebtEvidence(evidence) {
       }
     }
   }
-  return { contradiction, sumOf, tol, evidenceNames: ev.map(e => e.name) };
+  // (5) Auffangfall: keine der obigen Formen, aber dennoch keine zulässige
+  //     nichtnegative Aufteilung.
+  if (!contradiction && !feasible) {
+    contradiction = 'die gemeldeten Schuldenangaben lassen keine nichtnegative Aufteilung ' +
+      'der Bestandteile zu';
+  }
+
+  return { contradiction, sumOf, tol, evidenceNames: ev.map(e => e.name), feasible };
 }
 
 // Reihen, die überhaupt Schuldenzellen belegen können.

@@ -1,6 +1,227 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Korrekturchat 12B.3: Nichtnegativitaet im Schuldensolver (V1.0.62)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
+**`claude/chat12b2-debt-completeness`**, Ausgangscommit
+**`26568a974f83b2a6fc4a9c31135c9ba61c8b1e01`** — zugleich die Branch-Spitze;
+Abstammung geprueft (`git merge-base --is-ancestor`), nachfolgende Aenderungen
+gab es nicht. `main` wurde nicht angefasst. Tool-Datei:
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Ergebnisbranch: **`claude/chat12b3-debt-nonnegative`** — der vom Auftrag
+gewuenschte Name; kein technisch erzwungener Abweichname noetig.
+Eine `AGENTS.md` existiert in diesem Repository nicht.
+Testbefehl: `npm test`.
+
+**Bestaetigter Teststand vor der Aenderung** (selbst ausgefuehrt auf `26568a9`):
+1700 Rechen-Assertions · 434 Fixture-Assertions · 184 Node-Tests · Exit 0 —
+wie im Auftrag erwartet.
+
+**Auftrag.** Ausschliesslich zwei Restfehler in der Nichtnegativitaetspruefung
+von `_solveDebtEvidence()`. Die fuenf Korrekturen aus 12B.2 bleiben erhalten;
+Import, Taxonomietabelle, TTM-Aufbereitung und Bewertungsmodelle wurden nicht
+umgestaltet. A-5, A-6, A-7 und O-3 bleiben fuer 12C unangetastet.
+
+---
+
+### 1 · Quellenlage (wahrheitsgemaesz)
+
+Unveraendert die Taxonomiebasis aus 12B.1 (FASB-Taxonomie 2025, aus der
+Auftragsvorgabe, **nicht selbst an der Quelle geprueft** — der Egress-Proxy
+dieser Umgebung sperrt `xbrl.fasb.org`). Dieser Schritt aendert keine
+Tag-Definition, sondern allein die Rechenregel. Alle Nachweise sind
+**synthetische Importtests** ueber den produktiven Pfad — **keine
+Live-Validierung**, kein reales Filing.
+
+### 2 · Reproduktion am unveraenderten Ausgangsstand
+
+Beide Befunde wurden zuerst auf `26568a9` ueber
+`importSecFacts(secFactsWithDebt(...))` reproduziert, jeweils periodengleich
+ueber vier Jahre.
+
+**Befund 1 — unmoegliche Schuldenaufteilung wird akzeptiert.**
+`DebtAndCapitalLeaseObligations` 100, `LongTermDebtNoncurrent` 70,
+`FinanceLeaseLiabilityNoncurrent` 50. Die beiden DISJUNKTEN langfristigen
+Bestandteile ergeben 120 und uebersteigen die Gesamtschulden von 100; eine
+nichtnegative Aufteilung existiert nicht.
+
+| | vorher | nachher |
+|---|---|---|
+| Gesamtschuld | gilt als vollstaendig | **nicht vollstaendig** |
+| Nettoschuldenbruecke | verfuegbar (0M) | **nicht verfuegbar**, mit Begruendung |
+| kurzfr. Finanzschulden | **−20, Status „measured"** | unbekannt |
+| OWC-Quote | **−22 %** | nicht ermittelbar (ausdruecklich gekennzeichnet) |
+| `modelDcf(mj, scOf(8, 2, 10, 20))` | anwendbar, **≈ 31,43082** | nicht anwendbar |
+| Widerspruchswarnung | **keine** | nennt beide Bestandteile und die Gesamtangabe |
+
+**Befund 2 — belegte Gesamtschuld 0 wird nicht ausgewertet.**
+`DebtAndCapitalLeaseObligations` = 0, keine Aufschluesselung.
+
+| | vorher | nachher |
+|---|---|---|
+| Gesamtschulden | 0 (richtig) | 0 |
+| kurzfr. Finanzschulden | **unbekannt** | **belegte 0** |
+| `_resolveOwcForForecast()` | `available:false`, `measured:false`, `assumptionRequired:true`, Platzhalter 0 % | `available:true`, `measured:true`, `assumptionRequired:false` |
+| OWC-Quote | — | **−20 %** (= ((400 − 100) − (500 − 0)) / 1000) |
+| verwertbare Jahre | 0 | **4** |
+
+### 3 · Die Korrektur (eng begrenzt auf `_solveDebtEvidence()`)
+
+V1.0.61 prueferte nur, ob der Zielvektor im **Zeilenraum** von `A` liegt. Unter
+`x ≥ 0` ist das in beide Richtungen unzureichend: es akzeptierte Systeme ohne
+zulaessige Loesung (Befund 1) und hielt durch die Nichtnegativitaet eindeutig
+festgelegte Zielsummen fuer unbekannt (Befund 2).
+
+Die zulaessige Menge `P = { x ∈ R⁵ : A x = b, x ≥ 0 }` wird jetzt
+**vollstaendig und exakt** beschrieben:
+
+* `P` ist spitz (`x ≥ 0` enthaelt keine Gerade) ⇒ `P ≠ ∅` genau dann, wenn `P`
+  eine **Ecke** hat. Ecken sind Basisloesungen: Traeger mit linear
+  unabhaengigen Spalten, eindeutigem und nichtnegativem `x_S`.
+* Nach Minkowski/Weyl ist `P = conv(Ecken) + cone(Extremstrahlen)`;
+  Extremstrahlen sind Traeger mit eindimensionalem Nullraum und
+  vorzeichengleichem Erzeuger.
+* Beides entsteht durch Aufzaehlung **aller 32 Traeger** — keine
+  Optimierungsbibliothek, keine neue Laufzeitabhaengigkeit, kein
+  Naeherungsverfahren.
+
+Daraus die geforderte Dreiteilung:
+1. keine Ecke ⇒ **Widerspruch**;
+2. Spannweite der Zielsumme ueber `P` groesser als die Toleranz ⇒ **unbekannt**;
+3. Spannweite null ⇒ **bestimmt** — auch bei offenen Einzelzellen und dort, wo
+   der Zeilenraumtest allein nicht reicht (Befund 2).
+
+Ergaenzt wurde eine **verallgemeinerte Teilmengenpruefung**: mehrere paarweise
+DISJUNKTE Teilangaben duerfen zusammen die Gesamtangabe nicht uebersteigen.
+Die bisherige Pruefung war davon der Sonderfall mit einer Teilangabe — genau
+diese Luecke war Befund 1. Sie liefert die konkrete Begruendung
+(„70,0M + 50,0M = 120,0M uebersteigen zusammen … (100,0M)").
+
+Bewusst NICHT getan: negative Zielwerte lediglich abfangen; negative Ergebnisse
+pauschal auf null klemmen; einen beliebigen zulaessigen Loesungspunkt als
+eindeutige Aufteilung ausgeben. Unbeschraenkte oder mehrdeutige Zielgroeszen
+bleiben unbekannt.
+
+**Toleranz.** Unveraendert 0,01 % der groeszten Angabe, mindestens `1e-6`.
+Sie ist so eng, dass eine materiell unmoegliche Aufteilung nicht durchrutscht:
+Befund 1 verfehlt die Zulaessigkeit um 20 von 100, also um das 200-fache der
+Toleranz. Eine rundungsbedingt leicht negative Zielsumme wird **nicht**
+geklemmt, sondern aus der zulaessigen Menge genommen (deren Ecken `x ≥ 0`
+erfuellen).
+
+**Unveraendert:** Schnittstelle und Statuskonventionen von
+`_solveDebtEvidence()`, die Helferlisten der Modul-Lader (die neuen
+Hilfsfunktionen liegen bewusst innerhalb der Funktion), die Regeln fuer
+eigenstaendig belegte oder manuell gesetzte Nettoschulden, die Altdatenregel
+und alle fuenf Korrekturen aus 12B.2.
+
+### 4 · Gemessene Wirkung weiterer Faelle
+
+| Fall | Ergebnis |
+|---|---|
+| `DebtCurrent` 0 + `Noncurrent` 70 (Teilbetrag 0) | kurzfr. Schulden **belegte 0**, Gesamtschuld **bleibt offen** (langfr. Leasing) ⇒ Bruecke gesperrt |
+| … zusaetzlich `FLNoncurrent` 0 | Gesamt **70**, ND **−30**, kurzfr. 0 |
+| Gesamt 1.000 + `Noncurrent` 700 | Gesamt belegt (ND 900), kurzfr. Summe in [0, 300] ⇒ **unbekannt** |
+| `DebtCurrent` 300 + `Noncurrent` 700 + `FLNoncurrent` 0 | kurzfr. **300 bestimmt**, obwohl die Einzelzellen offen sind; OWC +10 % |
+| Gesamt 1.000 vs. 700 + 300,05 (0,005 %) | zulaessige Rundung, kurzfr. **0** (nicht negativ, nicht geklemmt) |
+| Gesamt 1.000 vs. 700 + 350 | **Widerspruch**, Bruecke gesperrt |
+
+### 5 · Tests
+
+**Neue Regressionstests**
+
+| Test | sichert ab |
+|---|---|
+| `R28` | unmoegliche Aufteilung ⇒ Widerspruch; keine gemessene negative Schuld, keine OWC-Quote; operativer Wert bleibt; manuelles `net_debt` weiterhin zulaessig; echter Engine-/Synthesizer-Pfad ohne Gewicht und Einstiegszone |
+| `R29` | belegte Gesamtschuld 0 ⇒ kurzfr. Schulden belegte 0, OWC −200 bzw. −20 %, vier verwertbare Jahre, keine Nutzereingabe noetig |
+| `R30` | Abgrenzung: ein Teilbetrag 0 belegt nur seine eigenen Bestandteile, nicht die uebrigen Schulden |
+| `R31` | Mehrdeutigkeit bleibt unbekannt; Zielsumme bestimmt trotz offener Einzelzellen; zulaessige Rundung; materieller Widerspruch; konsistente Daten unveraendert |
+| `R32` | dieselbe Korrektur erreicht die **TTM-Aufloesung** ueber die vorhandenen TTM-Testhilfen (beide Hauptfaelle), kein separater Solver |
+
+**Berichtigte Erwartung.** `R25` prueferte fuer den Fall „DebtCurrent 300 gegen
+laufende Faelligkeiten 100 + kurzfristiges Leasing 250" auf den Wortlaut
+`unvereinbar` — die generische Meldung ueber einen negativen Zellwert. Derselbe
+Fall wird jetzt von der **praeziseren** Pruefung auf disjunkte Teilangaben
+gefangen, die beide Bestandteile und die Gesamtangabe benennt. Der Befund ist
+unveraendert; die Erwartung akzeptiert nun beide Formulierungen. Die
+inhaltlichen Zusicherungen von `R25` sind unveraendert. Sonst wurde **kein**
+fachlich korrekter Fixture angepasst.
+
+**`npm test` nach der Aenderung: 1700 Rechen-Assertions · 434
+Fixture-Assertions · 189 Node-Tests · Exit 0.** `R21`–`R27` bestehen
+unveraendert. Node-Tests 184 → 189 (+5). Laufzeit unveraendert im
+Sekundenbereich.
+
+### 6 · Browserpruefung (durchgefuehrt)
+
+Mit dem vorinstallierten Chromium (Playwright) wurden beide Faelle ueber
+`importMasterJsonFromTextarea()` eingelesen:
+
+* **Befund 1:** `scopeComplete: false`, Bruecke nicht verfuegbar, DCF nicht
+  anwendbar; sichtbar „⚠ Nettoschulden nicht ermittelbar (fehlend: total_debt
+  (Umfang unvollstaendig)) — der DCF liefert deshalb KEINEN Eigenkapitalwert je
+  Aktie …" und die Begruendung „die gemeldeten Bestandteile … (70.0M) + …
+  (50.0M) = 120.0M uebersteigen zusammen … (100.0M)".
+* **Befund 2:** Bruecke verfuegbar (−100), OWC sichtbar als „historischer
+  Median -20.00% des Umsatzes ueber 4 lueckenlose Jahre — gemessen aus
+  Bilanzdaten".
+* Keine JavaScript-Fehler; die einzige Konsolenmeldung ist ein
+  fehlgeschlagener externer Ressourcenabruf (kein Netz) ohne Bezug zur
+  Aenderung.
+
+### 7 · Verbleibende Pruefgrenzen
+
+* **Keine eigene Pruefung der Primaerquelle** (Abschnitt 1).
+* **Kein reales Filing.** Synthetische Importtests sind keine Live-Validierung.
+* Die Aufzaehlung ist auf die feste Dimension `n = 5` zugeschnitten. Bei einer
+  sechsten Bilanzzelle bliebe das Verfahren richtig (2⁶ Traeger), die
+  Laufzeitannahme waere aber neu zu pruefen.
+* „`P` nichtleer ⇔ `P` hat eine Ecke" gilt, weil alle Variablen nach unten
+  durch 0 beschraenkt sind; bei vorzeichenfreien Groeszen waere das nicht so.
+* Die Grenzen aus 12B.2 bleiben bestehen — insbesondere gilt eine Bilanz, die
+  einen Bestandteil gar nicht erwaehnt, weiterhin als nicht belegt.
+* Beobachtung ohne Aenderung (auszerhalb des Auftrags): `long_term_debt` ist
+  eine PFLICHT-Reihe der TTM-Basis. Meldet ein Filer nur ein Gesamt-Tag, bleibt
+  die TTM-Basis unvollstaendig und die Jahressicht gilt — unabhaengig von
+  dieser Korrektur. In `R32` wird die Reihe deshalb ausdruecklich mit 0
+  gemeldet.
+* Dies ist **keine Bestaetigung**, dass der Rest des Werkzeugs fehlerfrei ist.
+
+### 8 · Bearbeitungsstand nach diesem Schritt
+
+**Behoben und abgesichert**
+
+* **A-1, A-2, A-3** (12A) — `R1`–`R9`
+* **A-4** (12B, in 12B.1 berichtigt) — `R10`–`R12`, `R16`
+* **O-1** (12B, in 12B.1 erweitert) — `R13`, `R17`
+* **O-2** (12B; Nachweis in 12B.1 auf passende Daten umgestellt) — `R14`
+* **12B.1** Schuldenumfang, Leasing, unklare Nettoschulden — `R16`–`R20`
+* **12B.2** Schuldenaufloesung und TTM-Sperren — `R21`–`R27`
+* **12B.3** Nichtnegativitaet im Schuldensolver — `R28`–`R32`
+
+**Weiterhin offen (nicht angefasst, Korrekturchat 12C vorbehalten)**
+
+* **A-5** Verwaesserung endet im Terminalwert bei Jahr 10 (`B6` gruen)
+* **A-6** `computeMidCycleFcf()` setzt fehlende D&A still auf 0 (`B7` gruen)
+* **A-7** Buyback-MoS-Zuschlag greift im Mid-Cycle-Pfad nie (`B8` gruen)
+* **O-3** Randfaelle der Nullstellensuche im Reverse DCF — unbestaetigt
+
+Die Einschraenkungen der Vorschritte bleiben offen.
+
+**Ausgangsbasis fuer Korrekturchat 12C: `claude/chat12b3-debt-nonnegative`.**
+Dieser Branch **ersetzt** dafuer `claude/chat12b2-debt-completeness`.
+
+---
+
 ## Korrekturchat 12B.2: Schuldenaufloesung und TTM-Sperren (V1.0.61)
+
+> **ERGAENZT durch Korrekturchat 12B.3 (V1.0.62).** Der hier eingefuehrte
+> Solver pruefte nur den ZEILENRAUM. Unter der Nebenbedingung `x >= 0` reicht
+> das nicht: er akzeptierte Systeme ohne zulaessige nichtnegative Loesung
+> (gemeldete Gesamtschuld 100 gegen disjunkte Bestandteile 70 + 50) und hielt
+> Zielsummen fuer unbekannt, die durch die Nichtnegativitaet eindeutig
+> festliegen (belegte Gesamtschuld 0). Beides ist in 12B.3 behoben; die fuenf
+> Korrekturen dieses Schrittes bleiben unveraendert.
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
 **`claude/chat12b1-debt-scope-fixes`**, Ausgangscommit

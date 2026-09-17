@@ -71,6 +71,7 @@ und keine Laufzeit- oder Sicherheitsprüfung.
 | `npm test` nach Korrekturchat 12B (A-4/O-1/O-2 behoben, B5 → R10–R15) | 1700 Rechen-Assertions · 434 Fixture-Assertions · **172 Node-Tests** · **Exit 0** |
 | `npm test` nach Korrekturchat 12B.1 (Schuldenumfang berichtigt, R12/R14/R15 korrigiert, R16–R20 neu) | 1700 Rechen-Assertions · 434 Fixture-Assertions · **177 Node-Tests** · **Exit 0** |
 | `npm test` nach Korrekturchat 12B.2 (Schuldenauflösung als Gleichungssystem, R21–R27 neu) | 1700 Rechen-Assertions · 434 Fixture-Assertions · **184 Node-Tests** · **Exit 0** |
+| `npm test` nach Korrekturchat 12B.3 (Nichtnegativität im Solver, R28–R32 neu) | 1700 Rechen-Assertions · 434 Fixture-Assertions · **189 Node-Tests** · **Exit 0** |
 
 Keine bestehende Testerwartung wurde geändert. Die neuen Tests sind in zwei
 Gruppen getrennt:
@@ -83,6 +84,12 @@ Gruppen getrennt:
   gelten muss.
 * **R1–R9 (Regression, ergänzt in Korrekturchat 12A)** — ersetzen `B1`–`B4`,
   nachdem A-1, A-2 und A-3 behoben sind, und sichern das richtige Verhalten ab.
+* **R28–R32 (Regression, ergänzt in Korrekturchat 12B.3)** — die
+  Nichtnegativitätsprüfung des Solvers: `R28` (unmögliche Aufteilung ⇒
+  Widerspruch, inkl. Engine-/Synthesizer-Pfad), `R29` (belegte Gesamtschuld 0),
+  `R30` (Teilbetrag 0 belegt nur seine eigenen Bestandteile), `R31`
+  (Mehrdeutigkeit, Bestimmtheit trotz offener Einzelzellen, Rundung),
+  `R32` (dieselbe Korrektur in der TTM-Auflösung).
 * **R21–R27 (Regression, ergänzt in Korrekturchat 12B.2)** — die fünf
   Restbefunde nach 12B.1: `R21` (zusammengefasste langfristige Beträge),
   `R22` (TTM umgeht die Sperre nicht), `R23` (noncurrent-Teilbeträge sind
@@ -816,6 +823,130 @@ und wurde berichtigt, nicht durch gelockerte Toleranzen:
 * Der `source_tag` der TTM-Sicht stammt jetzt aus den Quartalsdaten. Nennt
   eine TTM-Reihe keinen Tag, wird ersatzweise der Jahres-Tag übernommen und
   ausdrücklich als `source_tag_inherited` gekennzeichnet.
+
+---
+
+## 3c · Korrekturchat 12B.3 — Nichtnegativität im gemeinsamen Schuldensolver
+
+Die fünf Korrekturen aus 12B.2 bleiben unverändert. Hier wurden ausschließlich
+zwei Restfehler in `_solveDebtEvidence()` behoben; Import, Taxonomietabelle,
+TTM-Aufbereitung und Bewertungsmodelle wurden nicht angefasst.
+
+### Quellenlage (wahrheitsgemäß)
+
+Unverändert die Taxonomiebasis aus 12B.1 (FASB-Taxonomie 2025, aus der
+Auftragsvorgabe, **nicht selbst an der Quelle geprüft** — der Egress-Proxy
+sperrt `xbrl.fasb.org`). Dieser Schritt ändert keine Tag-Definition; er
+betrifft allein die Rechenregel. Alle Nachweise sind **synthetische
+Importtests** über den produktiven Pfad, **keine Live-Validierung**.
+
+### Die Ursache
+
+V1.0.61 prüfte nur, ob der Zielvektor im **Zeilenraum** von `A` liegt. Unter
+der Nebenbedingung `x ≥ 0` ist das in **beide** Richtungen unzureichend:
+
+| | vorher | fachlich richtig |
+|---|---|---|
+| **Befund 1** | Ein System ohne zulässige nichtnegative Lösung wurde akzeptiert, solange keine *einzelne* Teilangabe größer als ihre Gesamtangabe war | Widerspruch |
+| **Befund 2** | Eine durch die Nichtnegativität eindeutig festgelegte Zielsumme galt als unbekannt | bestimmt |
+
+### Reproduktion am unveränderten Code
+
+**Befund 1** — `DebtAndCapitalLeaseObligations` 100, `LongTermDebtNoncurrent` 70,
+`FinanceLeaseLiabilityNoncurrent` 50, periodengleich über vier Jahre. Die
+beiden **disjunkten** langfristigen Bestandteile ergeben 120 und übersteigen
+die Gesamtschulden von 100; es existiert keine nichtnegative Aufteilung.
+
+| | vorher | nachher |
+|---|---|---|
+| Gesamtschuld | gilt als vollständig | **nicht vollständig** |
+| Nettoschuldenbrücke | verfügbar (0M) | **nicht verfügbar**, mit Begründung |
+| kurzfristige Finanzschulden | **−20, Status „measured"** | unbekannt |
+| OWC-Quote der Referenzbilanz | **−22 %** | nicht ermittelbar (ausdrücklich gekennzeichnet) |
+| `modelDcf(mj, scOf(8, 2, 10, 20))` | anwendbar, **≈ 31,43082** | nicht anwendbar, kein Eigenkapitalwert |
+| Widerspruchswarnung | **keine** | nennt beide Bestandteile und die Gesamtangabe |
+
+**Befund 2** — `DebtAndCapitalLeaseObligations` = 0, keine Aufschlüsselung.
+Da alle enthaltenen Bestandteile nichtnegativ sind, müssen bei einer belegten
+Gesamtsumme von null auch alle Bestandteile null sein.
+
+| | vorher | nachher |
+|---|---|---|
+| Gesamtschulden | 0 (richtig) | 0 |
+| kurzfristige Finanzschulden | **unbekannt** | **belegte 0** |
+| `_resolveOwcForForecast()` | `available: false`, `measured: false`, `assumptionRequired: true`, Platzhalter 0 % | `available: true`, `measured: true`, `assumptionRequired: false` |
+| OWC-Quote | — | **−20 %** (= ((400 − 100) − (500 − 0)) / 1000) |
+| verwertbare Jahre | 0 | **4** |
+
+### Die Korrektur
+
+Die zulässige Menge ist `P = { x ∈ R⁵ : A x = b, x ≥ 0 }`. Für diese feste
+kleine Dimension wird sie **vollständig und exakt** beschrieben, statt sie zu
+approximieren:
+
+* `P` ist spitz (`x ≥ 0` enthält keine Gerade) ⇒ `P ≠ ∅` genau dann, wenn `P`
+  eine **Ecke** besitzt. Ecken sind Basislösungen: Träger `S` mit linear
+  unabhängigen Spalten, `x_S` eindeutig und `≥ 0`, `x` außerhalb `S` gleich 0.
+* Nach Minkowski/Weyl ist `P = conv(Ecken) + cone(Extremstrahlen)`;
+  Extremstrahlen sind Träger mit eindimensionalem Nullraum und
+  vorzeichengleichem Erzeuger.
+* Beide Mengen entstehen durch Aufzählung **aller 32 Träger** — keine
+  Optimierungsbibliothek, keine neue Laufzeitabhängigkeit, kein
+  Näherungsverfahren.
+
+Daraus folgt die geforderte Dreiteilung:
+
+1. **keine Ecke** ⇒ keine zulässige Aufteilung ⇒ **Widerspruch**;
+2. **Spannweite der Zielsumme über `P` größer als die Toleranz** ⇒ unbekannt;
+3. **Spannweite null** ⇒ bestimmt — auch dann, wenn einzelne Zellen offen
+   bleiben und der Zeilenraumtest allein nicht ausreicht (Befund 2).
+
+Ergänzt wurde außerdem eine **verallgemeinerte Teilmengenprüfung**: mehrere
+*paarweise disjunkte* Teilangaben dürfen zusammen die Gesamtangabe nicht
+übersteigen. Die bisherige Prüfung war davon der Sonderfall mit einer einzigen
+Teilangabe; genau diese Lücke war Befund 1. Sie liefert die konkrete
+Begründung („70,0M + 50,0M = 120,0M übersteigen zusammen … (100,0M)").
+
+Bewusst **nicht** getan: negative Zielwerte lediglich abfangen; negative
+Ergebnisse pauschal auf null klemmen; einen beliebigen zulässigen
+Lösungspunkt als eindeutige Aufteilung ausgeben. Unbeschränkte oder
+mehrdeutige Zielgrößen bleiben unbekannt.
+
+**Toleranz.** Unverändert 0,01 % der größten Angabe, mindestens `1e-6` —
+gemeldete Beträge sind auf Millionen gerundet. Sie ist so eng, dass eine
+materiell unmögliche Aufteilung nicht durchrutscht: Befund 1 verfehlt die
+Zulässigkeit um 20 von 100, also um das 200-fache der Toleranz. Eine
+rundungsbedingt leicht negative Zielsumme wird **nicht** geklemmt, sondern aus
+der zulässigen Menge genommen, deren Ecken `x ≥ 0` erfüllen.
+
+**Unverändert:** Schnittstelle und Statuskonventionen von
+`_solveDebtEvidence()`; die Regeln für eigenständig belegte oder ausdrücklich
+manuell gesetzte Nettoschulden; die Altdatenregel; alle fünf Korrekturen aus
+12B.2.
+
+### Berichtigte Testerwartung
+
+`R25` prüfte für den Fall „DebtCurrent 300 gegen laufende Fälligkeiten 100 +
+kurzfristiges Leasing 250" auf den Wortlaut `unvereinbar` — die generische
+Meldung über einen negativen Zellwert. Derselbe Fall wird jetzt von der
+**präziseren** Prüfung auf disjunkte Teilangaben gefangen, die beide
+Bestandteile und die Gesamtangabe benennt. Der Befund ist unverändert; die
+Erwartung akzeptiert nun beide Formulierungen. Die inhaltlichen Zusicherungen
+von `R25` (`scopeComplete === false`, Brücke gesperrt, `totalDebt === null`)
+sind unverändert.
+
+### Verbleibende Prüfgrenzen
+
+* **Keine eigene Prüfung der Primärquelle**, siehe oben.
+* **Kein reales Filing**; synthetische Importtests sind keine Live-Validierung.
+* Die Aufzählung ist auf die feste Dimension `n = 5` zugeschnitten. Käme eine
+  sechste Bilanzzelle hinzu, bliebe das Verfahren richtig (2⁶ Träger), die
+  Laufzeitannahme „vernachlässigbar" wäre aber neu zu prüfen.
+* Die Feststellung „`P` ist nichtleer ⇔ `P` hat eine Ecke" gilt, weil alle
+  Variablen nach unten durch 0 beschränkt sind. Diese Voraussetzung ist an das
+  Zellmodell gebunden und wäre bei vorzeichenfreien Größen nicht gegeben.
+* Die Grenzen aus 12B.2 bleiben bestehen — insbesondere gilt eine Bilanz, die
+  einen Bestandteil gar nicht erwähnt, weiterhin als **nicht belegt**.
 
 ---
 
