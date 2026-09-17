@@ -1,6 +1,270 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Korrekturchat 12B.1: Schuldenumfang, Leasing, unklare Nettoschulden (V1.0.60)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
+**`claude/chat12b-debt-periods`**, Ausgangscommit
+**`f4d65183fc5e5f4853015b43333eaf2cae6c5dcf`** — zugleich die Branch-Spitze;
+nachfolgende Aenderungen gab es nicht (geprueft nach `git fetch --prune`).
+`main` steht weiterhin auf `b023dc8` und wurde nicht angefasst.
+Tool-Datei: `us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Ergebnisbranch: **`claude/chat12b1-debt-scope-fixes`** — der vom Auftrag
+gewuenschte Name; kein technisch erzwungener Abweichname noetig.
+Eine `AGENTS.md` existiert in diesem Repository nicht (im gesamten Arbeitsbaum
+gesucht).
+Testbefehl: `npm test`.
+
+**Bestaetigter Teststand vor der Aenderung** (selbst ausgefuehrt auf `f4d6518`):
+1700 Rechen-Assertions · 434 Fixture-Assertions · 172 Node-Tests · Exit 0 —
+wie im Auftrag erwartet.
+
+**Auftrag.** Die nach Korrekturchat 12B festgestellten Fehler bei
+Schuldenumfang, Leasingueberschneidungen und unklaren Nettoschulden.
+A-5, A-6, A-7 und O-3 blieben unangetastet.
+
+---
+
+### 1 · Quellenlage (wahrheitsgemaesz)
+
+Der Abruf der Primaerquelle
+`https://xbrl.fasb.org/us-gaap/2025/elts/us-gaap-doc-2025.xml` war in dieser
+Umgebung **nicht moeglich**: der Egress-Proxy sperrt `xbrl.fasb.org` (HTTP 403
+auf CONNECT), ebenso `www.fasb.org`, `www.sec.gov` und `data.sec.gov`.
+Geprueft ueber `curl` und ueber den Seitenabruf.
+
+**Ich habe die Definitionen daher NICHT selbst an der Quelle geprueft.**
+Verwendet wurde die Auftragsvorgabe:
+
+| Tag | Umfang laut Vorgabe |
+|---|---|
+| `LongTermDebtAndCapitalLeaseObligations` | noncurrent Schulden **und** Leasing |
+| `DebtCurrent` | current Schulden **einschliesslich** Leasing |
+| `DebtAndCapitalLeaseObligations` | kurz- **und** langfristig, einschliesslich Leasing |
+| `LongTermDebtNoncurrent` | noncurrent Schulden **ohne** Leasing |
+| `LongTermDebtCurrent` | current Anteil langfristiger Schulden **ohne** Leasing |
+
+**Berichtigte Aussagen aus 12B.** Die dort festgehaltene Behauptung, *alle*
+drei Tags der `total_debt`-Kette seien langfristige Konzepte ohne kurzfristige
+Schulden, ist **falsch** (`DebtAndCapitalLeaseObligations` umfasst beides).
+Ebenso falsch war, `LongTermDebtAndCapitalLeaseObligations` mit
+`currentPortion: true` als Gesamtwert einschliesslich laufender Faelligkeiten
+zu fuehren. Beide Stellen sind in `AUDIT-CHAT12.md` ausdruecklich berichtigt.
+
+### 2 · Reproduktion am unveraenderten Ausgangsstand
+
+Alle drei Befunde wurden zuerst auf `f4d6518` ueber
+`importSecFacts(secFactsWithDebt(...))` reproduziert — dem produktiven
+Importweg, ohne im Test nachgebildete Ersatzlogik:
+
+| Befund | Datensatz | Verhalten vor der Korrektur |
+|---|---|---|
+| 1 | `LongTermDebtAndCapitalLeaseObligations` 1.000, `LongTermDebtNoncurrent` 700 | 300 als kurzfristige Finanzschuld, OWC-Quote +10 % als **gemessen** |
+| 2 | `LongTermDebtNoncurrent` 700 + `DebtCurrent` 300, einmal mit zusaetzlichem `FinanceLeaseLiabilityCurrent` 50 | Schulden 1.000 → 1.050, kurzfr. 300 → 350, Nettoschulden 900 → 950, OWC 10 % → 15 %, Fair Value **19,61913 → 18,67980** |
+| 3 | `LongTermDebt` 1.000 + `DebtCurrent` 150 | Rebuild erkennt die Ueberschneidung, `total_debt = 1.000` bleibt ungekennzeichnet; Bruecke `available: true`, `netDebtM: 900`, konkreter Eigenkapitalwert |
+| Vollstaendigkeit | `LongTermDebtNoncurrent` 700 + `ShortTermBorrowings` 300 | kurzfr. Schuld 300 „gemessen", obwohl die laufenden Faelligkeiten der 700 unbekannt sind |
+
+### 3 · Aenderungen am Produktcode
+
+**EINE gemeinsame Semantiktabelle.** Der Umfang wird nicht mehr ueber
+Merkmalsflags (`currentPortion`, `leases`) beschrieben, sondern als **Menge von
+Bilanzzellen** — `DEBT_TAG_CELLS`. Sie ist die einzige Semantikquelle;
+Komponenten-Rebuild und `_resolveShortTermDebtHistory()` lesen beide aus ihr.
+Die frueheren Tabellen `DEBT_TAG_SCOPE`, `STD_TAGS_INCLUDING_CURRENT_LTD` und
+`_TD_DIRECT_TAG_SCOPE` sind entfallen (durch `R20` abgesichert).
+
+Zellen: `stBorrow` (originaer kurzfristige Bankschulden), `ltCurMat` (laufende
+Faelligkeiten), `debtNC` (langfristige Schulden), `leaseCur`, `leaseNC`.
+Daraus folgen beide Rechenregeln:
+
+* **Addition** nur bei **disjunkten** Zellmengen.
+* **Subtraktion** A − B nur, wenn cells(B) **echte Teilmenge** von cells(A)
+  ist; das Ergebnis belegt genau cells(A) \ cells(B).
+
+Gleicher Stichtag allein genuegt damit nicht mehr. Die kurzfristigen
+Finanzschulden des Working Capital sind genau `{stBorrow, ltCurMat, leaseCur}`.
+
+**Befund 1 — Restgroessenaufloesung.**
+`LongTermDebtAndCapitalLeaseObligations` `{debtNC, leaseNC}` minus
+`LongTermDebtNoncurrent` `{debtNC}` ergibt `{leaseNC}` — **langfristiges
+Leasing**, keine Zelle der kurzfristigen Finanzschulden. Es geht damit nicht
+mehr ins OWC ein. Da weder die laufende Tranche noch das kurzfristige Leasing
+gemeldet oder ableitbar sind, bleibt der Betrag **unbekannt**; die Historie
+bricht ab und die bestehende ausdrueckliche Kennzeichnung greift
+(`assumptionRequired`, `setBy: 'model_provisional_default'`) — keine neue
+stille Nullannahme.
+
+**Befund 2 — Leasingdoppelzaehlung.** Im Rebuild wie im Resolver gilt jetzt
+dieselbe Teilmengenregel: `FinanceLeaseLiabilityCurrent` `{leaseCur}` ist in
+`DebtCurrent` `{stBorrow, ltCurMat, leaseCur}` enthalten und wird nicht erneut
+addiert. Tatsaechlich disjunkte Komponenten werden weiterhin addiert. Auch die
+Ueberschneidung `DebtCurrent` × `LongTermDebt` wird ueber die Zellmengen
+erkannt — ein Abzug der laufenden langfristigen Schulden entfernt dort nicht
+automatisch das bereits enthaltene kurzfristige Leasing.
+
+**Befund 3 — unklare Gesamtschulden.**
+* Der Rebuild kennzeichnet einen nicht ueberschneidungsfrei zusammensetzbaren
+  Wert als **Teilbetrag** (`_v4_meta.total_debt.scopeIndeterminate` mit Grund).
+* `_resolveNetDebtForDcfBridge()` liefert dann einen begruendeten
+  **Nichtverfuegbarkeitsstatus**. Ein bereits **abgeleitetes** `net_debt`
+  umgeht die Sperre nicht (die Pruefung steht vor dem `net_debt[0]`-Vorrang).
+* **Eigenstaendig belegte oder manuell gesetzte** Nettoschulden
+  (`source_type: 'reported'`) bleiben unveraendert zulaessig.
+* Der **operative Unternehmenswert** bleibt getrennt ausgewiesen; der
+  Eigenkapitalwert entfaellt (`applicable: false`, `base: null`). Der
+  Synthesizer filtert auf `applicable && base != null` und uebergeht das Modell
+  damit in Gewichtung und Einstiegszone. Haupt-DCF, Mid-Cycle, Reverse DCF,
+  Sensitivitaetsmatrix und Monte Carlo tragen denselben Status (in `R18` fuer
+  alle fuenf Wege geprueft).
+
+**Vollstaendigkeitsluecke.** Eine nicht belegte Zelle macht den kurzfristigen
+Betrag **unbekannt**, sofern sie nicht nachweisbar leer ist — nachweisbar leer
+ist eine Zelle, die von einer Angabe mit Wert 0 umfasst wird; `ltCurMat` ohne
+langfristige Schulden > 0; `leaseCur` ohne jede Leasingverpflichtung im
+Abschluss; `stBorrow`, wenn kein solcher Posten gemeldet ist (unveraenderte
+Lesart: ein originaer kurzfristiger Posten folgt aus keinem langfristigen
+Bestand). Ein blosser Warntext genuegt nicht mehr.
+
+**FY und TTM.** Die TTM-Sicht schreibt `source_reference` um; eine
+TTM-Schuldenreihe saehe dadurch aus wie eine Reihe ganz ohne Herkunft und
+waere faelschlich als unproblematischer Altdatensatz behandelt worden.
+`buildValuationBasisView()` fuehrt den urspruenglichen us-gaap-Tag jetzt als
+`source_tag` mit (`source_tag_inherited: true`); `_secSourceTag()` liest ihn
+vorrangig und steht dafuer in `DATA_BASIS_REQUIRED_HELPERS`. Die
+**Altdatenregel** gilt nur noch ohne **jeden** Periodenkontext — eine Reihe mit
+Perioden, deren Umfang unbestimmt ist, ist ausdruecklich kein Altdatenfall.
+
+### 4 · Gemessene Wirkung
+
+| Fall | vorher | nachher |
+|---|---|---|
+| Befund 1: LTD&Cap 1.000 / Noncurrent 700 | kurzfr. 300 „gemessen", OWC +10 % | kurzfr. **unbekannt**, OWC nicht ermittelbar (ausdruecklich gekennzeichnet) |
+| Befund 2 ohne Aufschluesselung | Schulden 1.000, kurzfr. 300, ND 900, OWC 10 %, FV 19,61913 | unveraendert |
+| Befund 2 mit `FinanceLeaseLiabilityCurrent` 50 | Schulden 1.050, kurzfr. 350, ND 950, OWC 15 %, **FV 18,67980** | **identisch zu ohne**: 1.000 / 300 / 900 / 10 % / **19,61913** |
+| Befund 2, disjunkte Komponenten (300+100+50) | — | kurzfr. **450**, Schulden 1.150, ND 1.050 (Addition bleibt erhalten) |
+| Befund 3: LongTermDebt 1.000 / DebtCurrent 150 | ND **900 verfuegbar**, FV 20,93711 | ND **nicht verfuegbar** mit Begruendung, kein Eigenkapitalwert, operativer Wert 29,94/Aktie bleibt |
+| Befund 3 mit manuell gesetztem `net_debt` 850 | — | **weiterhin verfuegbar** (850) |
+| Vollstaendigkeit: Noncurrent 700 + ShortTermBorrowings 300 | kurzfr. 300 „gemessen" | **unbekannt**; mit gemeldeter laufender Tranche (600/100/300) wieder **450 gemessen** |
+| drei zulaessige Darstellungen derselben Bilanz (`R15`) | — | identisch: Schulden 1.000, kurzfr. 300, OWC +10 %, ND 900, gleicher Fair Value |
+
+### 5 · Tests
+
+**Berichtigte Erwartungen** (fachlich falsch, nicht bloss toleranzbedingt):
+
+* **`R12`** erwartete, dass `LongTermDebt` 700 + `ShortTermBorrowings` 300 eine
+  **gemessene** kurzfristige Schuld von 300 ergibt. `LongTermDebt` enthaelt die
+  laufenden Faelligkeiten, weist sie aber nicht getrennt aus — die 300 sind nur
+  ein Bestandteil. Der Test prueft jetzt die Vollstaendigkeitsregel.
+* **`R14`** fuehrte seinen Periodennachweis ueber
+  `LongTermDebtAndCapitalLeaseObligations − LongTermDebtNoncurrent` und setzte
+  damit voraus, 1.000 − 700 sei die kurzfristige Schuld. Der Nachweis laeuft
+  jetzt ueber `DebtCurrent` (deckt die kurzfristige Schuld als Ganzes ab) mit
+  einer Periodenluecke — der Jahresmix wird weiterhin erkannt, und der frueher
+  still erzeugte Mischwert darf nicht auftreten.
+* **`R15`** verwendete als dritte Darstellung `LongTermDebt` 700 +
+  `ShortTermBorrowings` 300 und beschrieb damit eine **andere** Bilanz;
+  ersetzt durch `DebtCurrent` 300.
+* **`tests/sec-ttm.test.mjs`**: die festgeschriebene Helferliste des
+  DATENBASIS-BLOCKs enthaelt jetzt zusaetzlich `_secSourceTag` — eine echte
+  neue Abhaengigkeit, keine gelockerte Erwartung.
+
+**Neue Regressionstests**
+
+| Test | sichert ab |
+|---|---|
+| `R16` | Restgroesse zweier noncurrent-Tags ist **langfristiges Leasing**, keine kurzfristige Schuld; Gegenprobe mit ausgewiesenem kurz-/langfristigem Leasing |
+| `R17` | Leasing-Aufschluesselung aendert Schulden, OWC und Bewertung nicht; disjunkte Komponenten werden weiterhin addiert; explizite Null; fehlende Aufschluesselung; widerspruechliche Komponenten |
+| `R18` | unklare Gesamtschuld ⇒ Nichtverfuegbarkeitsstatus in Bruecke und Bewertung, abgeleitetes `net_debt` umgeht sie nicht, manuelles bleibt zulaessig, operativer Wert bleibt, alle fuenf DCF-Wege |
+| `R19` | TTM-Herkunft bleibt erhalten; Perioden ohne bestimmbaren Umfang sind kein Altdatenfall |
+| `R20` | genau EINE Semantiktabelle; die Zellmengen entsprechen der Auftragsvorgabe; die alten Tabellen existieren nicht mehr |
+
+**`npm test` nach der Aenderung: 1700 Rechen-Assertions · 434
+Fixture-Assertions · 177 Node-Tests · Exit 0.** Die 1700 Rechen-Assertions und
+alle 434 Fixture-Assertions sind unveraendert gruen. Node-Tests 172 → 177
+(+5 neue; `R12`/`R14`/`R15` berichtigt statt ergaenzt).
+
+### 6 · Browserpruefung (durchgefuehrt)
+
+Mit dem vorinstallierten Chromium (Playwright) wurde die ausgelieferte Datei
+geladen und beide Faelle ueber `importMasterJsonFromTextarea()` eingelesen:
+
+* **Befund 1:** OWC-Historie 0 Jahre; sichtbarer Text
+  „⚠ Operatives Working Capital NICHT ermittelbar (… kurzfristige
+  Finanzschulden unvollstaendig — laufende Faelligkeiten langfristiger Schulden
+  und kurzfristige Leasingverpflichtungen sind weder gemeldet noch aus den
+  vorhandenen Tags bestimmbar. Eine vorhandene Teilkomponente macht die Summe
+  nicht vollstaendig.)"; `measured: false`, `assumptionRequired: true`.
+* **Befund 3:** `available: false`; sichtbarer Text „⚠ Nettoschulden nicht
+  ermittelbar (fehlend: total_debt (Umfang unbestimmt)) — der DCF liefert
+  deshalb KEINEN Eigenkapitalwert je Aktie. Der operative Unternehmenswert
+  betraegt 29.94/Aktie …"; `applicable: false`, `base: null`.
+* Keine JavaScript-Fehler; die einzige Konsolenmeldung ist ein
+  fehlgeschlagener externer Ressourcenabruf (kein Netz) ohne Bezug zur
+  Aenderung.
+
+### 7 · Grenzen dieses Schrittes
+
+* **Keine eigene Pruefung der Primaerquelle** — siehe Abschnitt 1.
+* **Kein realer Filing-Fall.** Alle Nachweise sind synthetische SEC-Facts durch
+  den produktiven Importweg. Ein Live-Abruf bei SEC war nicht moeglich. Der
+  Unterschied ist damit klar: synthetischer Importtest, kein reales Filing.
+* **Ein noncurrent-only Tag bleibt als Gesamtschuld in Gebrauch.** Meldet ein
+  Filer nur `LongTermDebtAndCapitalLeaseObligations` und keine kurzfristige
+  Komponente, ist der Wert streng genommen ein Teilbetrag. Er wird weiterhin
+  als `total_debt` verwendet — sonst waere die haeufigste zulaessige
+  Darstellung ueberhaupt nicht bewertbar —, ist aber nicht mehr
+  ungekennzeichnet (`scopeNoncurrentOnly` + ausdrueckliche Warnung). Die Sperre
+  greift nur bei einer **erkannten, nicht aufloesbaren Ueberschneidung**.
+* Fuer `LongTermDebt` selbst enthaelt die Auftragsvorgabe keine Definition;
+  verwendet wird `{ltCurMat, debtNC}` — die Lesart, auf der bereits O-1 beruht.
+* Der `source_tag` der TTM-Sicht wird aus der Jahresreihe **desselben Feldes**
+  uebernommen (`source_tag_inherited`). Sollte der Quartalsnormalisierer fuer
+  ein Feld ein anderes Tag gewaehlt haben als die Jahresreihe, waere die
+  Herkunft insoweit uebernommen und nicht gemessen.
+* Die beiden DOM-Formulartests (`_testManualAssumptionOverride`,
+  `_testMarketDataOverrides`) bleiben wie bisher ausgewiesen uebersprungen.
+
+### 8 · Bearbeitungsstand nach diesem Schritt
+
+**Behoben und abgesichert**
+
+* **A-1, A-2, A-3** (12A, V1.0.58) — `R1`–`R9`, unveraendert gruen
+* **A-4** kurzfristige Finanzschulden nur als Restgroesse (12B, in 12B.1
+  fachlich berichtigt) — `R10`–`R12`, `R16`
+* **O-1** Doppelzaehlung laufender Faelligkeiten (12B, in 12B.1 um die
+  Leasing- und Kurzfristueberschneidung erweitert) — `R13`, `R17`
+* **O-2** Working-Capital-Historie ohne Periodenabgleich (12B; Nachweis in
+  12B.1 auf fachlich passende Daten umgestellt) — `R14`
+* **12B.1** Schuldenumfang, Leasingdoppelzaehlung, unklare Nettoschulden —
+  `R16`–`R20`
+
+**Weiterhin offen (nicht angefasst, Korrekturchat 12C vorbehalten)**
+
+* **A-5** Verwaesserung endet im Terminalwert bei Jahr 10 (`B6` gruen)
+* **A-6** `computeMidCycleFcf()` setzt fehlende D&A still auf 0 (`B7` gruen)
+* **A-7** Buyback-MoS-Zuschlag greift im Mid-Cycle-Pfad nie (`B8` gruen)
+* **O-3** Randfaelle der Nullstellensuche im Reverse DCF — unbestaetigt
+
+Die Einschraenkungen der Vorschritte bleiben offen.
+
+**Ausgangsbasis fuer Korrekturchat 12C: `claude/chat12b1-debt-scope-fixes`.**
+Dieser Branch **ersetzt** dafuer den bisherigen Ausgangsbranch
+`claude/chat12b-debt-periods`.
+
+---
+
 ## Korrekturchat 12B: Schuldenkomponenten und Periodenzuordnung (V1.0.59)
+
+> **BERICHTIGT durch Korrekturchat 12B.1 (V1.0.60).** Zwei Aussagen dieses
+> Eintrags sind fachlich falsch und wurden dort korrigiert:
+> (1) „alle drei Tags der Kette `SEC_TAG_MAP.total_debt` sind *langfristige*
+> Schuldkonzepte" — `DebtAndCapitalLeaseObligations` umfasst kurz- **und**
+> langfristige Schulden einschliesslich Leasing;
+> (2) `LongTermDebtAndCapitalLeaseObligations` wurde als Gesamtwert
+> *einschliesslich* laufender Faelligkeiten gefuehrt — es erfasst
+> ausschliesslich **noncurrent** klassifizierte Betraege, weshalb die
+> Restgroesse gegen `LongTermDebtNoncurrent` das **langfristige Leasing** ist
+> und keine kurzfristige Finanzschuld. Die daraus abgeleiteten Erwartungen in
+> `R12`, `R14` und `R15` sind in 12B.1 berichtigt.
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
 **`claude/chat12a-dcf-consistency`** — der in Korrekturchat 12A ausdrücklich

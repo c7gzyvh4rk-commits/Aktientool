@@ -749,8 +749,13 @@ test('der DATENBASIS-BLOCK laeuft in einer leeren Sandbox', () => {
   assert.equal(ds.flows.revenue.values[0], 860);
   // V1.0.56: der Block nennt seine Helfer ausdruecklich; der Loader loest
   // genau diese Liste auf (keine stille Abhaengigkeit).
+  // V1.0.60 (Korrekturchat 12B.1): `_secSourceTag` kam hinzu. Die TTM-Sicht
+  // schreibt `source_reference` um und muss den urspruenglichen us-gaap-Tag
+  // als `source_tag` mitfuehren — sonst saehen TTM-Schuldenreihen aus wie
+  // Reihen ganz ohne Herkunft und Ueberschneidungen blieben unerkennbar.
   assert.deepEqual(Array.from(isoliert.DATA_BASIS_REQUIRED_HELPERS),
-    ['_median', '_explicitNumber', 'DA_PROVISIONAL_LABEL', '_resolveDaForForecast']);
+    ['_median', '_explicitNumber', 'DA_PROVISIONAL_LABEL', '_resolveDaForForecast',
+     '_secSourceTag']);
   assert.deepEqual(Array.from(isoliert.DATA_BASIS_REQUIRED_BLOCKS), ['SEC-QUARTALS-BLOCK']);
   // Die Helfer sind in der Sandbox wirklich vorhanden — der Ausweis nennt
   // den D&A-Status, statt ihn stillschweigend auszulassen.

@@ -21,12 +21,12 @@ und diese Auswertung.
 | A-1 | **behoben** | Korrekturchat 12A, V1.0.58, Branch `claude/chat12a-dcf-consistency` |
 | A-2 | **behoben** | Korrekturchat 12A, V1.0.58, Branch `claude/chat12a-dcf-consistency` |
 | A-3 | **behoben** | Korrekturchat 12A, V1.0.58, Branch `claude/chat12a-dcf-consistency` |
-| A-4 | **behoben** | Korrekturchat 12B, V1.0.59, Branch `claude/chat12b-debt-periods` |
+| A-4 | **behoben** | Korrekturchat 12B (V1.0.59), **berichtigt** in 12B.1 (V1.0.60, Branch `claude/chat12b1-debt-scope-fixes`) |
 | A-5 | **offen** | — (Nachweis `B6` bleibt als Fehlernachweis grün) |
 | A-6 | **offen** | — (Nachweis `B7` bleibt als Fehlernachweis grün) |
 | A-7 | **offen** | — (Nachweis `B8` bleibt als Fehlernachweis grün) |
-| O-1 | **bestätigt und behoben** | Korrekturchat 12B, V1.0.59 (Reproduktion am echten Importweg) |
-| O-2 | **bestätigt und behoben** | Korrekturchat 12B, V1.0.59 (Reproduktion am echten Importweg) |
+| O-1 | **bestätigt und behoben** | Korrekturchat 12B (V1.0.59), **erweitert** in 12B.1 (V1.0.60) |
+| O-2 | **bestätigt und behoben** | Korrekturchat 12B (V1.0.59), Nachweis in 12B.1 auf fachlich passende Daten umgestellt |
 | O-3 | **unverändert offen** | nicht bestätigt, nicht angefasst |
 
 Die Nachweise `B1`–`B4` (A-1, A-2, A-3) wurden in Korrekturchat 12A in
@@ -69,6 +69,7 @@ und keine Laufzeit- oder Sicherheitsprüfung.
 | `npm test` nach Ergänzung der Audittests | 1700 Rechen-Assertions · **162 Node-Tests** (148 + 14 neu) · **Exit 0** |
 | `npm test` nach Korrekturchat 12A (A-1/A-2/A-3 behoben, B1–B4 → R1–R9) | 1700 Rechen-Assertions · 434 Fixture-Assertions · **167 Node-Tests** · **Exit 0** |
 | `npm test` nach Korrekturchat 12B (A-4/O-1/O-2 behoben, B5 → R10–R15) | 1700 Rechen-Assertions · 434 Fixture-Assertions · **172 Node-Tests** · **Exit 0** |
+| `npm test` nach Korrekturchat 12B.1 (Schuldenumfang berichtigt, R12/R14/R15 korrigiert, R16–R20 neu) | 1700 Rechen-Assertions · 434 Fixture-Assertions · **177 Node-Tests** · **Exit 0** |
 
 Keine bestehende Testerwartung wurde geändert. Die neuen Tests sind in zwei
 Gruppen getrennt:
@@ -81,6 +82,13 @@ Gruppen getrennt:
   gelten muss.
 * **R1–R9 (Regression, ergänzt in Korrekturchat 12A)** — ersetzen `B1`–`B4`,
   nachdem A-1, A-2 und A-3 behoben sind, und sichern das richtige Verhalten ab.
+* **R16–R20 (Regression, ergänzt in Korrekturchat 12B.1)** — sichern die
+  berichtigten Tag-Umfänge ab: `R16` (Restgröße zweier noncurrent-Tags ist
+  langfristiges Leasing), `R17` (Leasing-Aufschlüsselung ändert nichts),
+  `R18` (unklare Gesamtschuld ⇒ Nichtverfügbarkeitsstatus), `R19` (TTM-Herkunft
+  bleibt erhalten), `R20` (eine gemeinsame Semantiktabelle). `R12`, `R14` und
+  `R15` wurden dabei **inhaltlich berichtigt**: ihre bisherigen Erwartungen
+  beruhten auf den falschen Umfangsannahmen.
 * **R10–R15 (Regression, ergänzt in Korrekturchat 12B)** — ersetzen `B5`,
   nachdem A-4 behoben ist, und sichern zusätzlich die bestätigten und
   behobenen Prüfpunkte O-1 und O-2 ab. `R12`–`R15` laufen über den
@@ -276,15 +284,22 @@ Ergebnis:
 | **Komponente veraltet** | `ShortTermBorrowings` nur FY2024–FY2022 | Für den aktuellen Stichtag liegt nichts vor; Restgröße 0 galt trotzdem als Messung |
 
 Damit ist A-4 ein **nachgewiesener Importfehler**, kein bloß synthetisch
-inkonsistenter Datensatz. Die eigentliche Ursache liegt tiefer als im Audit
-vermutet: **alle drei Tags der Kette `SEC_TAG_MAP.total_debt`**
-(`LongTermDebtAndCapitalLeaseObligations`, `LongTermDebt`,
-`DebtAndCapitalLeaseObligations`) sind *langfristige* Schuldkonzepte; keines
-enthält kurzfristige Bankschulden oder Commercial Paper. Die Restgröße misst
-deshalb bestenfalls die **laufende Tranche** langfristiger Schulden — und
-wenn `total_debt` und `long_term_debt` auf **dasselbe** Tag fallen
-(`LongTermDebt` ist Kettenplatz 2 bzw. 1), ist sie strukturell 0 und nie eine
-Messung.
+inkonsistenter Datensatz.
+
+> **BERICHTIGUNG (Korrekturchat 12B.1).** Der ursprünglich hier festgehaltene
+> Satz „alle drei Tags der Kette `SEC_TAG_MAP.total_debt` sind *langfristige*
+> Schuldkonzepte; keines enthält kurzfristige Bankschulden" ist **falsch**.
+> `DebtAndCapitalLeaseObligations` umfasst kurz- **und** langfristige Schulden
+> einschließlich Leasing. Ebenso falsch war, `LongTermDebtAndCapitalLeaseObligations`
+> als Gesamtwert *einschließlich* laufender Fälligkeiten zu behandeln — es
+> erfasst ausschließlich **noncurrent** klassifizierte Beträge. Die daraus
+> gebildete Restgröße `LongTermDebtAndCapitalLeaseObligations −
+> LongTermDebtNoncurrent` ist deshalb das **langfristige Leasing** und keine
+> kurzfristige Finanzschuld. Die korrigierte Fassung steht in Abschnitt 3a.
+
+Richtig bleibt: wenn `total_debt` und `long_term_debt` auf **dasselbe** Tag
+fallen (`LongTermDebt` ist Kettenplatz 2 bzw. 1), ist die Restgröße
+strukturell 0 und nie eine Messung.
 
 #### Was geändert wurde
 
@@ -417,6 +432,13 @@ und belegt deshalb ebenfalls `lt_current`. Treffen `DebtCurrent` und
 auflösbar: die Periode wird verworfen und der direkte Wert bleibt stehen —
 statt eine scheinpräzise Summe zu bilden.
 
+**Nachtrag Korrekturchat 12B.1.** Die Auftragsvorgabe (FASB-Taxonomie 2025)
+bestätigt die Trennung `LongTermDebtCurrent` / `LongTermDebtNoncurrent` und
+damit die hier vorgenommene Korrektur. Sie berichtigt zugleich die in 12B
+zusätzlich getroffene Annahme über
+`LongTermDebtAndCapitalLeaseObligations` — siehe Abschnitt 3a. Der
+Primärquellenabruf war auch in 12B.1 nicht möglich.
+
 **Verbleibende Unsicherheit — ausdrücklich benannt.** Die Tag-Semantik
 (`LongTermDebt` = gesamte langfristige Verschuldung **einschließlich** der
 laufenden Fälligkeiten, `LongTermDebtCurrent` + `LongTermDebtNoncurrent` =
@@ -487,6 +509,170 @@ FY2025 = 300, FY2024 unbestimmbar. Regressionstest `R14`.
   kenntlich (`periodKeyed: false`, `status: 'derived'`). Trägt ein einzelnes
   Feld keine Periodenmetadaten, während die übrigen periodengetreu laufen,
   wird der erzwungene Rückfall auf die Position als Warnung ausgewiesen.
+
+## 3a · Korrekturchat 12B.1 — Schuldenumfang, Leasing, unklare Nettoschulden
+
+Nach Abschluss von 12B wurden drei Fehler festgestellt, die alle auf derselben
+Ursache beruhen: **falsche Annahmen über den fachlichen Umfang der
+us-gaap-Schulden-Tags**.
+
+### Quellenlage (wahrheitsgemäß)
+
+Grundlage sind die Dokumentationsdefinitionen der **FASB-Taxonomie 2025**
+(`us-gaap-doc-2025.xml`). Der Abruf der Primärquelle war **in dieser Sitzung
+nicht möglich**: `xbrl.fasb.org` (ebenso `www.fasb.org`, `www.sec.gov`,
+`data.sec.gov`) wird vom Egress-Proxy dieser Umgebung gesperrt (HTTP 403 auf
+CONNECT), sowohl über `curl` als auch über den Seitenabruf. Die Definitionen
+stammen daher aus der **Auftragsvorgabe**; sie wurden hier **nicht selbst an
+der Quelle geprüft**. Maßgeblich verwendet:
+
+| Tag | Umfang laut Vorgabe |
+|---|---|
+| `LongTermDebtAndCapitalLeaseObligations` | noncurrent klassifizierte Schulden **und** Leasingverpflichtungen |
+| `DebtCurrent` | current klassifizierte Schulden **einschließlich** Leasingverpflichtungen |
+| `DebtAndCapitalLeaseObligations` | kurz- **und** langfristige Schulden einschließlich Leasing |
+| `LongTermDebtNoncurrent` | noncurrent klassifizierte Schulden **ohne** Leasing |
+| `LongTermDebtCurrent` | current klassifizierter Anteil langfristiger Schulden **ohne** Leasing |
+
+### Das gemeinsame Umfangsmodell (V1.0.60)
+
+Statt Merkmalsflags (`currentPortion`, `leases`) wird der Umfang als **Menge
+von Bilanzzellen** geführt — `DEBT_TAG_CELLS`, die **einzige** Semantikquelle
+für Komponenten-Rebuild *und* `_resolveShortTermDebtHistory()`:
+
+| Zelle | Bedeutung |
+|---|---|
+| `stBorrow` | originär kurzfristige Bankschulden / Commercial Paper |
+| `ltCurMat` | laufende Fälligkeiten langfristiger Schulden |
+| `debtNC` | langfristige Schulden (ohne Leasing) |
+| `leaseCur` | kurzfristige Leasingverpflichtungen |
+| `leaseNC` | langfristige Leasingverpflichtungen |
+
+Damit sind beide Rechenschritte entscheidbar:
+
+* **Addition** ist zulässig, wenn die Zellmengen **disjunkt** sind.
+* **Subtraktion** A − B ist zulässig, wenn cells(B) eine **echte Teilmenge**
+  von cells(A) ist; das Ergebnis belegt genau cells(A) \ cells(B).
+
+Gleicher Stichtag allein genügt also nicht mehr — der Umfang muss die gesuchte
+Größe tatsächlich bestimmen. Die kurzfristigen Finanzschulden des Working
+Capital sind genau `{stBorrow, ltCurMat, leaseCur}`.
+
+### Befund 1 · Restgröße aus zwei noncurrent-Tags
+
+`LongTermDebtAndCapitalLeaseObligations` 1.000 − `LongTermDebtNoncurrent` 700
+ergab 300 „kurzfristige Finanzschulden" und daraus eine als **gemessen**
+ausgewiesene OWC-Quote von +10 %. Beide Tags belegen aber **keinen**
+kurzfristigen Betrag; die Differenz ist das **langfristige Leasing**.
+
+**Korrigiert:** Die Subtraktion liefert `{leaseNC}` — keine Zelle der
+kurzfristigen Finanzschulden. Da weder die laufende Tranche noch das
+kurzfristige Leasing gemeldet oder ableitbar sind, bleibt der Betrag
+**unbekannt**; die OWC-Historie bricht ab und die bestehende ausdrückliche
+Kennzeichnung fehlender OWC-Daten greift (`assumptionRequired`,
+`model_provisional_default`) — **keine** neue stille Nullannahme.
+Regressionstest `R16`.
+
+### Befund 2 · Leasingdoppelzählung
+
+Dieselbe Bilanz, einmal ohne und einmal mit zusätzlicher Aufschlüsselung:
+
+| | ohne `FinanceLeaseLiabilityCurrent` | mit (50, in `DebtCurrent` enthalten) |
+|---|---|---|
+| Gesamtschulden | 1.000 | **1.050** ❌ |
+| kurzfristige Finanzschulden | 300 | **350** ❌ |
+| Nettoschulden | 900 | **950** ❌ |
+| OWC-Quote | 10 % | **15 %** ❌ |
+| Fair Value (`scOf(8, 2, 10, 20)`) | 19,61913 | **18,67980** ❌ |
+
+**Korrigiert:** `DebtCurrent` deckt `{stBorrow, ltCurMat, leaseCur}` ab;
+`FinanceLeaseLiabilityCurrent` `{leaseCur}` ist eine **Teilmenge** und wird
+weder im Rebuild noch im Resolver erneut addiert. Alle fünf Größen sind jetzt
+in beiden Darstellungen identisch. Tatsächlich **disjunkte** Komponenten
+werden weiterhin addiert (`ShortTermBorrowings` + `LongTermDebtCurrent` +
+`FinanceLeaseLiabilityCurrent` = 450). Regressionstest `R17`.
+
+### Befund 3 · Unklare Gesamtschulden ergaben eine verfügbare Brücke
+
+`LongTermDebt` 1.000 (`{ltCurMat, debtNC}`) und `DebtCurrent` 150
+(`{stBorrow, ltCurMat, leaseCur}`) überschneiden sich in der laufenden
+Tranche; deren Höhe ist nicht gemeldet. Die wahre Gesamtschuld liegt zwischen
+1.000 und 1.150. Der Rebuild erkannte die Überschneidung und verwarf die
+Periode — ließ aber `total_debt = 1.000` **ungekennzeichnet** stehen. Die
+Brücke meldete `available: true`, `netDebtM: 900`, der DCF einen konkreten
+Eigenkapitalwert.
+
+**Korrigiert:**
+
+* Der Rebuild kennzeichnet den Wert als **Teilbetrag**
+  (`_v4_meta.total_debt.scopeIndeterminate` mit Begründung).
+* `_resolveNetDebtForDcfBridge()` liefert dann einen begründeten
+  **Nichtverfügbarkeitsstatus**. Ein bereits **abgeleitetes** `net_debt`
+  umgeht die Sperre nicht.
+* **Eigenständig belegte oder manuell gesetzte** Nettoschulden
+  (`source_type: 'reported'`) bleiben unverändert zulässig.
+* Der **operative Unternehmenswert** bleibt getrennt ausgewiesen
+  (29,94/Aktie); der Eigenkapitalwert entfällt. Da `applicable: false` und
+  `base: null`, übergeht der Synthesizer das Modell (Filter auf
+  `applicable && base != null`) — es wird **nicht** gewichtet und geht **nicht**
+  in die Einstiegszone ein. Haupt-DCF, Mid-Cycle, Reverse DCF,
+  Sensitivitätsmatrix und Monte Carlo tragen denselben Status.
+
+Regressionstest `R18`.
+
+### Verwandte Vollständigkeitslücke
+
+Eine bekannte kurzfristige Bankschuld bei **unbekannten** laufenden
+Fälligkeiten war bis V1.0.59 eine vollständig „gemessene" kurzfristige Schuld
+mit bloßem Warntext. Jetzt gilt: eine nicht belegte Zelle der kurzfristigen
+Finanzschulden macht den Betrag **unbekannt**, sofern sie nicht nachweisbar
+leer ist. Nachweisbar leer ist
+
+* jede Zelle, die von einer gemeldeten Angabe mit Wert 0 umfasst wird;
+* `ltCurMat`, wenn **keine** langfristigen Schulden > 0 gemeldet sind;
+* `leaseCur`, wenn im Abschluss **überhaupt keine** Leasingverpflichtung
+  auftaucht;
+* `stBorrow`, wenn kein solcher Posten gemeldet ist (unveränderte Lesart: ein
+  originär kurzfristiger Posten folgt aus keinem langfristigen Bestand).
+
+Regressionstest `R12`.
+
+### FY und TTM
+
+Die TTM-Sicht schreibt `source_reference` auf „TTM aus normalisierten
+Quartalsdaten (…)" um. Damit sah eine TTM-Schuldenreihe aus wie eine Reihe
+**ganz ohne Herkunft** und wäre wie ein manueller Altdatensatz behandelt
+worden — mit wieder zulässiger Restgröße. Korrigiert:
+
+* `buildValuationBasisView()` führt den ursprünglichen us-gaap-Tag als
+  `source_tag` mit (als `source_tag_inherited` gekennzeichnet);
+  `_secSourceTag()` liest ihn vorrangig. `_secSourceTag` steht dafür jetzt in
+  `DATA_BASIS_REQUIRED_HELPERS`.
+* Die **Altdatenregel** gilt nur noch ohne **jeden** Periodenkontext. Eine
+  Reihe mit Perioden, deren Umfang unbestimmt ist, ist ausdrücklich **kein**
+  Altdatenfall: dort wird nicht ersatzweise subtrahiert.
+
+Regressionstest `R19`.
+
+### Verbleibende Grenzen dieses Schrittes
+
+* **Keine eigene Prüfung der Primärquelle.** Siehe „Quellenlage" oben.
+* **Kein realer Filing-Fall.** Alle Nachweise laufen über synthetische
+  SEC-Facts durch den produktiven Importweg. Ein Live-Abruf war nicht möglich.
+* **Ein noncurrent-only Tag bleibt als Gesamtschuld in Gebrauch.** Meldet ein
+  Filer nur `LongTermDebtAndCapitalLeaseObligations` und keine kurzfristige
+  Komponente, ist der Wert streng genommen nur ein Teilbetrag. Er wird
+  weiterhin als `total_debt` verwendet — sonst wäre die häufigste zulässige
+  Darstellung überhaupt nicht bewertbar —, ist aber nicht mehr
+  ungekennzeichnet: `_v4_meta.total_debt.scopeNoncurrentOnly` und eine
+  ausdrückliche Warnung weisen aus, dass die Gesamtverschuldung insoweit zu
+  niedrig sein kann. Die Sperre greift nur bei einer **erkannten, nicht
+  auflösbaren Überschneidung** gemeldeter Angaben.
+* Für `LongTermDebt` selbst enthält die Auftragsvorgabe keine Definition;
+  verwendet wird `{ltCurMat, debtNC}` (langfristige Schulden einschließlich
+  laufender Tranche, ohne Leasing) — die Lesart, auf der bereits O-1 beruht.
+
+---
 
 ### O-3 · Randfälle der Nullstellensuche im Reverse DCF
 
