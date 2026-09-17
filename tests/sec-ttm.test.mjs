@@ -773,7 +773,13 @@ test('der DATENBASIS-BLOCK laeuft in einer leeren Sandbox', () => {
      '_cellsMinus', '_debtCellLabels', '_debtVec', '_solveDebtEvidence',
      '_resolveDebtHistory', '_resolveTotalDebtHistory', '_seriesHasPeriodContext',
      '_secPeriodYear', '_secPeriodDaysApart', '_joinPeriodKeyed',
-     'TERMINAL_DILUTION']);
+     'TERMINAL_DILUTION',
+     // V1.0.64 (Korrekturchat 12C.1, Restbefund A-6): Die D&A-Quote entsteht
+     // jetzt aus PERIODENGLEICHEN Angaben statt aus Array-Indizes. Der Ausweis
+     // der Datenbasis nennt den D&A-Status und muss deshalb dieselbe Paarung
+     // mitziehen — sonst kaeme er zu einem anderen Ergebnis als der Kern.
+     'DA_PERIOD_MATCH', '_daSeriesPeriods', '_daUnitsCompatible', '_daPeriodsMatch',
+     '_daMatchingIndex', '_daHasPeriods', '_daPairPeriodKeyed', '_daPeriodKeyedRatios']);
   assert.deepEqual(Array.from(isoliert.DATA_BASIS_REQUIRED_BLOCKS), ['SEC-QUARTALS-BLOCK']);
   // Die Helfer sind in der Sandbox wirklich vorhanden — der Ausweis nennt
   // den D&A-Status, statt ihn stillschweigend auszulassen.

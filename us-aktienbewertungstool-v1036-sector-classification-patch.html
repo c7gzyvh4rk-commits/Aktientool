@@ -3921,18 +3921,31 @@ const OWC_STOCK_SIMPLIFICATION_NOTE =
 // damit sie nicht auseinanderlaufen koennen. Die Detailphase ist im Kern mit
 // zehn Jahren festgeschrieben (forecastDcfCore, Schleife 1..10); `horizonYears`
 // benennt genau diese Groesse.
+// V1.0.64 (Restbefund A-5, Korrekturchat 12C.1): Welche Aktienbasis der
+// HAUPTWERT verwendet, haengt vom Vorzeichen der Aktienprojektion ab — die
+// Konvention hat zwei Zweige, und die Beschreibung nennt jetzt beide:
+//  · Verwaesserung (g > 0): jahresweise Teilung, Terminalwert durch die
+//    Aktienzahl des Jahres 10, danach konstant.
+//  · Rueckkaeufe oder konstante Aktienzahl (g <= 0): der konservative
+//    Hauptwert teilt DURCHGEHEND durch die heutige Aktienzahl. Die Projektion
+//    wirkt dort ausschliesslich in der Buyback-Diagnose — das ist die
+//    bestehende Konvention gegen Double Counting, sie bleibt unveraendert.
+// Bis V1.0.63 behauptete die Beschreibung pauschal den ersten Zweig.
 const TERMINAL_DILUTION = {
   horizonYears: 10,
-  terminalShareCountBasis: 'shares_year_10_constant',
-  appliedInDetailYears: true,
+  dilutionTerminalShareCountBasis: 'shares_year_10_constant',
+  buybackOrFlatTerminalShareCountBasis: 'shares_year_0_constant',
   appliedInTerminalValue: false,
   extrapolatedToPerpetuity: false,
+  buybackTreatment: 'diagnosis_only',
   note:
-    'Verwässerungs-Vereinfachung: Die projizierte Veränderung der Aktienzahl wirkt NUR in den ' +
-    'Detailjahren 1–10. Der Terminalwert wird mit der Aktienzahl des Jahres 10 gerechnet; ab dem ' +
-    'Terminalzeitpunkt ist die Aktienzahl im Modell konstant. Eine dauerhaft fortgesetzte ' +
+    'Verwässerungs-Vereinfachung: Eine projizierte ZUNAHME der Aktienzahl wirkt im Hauptwert NUR ' +
+    'in den Detailjahren 1–10; der Terminalwert wird dann mit der Aktienzahl des Jahres 10 ' +
+    'gerechnet und ist ab dem Terminalzeitpunkt konstant. Eine dauerhaft fortgesetzte ' +
     'Verwässerung wird NICHT fortgeschrieben — bei anhaltend verwässernden Geschäftsmodellen ' +
-    'ist der Wert je Aktie dadurch tendenziell zu hoch.'
+    'ist der Wert je Aktie dadurch tendenziell zu hoch. Bei Aktienrückgang oder konstanter ' +
+    'Aktienzahl rechnet der konservative Hauptwert durchgehend mit der HEUTIGEN Aktienzahl; ' +
+    'die Projektion wirkt dort nur in der Buyback-Diagnose.'
 };
 
 // Ohne manuelle Eingabe und ohne ausreichende Historie rechnet der Forecast
@@ -4856,25 +4869,192 @@ function _explicitNumber(raw) {
   return null;
 }
 
+// ══ V1.0.64 (Restbefund A-6, Korrekturchat 12C.1) · Periodengetreue Paarung ══
+// Bis V1.0.63 wurden EBITDA, EBIT und Umsatz ueber ARRAY-INDIZES verrechnet.
+// Beginnt eine Reihe erst spaeter (z.B. EBITDA ab FY2024, EBIT ab FY2025),
+// verrutschen die Reihen gegeneinander: ebitda[0] (FY2024) traf auf ebit[0]
+// (FY2025) und ergab eine D&A aus zwei verschiedenen Berichtsperioden. Die
+// Periodenart-Pruefung aus V1.0.63 faengt das NICHT — beide Reihen sind FY.
+//
+// Gepaart wird jetzt ueber das tatsaechliche BERICHTSENDE. Der Jahresschluessel
+// von _joinPeriodKeyed() wird hier bewusst NICHT uebernommen: er ist auf
+// Geschaeftsjahre zugeschnitten, und zwei TTM-Fenster koennen im selben
+// Kalenderjahr enden (sie liegen nur ein Quartal auseinander). Geprueft werden
+// Periodenende, Beginn und Dauer, soweit gemeldet, sowie die Einheit.
+//
+// Die Toleranz ist die des Bestandes: fuer zwei ausdrueckliche FY-Reihen gilt
+// dieselbe Regel wie in _joinPeriodKeyed (gleiches Fiskaljahr UND Enden
+// innerhalb von 45 Tagen, fuer 52/53-Wochen-Geschaeftsjahre). Sonst — und
+// damit fuer TTM-Fenster — gilt die enge Regel.
+const DA_PERIOD_MATCH = {
+  maxSpreadDays: 15,        // gilt fuer JEDE Periodenart, auch TTM
+  annualMaxSpreadDays: 45,  // nur FY gegen FY, wie _joinPeriodKeyed
+  maxDurationDiffDays: 45   // Quartal (ca. 91 T) gegen Jahr (ca. 365 T) faellt durch
+};
+
+// Periodenangaben einer Reihe in einem Griff.
+function _daSeriesPeriods(f, field) {
+  const m = (f && f._v4_meta && f._v4_meta[field]) || null;
+  const pt = (m && typeof m.period_type === 'string' && m.period_type.trim() !== ''
+              && m.period_type.toLowerCase() !== 'unknown') ? m.period_type.toUpperCase() : null;
+  return {
+    field,
+    periods:   (m && Array.isArray(m.periods))   ? m.periods   : null,
+    starts:    (m && Array.isArray(m.starts))    ? m.starts    : null,
+    durations: (m && Array.isArray(m.durations)) ? m.durations : null,
+    unit:      (m && m.unit != null) ? m.unit : null,
+    periodType: pt
+  };
+}
+
+// Einheiten duerfen sich nicht widersprechen (nur gemeldete werden geprueft).
+function _daUnitsCompatible(sA, sB) {
+  return !(sA.unit != null && sB.unit != null && sA.unit !== sB.unit);
+}
+
+// Gehoeren zwei Positionen zur SELBEN Berichtsperiode?
+function _daPeriodsMatch(sA, iA, sB, iB) {
+  const pA = sA.periods && sA.periods[iA];
+  const pB = sB.periods && sB.periods[iB];
+  if (pA == null || pB == null) return false;
+  const dist = _secPeriodDaysApart(pA, pB);
+  if (dist == null) return false;
+
+  let tol = DA_PERIOD_MATCH.maxSpreadDays;
+  let ok  = dist <= tol;
+  // Bestehende Geschaeftsjahr-Regel: gleiches Fiskaljahr und Enden innerhalb
+  // der in _joinPeriodKeyed gebrauchten Spanne. Nur fuer FY gegen FY.
+  if (!ok && sA.periodType === 'FY' && sB.periodType === 'FY') {
+    const yA = _secPeriodYear(pA), yB = _secPeriodYear(pB);
+    if (yA != null && yA === yB && dist <= DA_PERIOD_MATCH.annualMaxSpreadDays) {
+      ok = true;
+      tol = DA_PERIOD_MATCH.annualMaxSpreadDays;
+    }
+  }
+  if (!ok) return false;
+
+  // Beginn und Dauer duerfen nicht widersprechen, soweit gemeldet. Damit
+  // faellt ein Quartalswert gegen ein Jahresfenster durch, auch wenn beide
+  // am selben Tag enden.
+  const stA = sA.starts && sA.starts[iA], stB = sB.starts && sB.starts[iB];
+  if (stA != null && stB != null) {
+    const ds = _secPeriodDaysApart(stA, stB);
+    if (ds == null || ds > tol) return false;
+  }
+  const duA = sA.durations && sA.durations[iA], duB = sB.durations && sB.durations[iB];
+  if (typeof duA === 'number' && isFinite(duA) && typeof duB === 'number' && isFinite(duB)) {
+    if (Math.abs(duA - duB) > DA_PERIOD_MATCH.maxDurationDiffDays) return false;
+  }
+  return true;
+}
+
+// Position der Reihe `s`, die zur Periode (sRef, iRef) gehoert — oder -1.
+function _daMatchingIndex(sRef, iRef, s, values) {
+  const n = Math.min(values.length, (s.periods || []).length);
+  for (let k = 0; k < n; k++) {
+    if (_daPeriodsMatch(sRef, iRef, s, k)) return k;
+  }
+  return -1;
+}
+
+// Meldet die Reihe ueberhaupt Berichtsperioden?
+function _daHasPeriods(sp) {
+  return !!(sp && Array.isArray(sp.periods) && sp.periods.some(x => x != null));
+}
+
+// Laesst sich das tatsaechlich VERRECHNETE Paar (EBITDA, EBIT) periodengetreu
+// zuordnen? Nur wenn BEIDE Reihen Berichtsperioden melden. Meldet eine der
+// beiden gar keine, ist nichts pruefbar — dann gilt unveraendert die
+// dokumentierte Altdatenregel (Positionszuordnung des manuellen Imports).
+// Melden beide Perioden, gibt es KEINEN Index-Rueckfall: was sich nicht
+// periodengleich zuordnen laesst, liefert keinen Wert.
+function _daPairPeriodKeyed(f) {
+  return _daHasPeriods(_daSeriesPeriods(f, 'ebitda'))
+      && _daHasPeriods(_daSeriesPeriods(f, 'ebit'));
+}
+
+// ── D&A-Quoten aus PERIODENGLEICHEN Angaben ──────────────────────────────
+// Rueckgabe: { pairing, ratios, periods, pairs, mismatches, reason }
+//   pairing 'index'  — Altdatenregel: EBITDA oder EBIT meldet keine Perioden.
+//                      Verhalten unveraendert gegenueber V1.0.63.
+//   pairing 'period' — beide melden Perioden ⇒ Zuordnung ueber das
+//                      Berichtsende, ohne Index-Rueckfall.
+function _daPeriodKeyedRatios(f) {
+  f = f || {};
+  const rev = Array.isArray(f.revenue) ? f.revenue : [];
+  const ebt = Array.isArray(f.ebit)    ? f.ebit    : [];
+  const eba = Array.isArray(f.ebitda)  ? f.ebitda  : [];
+  const sRev = _daSeriesPeriods(f, 'revenue');
+  const sEbt = _daSeriesPeriods(f, 'ebit');
+  const sEba = _daSeriesPeriods(f, 'ebitda');
+
+  if (!_daPairPeriodKeyed(f)) {
+    const ratios = [];
+    const dLen = Math.min(eba.length, ebt.length, rev.length, 10);
+    for (let i = 0; i < dLen; i++) {
+      if (eba[i] != null && ebt[i] != null && rev[i] > 0) {
+        ratios.push((eba[i] - ebt[i]) / rev[i]);
+      }
+    }
+    return { pairing: 'index', ratios, periods: null, pairs: null, mismatches: 0,
+             reason: 'EBITDA oder EBIT ohne Berichtsperioden — dokumentierte Altdatenregel' };
+  }
+
+  if (!_daUnitsCompatible(sEbt, sEba)
+      || (_daHasPeriods(sRev) && !_daUnitsCompatible(sRev, sEbt))) {
+    return { pairing: 'period', ratios: [], periods: [], pairs: [], mismatches: 0,
+             reason: 'uneinheitliche Einheiten gemeldet — keine Quote ableitbar' };
+  }
+
+  const revKeyed = _daHasPeriods(sRev);
+  const ratios = [], periods = [], pairs = [];
+  let mismatches = 0;
+  const lead = Math.min(ebt.length, sEbt.periods.length, 10);
+  for (let i = 0; i < lead; i++) {
+    if (ebt[i] == null) continue;
+    const iEba = _daMatchingIndex(sEbt, i, sEba, eba);
+    if (iEba < 0 || eba[iEba] == null) { mismatches++; continue; }
+    // Umsatz: periodengleich, sobald die Reihe Perioden meldet. Ohne Perioden
+    // bleibt es bei der bisherigen Positionszuordnung — das ist der
+    // unveraenderte Altdatenfall dieser einen Reihe.
+    let iRev = i;
+    if (revKeyed) {
+      iRev = _daMatchingIndex(sEbt, i, sRev, rev);
+      if (iRev < 0) { mismatches++; continue; }
+    }
+    if (!(rev[iRev] > 0)) continue;
+    ratios.push((eba[iEba] - ebt[i]) / rev[iRev]);
+    const per = (sEbt.periods && sEbt.periods[i]) || null;
+    periods.push(per);
+    pairs.push({ period: per, revenueIdx: iRev, ebitIdx: i, ebitdaIdx: iEba });
+  }
+  return { pairing: 'period', ratios, periods, pairs, mismatches,
+           reason: ratios.length > 0 ? null
+                 : 'keine periodengleiche Zuordnung von EBITDA, EBIT und Umsatz' };
+}
+
 function _resolveDaForForecast(mj) {
   const f   = (mj && mj.fundamentals) || {};
   const val = (mj && mj.valuation)    || {};
   const ass = val.assumptions || {};
 
-  // Gemessen: nur Indexpositionen, an denen EBITDA, EBIT und Umsatz
-  // gemeinsam vorliegen. Die Periodengleichheit ergibt sich daraus, dass
-  // alle drei Reihen aus derselben Sicht stammen (FY oder TTM).
-  const ratios = [];
-  const dLen = Math.min((f.ebitda || []).length, (f.ebit || []).length, (f.revenue || []).length, 10);
-  for (let i = 0; i < dLen; i++) {
-    if (f.ebitda[i] != null && f.ebit[i] != null && f.revenue[i] > 0) {
-      ratios.push((f.ebitda[i] - f.ebit[i]) / f.revenue[i]);
-    }
-  }
+  // V1.0.64 (Restbefund A-6): Die Quoten entstehen nur aus PERIODENGLEICHEN
+  // Angaben. Bis V1.0.63 wurde hier ueber Array-Indizes gepaart; die
+  // Begruendung „alle drei Reihen stammen aus derselben Sicht" traegt nicht,
+  // sobald eine Reihe eine Periode weniger meldet.
+  const _pk = _daPeriodKeyedRatios(f);
+  const ratios = _pk.ratios;
   const measured = ratios.length >= 1 ? _median(ratios) : null;
   const periodType = (f._v4_meta && f._v4_meta.ebitda && f._v4_meta.ebitda.period_type) || null;
 
-  const base = { measuredRatio: measured, yearsUsed: ratios.length, periodType };
+  const base = { measuredRatio: measured, yearsUsed: ratios.length, periodType,
+                 // Herkunft der Paarung, damit eine Altdatenquote nicht wie
+                 // eine periodengetreue Messung aussieht.
+                 measuredPairing: _pk.pairing,
+                 measuredPeriods: _pk.periods ? _pk.periods.slice() : null,
+                 periodPairs: _pk.pairs ? _pk.pairs.slice() : null,
+                 periodMismatchCount: _pk.mismatches,
+                 pairingReason: _pk.reason };
 
   let ovRaw = null;
   const entry = ass.da_pct_of_revenue;
@@ -4898,7 +5078,11 @@ function _resolveDaForForecast(mj) {
       ratio: measured,
       source: 'measured',
       sourceLabel: 'gemessener Median ' + (measured * 100).toFixed(2) + '% des Umsatzes über '
-        + ratios.length + ' Periode(n)' + (periodType ? ' (' + periodType + ')' : ''),
+        + ratios.length + ' Periode(n)' + (periodType ? ' (' + periodType + ')' : '')
+        // V1.0.64: Die Art der Paarung gehoert zur Herkunft.
+        + (_pk.pairing === 'period'
+            ? ' — periodengleich zugeordnet'
+            : ' — ohne Periodenmetadaten positionsweise zugeordnet (Altdatenregel)'),
       available: true, measured: true, assumptionRequired: false,
       setBy: 'measured_history', overridePct: null
     }, base);
@@ -5221,8 +5405,20 @@ function forecastDcfCore(fi, g1, tg, wacc, fade, opMarginOverridePct) {
     // Kommentar — damit kann kein Verbraucher die Annahme uebersehen.
     _dilutionHorizonYears: TERMINAL_DILUTION.horizonYears,
     _dilutionAppliedInTerminalValue: false,
-    _terminalShareCountBasis: 'shares_year_10_constant',
-    _terminalShareCount: sharesYear[10],
+    // V1.0.64 (Restbefund A-5, Korrekturchat 12C.1): Der AUSGEWIESENE Teiler
+    // ist der TATSAECHLICH VERWENDETE. Bis V1.0.63 stand hier immer
+    // sharesYear[10] — auch dann, wenn der konservative Hauptwert gar nicht
+    // damit rechnet. Bei g <= 0 (Rueckkaeufe oder konstante Aktienzahl) teilt
+    // der Hauptwert durchgehend durch die HEUTIGE Aktienzahl; sharesYear[10]
+    // gehoert dort zur Buyback-Diagnose (_buybackAdjustedTotal), nicht zum
+    // Hauptwert. Es gilt stets: pvTv === _pvTvAbs / _terminalShareCount.
+    _terminalShareCountBasis: (g > 0) ? 'shares_year_10_constant' : 'shares_year_0_constant',
+    _terminalShareCount: (g > 0) ? sharesYear[10] : sharesYear[0],
+    // Nur Diagnose: der Teiler der buyback-adjustierten Nebenrechnung.
+    _buybackDiagnosticTerminalShareCount: sharesYear[10],
+    // Wirkt die projizierte Aktienveraenderung im HAUPTWERT ueberhaupt?
+    // Nur bei Verwaesserung (g > 0); Rueckkaeufe bleiben Diagnose.
+    _sharesChangeAppliedInMainValue: (g > 0),
     _terminalDilutionSimplification: TERMINAL_DILUTION.note
   };
 }
@@ -12444,29 +12640,75 @@ function _resolveMidCycleDa(mj, revTtm) {
   }
 
   // 2) Direkt gemeldeter Wert der bewerteten Periode.
-  const ebitda0 = (Array.isArray(f.ebitda) && f.ebitda[0] != null) ? f.ebitda[0] : null;
-  const ebit0   = (Array.isArray(f.ebit)   && f.ebit[0]   != null) ? f.ebit[0]   : null;
-  if (ebitda0 != null && ebit0 != null) {
+  //    V1.0.64 (Restbefund A-6): EBITDA und EBIT muessen zur Periode des
+  //    BEWERTETEN Umsatzes (revenue[0]) gehoeren. Bis V1.0.63 wurde
+  //    ebitda[0] − ebit[0] ueber Array-Indizes gebildet; meldet eine Reihe
+  //    die juengste Periode nicht, entstand daraus eine D&A aus zwei
+  //    verschiedenen Berichtsperioden (im Testfall −150M statt 50M).
+  //    Der Vergleich der Periodenart allein reicht dafuer nicht aus.
+  const _sRev = _daSeriesPeriods(f, 'revenue');
+  const _sEbt = _daSeriesPeriods(f, 'ebit');
+  const _sEba = _daSeriesPeriods(f, 'ebitda');
+  const _ebitdaArr = Array.isArray(f.ebitda) ? f.ebitda : [];
+  const _ebitArr   = Array.isArray(f.ebit)   ? f.ebit   : [];
+  const _hasCtx = _daPairPeriodKeyed(f);
+
+  let iEba = -1, iEbt = -1, _pairedPeriod = null;
+  if (!_hasCtx) {
+    // Altdatenregel: meldet EBITDA oder EBIT keine Perioden, bleibt es bei
+    // Position 0 — unveraendert gegenueber V1.0.63.
+    iEba = (_ebitdaArr[0] != null) ? 0 : -1;
+    iEbt = (_ebitArr[0]   != null) ? 0 : -1;
+  } else {
+    // Die BEWERTETE Periode ist die von revenue[0]; meldet der Umsatz keine
+    // Perioden, gilt die Periode von ebit[0] als bewertete Periode.
+    // Danach gibt es KEINEN Index-Rueckfall.
+    let refS = null, refI = -1;
+    if (_daHasPeriods(_sRev) && _sRev.periods[0] != null) { refS = _sRev; refI = 0; }
+    else if (_sEbt.periods && _sEbt.periods[0] != null)   { refS = _sEbt; refI = 0; }
+    if (refS) {
+      const _k1 = _daMatchingIndex(refS, refI, _sEba, _ebitdaArr);
+      const _k2 = _daMatchingIndex(refS, refI, _sEbt, _ebitArr);
+      if (_k1 >= 0 && _ebitdaArr[_k1] != null) iEba = _k1;
+      if (_k2 >= 0 && _ebitArr[_k2]   != null) iEbt = _k2;
+      _pairedPeriod = refS.periods[refI];
+    }
+  }
+
+  if (iEba >= 0 && iEbt >= 0) {
     if (periodConflict) return _conflict();
-    return { value: ebitda0 - ebit0, available: true, basis: 'reported_period', derived: false,
+    if (_hasCtx && !_daUnitsCompatible(_sEba, _sEbt)) return _conflict();
+    return { value: _ebitdaArr[iEba] - _ebitArr[iEbt], available: true,
+             basis: 'reported_period', derived: false,
              label: 'direkt gemeldet: EBITDA − EBIT der bewerteten Periode' +
-                    (ptRevenue ? ' (' + ptRevenue + ')' : ''),
-             daSource: da.source };
+                    (_pairedPeriod ? ' (' + _pairedPeriod +
+                                     (ptRevenue ? ', ' + ptRevenue : '') + ')'
+                                   : (ptRevenue ? ' (' + ptRevenue + ')' : '')) +
+                    (_hasCtx ? '' : ' — ohne Periodenmetadaten, Altdatenregel'),
+             daSource: da.source, periodMatched: _hasCtx, period: _pairedPeriod };
   }
 
   // 3) Zulaessige Ableitung aus anderen Perioden derselben Sicht.
+  //    Nur periodengleich gebildete Quoten kommen hier an (siehe
+  //    _daPeriodKeyedRatios); eine Quote aus vermischten Perioden entsteht
+  //    gar nicht erst und wird auch nicht auf 0 geklemmt.
   if (da.source === 'measured' && da.measuredRatio != null) {
     if (periodConflict) return _conflict();
     return { value: revTtm * da.measuredRatio, available: true, basis: 'measured_ratio',
              derived: true,
              label: 'abgeleitet: ' + da.sourceLabel +
-                    ' — die bewertete Periode selbst meldet kein EBITDA',
-             daSource: da.source };
+                    ' — die bewertete Periode selbst meldet keine periodengleiche EBITDA-Angabe',
+             daSource: da.source, periodMatched: da.measuredPairing === 'period',
+             period: _pairedPeriod };
   }
 
-  // 4) Nicht belegt — kein stiller Nullwert.
+  // 4) Nicht belegt — kein stiller Nullwert und keine Klemmung auf 0.
   return { value: null, available: false, basis: 'assumption_required', derived: false,
-           label: DA_PROVISIONAL_LABEL, daSource: da.source };
+           label: DA_PROVISIONAL_LABEL +
+                  (_hasCtx && da.periodMismatchCount > 0
+                    ? ' (in ' + da.periodMismatchCount + ' Periode(n) liessen sich Umsatz, ' +
+                      'EBIT und EBITDA nicht periodengleich zuordnen)' : ''),
+           daSource: da.source, periodMatched: false, period: _pairedPeriod };
 }
 
 function computeMidCycleFcf(mj) {
@@ -12931,14 +13173,21 @@ function modelDcf(mj, scenarios, fcfStartOverride, fcfStartMeta) {
       const gPct = fi.sharesGrowthPa || 0;
       let label;
       if (fi._possibleStockSplit) label = 'Split/Restatement-Verdacht (neutralisiert)';
-      else if (gPct < -0.5)        label = 'Buybacks (Aktienanzahl sinkt) — Diagnose, ebenfalls nur bis Jahr '
-                                           + TERMINAL_DILUTION.horizonYears;
+      // V1.0.64 (Restbefund A-5): Bei Rueckkaeufen rechnet der HAUPTWERT gar
+      // nicht mit der Projektion — er teilt durchgehend durch die heutige
+      // Aktienzahl. Nur die Diagnose verwendet die projizierte Reihe, und auch
+      // sie endet mit der Detailphase.
+      else if (gPct < -0.5)        label = 'Buybacks (Aktienanzahl sinkt) — NICHT im Hauptwert: '
+                                           + 'der konservative Wert rechnet durchgehend mit der heutigen '
+                                           + 'Aktienzahl; die Projektion wirkt nur in der Diagnose und '
+                                           + 'endet mit Jahr ' + TERMINAL_DILUTION.horizonYears;
       // V1.0.63 (Auditbefund A-5): "im Hauptwert berücksichtigt" nennt jetzt
       // den zeitlichen Umfang. Die Aussage ohne Zeitbezug war unvollständig.
       else if (gPct >  0.5)        label = 'Dilution (Aktienanzahl steigt) — im Hauptwert berücksichtigt '
                                            + 'für die Detailjahre 1–' + TERMINAL_DILUTION.horizonYears
                                            + '; ab dem Terminalzeitpunkt konstante Aktienzahl';
-      else                          label = 'neutral (≈konstante Aktienanzahl)';
+      else                          label = 'neutral (≈konstante Aktienanzahl) — der Hauptwert rechnet '
+                                           + 'durchgehend mit der heutigen Aktienzahl';
       warnings.push(
         `Shares-Projektion: ${s0.toFixed(1)}M (Jahr 0) → ${s10.toFixed(1)}M (Jahr 10) ` +
         `bei ${gPct >= 0 ? '+' : ''}${gPct.toFixed(2)}%/y · ${label}`
@@ -13073,10 +13322,25 @@ function modelDcf(mj, scenarios, fcfStartOverride, fcfStartMeta) {
       // Offengelegte MODELLVEREINFACHUNG, keine numerisch beseitigte
       // Ueberbewertung: die Rechnung ist unveraendert, sie wird nur benannt.
       _dilutionHorizonYears: TERMINAL_DILUTION.horizonYears,
-      _dilutionAppliedInDetailYears: true,
+      // V1.0.64 (Restbefund A-5): Die Felder beschreiben die TATSAECHLICH
+      // verwendete Aktienbasis der HAUPTBEWERTUNG, nicht die Projektion der
+      // Buyback-Diagnose. Sie stammen aus dem Kern (forecastDcfCore), damit es
+      // nur EINE Quelle gibt.
+      _dilutionAppliedInDetailYears: (rBase && rBase._sharesChangeAppliedInMainValue === true),
       _dilutionAppliedInTerminalValue: false,
-      _terminalShareCountBasis: 'shares_year_10_constant',
-      _terminalShareCountM: (rBase && rBase._sharesYear10 != null) ? rBase._sharesYear10 : null,
+      _terminalShareCountBasis: (rBase && rBase._terminalShareCountBasis) || null,
+      _terminalShareCountM: (rBase && rBase._terminalShareCount != null) ? rBase._terminalShareCount : null,
+      // Nur Diagnose — der Teiler der buyback-adjustierten Nebenrechnung.
+      _buybackDiagnosticTerminalShareCountM:
+        (rBase && rBase._buybackDiagnosticTerminalShareCount != null)
+          ? rBase._buybackDiagnosticTerminalShareCount : null,
+      _sharesChangeAppliedInMainValue: (rBase && rBase._sharesChangeAppliedInMainValue === true),
+      _sharesChangeTreatment: (rBase && rBase._sharesChangeAppliedInMainValue === true)
+        ? 'Verwässerung wirkt im Hauptwert in den Detailjahren 1–'
+          + TERMINAL_DILUTION.horizonYears + '; ab dem Terminalzeitpunkt konstante Aktienzahl'
+        : 'Aktienrückgang/konstante Aktienzahl: der konservative Hauptwert rechnet '
+          + 'durchgehend mit der heutigen Aktienzahl; die Projektion wirkt nur in der '
+          + 'Buyback-Diagnose',
       _terminalDilutionSimplification: TERMINAL_DILUTION.note,
       _sharesGrowthPaProjected: fi.sharesGrowthPa || 0,
       _terminalSharesGrowthPa: 0,
@@ -15002,7 +15266,19 @@ const DATA_BASIS_REQUIRED_HELPERS = Object.freeze([
   '_joinPeriodKeyed',
   // V1.0.63 (Auditbefund A-5): Der Ausweis der Datenbasis nennt den
   // zeitlichen Umfang der Aktienprojektion als Modellkonvention.
-  'TERMINAL_DILUTION'
+  'TERMINAL_DILUTION',
+  // V1.0.64 (Restbefund A-6, Korrekturchat 12C.1): _resolveDaForForecast paart
+  // EBITDA, EBIT und Umsatz ueber ihre Berichtsperioden statt ueber Indizes.
+  // Der Ausweis der Datenbasis nennt den D&A-Status und braucht die Paarung
+  // deshalb mit — sonst waere sein Ergebnis ein anderes als das des Kerns.
+  'DA_PERIOD_MATCH',
+  '_daSeriesPeriods',
+  '_daUnitsCompatible',
+  '_daPeriodsMatch',
+  '_daMatchingIndex',
+  '_daHasPeriods',
+  '_daPairPeriodKeyed',
+  '_daPeriodKeyedRatios'
 ]);
 // Seit V1.0.56 enthaelt dieser Block auch den Erzeugungsweg aus
 // SEC-companyfacts. Dafuer braucht er den Quartalsnormalisierer — als GANZEN
@@ -16538,15 +16814,25 @@ function buildDataBasisReport(mj, resolved) {
   // V1.0.63 (Auditbefund A-5): Zeitlicher Umfang der Aktienprojektion. Die
   // Angabe gehoert in den Herkunftsausweis, weil sie eine MODELLKONVENTION
   // ueber die bewertete Groesze "Wert je Aktie" ist — nicht bloss eine
-  // Anzeige. Sie ist eine feste Konvention des Bewertungskerns und braucht
-  // deshalb keinen Prognoseparameter: die tatsaechlich projizierte Rate steht
-  // am Modellergebnis (_sharesGrowthPaProjected) und im Snapshot.
+  // Anzeige.
+  // V1.0.64 (Restbefund A-5): Die Konvention hat ZWEI Zweige. Bis V1.0.63
+  // behauptete der Ausweis pauschal `shares_year_10_constant` — das gilt nur
+  // bei Verwaesserung. Bei Rueckkaeufen oder konstanter Aktienzahl rechnet der
+  // konservative Hauptwert durchgehend mit der heutigen Aktienzahl. Welcher
+  // Zweig greift, haengt von der projizierten Rate ab; die kennt erst der
+  // Bewertungskern. Der Ausweis der Datenbasis nennt deshalb BEIDE Zweige und
+  // verweist auf die Stellen, die den konkreten Fall tragen — statt einen
+  // Zweig zu behaupten (siehe `resolved_in`).
   rep.dilution = {
     horizon_years: TERMINAL_DILUTION.horizonYears,
-    applied_in_detail_years: true,
+    applied_in_main_value_when: 'shares_growth_pa_pct > 0 (Verwässerung)',
     applied_in_terminal_value: false,
     extrapolated_to_perpetuity: false,
-    terminal_share_count_basis: 'shares_year_10_constant',
+    terminal_share_count_basis_dilution: TERMINAL_DILUTION.dilutionTerminalShareCountBasis,
+    terminal_share_count_basis_buyback_or_flat: TERMINAL_DILUTION.buybackOrFlatTerminalShareCountBasis,
+    buyback_treatment: TERMINAL_DILUTION.buybackTreatment,
+    resolved_in: ['modelResults.<dcf>._terminalShareCountBasis',
+                  'snapshot.forecast_targets.terminal.share_count_basis'],
     simplification: TERMINAL_DILUTION.note
   };
   rep.warnings = rep.warnings.concat([TERMINAL_DILUTION.note]);
@@ -19149,12 +19435,30 @@ function buildReverseDcfDiagnosticBlock(mj, v, baseRateWarnings) {
   const _resid = (_core.residualPerShare != null && isFinite(_core.residualPerShare))
     ? _core.residualPerShare : null;
 
+  // ── V1.0.64 (Restbefund O-3, Korrekturchat 12C.1) · Vorbehalt anzeigen ──
+  // Der Solver kann eine Loesung finden UND die Suche unvollstaendig lassen
+  // (`searchComplete: false`, `uniquenessProven: false`, `caveat` gesetzt).
+  // Bis V1.0.63 zeigte diese Karte die Zahl ohne den Vorbehalt — sie sah aus
+  // wie ein gesichertes, eindeutiges Ergebnis. Der Vorbehalt steht jetzt
+  // unmittelbar bei der Zahl; er kommt unveraendert aus dem Solver, der
+  // dafuer NICHT angefasst wurde.
+  const _caveatTxt = (_core.caveat != null && String(_core.caveat).trim() !== '')
+    ? String(_core.caveat) : null;
+  const _unsicher  = _caveatTxt != null || _core.searchComplete === false
+                     || _core.uniquenessProven === false;
+  const _caveatBlock = _unsicher ? `
+        <div class="rdcf-g-caveat" style="margin-top:6px;padding:6px 8px;border:1px dashed var(--warn);border-radius:6px;color:var(--warn);font-size:.68rem">
+          ⚠ Eindeutigkeit nicht gesichert — gefundene Lösung, unvollständige Suche.
+          ${escapeHtml(_caveatTxt || 'Der Suchbereich ist nicht durchgehend auswertbar; eine weitere Lösung ist nicht ausgeschlossen.')}
+        </div>` : '';
+
   return `
     <div class="rdcf-block">
       <div class="rdcf-dl">Reverse DCF / Market-Implied Growth · 10J Stage-1 · Diagnose</div>
       <div class="rdcf-hero">
         <div class="rdcf-g" style="color:${tierColor}">${(g >= 0 ? '+' : '') + g.toFixed(2)}%</div>
-        <div class="rdcf-g-tier" style="color:${tierColor}">${tierLabel}</div>
+        <div class="rdcf-g-tier" style="color:${tierColor}">${tierLabel}${_unsicher ? ' · Eindeutigkeit nicht gesichert' : ''}</div>
+        ${_caveatBlock}
         <div class="rdcf-g-help">
           Stage-1-Umsatzwachstum, das der Markt für die nächsten 10 Jahre einpreist
           (bei WACC ${waccPct.toFixed(2)}% und Terminal Growth ${tgPct.toFixed(2)}%).
@@ -20977,14 +21281,23 @@ function buildReverseDcfOverviewCard(mj, v) {
     </div>`;
   }
 
+  // ── V1.0.64 (Restbefund O-3) · derselbe Vorbehalt wie in der Bewertungskarte ──
+  // Eine gefundene, nachgerechnete Loesung bei unvollstaendiger Suche ist
+  // KEINE gesicherte Eindeutigkeit. Text unveraendert aus dem Solver.
+  const _ovCaveatTxt = (_core.caveat != null && String(_core.caveat).trim() !== '')
+    ? String(_core.caveat) : null;
+  const _ovUnsicher  = _ovCaveatTxt != null || _core.searchComplete === false
+                       || _core.uniquenessProven === false;
+
   return `<div class="ov-rdcf-card" style="border-left-color:${labelColor}">
     <div class="ov-rdcf-header">
       <div class="ov-rdcf-title">Reverse DCF <span class="ov-rdcf-diag-tag">nur Diagnose</span></div>
       <div class="ov-rdcf-chip" style="color:${labelColor};background:${chipBg};border-color:${labelColor}40">${labelText}</div>
     </div>
     <div class="ov-rdcf-hero" style="color:${labelColor}">${g >= 0 ? '+' : ''}${g.toFixed(1)}%
-      <span class="ov-rdcf-hero-sub">impliziertes Stage-1-Wachstum (10J)</span>
+      <span class="ov-rdcf-hero-sub">impliziertes Stage-1-Wachstum (10J)${_ovUnsicher ? ' · Eindeutigkeit nicht gesichert' : ''}</span>
     </div>
+    ${_ovUnsicher ? `<div class="ov-rdcf-warn">⚠ Eindeutigkeit nicht gesichert — gefundene Lösung, unvollständige Suche. ${escapeHtml(_ovCaveatTxt || 'Der Suchbereich ist nicht durchgehend auswertbar; eine weitere Lösung ist nicht ausgeschlossen.')}</div>` : ''}
     <div class="ov-rdcf-rows">
       ${_cagrRow('Rev. CAGR 5J (historisch)', cagr5y)}
       ${_cagrRow('Rev. CAGR 10J (historisch)', cagr10y)}
@@ -24477,16 +24790,29 @@ function buildSnapshotForecastTargets(mj, valuationResult) {
                 // fest, dass die Aktienprojektion mit der Detailphase endet.
                 // Ein spaeterer Soll-Ist-Vergleich soll die Annahme kennen,
                 // unter der der Pfad entstanden ist.
+                // V1.0.64 (Restbefund A-5): die TATSAECHLICH verwendete
+                // Aktienbasis der Hauptbewertung, aus dem Kern uebernommen.
+                // Bis V1.0.63 stand hier stets die projizierte Aktienzahl des
+                // Jahres 10, auch wenn der Hauptwert mit der heutigen rechnet.
                 share_count: (r._terminalShareCount != null && isFinite(r._terminalShareCount))
                   ? r._terminalShareCount : null,
-                share_count_basis: r._terminalShareCountBasis || 'shares_year_10_constant',
+                share_count_basis: r._terminalShareCountBasis || null,
+                // Nur Diagnose, nicht der Teiler des Hauptwerts.
+                buyback_diagnostic_share_count:
+                  (r._buybackDiagnosticTerminalShareCount != null
+                   && isFinite(r._buybackDiagnosticTerminalShareCount))
+                    ? r._buybackDiagnosticTerminalShareCount : null,
                 dilution_applied_in_terminal_value: false,
                 shares_growth_pa_terminal_pct: 0 },
     dilution: { shares_growth_pa_pct: fi.sharesGrowthPa || 0,
                 horizon_years: TERMINAL_DILUTION.horizonYears,
-                applied_in_detail_years: true,
+                // Wirkt die Projektion im HAUPTWERT? Nur bei Verwaesserung.
+                applied_in_main_value: r._sharesChangeAppliedInMainValue === true,
+                applied_in_detail_years: r._sharesChangeAppliedInMainValue === true,
                 applied_in_terminal_value: false,
                 extrapolated_to_perpetuity: false,
+                terminal_share_count_basis: r._terminalShareCountBasis || null,
+                buyback_treatment: TERMINAL_DILUTION.buybackTreatment,
                 simplification: TERMINAL_DILUTION.note }
   };
 }

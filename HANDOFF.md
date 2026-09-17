@@ -1,5 +1,194 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Korrekturchat 12C.1: drei Restfehler nach 12C behoben (V1.0.64)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
+**`claude/chat12c-audit-completion`**, Ausgangscommit
+**`3a215eca8e3277a7ee0ab61ae4c56398c69d2b78`** (V1.0.63) — zugleich die
+Branch-Spitze; nach `git fetch --prune` gab es KEINE Nachfolgecommits
+(`git branch -r --contains 3a215ec` nennt nur diesen Branch). `main`
+(`b023dc8`) wurde nicht angefasst. Eine `AGENTS.md` existiert in diesem
+Repository nicht. Tool-Datei:
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Ergebnisbranch: **`claude/chat12c1-targeted-fixes`** — der vom Auftrag
+gewuenschte Name; kein technisch erzwungener Abweichname noetig.
+Testbefehl: `npm test`.
+
+**Bestaetigte Testbaseline vor der Aenderung** (selbst auf `3a215ec`
+ausgefuehrt): 1700 Rechen-Assertions · 434 Fixture-Assertions · 190
+Node-Tests · Exit 0 — wie im Auftrag angegeben.
+
+**Auftrag.** Ausschliesslich die drei nach 12C unabhaengig reproduzierten
+Restfehler: D&A-Periodenzuordnung (A-6), Terminal-Aktienbasis in Herkunft und
+Snapshot (A-5), fehlende Reverse-DCF-Vorbehalte in der Oberflaeche (O-3).
+Keine weiteren Auditbaustellen, kein Refactoring, keine erneuten
+Parameterscans.
+
+---
+
+### 1 · Quellenlage (wahrheitsgemaesz)
+
+Alle Nachweise sind **synthetische Master-JSON-Datensaetze ueber die
+produktiven Aufrufwege** — keine Live-Validierung, kein reales Filing. Der
+A-6-Nachweis ist ausdruecklich **kein Beleg fuer einen Fehler des echten
+SEC-Live-Imports**: ob eine reale Filing-Kette diese Reihenlage erzeugt, wurde
+hier nicht geprueft. Ergaenzend wurden die geaenderten sichtbaren Hinweise im
+vorinstallierten Chromium geprueft (punktuell, drei Datensaetze).
+
+### 2 · Reproduktion am unveraenderten Ausgangsstand
+
+Alle drei Befunde wurden zuerst auf `3a215ec` reproduziert.
+
+| # | gemessen auf `3a215ec` |
+|---|---|
+| A-6 | Zyklischer Filer, EBIT FY2025–FY2020, **EBITDA erst ab FY2024**, Periodenmetadaten vollstaendig: **Referenz-FCF −50**, **D&A −150**, Herkunft **`reported_period`**, dazu eine >30-%-Abweichungswarnung gegen den berichteten FCF 150. Der echte Engine-Pfad akzeptiert das. Ursache: `ebitda[0]` (FY2024, 250) gegen `ebit[0]` (FY2025, 400). |
+| A-5 | Referenzfirma mit −4 %/y Rueckkaeufen: Der Hauptwert teilt durchgehend durch **100 Mio.** Aktien (Terminalwert je Aktie **7,373515**). `_terminalShareCount`, `_terminalShareCountM` und `snapshot.terminal.share_count` nennen **66,483264 Mio.** — damit ergaeben sich **11,090784**. |
+| O-3 | Lueckendatensatz aus `R36` mit Kurs **20,50**: Solver liefert **10,589752 %** UND `searchComplete: false`, `uniquenessProven: false`, `caveat` gesetzt. Beide Karten zeigen die Zahl **ohne** Vorbehalt. |
+
+### 3 · Was geaendert wurde
+
+**A-6 — D&A ueber die Berichtsperioden.** Neu ist eine gemeinsame Paarung
+ueber das **Berichtsende** (`_daPeriodsMatch`, `_daMatchingIndex`,
+`_daPeriodKeyedRatios`), verwendet von `_resolveDaForForecast()` (historische
+Quote) UND `_resolveMidCycleDa()` (bewertete Periode) — eine Regel, zwei
+Verbraucher.
+Der Jahresschluessel von `_joinPeriodKeyed()` wird bewusst NICHT uebernommen:
+zwei TTM-Fenster koennen im selben Kalenderjahr enden. Die enge Regel (Enden
+≤ 15 Tage auseinander) gilt fuer jede Periodenart; die bestehende
+FY-Toleranz (gleiches Fiskaljahr UND ≤ 45 Tage) greift nur fuer FY gegen FY.
+Gemeldete Periodenbeginne und -dauern duerfen sich nicht widersprechen — ein
+Quartalswert faellt damit gegen ein Jahresfenster durch, auch bei identischem
+Ende; widerspruechliche Einheiten verhindern die Ableitung.
+Die Vorrangfolge bleibt: gueltige manuelle Annahme → belegte D&A der
+bewerteten Periode → zulaessige historische Ableitung → begruendete
+Nichtverfuegbarkeit. Die **Altdatenregel** bleibt erhalten: meldet das
+tatsaechlich verrechnete Paar (EBITDA, EBIT) keine Berichtsperioden, gilt
+unveraendert die Positionszuordnung des manuellen Imports — dieselbe
+Abgrenzung wie in `_derivePairPeriodAware()`. Melden **beide** Perioden, gibt
+es **keinen** Index-Rueckfall; ein nicht zuordenbarer Wert entsteht gar nicht
+erst und wird nicht auf 0 geklemmt.
+Wirkung: der Testfall liefert jetzt **Referenz-FCF 150**, D&A **50**,
+Herkunft **`measured_ratio`** (ausdruecklich abgeleitet) und **keine**
+Abweichungswarnung. Der Haupt-Fair-Value ist in beiden Darstellungen derselbe.
+
+**A-5 — Terminal-Aktienbasis beschreibt die tatsaechliche Rechnung.**
+Die Bewertungsrechnung ist bit-genau unveraendert (Fair Value, Buyback-Uplift
+und Sicherheitsmarge in `R38` gegen `3a215ec` gemessen). Korrigiert ist die
+Beschreibung: der konservative Hauptwert hat zwei Zweige.
+* Verwaesserung (g > 0): Terminalwert durch die Aktienzahl des Jahres 10 →
+  `shares_year_10_constant`.
+* Rueckkaeufe oder konstante Aktienzahl (g ≤ 0): der Hauptwert teilt
+  **durchgehend** durch die heutige Aktienzahl → `shares_year_0_constant`.
+  Die projizierte Aktienzahl des Jahres 10 ist dort **Buyback-Diagnose** und
+  wird getrennt ausgewiesen (`_buybackDiagnosticTerminalShareCount`).
+Neu sind `_sharesChangeAppliedInMainValue` und `_sharesChangeTreatment`. Die
+Zusicherung, die `R38` in allen drei Faellen prueft:
+`pvTv === _pvTvAbs / _terminalShareCount`. Mitgefuehrt wird das bis in
+`buildSnapshotForecastTargets()`; der sichtbare Hinweis nennt den
+Rueckkaufzweig jetzt richtig. `buildDataBasisReport()` nennt **beide Zweige**
+samt `resolved_in` statt einen zu behaupten (siehe Pruefgrenzen).
+
+**O-3 — Vorbehalt in beiden Karten.** Reine Anzeigekorrektur: Solver,
+Suchgrenzen, Toleranzen und Bewertungsfunktion sind unveraendert (in `R39`
+festgeschrieben). Liefert der Kern eine Loesung UND `searchComplete: false`
+bzw. `uniquenessProven: false` bzw. einen `caveat`, zeigen jetzt **beide**
+HTML-Erzeuger unmittelbar bei der Zahl „⚠ Eindeutigkeit nicht gesichert —
+gefundene Loesung, unvollstaendige Suche" samt dem Text des Solvers, durch
+`escapeHtml()` gefuehrt. Regulaere vollstaendige Loesungen und
+`search_incomplete` ohne Zahlenwert bleiben unveraendert.
+
+### 4 · Tests
+
+| Test | sichert ab |
+|---|---|
+| `R37` | A-6: Periodenzuordnung ueber das Berichtsende; fehlende Perioden, abweichende Reihenfolge, echte Null, manuelle Overrides (auch 0), fremde Perioden ohne Index-Rueckfall, Quartal gegen Jahresfenster, Altdatenregel; echter Engine-Pfad |
+| `R38` | A-5: der ausgewiesene Teiler rekonstruiert den tatsaechlichen Haupt-Terminalwert in allen drei Faellen (Verwaesserung, konstant, Rueckkaeufe); Fair Value und Uplift unveraendert; Snapshot; keine neue Einstellung |
+| `R39` | O-3: Vorbehalt in BEIDEN HTML-Erzeugern, Escaping, vollstaendige Loesung ohne Vorbehalt, `search_incomplete` ohne Zahl unveraendert, Solverparameter festgeschrieben |
+
+**Berichtigte Erwartungen** (fachlich falsch, keine Toleranzlockerung):
+* `R33` prueferte `TERMINAL_DILUTION.appliedInDetailYears === true`,
+  `rep.dilution.terminal_share_count_basis === 'shares_year_10_constant'` und
+  `rep.dilution.applied_in_detail_years === true`. Alle drei waren pauschale
+  Behauptungen, die nur im Verwaesserungsfall gelten; sie sind durch die
+  Pruefung beider Zweige ersetzt. Die inhaltlichen Zusicherungen von `R33`
+  bleiben unveraendert.
+* `DATA_BASIS_REQUIRED_HELPERS` in `tests/sec-ttm.test.mjs` wurde um die
+  sieben Helfer der Periodenpaarung ergaenzt (mit Begruendung im Test).
+* Sonst wurde **keine** fachlich korrekte Erwartung angepasst; `R1`–`R32`,
+  `R34`–`R36` und insbesondere `R35` (A-7) bestehen unveraendert.
+
+**`npm test` nach der Aenderung: 1700 Rechen-Assertions · 434
+Fixture-Assertions · 193 Node-Tests · Exit 0.** Node-Tests 190 → 193 (+3).
+
+### 5 · Browserpruefung (durchgefuehrt)
+
+Mit dem vorinstallierten Chromium ueber `importMasterJsonFromTextarea()`:
+
+* **A-6 (DAPER):** sichtbar „Referenz-FCF 150M inkl. D&A 50M · abgeleitet:
+  gemessener Median 5.00% des Umsatzes ueber 5 Periode(n) (FY) —
+  periodengleich zugeordnet …". Gemessen: `_midCycleDaBasis: 'measured_ratio'`,
+  `_midCycleDaM: 50`, `_midCycleReferenceFcfM: 150`.
+* **A-5 (BUYB, −4 %/y):** sichtbar „Shares-Projektion: 100.0M (Jahr 0) →
+  66.5M (Jahr 10) bei -4.00%/y · Buybacks (Aktienanzahl sinkt) — NICHT im
+  Hauptwert: der konservative Wert rechnet durchgehend mit der heutigen
+  Aktienzahl; die Projektion wirkt nur in der Diagnose und endet mit Jahr 10".
+  Gemessen: Basis `shares_year_0_constant`, Teiler 100, Diagnose-J10
+  66,483264, Fair Value 16,590366 und Uplift 34,6757 **unveraendert**.
+* **O-3 (O3GAP, Kurs 20,50):** beide Karten zeigen „⚠ Eindeutigkeit nicht
+  gesichert — gefundene Loesung, unvollstaendige Suche" samt Solvertext; die
+  Zahl (10,59 %) bleibt sichtbar. Solver: `status: 'ok'`,
+  `searchComplete: false`, Residuum 8,5·10⁻⁷.
+
+Keine JavaScript-Fehler; die einzigen Konsolenmeldungen sind fehlgeschlagene
+externe Ressourcenabrufe (kein Netz) ohne Bezug zur Aenderung.
+
+### 6 · Verbleibende Pruefgrenzen
+
+* **A-5 bleibt eine offengelegte Modellvereinfachung.** Behoben ist hier nur
+  die falsche Beschreibung der verwendeten Aktienbasis, nicht die Annahme
+  selbst.
+* **`buildDataBasisReport()` nennt beide Zweige, nicht den konkreten.** Der
+  Ausweis liegt im DATENBASIS-Block; fuer den konkreten Fall muesste er
+  `buildForecastInputs()` mitziehen und damit die gesamte Prognose-Kette an
+  den Datenbasis-Block haengen. Der konkrete Fall steht am Modellergebnis und
+  im Snapshot; der Ausweis verweist darauf (`resolved_in`). Bewusste Grenze.
+* **A-6 ist an synthetischen Master-JSON-Datensaetzen geprueft**, nicht an
+  einem Live-SEC-Import.
+* Die Toleranzen der Periodenpaarung (15 Tage allgemein, 45 Tage FY gegen FY,
+  45 Tage Dauerabweichung) folgen der bestehenden `_joinPeriodKeyed`-Regel,
+  sind aber **nicht an realen Filings kalibriert**.
+* Die **Browserpruefung** deckt drei Datensaetze ab, nicht die Oberflaeche
+  insgesamt.
+* Alle Grenzen aus 12A, 12B.1–12B.3 und 12C bleiben bestehen. Dies ist
+  **keine Bestaetigung**, dass das Werkzeug fehlerfrei ist, und **keine
+  Aussage** ueber die Qualitaet der erzeugten Bewertungen.
+
+### 7 · Bearbeitungsstand nach diesem Schritt
+
+**In diesem Schritt behoben**
+* **A-6** D&A-Periodenzuordnung — `R37`
+* **A-5** falsche Beschreibung der Terminal-Aktienbasis — `R38`
+  (die Modellvereinfachung selbst bleibt offengelegt, nicht behoben)
+* **O-3** fehlender Vorbehalt in beiden Reverse-DCF-Karten — `R39`
+
+**Unveraendert abgesichert**
+* **A-1 bis A-4, O-1, O-2** (12A/12B) — `R1`–`R20`
+* **12B.1–12B.3** Schuldenumfang, -aufloesung und Nichtnegativitaet — `R21`–`R32`
+* **A-5** offengelegte Modellannahme — `R33`
+* **A-6** zentrale D&A-Aufloesung (12C) — `R34`
+* **A-7** Buyback-Zuschlag im aktiven DCF-Modell — `R35`
+* **O-3** Nullstellensuche, Residualtoleranz, `search_incomplete` — `R36`
+
+**Weiterhin offene Pruefpunkte** (unveraendert gegenueber 12C)
+* Keine Live-Validierung bei SEC/Yahoo, kein reales Filing.
+* Keine vollstaendige Browser-/DOM-Pruefung.
+* Nicht-DCF-Modelle nicht auf innere Konsistenz geprueft.
+* Sektor-/Klassifikationstabellen, Gewichtung, Einstiegszonen-Logik und
+  Datenqualitaets-Gates ueber A-7 hinaus ungeprueft.
+* Keine Laufzeit- oder Sicherheitspruefung.
+
+---
+
 ## Korrekturchat 12C: A-5, A-6, A-7 und O-3 abgeschlossen (V1.0.63)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`.
