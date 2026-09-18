@@ -4962,23 +4962,89 @@ function _daHasPeriods(sp) {
   return !!(sp && Array.isArray(sp.periods) && sp.periods.some(x => x != null));
 }
 
-// Laesst sich das tatsaechlich VERRECHNETE Paar (EBITDA, EBIT) periodengetreu
-// zuordnen? Nur wenn BEIDE Reihen Berichtsperioden melden. Meldet eine der
-// beiden gar keine, ist nichts pruefbar — dann gilt unveraendert die
-// dokumentierte Altdatenregel (Positionszuordnung des manuellen Imports).
-// Melden beide Perioden, gibt es KEINEN Index-Rueckfall: was sich nicht
-// periodengleich zuordnen laesst, liefert keinen Wert.
-function _daPairPeriodKeyed(f) {
-  return _daHasPeriods(_daSeriesPeriods(f, 'ebitda'))
-      && _daHasPeriods(_daSeriesPeriods(f, 'ebit'));
+// ══ V1.0.65 (Restbefund A-6, Korrekturchat 12C.2) · EINE Entscheidung ══════
+// ueber Periodenzuordnung, Altdatenregel und Sperre — fuer die historische
+// Quotenbildung UND die D&A der bewerteten Periode. Bis V1.0.64 entschied
+// allein das Paar (EBITDA, EBIT): meldete EINE der beiden keine Perioden, fiel
+// die Rechnung auf Array-Indizes zurueck — auch dann, wenn Umsatz und EBITDA
+// nachweislich verschiedene Berichtsperioden tragen. Genau so entstand erneut
+// eine D&A aus zwei Perioden (−150M statt 50M), ausgewiesen als
+// `reported_period` samt falscher Abweichungswarnung.
+//
+// Jetzt zaehlen die Periodenangaben ALLER DREI beteiligten Reihen:
+//   'period'  — alle drei melden Perioden ⇒ Zuordnung ueber das Berichtsende,
+//               ohne Index-Rueckfall.
+//   'index'   — keine der drei meldet Perioden (dokumentierte Altdatenregel),
+//               oder die meldenden Reihen widersprechen sich an den Stellen,
+//               die eine Positionszuordnung verwenden wuerde, NICHT. Dann ist
+//               nichts Bekanntes verletzt und es bleibt beim bisherigen
+//               Verhalten.
+//   'blocked' — mindestens zwei Reihen melden Perioden UND widersprechen sich
+//               an einer dieser Stellen. Die Positionszuordnung ist damit
+//               nachweislich falsch; fuer die Reihe ohne Metadaten laesst sich
+//               die richtige Lage nicht bestimmen, ohne Perioden zu erfinden.
+//               Also: keine angeblich gemessene Zahl.
+// Es werden keine Perioden erfunden, keine Werte geklemmt und keine neue
+// Schaetzmethode eingefuehrt — im Zweifel entsteht gar kein Wert.
+function _daPairingDecision(f) {
+  f = f || {};
+  // Die drei beteiligten Reihen. Bewusst innerhalb der Funktion, damit der
+  // Modul-Lader die Deklaration als EIN Stueck mitziehen kann.
+  const FIELDS = ['revenue', 'ebit', 'ebitda'];
+  const arrOf = (name) => Array.isArray(f[name]) ? f[name] : [];
+  const sp = {};
+  for (const name of FIELDS) sp[name] = _daSeriesPeriods(f, name);
+  const known = FIELDS.filter(name => _daHasPeriods(sp[name]));
+
+  if (known.length === FIELDS.length) {
+    return { mode: 'period', known, conflicts: [],
+             reason: 'Umsatz, EBIT und EBITDA melden Berichtsperioden' };
+  }
+  if (known.length === 0) {
+    return { mode: 'index', known, conflicts: [],
+             reason: 'keine der beteiligten Reihen meldet Berichtsperioden — ' +
+                     'dokumentierte Altdatenregel' };
+  }
+
+  // Teilweise gemeldet: die Positionszuordnung ist nur dann weiter zulaessig,
+  // wenn die MELDENDEN Reihen sich an den Stellen, die sie verwenden wuerde,
+  // nicht widersprechen. Eine einzelne meldende Reihe kann nichts verletzen.
+  const conflicts = [];
+  if (known.length >= 2) {
+    const dLen = Math.min(arrOf('revenue').length, arrOf('ebit').length,
+                          arrOf('ebitda').length, 10);
+    for (let i = 0; i < dLen; i++) {
+      for (let a = 0; a < known.length - 1; a++) {
+        for (let b = a + 1; b < known.length; b++) {
+          const sA = sp[known[a]], sB = sp[known[b]];
+          const pA = sA.periods && sA.periods[i], pB = sB.periods && sB.periods[i];
+          if (pA == null || pB == null) continue;
+          if (!_daPeriodsMatch(sA, i, sB, i)) {
+            conflicts.push('Position ' + i + ': ' + known[a] + '@' + pA +
+                           ' gegen ' + known[b] + '@' + pB);
+          }
+        }
+      }
+    }
+  }
+  if (conflicts.length > 0) {
+    return { mode: 'blocked', known, conflicts,
+             reason: 'die gemeldeten Berichtsperioden widersprechen einer Zuordnung nach ' +
+                     'Position (' + conflicts.slice(0, 3).join('; ') +
+                     (conflicts.length > 3 ? '; …' : '') + '); ' +
+                     'fehlende Metadaten von ' +
+                     FIELDS.filter(n => known.indexOf(n) < 0).join(', ') +
+                     ' machen diesen Widerspruch nicht auflösbar' };
+  }
+  return { mode: 'index', known, conflicts: [],
+           reason: 'nur ' + known.join(', ') + ' meldet Berichtsperioden; die gemeldeten ' +
+                   'Perioden widersprechen der Positionszuordnung nicht' };
 }
 
 // ── D&A-Quoten aus PERIODENGLEICHEN Angaben ──────────────────────────────
 // Rueckgabe: { pairing, ratios, periods, pairs, mismatches, reason }
-//   pairing 'index'  — Altdatenregel: EBITDA oder EBIT meldet keine Perioden.
-//                      Verhalten unveraendert gegenueber V1.0.63.
-//   pairing 'period' — beide melden Perioden ⇒ Zuordnung ueber das
-//                      Berichtsende, ohne Index-Rueckfall.
+// `pairing` ist der Modus aus _daPairingDecision(); bei 'blocked' entsteht
+// KEINE Quote — sonst entstuende der Befund ueber diesen zweiten Pfad erneut.
 function _daPeriodKeyedRatios(f) {
   f = f || {};
   const rev = Array.isArray(f.revenue) ? f.revenue : [];
@@ -4987,8 +5053,14 @@ function _daPeriodKeyedRatios(f) {
   const sRev = _daSeriesPeriods(f, 'revenue');
   const sEbt = _daSeriesPeriods(f, 'ebit');
   const sEba = _daSeriesPeriods(f, 'ebitda');
+  const dec  = _daPairingDecision(f);
 
-  if (!_daPairPeriodKeyed(f)) {
+  if (dec.mode === 'blocked') {
+    return { pairing: 'blocked', ratios: [], periods: [], pairs: [], mismatches: 0,
+             decision: dec, reason: dec.reason };
+  }
+
+  if (dec.mode === 'index') {
     const ratios = [];
     const dLen = Math.min(eba.length, ebt.length, rev.length, 10);
     for (let i = 0; i < dLen; i++) {
@@ -4997,16 +5069,15 @@ function _daPeriodKeyedRatios(f) {
       }
     }
     return { pairing: 'index', ratios, periods: null, pairs: null, mismatches: 0,
-             reason: 'EBITDA oder EBIT ohne Berichtsperioden — dokumentierte Altdatenregel' };
+             decision: dec, reason: dec.reason };
   }
 
-  if (!_daUnitsCompatible(sEbt, sEba)
-      || (_daHasPeriods(sRev) && !_daUnitsCompatible(sRev, sEbt))) {
+  if (!_daUnitsCompatible(sEbt, sEba) || !_daUnitsCompatible(sRev, sEbt)) {
     return { pairing: 'period', ratios: [], periods: [], pairs: [], mismatches: 0,
+             decision: dec,
              reason: 'uneinheitliche Einheiten gemeldet — keine Quote ableitbar' };
   }
 
-  const revKeyed = _daHasPeriods(sRev);
   const ratios = [], periods = [], pairs = [];
   let mismatches = 0;
   const lead = Math.min(ebt.length, sEbt.periods.length, 10);
@@ -5014,23 +5085,17 @@ function _daPeriodKeyedRatios(f) {
     if (ebt[i] == null) continue;
     const iEba = _daMatchingIndex(sEbt, i, sEba, eba);
     if (iEba < 0 || eba[iEba] == null) { mismatches++; continue; }
-    // Umsatz: periodengleich, sobald die Reihe Perioden meldet. Ohne Perioden
-    // bleibt es bei der bisherigen Positionszuordnung — das ist der
-    // unveraenderte Altdatenfall dieser einen Reihe.
-    let iRev = i;
-    if (revKeyed) {
-      iRev = _daMatchingIndex(sEbt, i, sRev, rev);
-      if (iRev < 0) { mismatches++; continue; }
-    }
+    const iRev = _daMatchingIndex(sEbt, i, sRev, rev);
+    if (iRev < 0) { mismatches++; continue; }
     if (!(rev[iRev] > 0)) continue;
     ratios.push((eba[iEba] - ebt[i]) / rev[iRev]);
     const per = (sEbt.periods && sEbt.periods[i]) || null;
     periods.push(per);
     pairs.push({ period: per, revenueIdx: iRev, ebitIdx: i, ebitdaIdx: iEba });
   }
-  return { pairing: 'period', ratios, periods, pairs, mismatches,
+  return { pairing: 'period', ratios, periods, pairs, mismatches, decision: dec,
            reason: ratios.length > 0 ? null
-                 : 'keine periodengleiche Zuordnung von EBITDA, EBIT und Umsatz' };
+                 : 'keine periodengleiche Zuordnung von Umsatz, EBIT und EBITDA' };
 }
 
 function _resolveDaForForecast(mj) {
@@ -12651,29 +12716,34 @@ function _resolveMidCycleDa(mj, revTtm) {
   const _sEba = _daSeriesPeriods(f, 'ebitda');
   const _ebitdaArr = Array.isArray(f.ebitda) ? f.ebitda : [];
   const _ebitArr   = Array.isArray(f.ebit)   ? f.ebit   : [];
-  const _hasCtx = _daPairPeriodKeyed(f);
+  // V1.0.65 (Restbefund A-6, Korrekturchat 12C.2): DIESELBE Entscheidung wie
+  // fuer die historische Quote — sie beruecksichtigt die Periodenangaben aller
+  // drei beteiligten Reihen. Bis V1.0.64 genuegte es, dass EBIT keine Perioden
+  // meldete, damit hier wieder ueber Array-Indizes gerechnet wurde, obwohl
+  // Umsatz und EBITDA nachweislich verschiedene Perioden tragen.
+  const _dec    = _daPairingDecision(f);
+  const _hasCtx = _dec.mode === 'period';
 
   let iEba = -1, iEbt = -1, _pairedPeriod = null;
-  if (!_hasCtx) {
-    // Altdatenregel: meldet EBITDA oder EBIT keine Perioden, bleibt es bei
-    // Position 0 — unveraendert gegenueber V1.0.63.
+  if (_dec.mode === 'index') {
+    // Altdatenregel: keine der beteiligten Reihen meldet Perioden, oder die
+    // meldenden widersprechen der Positionszuordnung nicht — Position 0 wie
+    // bisher.
     iEba = (_ebitdaArr[0] != null) ? 0 : -1;
     iEbt = (_ebitArr[0]   != null) ? 0 : -1;
-  } else {
-    // Die BEWERTETE Periode ist die von revenue[0]; meldet der Umsatz keine
-    // Perioden, gilt die Periode von ebit[0] als bewertete Periode.
-    // Danach gibt es KEINEN Index-Rueckfall.
-    let refS = null, refI = -1;
-    if (_daHasPeriods(_sRev) && _sRev.periods[0] != null) { refS = _sRev; refI = 0; }
-    else if (_sEbt.periods && _sEbt.periods[0] != null)   { refS = _sEbt; refI = 0; }
-    if (refS) {
-      const _k1 = _daMatchingIndex(refS, refI, _sEba, _ebitdaArr);
-      const _k2 = _daMatchingIndex(refS, refI, _sEbt, _ebitArr);
+  } else if (_dec.mode === 'period') {
+    // Die BEWERTETE Periode ist die von revenue[0]. Danach gibt es KEINEN
+    // Index-Rueckfall.
+    if (_daHasPeriods(_sRev) && _sRev.periods[0] != null) {
+      const _k1 = _daMatchingIndex(_sRev, 0, _sEba, _ebitdaArr);
+      const _k2 = _daMatchingIndex(_sRev, 0, _sEbt, _ebitArr);
       if (_k1 >= 0 && _ebitdaArr[_k1] != null) iEba = _k1;
       if (_k2 >= 0 && _ebitArr[_k2]   != null) iEbt = _k2;
-      _pairedPeriod = refS.periods[refI];
+      _pairedPeriod = _sRev.periods[0];
     }
   }
+  // _dec.mode === 'blocked': weder Position noch Periode sind belegt ⇒ hier
+  // entsteht KEIN Wert. Es werden keine Perioden erfunden.
 
   if (iEba >= 0 && iEbt >= 0) {
     if (periodConflict) return _conflict();
@@ -12684,8 +12754,9 @@ function _resolveMidCycleDa(mj, revTtm) {
                     (_pairedPeriod ? ' (' + _pairedPeriod +
                                      (ptRevenue ? ', ' + ptRevenue : '') + ')'
                                    : (ptRevenue ? ' (' + ptRevenue + ')' : '')) +
-                    (_hasCtx ? '' : ' — ohne Periodenmetadaten, Altdatenregel'),
-             daSource: da.source, periodMatched: _hasCtx, period: _pairedPeriod };
+                    (_hasCtx ? '' : ' — nach Position zugeordnet (' + _dec.reason + ')'),
+             daSource: da.source, periodMatched: _hasCtx, period: _pairedPeriod,
+             pairingMode: _dec.mode };
   }
 
   // 3) Zulaessige Ableitung aus anderen Perioden derselben Sicht.
@@ -12703,12 +12774,19 @@ function _resolveMidCycleDa(mj, revTtm) {
   }
 
   // 4) Nicht belegt — kein stiller Nullwert und keine Klemmung auf 0.
+  if (_dec.mode === 'blocked') {
+    return { value: null, available: false, basis: 'period_unresolved', derived: false,
+             label: 'Zuordnung von Umsatz, EBIT und EBITDA nicht belegt: ' + _dec.reason,
+             daSource: da.source, periodMatched: false, period: null,
+             pairingMode: _dec.mode, pairingConflicts: _dec.conflicts.slice() };
+  }
   return { value: null, available: false, basis: 'assumption_required', derived: false,
            label: DA_PROVISIONAL_LABEL +
                   (_hasCtx && da.periodMismatchCount > 0
                     ? ' (in ' + da.periodMismatchCount + ' Periode(n) liessen sich Umsatz, ' +
                       'EBIT und EBITDA nicht periodengleich zuordnen)' : ''),
-           daSource: da.source, periodMatched: false, period: _pairedPeriod };
+           daSource: da.source, periodMatched: false, period: _pairedPeriod,
+           pairingMode: _dec.mode };
 }
 
 function computeMidCycleFcf(mj) {
@@ -13136,7 +13214,10 @@ function modelDcf(mj, scenarios, fcfStartOverride, fcfStartMeta) {
       `(Ø verwässerte Aktien der Periode) — Ersatzbasis für die aktuelle ausstehende ` +
       `Aktienzahl zum Stichtag; kann bei unterjährigen Buybacks/Emissionen abweichen.`
     );
-    if ((fi.sharesGrowthPa || 0) > 0.5) {
+    // V1.0.65 (Restbefund A-5): Massgeblich ist, ob der Hauptwert die
+    // Projektion TATSAECHLICH anwendet — nicht eine 0,5-%-Schwelle. Bei
+    // +0,25 %/y tut er es, also gehoeren beide Hinweise auch dorthin.
+    if (rBase._sharesChangeAppliedInMainValue === true) {
       warnings.push(
         'Trennung der Effekte: operativer Wert/Aktie ist in den Detailjahren 1–' +
         TERMINAL_DILUTION.horizonYears + ' jahresweise verwässerungsadjustiert ' +
@@ -13171,26 +13252,34 @@ function modelDcf(mj, scenarios, fcfStartOverride, fcfStartMeta) {
       const s0 = rBase._shares0;
       const s10 = rBase._sharesYear10;
       const gPct = fi.sharesGrowthPa || 0;
-      let label;
-      if (fi._possibleStockSplit) label = 'Split/Restatement-Verdacht (neutralisiert)';
-      // V1.0.64 (Restbefund A-5): Bei Rueckkaeufen rechnet der HAUPTWERT gar
-      // nicht mit der Projektion — er teilt durchgehend durch die heutige
-      // Aktienzahl. Nur die Diagnose verwendet die projizierte Reihe, und auch
-      // sie endet mit der Detailphase.
-      else if (gPct < -0.5)        label = 'Buybacks (Aktienanzahl sinkt) — NICHT im Hauptwert: '
-                                           + 'der konservative Wert rechnet durchgehend mit der heutigen '
-                                           + 'Aktienzahl; die Projektion wirkt nur in der Diagnose und '
-                                           + 'endet mit Jahr ' + TERMINAL_DILUTION.horizonYears;
-      // V1.0.63 (Auditbefund A-5): "im Hauptwert berücksichtigt" nennt jetzt
-      // den zeitlichen Umfang. Die Aussage ohne Zeitbezug war unvollständig.
-      else if (gPct >  0.5)        label = 'Dilution (Aktienanzahl steigt) — im Hauptwert berücksichtigt '
-                                           + 'für die Detailjahre 1–' + TERMINAL_DILUTION.horizonYears
-                                           + '; ab dem Terminalzeitpunkt konstante Aktienzahl';
-      else                          label = 'neutral (≈konstante Aktienanzahl) — der Hauptwert rechnet '
-                                           + 'durchgehend mit der heutigen Aktienzahl';
+      // ── V1.0.65 (Restbefund A-5, Korrekturchat 12C.2) ────────────────
+      // Bis V1.0.64 entschied die 0,5-%-Schwelle BEIDES: die Einordnung der
+      // Groessenordnung UND die Aussage ueber den Rechenweg. Der Hauptwert
+      // beruecksichtigt aber JEDE positive Aktienzunahme (g > 0). Bei +0,25 %/y
+      // stand deshalb „der Hauptwert rechnet durchgehend mit der heutigen
+      // Aktienzahl" — obwohl er mit 102,5M Aktien des Jahres 10 rechnete.
+      // Getrennt wird jetzt: die Schwelle ordnet nur noch die GROESSENORDNUNG
+      // ein; der RECHENWEG kommt aus dem tatsaechlichen Kernergebnis
+      // (_sharesChangeAppliedInMainValue / _terminalShareCountBasis).
+      let klasse;
+      if (fi._possibleStockSplit)  klasse = 'Split/Restatement-Verdacht (neutralisiert)';
+      else if (gPct < -0.5)        klasse = 'Buybacks (Aktienanzahl sinkt)';
+      else if (gPct >  0.5)        klasse = 'Dilution (Aktienanzahl steigt)';
+      else if (gPct >  0)          klasse = 'geringe Dilution (Aktienanzahl steigt leicht)';
+      else if (gPct <  0)          klasse = 'geringer Rückkauf (Aktienanzahl sinkt leicht)';
+      else                         klasse = 'neutral (≈konstante Aktienanzahl)';
+
+      const _imHauptwert = rBase._sharesChangeAppliedInMainValue === true;
+      const rechenweg = _imHauptwert
+        ? 'im Hauptwert berücksichtigt für die Detailjahre 1–' + TERMINAL_DILUTION.horizonYears
+          + '; ab dem Terminalzeitpunkt konstante Aktienzahl'
+        : 'NICHT im Hauptwert: der konservative Wert rechnet durchgehend mit der heutigen '
+          + 'Aktienzahl'
+          + (gPct < 0 ? '; die Projektion wirkt nur in der Diagnose und endet mit Jahr '
+                        + TERMINAL_DILUTION.horizonYears : '');
       warnings.push(
         `Shares-Projektion: ${s0.toFixed(1)}M (Jahr 0) → ${s10.toFixed(1)}M (Jahr 10) ` +
-        `bei ${gPct >= 0 ? '+' : ''}${gPct.toFixed(2)}%/y · ${label}`
+        `bei ${gPct >= 0 ? '+' : ''}${gPct.toFixed(2)}%/y · ${klasse} — ${rechenweg}`
       );
     }
     if (fi._possibleStockSplit) {
@@ -15277,7 +15366,10 @@ const DATA_BASIS_REQUIRED_HELPERS = Object.freeze([
   '_daPeriodsMatch',
   '_daMatchingIndex',
   '_daHasPeriods',
-  '_daPairPeriodKeyed',
+  // V1.0.65 (Restbefund A-6, Korrekturchat 12C.2): EINE Entscheidung ueber
+  // Periodenzuordnung, Altdatenregel und Sperre — sie loest
+  // _daPairPeriodKeyed ab, das nur EBITDA und EBIT betrachtete.
+  '_daPairingDecision',
   '_daPeriodKeyedRatios'
 ]);
 // Seit V1.0.56 enthaelt dieser Block auch den Erzeugungsweg aus

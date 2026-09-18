@@ -1,5 +1,175 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Korrekturchat 12C.2: zwei Restfehler nach 12C.1 behoben (V1.0.65)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch
+**`claude/chat12c1-targeted-fixes`**, Ausgangscommit
+**`d55dfbdeb40fa9b799f3d6851adc7ddb0543371b`** (V1.0.64) — zugleich die
+Branch-Spitze; nach `git fetch --prune` gab es KEINE Nachfolgecommits
+(`git branch -r --contains d55dfbd` nennt nur diesen Branch). `main`
+(`b023dc8`) wurde nicht angefasst. Eine `AGENTS.md` existiert in diesem
+Repository nicht. Tool-Datei:
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Ergebnisbranch: **`claude/chat12c2-final-edge-fixes`** — der vom Auftrag
+gewuenschte Name; kein technisch erzwungener Abweichname noetig.
+Testbefehl: `npm test`.
+
+**Bestaetigte Testbaseline vor der Aenderung** (selbst auf `d55dfbd`
+ausgefuehrt): 1700 Rechen-Assertions · 434 Fixture-Assertions · 193
+Node-Tests · Exit 0 — wie im Auftrag angegeben.
+
+**Auftrag.** Ausschliesslich zwei Restfehler: der D&A-Index-Rueckfall bei
+TEILWEISE fehlenden Periodenmetadaten (A-6) und der falsche Erklaerungstext
+bei geringer positiver Verwaesserung (A-5). Keine weiteren Auditbaustellen,
+keine Solver- oder Toleranzaenderungen, kein Refactoring. Die in 12C.1
+akzeptierte Darstellung BEIDER Terminalzweige in `buildDataBasisReport()`
+bleibt bestehen.
+
+---
+
+### 1 · Quellenlage (wahrheitsgemaesz)
+
+Alle Nachweise sind **synthetische Master-JSON-Datensaetze ueber die
+produktiven Aufrufwege** — keine Live-Validierung, kein reales Filing. Der
+A-6-Nachweis ist ausdruecklich **kein Beleg fuer einen Fehler des echten
+SEC-Live-Imports**. Ergaenzend wurden die geaenderten sichtbaren Texte im
+vorinstallierten Chromium geprueft (punktuell, sechs Datensaetze).
+
+### 2 · Reproduktion am unveraenderten Ausgangsstand
+
+Beide Befunde wurden zuerst auf `d55dfbd` reproduziert.
+
+| # | gemessen auf `d55dfbd` |
+|---|---|
+| A-6 | Verschobener Datensatz aus `R37` (Umsatz und EBIT FY2025–FY2020, EBITDA ab FY2024), **nur die EBIT-Periodenmetadaten entfernt**: **D&A −150M**, **Referenz-FCF −50M**, Herkunft **`reported_period`**, >30-%-Abweichungswarnung gegen den berichteten FCF 150 — der echte Engine-Pfad akzeptierte den Fall (`applicable: true`). Ursache: `_daPairPeriodKeyed()` verlangte Perioden von EBITDA UND EBIT und fiel sonst auf Array-Indizes zurueck; der bekannte Widerspruch zwischen Umsatz@FY2025 und EBITDA@FY2024 blieb ungenutzt. |
+| A-5 | Referenzfirma mit `shares_diluted = [100, 100/1,0025, 100/1,0025², 100/1,0025³]` (**+0,25 %/y**): Terminalteiler **102,528313 Mio.**, Basis `shares_year_10_constant`, Projektion im Hauptwert angewendet — sichtbarer Text aber **„neutral (≈konstante Aktienanzahl) — der Hauptwert rechnet durchgehend mit der heutigen Aktienzahl"**. |
+
+### 3 · Was geaendert wurde
+
+**A-6 — EINE Entscheidung ueber alle drei beteiligten Reihen.**
+`_daPairPeriodKeyed()` ist durch `_daPairingDecision(f)` ersetzt. Sie
+betrachtet die Periodenangaben von Umsatz, EBIT UND EBITDA und liefert genau
+einen Modus, den BEIDE Verbraucher verwenden — die historische Quotenbildung
+(`_daPeriodKeyedRatios`) und die D&A der bewerteten Periode
+(`_resolveMidCycleDa`). Damit kann der Fehler nicht ueber den jeweils anderen
+Pfad erneut entstehen.
+* `period` — alle drei melden Perioden ⇒ Zuordnung ueber das Berichtsende,
+  kein Index-Rueckfall.
+* `index` — keine der drei meldet Perioden (dokumentierte Altdatenregel) ODER
+  die meldenden Reihen widersprechen der Positionszuordnung an keiner der
+  verwendeten Stellen ⇒ Positionszuordnung wie bisher, ausdruecklich als
+  solche gekennzeichnet (`periodMatched: false`, „nach Position zugeordnet").
+* `blocked` — mindestens ZWEI Reihen melden Perioden und widersprechen sich
+  an einer dieser Stellen ⇒ KEIN Wert: `status: 'insufficient_data'`,
+  `daBasis: 'period_unresolved'`, Begruendung mit den konkreten Konflikten,
+  KEINE Abweichungswarnung, Modell gesperrt.
+Keine erfundenen Perioden, keine Klemmung negativer Werte, keine neue
+Schaetzmethode. Die Priorität einer gueltigen manuellen D&A-Annahme (auch 0)
+bleibt vor allem anderen.
+
+**A-5 — Erklaerungstext folgt dem Kernergebnis.** Bis V1.0.64 entschied die
+0,5-%-Schwelle BEIDES: die Einordnung der Groessenordnung und die Aussage
+ueber den Rechenweg. Der Hauptwert beruecksichtigt aber JEDE positive
+Aktienzunahme (`g > 0`). Getrennt wird jetzt: die Schwelle ordnet nur noch die
+GROESSENORDNUNG ein (Buybacks / Dilution / geringe Dilution / geringer
+Rueckkauf / neutral); der RECHENWEG kommt aus
+`_sharesChangeAppliedInMainValue` des Kerns. Aus demselben Feld haengen jetzt
+auch die „Trennung der Effekte" und der ⚠-Vereinfachungshinweis, die vorher
+ebenfalls erst ab 0,5 % erschienen.
+**Unveraendert:** Bewertungsformel, Aktienprojektion, Clamp- und Split-Regeln,
+Fair Value, Buyback-Uplift und Sicherheitsmarge (in `R41` gegen `d55dfbd`
+gemessen: +0,25 % → 16,300651655509; −4 % → 16,590366068896806 bei Uplift
+34,67567333289907; +8 % → 7,913941025347281; Synthesizer-Fair-Value
+12,796287825471, `buybackAddon` 0,10, `mosTotal` 0,390812500). Keine neue
+Einstellung, keine Aenderung der Terminalkonvention.
+
+### 4 · Tests
+
+| Test | sichert ab |
+|---|---|
+| `R40` | A-6: teilweise fehlende Metadaten heben bekannte Widersprueche nicht auf — EBIT-Meta entfernt ⇒ gesperrt, Umsatz-Meta entfernt ⇒ gesperrt, verschobene aber vollstaendig belegte Perioden ⇒ richtig zugeordnet (150), vollstaendiger `R37`-Fall unveraendert, Altdaten ohne Metadaten unveraendert nutzbar, nur eine meldende Reihe ⇒ Positionszuordnung (gekennzeichnet), manuelle Annahmen (auch 0) behalten Vorrang, keine Klemmung; echter Engine-Pfad |
+| `R41` | A-5: Erklaerung und tatsaechliche Aktienbasis stimmen ueberein — geprueft bei +0,25 %, +0,50 %, +2,00 %, konstanter Aktienzahl, −4 % und Split-Verdacht; Rekonstruktion `pvTv === _pvTvAbs / _terminalShareCount`; Fair Value, Uplift und Terminalkonvention unveraendert; keine neue Einstellung |
+
+**Berichtigte Erwartung.** `DATA_BASIS_REQUIRED_HELPERS` in
+`tests/sec-ttm.test.mjs` fuehrt statt `_daPairPeriodKeyed` jetzt
+`_daPairingDecision` (mit Begruendung im Test). Sonst wurde **keine**
+Erwartung angepasst; `R1`–`R39` bestehen unveraendert, insbesondere `R35`
+(A-7) und `R39` (Vorbehalt in beiden Reverse-DCF-Karten).
+
+**`npm test` nach der Aenderung: 1700 Rechen-Assertions · 434
+Fixture-Assertions · 195 Node-Tests · Exit 0.** Node-Tests 193 → 195 (+2).
+
+### 5 · Browserpruefung (durchgefuehrt)
+
+Mit dem vorinstallierten Chromium ueber `importMasterJsonFromTextarea()`:
+
+* **A-5, fuenf Aktienverlaeufe.** Erklaerung und gemessene Basis stimmen in
+  allen Faellen ueberein:
+  * +0,25 %/y → Teiler 102,528313, `shares_year_10_constant`, Text „geringe
+    Dilution (Aktienanzahl steigt leicht) — im Hauptwert beruecksichtigt fuer
+    die Detailjahre 1–10; ab dem Terminalzeitpunkt konstante Aktienzahl";
+  * +0,50 %/y → Teiler 105,114013, gleicher Rechenweg;
+  * +2,00 %/y → Teiler 121,899442, „Dilution … Detailjahre 1–10";
+  * konstant → Teiler 100, „neutral … NICHT im Hauptwert: … heutige
+    Aktienzahl";
+  * −4,00 %/y → Teiler 100, „Buybacks … NICHT im Hauptwert …".
+* **A-6 (DABLK, EBIT-Metadaten fehlen):** sichtbar „Mid-Cycle-Marge nicht
+  ableitbar: Abschreibungen (D&A) der bewerteten Periode nicht belegt
+  (Zuordnung von Umsatz, EBIT und EBITDA nicht belegt: die gemeldeten
+  Berichtsperioden widersprechen …)". Gemessen: `applicable: false`,
+  `status: 'insufficient_data'`, `value: null`,
+  `daBasis: 'period_unresolved'`, `warning: null`, `pairing: 'blocked'`.
+
+Keine JavaScript-Fehler; die einzigen Konsolenmeldungen sind fehlgeschlagene
+externe Ressourcenabrufe (kein Netz) ohne Bezug zur Aenderung.
+
+### 6 · Verbleibende Pruefgrenzen
+
+* **Meldet nur EINE der drei Reihen Perioden, bleibt es bei der
+  Positionszuordnung.** Ein Versatz der unbeschrifteten Reihen ist dann aus
+  den Daten nicht erkennbar; ihn zu unterstellen hiesse, Perioden zu
+  erfinden. Im verschobenen Testdatensatz liefert dieser Fall weiterhin −50M
+  — sichtbar als „nach Position zugeordnet" und mit `periodMatched: false`,
+  aber ohne Sperre. Bewusste Grenze, keine vollstaendige Aufloesung.
+* **A-5 bleibt eine offengelegte Modellvereinfachung.** Behoben ist hier nur
+  der falsche Erklaerungstext.
+* Die in 12C.1 dokumentierte Grenze zu `buildDataBasisReport()` (beide Zweige
+  statt des konkreten) bleibt unveraendert bestehen.
+* **A-6 ist an synthetischen Master-JSON-Datensaetzen geprueft**, nicht an
+  einem Live-SEC-Import.
+* Die Toleranzen der Periodenpaarung sind unveraendert und **nicht an realen
+  Filings kalibriert**.
+* Die **Browserpruefung** deckt sechs Datensaetze ab, nicht die Oberflaeche
+  insgesamt.
+* Alle Grenzen aus 12A, 12B.1–12B.3, 12C und 12C.1 bleiben bestehen. Dies ist
+  **keine Bestaetigung**, dass das Werkzeug fehlerfrei ist, und **keine
+  Aussage** ueber die Qualitaet der erzeugten Bewertungen.
+
+### 7 · Bearbeitungsstand nach diesem Schritt
+
+**In diesem Schritt behoben**
+* **A-6** Index-Rueckfall bei teilweise fehlenden Periodenmetadaten — `R40`
+* **A-5** falscher Erklaerungstext bei geringer positiver Verwaesserung — `R41`
+  (die Modellvereinfachung selbst bleibt offengelegt, nicht behoben)
+
+**Unveraendert abgesichert**
+* **A-1 bis A-4, O-1, O-2** (12A/12B) — `R1`–`R20`
+* **12B.1–12B.3** Schuldenumfang, -aufloesung und Nichtnegativitaet — `R21`–`R32`
+* **A-5** offengelegte Modellannahme und Terminal-Aktienbasis — `R33`, `R38`
+* **A-6** zentrale D&A-Aufloesung und Periodenzuordnung — `R34`, `R37`
+* **A-7** Buyback-Zuschlag im aktiven DCF-Modell — `R35`
+* **O-3** Nullstellensuche und Vorbehalt in beiden Karten — `R36`, `R39`
+
+**Weiterhin offene Pruefpunkte** (unveraendert)
+* Keine Live-Validierung bei SEC/Yahoo, kein reales Filing.
+* Keine vollstaendige Browser-/DOM-Pruefung.
+* Nicht-DCF-Modelle nicht auf innere Konsistenz geprueft.
+* Sektor-/Klassifikationstabellen, Gewichtung, Einstiegszonen-Logik und
+  Datenqualitaets-Gates ueber A-7 hinaus ungeprueft.
+* Keine Laufzeit- oder Sicherheitspruefung.
+
+---
+
 ## Korrekturchat 12C.1: drei Restfehler nach 12C behoben (V1.0.64)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch

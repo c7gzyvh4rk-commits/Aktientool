@@ -2985,3 +2985,249 @@ test('R39 (O-3) beide Reverse-DCF-Karten zeigen den Vorbehalt bei unvollstaendig
   assert.equal(JSON.stringify(coreA.unresolvedIntervalsPct), '[[16.5,17]]');
   assert.equal(JSON.stringify(coreA.evaluableRangePct), '[-20,16.5]');
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// R40–R41 (Regression, Korrekturchat 12C.2) — die beiden nach 12C.1
+// reproduzierten Restfehler. Erwartungswerte unabhaengig nachgerechnet bzw.
+// gegen den unveraenderten Ausgangsstand V1.0.64 (Commit d55dfbd) gemessen.
+// ═══════════════════════════════════════════════════════════════════════════
+
+test('R40 (A-6) teilweise fehlende Periodenmetadaten heben bekannte Widersprueche nicht auf', () => {
+  // Frueher (Restbefund nach 12C.1): _daPairPeriodKeyed() sah nur EBITDA und
+  // EBIT an. Fehlten die EBIT-Periodenmetadaten, wurde wieder nach Position
+  // gerechnet — obwohl Umsatz (FY2025…) und EBITDA (FY2024…) nachweislich
+  // verschiedene Berichtsperioden tragen. Gemessen auf `d55dfbd`:
+  // D&A −150M, Referenz-FCF −50M, Herkunft `reported_period`, dazu eine
+  // >30-%-Abweichungswarnung — und der echte Engine-Pfad akzeptierte das.
+  const ohneEbitMeta = daPeriodMj({ meta: { ebit: undefined } });
+  delete ohneEbitMeta.fundamentals._v4_meta.ebit;
+
+  const dec = S._daPairingDecision(ohneEbitMeta.fundamentals);
+  assert.equal(dec.mode, 'blocked');
+  assert.equal(JSON.stringify(dec.known.slice().sort()), JSON.stringify(['ebitda', 'revenue']));
+  assert.ok(dec.conflicts.length > 0, 'der Widerspruch wird benannt');
+  assert.ok(/revenue@2025-12-31/.test(dec.conflicts[0]) && /ebitda@2024-12-31/.test(dec.conflicts[0]),
+    'Konflikt an Position 0: ' + dec.conflicts[0]);
+
+  const mc = S.computeMidCycleFcf(ohneEbitMeta);
+  assert.equal(mc.status, 'insufficient_data');
+  assert.equal(mc.value, null, 'keine angeblich gemessene Zahl');
+  assert.equal(mc.daM, null, 'kein D&A-Wert aus vermischten Perioden');
+  assert.equal(mc.daBasis, 'period_unresolved');
+  assert.equal(mc.warning, null, 'und damit auch keine abgeleitete Abweichungswarnung');
+  assert.ok(/nicht belegt/.test(mc.reason) && /widersprechen/.test(mc.reason), mc.reason);
+
+  // Der zweite Pfad darf denselben Fehler nicht erneut erzeugen: auch die
+  // historische Quotenbildung liefert hier nichts.
+  const da = S._resolveDaForForecast(ohneEbitMeta);
+  assert.equal(da.measuredPairing, 'blocked');
+  assert.equal(da.measuredRatio, null);
+  assert.equal(da.source, 'assumption_required');
+  assert.equal(da.ratio, null, 'keine Quote aus einer Positionszuordnung');
+
+  // ── ECHTER ENGINE-PFAD ───────────────────────────────────────────────
+  const v = S.runValuationEngine(ohneEbitMeta);
+  assert.equal(v.error, undefined, 'Engine laeuft: ' + (v.error || ''));
+  const dm = v.modelResults.dcf_midcycle;
+  assert.equal(dm.applicable, false, 'der Mid-Cycle-Pfad wird gesperrt statt akzeptiert');
+  assert.ok(/nicht belegt/.test(dm.reason || ''), dm.reason);
+
+  // ── Unterschiedliche Positionen fehlender Metadaten ──────────────────
+  // Fehlt der UMSATZ-Ausweis, widersprechen sich EBIT und EBITDA — ebenfalls
+  // gesperrt.
+  const ohneRevMeta = daPeriodMj();
+  delete ohneRevMeta.fundamentals._v4_meta.revenue;
+  const decR = S._daPairingDecision(ohneRevMeta.fundamentals);
+  assert.equal(decR.mode, 'blocked');
+  assert.ok(/ebit@2025-12-31/.test(decR.conflicts[0]) && /ebitda@2024-12-31/.test(decR.conflicts[0]),
+    decR.conflicts[0]);
+  const mcR = S.computeMidCycleFcf(ohneRevMeta);
+  assert.equal(mcR.status, 'insufficient_data');
+  assert.equal(mcR.value, null);
+  assert.equal(mcR.warning, null);
+
+  // Vorhandene, aber VERSCHOBENE Perioden werden richtig zugeordnet, nicht
+  // gesperrt: Umsatz und EBITDA ab FY2024, EBIT ab FY2025.
+  // Von Hand: D&A = EBITDA(FY2024) − EBIT(FY2024) = 250 − 200 = 50
+  //           ⇒ Referenz-FCF = 150 + 50 − 50 = 150
+  const verschoben = daPeriodMj();
+  verschoben.fundamentals._v4_meta.revenue = fyMeta(6, 2024);
+  const decV = S._daPairingDecision(verschoben.fundamentals);
+  assert.equal(decV.mode, 'period');
+  const mcV = S.computeMidCycleFcf(verschoben);
+  assert.equal(mcV.status, 'ok');
+  assert.ok(Math.abs(mcV.value - 150) < 1e-9, 'erhalten ' + mcV.value);
+  assert.ok(Math.abs(mcV.daM - 50) < 1e-9);
+  assert.equal(mcV.daBasis, 'reported_period', 'die bewertete Periode ist jetzt belegt');
+
+  // ── GEGENPROBEN ──────────────────────────────────────────────────────
+  // 1) Vollstaendig belegter R37-Fall bleibt korrekt.
+  const mcVoll = S.computeMidCycleFcf(daPeriodMj());
+  assert.equal(mcVoll.status, 'ok');
+  assert.ok(Math.abs(mcVoll.value - 150) < 1e-9);
+  assert.equal(mcVoll.daBasis, 'measured_ratio');
+  assert.equal(S._daPairingDecision(daPeriodMj().fundamentals).mode, 'period');
+
+  // 2) Vollstaendig metadatenlose Altdaten bleiben nutzbar — unveraenderte
+  //    Positionszuordnung. Von Hand: 150 + 50 − 50 = 150.
+  const altMj = {
+    meta: { sub_classification: 'cyclical' },
+    fundamentals: { revenue: [1000, 1000, 1000, 1000, 1000],
+      ebit: [200, 200, 200, 200, 200], ebitda: [250, 250, 250, 250, 250],
+      capex: [50, 50, 50, 50, 50], shares_diluted: [100, 100, 100, 100, 100] },
+    valuation: { wacc_components: { tax_rate: 25 } }, market: {}
+  };
+  const decAlt = S._daPairingDecision(altMj.fundamentals);
+  assert.equal(decAlt.mode, 'index');
+  assert.equal(decAlt.known.length, 0);
+  const mcAlt = S.computeMidCycleFcf(altMj);
+  assert.equal(mcAlt.status, 'ok');
+  assert.ok(Math.abs(mcAlt.value - 150) < 1e-9);
+  assert.equal(mcAlt.daBasis, 'reported_period');
+  assert.equal(S._resolveDaForForecast(altMj).measuredPairing, 'index');
+
+  // 3) Meldet nur EINE Reihe Perioden, kann nichts widersprechen — die
+  //    Positionszuordnung bleibt zulaessig (dokumentierte Grenze, siehe
+  //    AUDIT-CHAT12.md 3f), wird aber als solche gekennzeichnet.
+  const nurUmsatz = daPeriodMj();
+  delete nurUmsatz.fundamentals._v4_meta.ebit;
+  delete nurUmsatz.fundamentals._v4_meta.ebitda;
+  const decU = S._daPairingDecision(nurUmsatz.fundamentals);
+  assert.equal(decU.mode, 'index');
+  assert.equal(JSON.stringify(decU.known), JSON.stringify(['revenue']));
+  const daU = S._resolveMidCycleDa(nurUmsatz, 1000);
+  assert.equal(daU.periodMatched, false, 'nicht als periodengleich ausgewiesen');
+  assert.equal(daU.pairingMode, 'index');
+  assert.ok(/nach Position zugeordnet/.test(daU.label), daU.label);
+
+  // 4) Manuelle D&A-Annahmen behalten Vorrang — auch bei gesperrter Zuordnung.
+  const ovMj = daPeriodMj();
+  delete ovMj.fundamentals._v4_meta.ebit;
+  ovMj.valuation.assumptions = { da_pct_of_revenue: 10 };
+  const mcOv = S.computeMidCycleFcf(ovMj);
+  assert.equal(mcOv.status, 'ok');
+  assert.equal(mcOv.daBasis, 'manual_override');
+  assert.ok(Math.abs(mcOv.daM - 100) < 1e-9, '10 % von 1.000');
+  assert.ok(Math.abs(mcOv.value - 200) < 1e-9, '150 + 100 − 50');
+  const ov0Mj = daPeriodMj();
+  delete ov0Mj.fundamentals._v4_meta.ebit;
+  ov0Mj.valuation.assumptions = { da_pct_of_revenue: 0 };
+  const mcOv0 = S.computeMidCycleFcf(ov0Mj);
+  assert.equal(mcOv0.status, 'ok', 'eine ausdrueckliche Null bleibt zulaessig');
+  assert.equal(mcOv0.daBasis, 'manual_override');
+  assert.ok(Math.abs(mcOv0.value - 100) < 1e-9);
+
+  // 5) Keine Klemmung: eine gesperrte Zuordnung liefert null, nicht 0.
+  assert.notEqual(mc.value, 0);
+  assert.equal(mc.value, null);
+
+  // Dieser Nachweis laeuft auf einem SYNTHETISCHEN Master-JSON ueber den
+  // produktiven Bewertungsweg. Er belegt KEINEN Fehler eines echten
+  // SEC-Live-Imports — ein solcher wurde hier nicht geprueft.
+});
+
+test('R41 (A-5) der Erklaerungstext folgt dem Kernergebnis, nicht der 0,5-%-Schwelle', () => {
+  // Frueher (Restbefund nach 12C.1): Die Hauptrechnung beruecksichtigt JEDE
+  // positive Aktienzunahme (g > 0), der sichtbare Text richtete sich aber nach
+  // einer 0,5-%-Schwelle. Bei +0,25 %/y stand deshalb „der Hauptwert rechnet
+  // durchgehend mit der heutigen Aktienzahl", obwohl er mit 102,528313 Mio.
+  // Aktien des Jahres 10 rechnete.
+  const p = (x) => [100, 100 / x, 100 / Math.pow(x, 2), 100 / Math.pow(x, 3)];
+  const faelle = [
+    { name: '+0,25 %/y (unter der Schwelle)', sd: p(1.0025), g: 0.25,
+      imHauptwert: true,  basis: 'shares_year_10_constant', teiler: 102.52831332277852 },
+    { name: '+0,50 %/y (auf der Schwelle)',   sd: p(1.005),  g: 0.50,
+      imHauptwert: true,  basis: 'shares_year_10_constant', teiler: 105.11401320407893 },
+    { name: '+2,00 %/y (ueber der Schwelle)', sd: p(1.02),   g: 2.00,
+      imHauptwert: true,  basis: 'shares_year_10_constant', teiler: null },
+    { name: 'konstante Aktienzahl',           sd: [100, 100, 100, 100], g: 0,
+      imHauptwert: false, basis: 'shares_year_0_constant',  teiler: 100 },
+    { name: 'Rueckkaeufe -4 %/y',             sd: p(0.96),   g: -4,
+      imHauptwert: false, basis: 'shares_year_0_constant',  teiler: 100 }
+  ];
+
+  for (const fall of faelle) {
+    const mj  = refMj({ shares_diluted: fall.sd, net_debt: [0] });
+    const fi  = S.buildForecastInputs(mj);
+    assert.ok(Math.abs(fi.sharesGrowthPa - fall.g) < 1e-6, fall.name + ': g=' + fi.sharesGrowthPa);
+    const r   = S.forecastDcfCore(fi, 0, 2, 10, { enabled: false }, 20);
+    const dcf = S.modelDcf(mj, scOf(0, 2, 10, 20));
+
+    // Der Kern ist die einzige Quelle der Aussage — und er stimmt mit der
+    // tatsaechlichen Rechnung ueberein.
+    assert.equal(r._sharesChangeAppliedInMainValue, fall.imHauptwert, fall.name);
+    assert.equal(dcf._terminalShareCountBasis, fall.basis, fall.name);
+    assert.ok(Math.abs(r.pvTv - (r._pvTvAbs / r._terminalShareCount)) < 1e-12,
+      fall.name + ': ausgewiesener Teiler rekonstruiert den Hauptwert nicht');
+    if (fall.teiler != null) {
+      assert.ok(Math.abs(dcf._terminalShareCountM - fall.teiler) < 1e-9,
+        fall.name + ': Teiler ' + dcf._terminalShareCountM);
+    }
+
+    const w = dcf.warnings || [];
+    const label = w.find(x => /Shares-Projektion/.test(x));
+    assert.ok(label, fall.name + ': die Shares-Projektion wird ausgewiesen');
+
+    if (fall.imHauptwert) {
+      assert.ok(/im Hauptwert berücksichtigt/.test(label),
+        fall.name + ': Rechenweg falsch beschrieben — ' + label);
+      assert.ok(/Detailjahre 1–10/.test(label) && /Terminalzeitpunkt/.test(label),
+        fall.name + ': Zeitraum fehlt — ' + label);
+      // Genau die frueher falsche Aussage darf hier nicht mehr stehen.
+      assert.equal(/durchgehend mit der heutigen Aktienzahl/.test(label), false,
+        fall.name + ': behauptet weiterhin die heutige Aktienzahl — ' + label);
+      // Die Hinweise zur Verwaesserung haengen ebenfalls am Kernergebnis,
+      // nicht mehr an der Schwelle.
+      assert.ok(w.some(x => /verwässerungsadjustiert/.test(x) && /Detailjahren 1–10/.test(x)),
+        fall.name + ': Trennung der Effekte fehlt');
+      assert.ok(w.some(x => /Verwässerungs-Vereinfachung/.test(x)),
+        fall.name + ': Vereinfachungshinweis fehlt');
+    } else {
+      assert.ok(/NICHT im Hauptwert/.test(label) && /durchgehend mit der heutigen Aktienzahl/.test(label),
+        fall.name + ': Rechenweg falsch beschrieben — ' + label);
+      assert.equal(/im Hauptwert berücksichtigt/.test(label), false, fall.name);
+    }
+  }
+
+  // ── Groessenordnung bleibt eingeordnet, ohne falsche Rechenaussage ────
+  const klein = S.modelDcf(refMj({ shares_diluted: p(1.0025), net_debt: [0] }), scOf(0, 2, 10, 20));
+  const kleinLabel = (klein.warnings || []).find(x => /Shares-Projektion/.test(x));
+  assert.ok(/geringe Dilution/.test(kleinLabel), 'die Groessenordnung wird weiterhin benannt: ' + kleinLabel);
+  assert.ok(/\+0\.25%\/y/.test(kleinLabel), kleinLabel);
+
+  // ── Die BEWERTUNG selbst ist unveraendert ────────────────────────────
+  // Referenzzahlen auf dem Ausgangsstand V1.0.64 (Commit d55dfbd) gemessen.
+  assert.ok(Math.abs(klein.base - 16.300651655509) < 1e-9,
+    'Fair Value unveraendert, erhalten ' + klein.base);
+  assert.equal(klein._buybackUpliftPct, 0);
+  const rueck = S.modelDcf(refMj({ shares_diluted: p(0.96), net_debt: [0] }), scOf(0, 2, 10, 20));
+  assert.ok(Math.abs(rueck.base - 16.590366068896806) < 1e-9, 'erhalten ' + rueck.base);
+  assert.ok(Math.abs(rueck._buybackUpliftPct - 34.67567333289907) < 1e-9,
+    'Buyback-Uplift unveraendert, erhalten ' + rueck._buybackUpliftPct);
+  const stark = S.modelDcf(refMj({ shares_diluted: [125.971, 116.640, 108.0, 100.0],
+    net_debt: [0] }), scOf(0, 2, 10, 20));
+  assert.ok(Math.abs(stark.base - 7.913941025347281) < 1e-12, 'erhalten ' + stark.base);
+
+  // ── Terminalkonvention und Einstellungen unveraendert ────────────────
+  const konvention = evalInApp('TERMINAL_DILUTION');
+  assert.equal(konvention.horizonYears, 10);
+  assert.equal(konvention.appliedInTerminalValue, false);
+  assert.equal(konvention.dilutionTerminalShareCountBasis, 'shares_year_10_constant');
+  assert.equal(konvention.buybackOrFlatTerminalShareCountBasis, 'shares_year_0_constant');
+  const mjX = refMj({ shares_diluted: p(1.0025), net_debt: [0] });
+  mjX.valuation.assumptions = { shares_growth_threshold_pct: 5, terminal_share_count_basis: 'x' };
+  const rX = S.modelDcf(mjX, scOf(0, 2, 10, 20));
+  assert.ok(Math.abs(rX.base - klein.base) < 1e-12, 'keine neue Einstellung');
+  assert.equal(rX._terminalShareCountBasis, 'shares_year_10_constant');
+
+  // ── Split-/Clamp-Regeln unveraendert ─────────────────────────────────
+  // Ein Split-Verdacht setzt sharesGrowthPa auf 0; der Hauptwert rechnet dann
+  // durchgehend mit der heutigen Aktienzahl — und sagt das auch.
+  const split = S.modelDcf(refMj({ shares_diluted: [200, 100, 100, 100], net_debt: [0] }),
+    scOf(0, 2, 10, 20));
+  assert.equal(split._sharesGrowthPaProjected, 0);
+  assert.equal(split._sharesChangeAppliedInMainValue, false);
+  const splitLabel = (split.warnings || []).find(x => /Shares-Projektion/.test(x));
+  assert.ok(/Split\/Restatement-Verdacht/.test(splitLabel), splitLabel);
+  assert.ok(/NICHT im Hauptwert/.test(splitLabel), splitLabel);
+});

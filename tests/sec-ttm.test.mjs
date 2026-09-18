@@ -779,7 +779,11 @@ test('der DATENBASIS-BLOCK laeuft in einer leeren Sandbox', () => {
      // der Datenbasis nennt den D&A-Status und muss deshalb dieselbe Paarung
      // mitziehen — sonst kaeme er zu einem anderen Ergebnis als der Kern.
      'DA_PERIOD_MATCH', '_daSeriesPeriods', '_daUnitsCompatible', '_daPeriodsMatch',
-     '_daMatchingIndex', '_daHasPeriods', '_daPairPeriodKeyed', '_daPeriodKeyedRatios']);
+     // V1.0.65 (Korrekturchat 12C.2): `_daPairPeriodKeyed` betrachtete nur
+     // EBITDA und EBIT und liess bei fehlenden EBIT-Perioden wieder eine
+     // Zuordnung nach Position zu. `_daPairingDecision` entscheidet jetzt
+     // anhand aller drei beteiligten Reihen und loest den Helfer ab.
+     '_daMatchingIndex', '_daHasPeriods', '_daPairingDecision', '_daPeriodKeyedRatios']);
   assert.deepEqual(Array.from(isoliert.DATA_BASIS_REQUIRED_BLOCKS), ['SEC-QUARTALS-BLOCK']);
   // Die Helfer sind in der Sandbox wirklich vorhanden — der Ausweis nennt
   // den D&A-Status, statt ihn stillschweigend auszulassen.
