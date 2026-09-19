@@ -26,7 +26,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { app, refMj, scOf, refValuePerShare,
+import { readFileSync } from 'node:fs';
+import { app, APP_FILE, refMj, scOf, refValuePerShare,
          evalInApp, importSecFacts, secFactsWithDebt, secInst, allYears,
          fullyDocumented, noNoncurrentLeases,
          secQuarterlyFactsWithDebt, secQInst, ttmViewOf } from './audit-chat12.mjs';
@@ -3230,4 +3231,532 @@ test('R41 (A-5) der Erklaerungstext folgt dem Kernergebnis, nicht der 0,5-%-Schw
   const splitLabel = (split.warnings || []).find(x => /Shares-Projektion/.test(x));
   assert.ok(/Split\/Restatement-Verdacht/.test(splitLabel), splitLabel);
   assert.ok(/NICHT im Hauptwert/.test(splitLabel), splitLabel);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// R42–R46 (Regression, Korrekturchat 12D) — die fuenf Befunde des
+// unabhaengigen Auditberichts nach V1.0.65. Jeder Test wurde zuerst am
+// unveraenderten Ausgangsstand `7b1fd10` ausgefuehrt und ist dort
+// fehlgeschlagen.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Hilfen fuer die Vergleichsmultiples ───────────────────────────────────
+const relMj = (fundOverrides, ownOverrides) => ({
+  fundamentals: Object.assign({ ebitda: [250], shares_diluted: [100] }, fundOverrides || {}),
+  market: { own_multiples_median: Object.assign({ ev_ebitda_10y: 10 }, ownOverrides || {}) }
+});
+const evModelOf = (mj) => {
+  const rel = S.computeRelativeMultiplesFV(mj);
+  return { rel, ev: rel.models.find(m => m.id === 'ev_ebitda_10y') };
+};
+
+test('R42 (Befund 2) die EV/EBITDA-Wertbruecke behandelt fehlende Schulden nicht als Null', () => {
+  // Ausgangsstand: `(f.total_debt && f.total_debt[0]) || 0` — fehlende Angaben
+  // ergaben 25 USD/Aktie und galten als verfuegbar.
+
+  // ── Pflichtfall 1: Schulden UND Liquiditaet fehlen ⇒ kein Aktienwert ──
+  {
+    const { rel, ev } = evModelOf(relMj({}));
+    assert.equal(ev.available, false, 'unbekannt ist nicht schuldenfrei');
+    assert.equal(ev.base, null);
+    assert.equal(rel.hasAny, false);
+    assert.equal(rel.availableCount, 0);
+    assert.equal(rel.median, null);
+    assert.ok(/Eigenkapitalbruecke nicht belegt/.test(ev.reason), ev.reason);
+    // Der operative Unternehmenswert bleibt getrennt verfuegbar.
+    assert.equal(ev.enterpriseValueM, 2500);
+    assert.equal(ev.bridgeBlocked, true);
+  }
+
+  // ── Pflichtfall 2: Schulden unbekannt, Liquiditaet ausdruecklich 0 ────
+  for (const fund of [{ cash: [0] }, { total_debt: [null], cash: [0] }]) {
+    const { ev } = evModelOf(relMj(fund));
+    assert.equal(ev.available, false, JSON.stringify(fund));
+    assert.equal(ev.base, null);
+  }
+
+  // ── Pflichtfall 3: beide ausdruecklich 0 ⇒ 25 USD/Aktie ──────────────
+  {
+    const { ev } = evModelOf(relMj({ total_debt: [0], cash: [0] }));
+    assert.equal(ev.available, true, 'gemeldete Nullwerte bleiben gueltig');
+    assert.ok(Math.abs(ev.base - 25) < 1e-12, 'erhalten ' + ev.base);
+    assert.equal(ev.netDebtM, 0);
+  }
+
+  // ── Pflichtfall 4: Schulden 500, Liquiditaet 0 ⇒ 20 USD/Aktie ────────
+  {
+    const { ev } = evModelOf(relMj({ total_debt: [500], cash: [0] }));
+    assert.ok(Math.abs(ev.base - 20) < 1e-12, 'erhalten ' + ev.base);
+    assert.equal(ev.netDebtM, 500);
+  }
+
+  // ── Pflichtfall 5: Schulden 0, Liquiditaet 200 ⇒ 27 USD/Aktie ────────
+  // Nettoliquiditaet erhoeht den Eigenkapitalwert (Vorzeichen).
+  {
+    const { ev } = evModelOf(relMj({ total_debt: [0], cash: [200] }));
+    assert.ok(Math.abs(ev.base - 27) < 1e-12, 'erhalten ' + ev.base);
+    assert.equal(ev.netDebtM, -200);
+  }
+
+  // ── Pflichtfall 6: unvereinbare Bilanzperioden ⇒ begruendete Sperre ──
+  {
+    const mj = relMj({ total_debt: [500], cash: [100] });
+    mj.fundamentals._v4_meta = {
+      total_debt: { periods: ['2025-12-31'], isFlowConcept: false, unit: 'USD' },
+      cash:       { periods: ['2024-12-31'], isFlowConcept: false, unit: 'USD' }
+    };
+    const { ev } = evModelOf(mj);
+    assert.equal(ev.available, false);
+    assert.ok(/Berichtsperioden|kompatible Periode/.test(ev.reason), ev.reason);
+  }
+
+  // ── FY-/TTM-Kontext: EBITDA-Jahr und Bilanzjahr muessen zusammenpassen ─
+  {
+    const mj = relMj({ total_debt: [500], cash: [100] });
+    mj.fundamentals._v4_meta = {
+      ebitda:     { periods: ['2025-12-31'], isFlowConcept: true,  unit: 'USD' },
+      total_debt: { periods: ['2023-12-31'], isFlowConcept: false, unit: 'USD' },
+      cash:       { periods: ['2023-12-31'], isFlowConcept: false, unit: 'USD' }
+    };
+    const { ev } = evModelOf(mj);
+    assert.equal(ev.available, false, 'EV aus FY2025 gegen Bilanz FY2023');
+    assert.ok(/unterschiedlichen Berichtsperioden/.test(ev.reason), ev.reason);
+  }
+
+  // ── Dieselbe gepruefte Aufloesung wie der DCF ────────────────────────
+  // Ein als unvollstaendig gekennzeichneter Schuldenumfang sperrt beide.
+  {
+    const f = { total_debt: [500], cash: [0],
+                _v4_meta: { total_debt: { scopeComplete: false,
+                            scopeIndeterminateReason: 'nur langfristiger Teilbetrag belegt' } } };
+    const bridge = S._resolveNetDebtForDcfBridge(f);
+    assert.equal(bridge.available, false, 'DCF-Bruecke sperrt');
+    const { ev } = evModelOf(relMj(f));
+    assert.equal(ev.available, false, 'Vergleichsmultiple sperrt aus DEMSELBEN Grund');
+    assert.ok(/Umfang|Teilbetrag/.test(ev.reason), ev.reason);
+  }
+
+  // ── Andere Vergleichsmodelle bleiben unabhaengig verfuegbar ──────────
+  {
+    const mj = relMj({ eps_diluted: [2], fcf: [100] },
+                     { pe_10y: 15, p_fcf_10y: 20 });
+    const rel = S.computeRelativeMultiplesFV(mj);
+    const pe  = rel.models.find(m => m.id === 'pe_10y');
+    const pfcf = rel.models.find(m => m.id === 'p_fcf_10y');
+    assert.equal(pe.available, true);
+    assert.ok(Math.abs(pe.base - 30) < 1e-12, 'erhalten ' + pe.base);
+    assert.equal(pfcf.available, true);
+    assert.ok(Math.abs(pfcf.base - 20) < 1e-12, 'erhalten ' + pfcf.base);
+    assert.equal(rel.availableCount, 2, 'nur die EV-Bruecke ist gesperrt');
+    assert.ok(Math.abs(rel.median - 25) < 1e-12, 'erhalten ' + rel.median);
+    assert.equal(rel.bridgeBlockedCount, 1);
+  }
+
+  // ── Randfall: berechenbarer nichtpositiver Wert ist KEINE Datenluecke ─
+  {
+    const { rel, ev } = evModelOf(relMj({ total_debt: [3000], cash: [0] }));
+    assert.equal(ev.available, true, 'der Wert ist gerechnet, nicht fehlend');
+    assert.ok(Math.abs(ev.base - (-5)) < 1e-12, 'erhalten ' + ev.base);
+    assert.equal(ev.nonPositive, true);
+    assert.ok(/Ergebnis, kein fehlender Wert/.test(ev.excludedFromMedian), ev.excludedFromMedian);
+    assert.equal(ev.reason, undefined, 'kein Datenmangel-Grund');
+    assert.equal(rel.nonPositiveCount, 1);
+    assert.equal(rel.availableCount, 0, 'nicht als Referenzpreis im Median');
+    assert.equal(rel.median, null);
+    assert.equal(rel.computedCount, 1, 'aber als berechnet gezaehlt');
+  }
+
+  // ── Bewertungs-Fallback: keine Scheinverfuegbarkeit ──────────────────
+  // `fallbackMode` haengt an `hasAny`; ohne belegte Bruecke bleibt es
+  // 'market_only' statt 'relative_multiples'.
+  {
+    const mj = relMj({});
+    const rel = S.computeRelativeMultiplesFV(mj);
+    assert.equal(rel.hasAny ? 'relative_multiples' : 'market_only', 'market_only');
+  }
+});
+
+test('R43 (Befund 4) Financials-Modelle zaehlen als EINE Familie ohne unabhaengige Bestaetigung', () => {
+  const CFG = evalInApp('SYNTHESIS_CONFIG');
+  const finMj = () => ({
+    meta: { ticker: 'FINX', sub_classification: 'financial' },
+    fundamentals: {
+      revenue: [1000, 1000, 1000, 1000, 1000],
+      ebit: [200, 200, 200, 200, 200],
+      net_income: [130, 130, 130, 130, 130],
+      book_value: [1000, 1000, 1000, 1000, 1000],
+      tangible_book_value: [1000, 1000, 1000, 1000, 1000],
+      eps_diluted: [1.3, 1.3, 1.3, 1.3, 1.3],
+      shares_diluted: [100, 100, 100, 100, 100]
+    },
+    valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false },
+                 wacc_derived: 10, cost_of_equity_derived: 10,
+                 growth_terminal: 2, growth_stage1: 5 },
+    market: { price: 14 }
+  });
+  const mj = finMj();
+  const v  = S.runValuationEngine(mj);
+  assert.equal(Array.from(v.router.activeModels).join(','), 'p_tbv_gordon,excess_return');
+
+  // ── Die Einzelwerte bleiben fachlich unveraendert ────────────────────
+  const g = v.modelResults.p_tbv_gordon;
+  const e = v.modelResults.excess_return;
+  assert.equal(g.applicable, true);
+  assert.equal(e.applicable, true);
+  assert.ok(Math.abs(g.base - 13.75) < 1e-9, 'Gordon base ' + g.base);
+  assert.ok(Math.abs(e.base - 13.75) < 1e-9, 'Excess Return base ' + e.base);
+  // Die Uebereinstimmung ist eine algebraische Identitaet, kein Messergebnis.
+  ['conservative', 'base', 'optimistic'].forEach(k => {
+    assert.ok(Math.abs(g[k] - e[k]) < 1e-9, k + ': ' + g[k] + ' vs ' + e[k]);
+  });
+
+  // ── Beide bleiben als Darstellungen sichtbar und erklaeren die Abhaengigkeit ─
+  assert.equal(g.modelFamily, 'financials_book_return');
+  assert.equal(e.modelFamily, 'financials_book_return');
+  [g, e].forEach(m => {
+    assert.ok((m.warnings || []).some(w => /keine unabhaengige Bestaetigung/i.test(w)),
+      'Familienhinweis am Modell fehlt: ' + JSON.stringify(m.warnings));
+  });
+
+  // ── Synthese: eine Familie, keine hohe Uebereinstimmung ──────────────
+  const syn = S.runFairValueSynthesizer(mj, v, S.runQualityEngine(mj),
+    Object.assign({}, CFG, { _dqResult: S.computeDataQualityScore(mj) }));
+  assert.equal(syn.activeModelsCount, 2, 'zwei gerechnete Darstellungen');
+  assert.equal(syn.independentModelCount, 1, 'aber nur EINE unabhaengige Familie');
+  assert.equal(syn.modelAgreement, 'n/a',
+    'Ausgangsstand lieferte hier "high" aus zwei identischen Werten');
+  assert.ok(/derselben Modellfamilie/.test(syn.modelAgreementReason), syn.modelAgreementReason);
+  assert.equal(syn._confidenceLevel, 'medium',
+    'Ausgangsstand lieferte "high" — eine Identitaet darf kein Vertrauen stiften');
+  assert.equal(syn.modelFitConfidence, 55,
+    'Ausgangsstand: 72 (zwei Modelle) — maszgeblich ist die Familienzahl');
+  assert.equal((syn.modelFamilyNotes || []).length, 1);
+  assert.equal(Array.from(syn.modelFamilyNotes[0].members).join(','), 'p_tbv_gordon,excess_return');
+
+  // ── Der Fair Value selbst bleibt unveraendert ────────────────────────
+  assert.ok(Math.abs(syn.range.base - 13.75) < 1e-9, 'range.base ' + syn.range.base);
+
+  // ── Keine doppelte Gewichtung: beide teilen sich EINEN Modellslot ────
+  // (rim-Gewicht je zur Haelfte — unveraendert gegenueber V1.0.65)
+  assert.ok(Math.abs(syn.range.base - g.base) < 1e-9,
+    'gewichtetes Ergebnis entspricht dem einen Familienwert');
+
+  // ── Gegenprobe: wirklich unabhaengige Modelle bleiben unberuehrt ─────
+  const nf = {
+    meta: { ticker: 'NONFIN', sub_classification: 'standard_nonfin' },
+    fundamentals: { revenue: [1000, 1000, 1000, 1000, 1000], ebit: [200, 200, 200, 200, 200],
+      ebitda: [250, 250, 250, 250, 250], capex: [50, 50, 50, 50, 50],
+      fcf: [150, 150, 150, 150, 150], eps_diluted: [1.5, 1.5, 1.5, 1.5, 1.5],
+      book_value: [1000, 1000, 1000, 1000, 1000], net_debt: [0],
+      shares_diluted: [100, 100, 100, 100, 100] },
+    valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false }, wacc_derived: 10,
+      cost_of_equity_derived: 10, growth_terminal: 2, growth_stage1: 5 },
+    market: { price: 20 }
+  };
+  const v2 = S.runValuationEngine(nf);
+  const syn2 = S.runFairValueSynthesizer(nf, v2, S.runQualityEngine(nf),
+    Object.assign({}, CFG, { _dqResult: S.computeDataQualityScore(nf) }));
+  assert.equal(syn2.activeModelsCount, syn2.independentModelCount,
+    'dcf + rim sind zwei Familien');
+  assert.equal(syn2.modelAgreementReason, null);
+  assert.equal(syn2.modelFitConfidence, 70, 'unveraendert gegenueber V1.0.65');
+  assert.equal((syn2.modelFamilyNotes || []).length, 0);
+
+  // ── Keine neue Bewertungsmethode, keine verschobenen Annahmen ────────
+  const fams = evalInApp('MODEL_FAMILIES');
+  assert.equal(Object.keys(fams).sort().join(','), 'excess_return,p_tbv_gordon');
+});
+
+// ── Hilfen fuer den Journal-/Import-Pfad ──────────────────────────────────
+const SNAP_KEY_V = evalInApp('SNAP_KEY');
+const mkSnapRec = (over) => Object.assign({
+  id: 'ok123', ticker: 'AAPL', name: 'Apple', timestamp: '2026-01-02T03:04:05.000Z',
+  masterJson: { meta: { ticker: 'AAPL' }, fundamentals: {} }, _snapshotFormat: 2
+}, over || {});
+
+// Rendert das Journal mit einem minimalen Element-Ersatz und liefert das
+// erzeugte HTML. Der ECHTE Renderer laeuft — es wird nichts nachgebildet.
+function renderJournalHtml(records) {
+  const prev = S.document.getElementById;
+  let html = '';
+  S.localStorage.setItem(SNAP_KEY_V, JSON.stringify(records));
+  S.document.getElementById = (id) => (id === 'snap-list')
+    ? { set innerHTML(v) { html = v; }, get innerHTML() { return html; } }
+    : null;
+  try { S.renderSnapshots(); } finally { S.document.getElementById = prev; }
+  return html;
+}
+
+test('R44 (Befund 1) importierte Snapshot-IDs erzeugen kein HTML und keine Ereignisbehandler', () => {
+  const XSS_QUOTE = "x'); alert('pwned'); //";
+  const XSS_TAG   = '"><img src=x onerror="window.__pwned=1">';
+
+  // ── Die gemeinsame Pruefstelle weist solche IDs ab ───────────────────
+  // (dieselbe Funktion bedient Import UND den Journal-Schutz)
+  for (const bad of [XSS_QUOTE, XSS_TAG, 'mit leerzeichen', 'a'.repeat(129), '<b>']) {
+    const probs = S.validateSnapshotRecordStructure(mkSnapRec({ id: bad }));
+    assert.ok(probs.length > 0, 'nicht abgewiesen: ' + JSON.stringify(bad));
+    assert.ok(/unzulaessige Zeichen|nichtleerer Text/.test(probs[0]), probs[0]);
+  }
+
+  // ── Gueltige bestehende IDs bleiben erhalten ─────────────────────────
+  // (vom Werkzeug erzeugtes Base36 und frueher exportierte Kennungen)
+  for (const good of ['ok123', 'm5k2j9x1ab', 'AAPL-2026-01-02T03:04:05.000Z', 'snap_1.2']) {
+    const probs = S.validateSnapshotRecordStructure(mkSnapRec({ id: good }));
+    assert.equal(probs.length, 0, JSON.stringify(good) + ' → ' + probs.join(' | '));
+  }
+
+  // ── Der regulaere Importparser laesst sie nicht mehr durch ───────────
+  const payload = { _kind: evalInApp('SNAPSHOT_EXPORT_KIND'), _snapshotFormat: 2,
+                    snapshots: [mkSnapRec({ id: XSS_TAG })] };
+  const res = S.parseSnapshotImportPayload(payload);
+  assert.equal(res.ok, false, 'praeparierter Snapshot wurde importiert');
+  assert.equal(res.rejected, 1);
+  assert.equal(res.snapshots.length, 0, 'nichts uebernommen');
+  assert.ok(/unzulaessige Zeichen/.test(res.errors.join(' ')), res.errors.join(' '));
+
+  // ── Der ECHTE Renderer erzeugt keine Inline-Ereignisattribute mehr ───
+  const html = renderJournalHtml([mkSnapRec({ id: 'ok123' })]);
+  assert.equal(/onclick=/i.test(html), false, 'Inline-onclick im Journal');
+  assert.equal(/\son[a-z]+\s*=\s*"/i.test(html), false, 'irgendein Inline-Ereignisattribut');
+  assert.ok(/data-action="snapshot-load"/.test(html));
+  assert.ok(/data-action="snapshot-recompute"/.test(html));
+  assert.ok(/data-action="snapshot-delete"/.test(html));
+  assert.ok(/data-action-value="ok123"/.test(html));
+
+  // ── Ein frueher gespeicherter Schrott-Datensatz wird ausgewiesen,
+  //    nicht ausgefuehrt und nicht geloescht ────────────────────────────
+  const brokenHtml = renderJournalHtml([mkSnapRec({ id: XSS_TAG })]);
+  assert.ok(/unbrauchbare/.test(brokenHtml), 'nicht als unbrauchbar ausgewiesen');
+  assert.equal(/<img/i.test(brokenHtml), false, 'rohes Markup in der Ausgabe');
+  assert.equal(/<script/i.test(brokenHtml), false);
+  assert.ok(/&lt;img/.test(brokenHtml), 'Markup muss escaped erscheinen');
+  const stillStored = JSON.parse(S.localStorage.getItem(SNAP_KEY_V));
+  assert.equal(stillStored.length, 1, 'gespeicherter Bestand wurde veraendert');
+  assert.equal(stillStored[0].id, XSS_TAG, 'Datensatz wurde umgeschrieben');
+
+  // ── Der Ereignispfad: Delegation statt Inline-Code ───────────────────
+  // Der Wert wird als ZEICHENKETTE an die Funktion gereicht; er wird nie
+  // ausgewertet. Geprueft am echten _installDomActionDelegation().
+  const prevDoc = S.document;
+  let captured = null;
+  S.document = { addEventListener: (ev, fn) => { if (ev === 'click') captured = fn; } };
+  try {
+    evalInApp('_domActionDelegationInstalled = false; _installDomActionDelegation();');
+    assert.ok(typeof captured === 'function', 'kein Klick-Listener verbunden');
+    const seen = [];
+    const handlers = evalInApp('DOM_ACTION_HANDLERS');
+    const origLoad = handlers['snapshot-load'];
+    const el = {
+      getAttribute: (a) => a === 'data-action' ? 'snapshot-load'
+                         : a === 'data-action-value' ? XSS_QUOTE : null
+    };
+    evalInApp('window.__testSeen = [];');
+    S.DOM_ACTION_HANDLERS_TEST = null;
+    handlers['snapshot-load'] = (v) => { seen.push(v); };
+    captured({ target: { closest: (sel) => (sel === '[data-action]' ? el : null) },
+               preventDefault: () => {} });
+    handlers['snapshot-load'] = origLoad;
+    assert.equal(seen.length, 1, 'Handler nicht aufgerufen');
+    assert.equal(seen[0], XSS_QUOTE, 'Wert wurde veraendert oder ausgewertet');
+    assert.equal(typeof seen[0], 'string');
+  } finally {
+    S.document = prevDoc;
+    evalInApp('_domActionDelegationInstalled = false;');
+  }
+
+  // ── Dasselbe Muster bei den Override-Knoepfen ────────────────────────
+  const handlerTable = evalInApp('Object.keys(DOM_ACTION_HANDLERS).sort().join(",")');
+  assert.equal(handlerTable,
+    'override-open,override-remove,snapshot-delete,snapshot-load,snapshot-recompute');
+
+  // Quelltextpruefung am AUSGELIEFERTEN Stand: kein Inline-Ereignisattribut
+  // enthaelt mehr eine Template-Interpolation der Snapshot-/Hard-Stop-Kennung.
+  const src = readFileSync(APP_FILE, 'utf8');
+  assert.ok(src.indexOf('data-action="override-remove"') >= 0);
+  assert.ok(src.indexOf('data-action="override-open"') >= 0);
+  assert.equal(/onclick="[^"]*\$\{/.test(src), false,
+    'onclick mit interpoliertem Wert im ausgelieferten Quelltext');
+  for (const fn of ['loadSnapshot', 'loadSnapshotWithCurrentModel', 'deleteSnapshot',
+                    'removeOverride', 'openOverrideModal']) {
+    // Gesucht wird der ERZEUGENDE Code (Inline-Attribut mit interpoliertem
+    // Wert), nicht die Erwaehnung des alten Musters in einem Kommentar.
+    assert.equal(src.indexOf('onclick="' + fn + "('$" + '{') >= 0, false,
+      'Inline-onclick fuer ' + fn + ' noch vorhanden');
+  }
+});
+
+test('R45 (Befund 5) ungueltige Importe werfen keine Ausnahme und beschaedigen nichts', () => {
+  // ── Master-JSON: Top-Level-Typ VOR jedem Feldzugriff ─────────────────
+  const prev = S.document.getElementById;
+  const status = { textContent: '', className: '' };
+  const runImport = (text) => {
+    S.document.getElementById = (id) => (id === 'import-master-json') ? { value: text } : status;
+    try { return { ok: S.importMasterJsonFromTextarea(), err: null }; }
+    catch (e) { return { ok: null, err: e }; }
+    finally { S.document.getElementById = prev; }
+  };
+  for (const [text, was] of [['null', 'null'], ['[1,2,3]', 'ein Array'], ['"text"', 'string'], ['42', 'number']]) {
+    status.textContent = '';
+    const r = runImport(text);
+    assert.equal(r.err, null, 'ungefangene Ausnahme bei ' + text + ': ' + (r.err && r.err.message));
+    assert.equal(r.ok, false, 'Erfolgsmeldung bei ' + text);
+    assert.ok(/Kein gültiges Master-JSON/.test(status.textContent), status.textContent);
+    assert.ok(status.textContent.indexOf(was) >= 0, was + ' nicht benannt: ' + status.textContent);
+    assert.equal(status.className, 'import-status err');
+    assert.ok(/bleibt unverändert/.test(status.textContent), 'Bestandszusage fehlt');
+  }
+  // Kaputtes JSON bleibt wie bisher eine gemeldete Parse-Meldung.
+  status.textContent = '';
+  const broken = runImport('{ nicht json');
+  assert.equal(broken.err, null);
+  assert.equal(broken.ok, false);
+  assert.ok(/JSON-Parse-Fehler/.test(status.textContent), status.textContent);
+
+  // ── Gruppierung: Prototyp-Namen sind gewoehnliche Ticker ─────────────
+  for (const ticker of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'AAPL']) {
+    const recs = [mkSnapRec({ id: 's1', ticker }), mkSnapRec({ id: 's2', ticker, timestamp: '2026-02-02T00:00:00.000Z' })];
+    let html = null;
+    assert.doesNotThrow(() => { html = renderJournalHtml(recs); }, 'Ticker ' + ticker);
+    assert.ok(html.indexOf('data-action="snapshot-load"') >= 0, 'Journal leer bei ' + ticker);
+    assert.equal(/unbrauchbare/.test(html), false, ticker + ' faelschlich abgewiesen');
+  }
+  // Gemischt in EINEM Bestand — die Gruppierung darf nicht kippen.
+  const gemischt = [mkSnapRec({ id: 'g1', ticker: 'constructor' }),
+                    mkSnapRec({ id: 'g2', ticker: '__proto__' }),
+                    mkSnapRec({ id: 'g3', ticker: 'AAPL' })];
+  let htmlMix = null;
+  assert.doesNotThrow(() => { htmlMix = renderJournalHtml(gemischt); });
+  assert.equal((htmlMix.match(/data-action="snapshot-load"/g) || []).length, 3);
+
+  // ── Ein fehlgeschlagener Snapshot-Import laesst den Bestand unberuehrt ─
+  const vorher = [mkSnapRec({ id: 'keep1', ticker: 'MSFT' })];
+  S.localStorage.setItem(SNAP_KEY_V, JSON.stringify(vorher));
+  const bad = S.parseSnapshotImportPayload({ _kind: evalInApp('SNAPSHOT_EXPORT_KIND'),
+    _snapshotFormat: 2, snapshots: [mkSnapRec({ id: 'gut1' }), mkSnapRec({ id: '<script>' })] });
+  assert.equal(bad.ok, false, 'Alles-oder-nichts verletzt');
+  assert.equal(bad.snapshots.length, 0);
+  const nachher = JSON.parse(S.localStorage.getItem(SNAP_KEY_V));
+  assert.equal(nachher.length, 1, 'Bestand veraendert');
+  assert.equal(nachher[0].id, 'keep1');
+  // Und der Gegenfall: zwei gueltige Datensaetze gehen durch.
+  const good = S.parseSnapshotImportPayload({ _kind: evalInApp('SNAPSHOT_EXPORT_KIND'),
+    _snapshotFormat: 2, snapshots: [mkSnapRec({ id: 'gut1' }), mkSnapRec({ id: 'gut2' })] });
+  assert.equal(good.ok, true, good.errors.join(' | '));
+  assert.equal(good.snapshots.length, 2);
+});
+
+test('R46 (Befund 3) DPS-Wachstum wird ueber die tatsaechlich vergangenen Jahre annualisiert', () => {
+  const D = (f) => S._deriveDdmGrowthInputs(f, {}, { base: {} });
+  const CAGR6 = (Math.pow(1.12 / 1.00, 1 / 6) - 1) * 100;   // 1,906762…%
+  const CAGR5 = (Math.pow(1.12 / 1.00, 1 / 5) - 1) * 100;   // 2,292455…%
+
+  // ── Pflichtfall 1: Luecke in der Wertereihe ueber sechs Jahresintervalle ─
+  {
+    const o = D({ dps: [1.12, 1.10, null, 1.06, 1.04, 1.02, 1.00] });
+    assert.ok(Math.abs(o.g1DpsCagr - CAGR6) < 1e-9, 'erhalten ' + o.g1DpsCagr);
+    assert.ok(Math.abs(o.g1DpsCagr - CAGR5) > 0.3, 'Ausgangsstand lieferte ' + CAGR5.toFixed(4) + '%');
+    assert.equal(o.g1DpsGrowthYears, 6, 'Zeitspanne muss die tatsaechliche sein');
+    assert.equal(o.g1Source, 'dps_cagr_6y', 'die Beschriftung muss dazu passen');
+    assert.ok((o.g1DpsNotes || []).some(n => /tatsaechlich 6 Jahre/.test(n)), JSON.stringify(o.g1DpsNotes));
+    // Die Kappung greift erst NACH der Annualisierung und verdeckt sie nicht.
+    assert.ok(Math.abs(o.g1 - CAGR6) < 1e-9, 'g1 ' + o.g1);
+  }
+
+  // ── Pflichtfall 2: vollstaendige Reihe bleibt unveraendert ───────────
+  {
+    const o = D({ dps: [1.12, 1.10, 1.08, 1.06, 1.04, 1.00] });
+    assert.ok(Math.abs(o.g1DpsCagr - CAGR5) < 1e-9, 'erhalten ' + o.g1DpsCagr);
+    assert.equal(o.g1DpsGrowthYears, 5);
+    assert.equal(o.g1Source, 'dps_cagr_5y');
+    assert.equal((o.g1DpsNotes || []).length, 0, 'kein Sonderfall zu melden');
+  }
+
+  // ── Pflichtfall 3: fehlendes Jahr in den PERIODENLABELS selbst ───────
+  // Die Werte sind lueckenlos, aber 2024 fehlt — der Platzabstand allein
+  // wuerde hier 5 Jahre nennen.
+  {
+    const o = D({ dps: [1.12, 1.10, 1.06, 1.04, 1.02, 1.00],
+      _v4_meta: { dps: { periods: ['2026-12-31', '2025-12-31', '2023-12-31',
+                                   '2022-12-31', '2021-12-31', '2020-12-31'] } } });
+    assert.equal(o.g1DpsGrowthYears, 6, 'Periodenabstand entscheidet');
+    assert.ok(Math.abs(o.g1DpsCagr - CAGR6) < 1e-9, 'erhalten ' + o.g1DpsCagr);
+    assert.equal(o.g1Source, 'dps_cagr_6y');
+  }
+
+  // ── Pflichtfall 4: Perioden vorhanden, aber nicht lesbar ─────────────
+  // Kein erfundener Zeitabstand; der Grund bleibt sichtbar.
+  {
+    const o = D({ dps: [1.12, 1.10, 1.08, 1.06, 1.04, 1.00],
+      _v4_meta: { dps: { periods: ['n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a'] } } });
+    assert.equal(o.g1DpsCagr, null, 'CAGR darf nicht geraten werden');
+    assert.notEqual(o.g1Source, 'dps_cagr_5y');
+    assert.ok((o.g1DpsNotes || []).some(n => /nicht lesbar/.test(n)), JSON.stringify(o.g1DpsNotes));
+  }
+  // Gar keine Periodenangaben: dokumentierte Altdatenregel, unveraendert.
+  {
+    const o = D({ dps: [1.12, 1.10, 1.08, 1.06, 1.04, 1.00] });
+    assert.equal(o.g1Source, 'dps_cagr_5y');
+    assert.ok(Math.abs(o.g1DpsCagr - CAGR5) < 1e-9);
+  }
+
+  // ── Pflichtfall 5: gemeldete Null innerhalb der Historie ─────────────
+  // Eine Null ist eine wirtschaftliche Angabe (Dividende ausgesetzt), kein
+  // fehlender Wert — ein durchgehender CAGR beschreibt das nicht.
+  {
+    const o = D({ dps: [1.12, 1.10, 0, 1.06, 1.04, 1.02, 1.00] });
+    assert.equal(o.g1DpsCagr, null, 'CAGR ueber eine Null hinweg');
+    assert.equal(o.g1Source, 'dps_median_yoy', 'transparenter Ersatzweg');
+    assert.ok((o.g1DpsNotes || []).some(n => /gemeldete Dividende 0/.test(n)), JSON.stringify(o.g1DpsNotes));
+    assert.ok(o.g1 != null, 'das Modell bleibt rechenbar');
+  }
+  // Eine Null AUSSERHALB der verwendeten Spanne aendert nichts.
+  {
+    const o = D({ dps: [1.12, 1.10, 1.08, 1.06, 1.00, 0, 0] });
+    assert.equal(o.g1Source, 'dps_cagr_3y');
+    assert.equal(o.g1DpsGrowthYears, 3);
+  }
+
+  // ── Pflichtfall 6: echter DDM-Engine-Pfad, Fehler nicht durch die
+  //    Kappung verdeckt (1,91 % liegt unter der 5-%-Grenze) ─────────────
+  {
+    const mkMj = (dps) => ({
+      meta: { ticker: 'DIVX', sub_classification: 'dividend_aristocrat' },
+      fundamentals: {
+        revenue: [1000, 1000, 1000, 1000, 1000, 1000, 1000],
+        ebit: [200, 200, 200, 200, 200, 200, 200],
+        ebitda: [250, 250, 250, 250, 250, 250, 250],
+        capex: [50, 50, 50, 50, 50, 50, 50],
+        fcf: [150, 150, 150, 150, 150, 150, 150],
+        eps_diluted: [2, 2, 2, 2, 2, 2, 2],
+        book_value: [1000, 1000, 1000, 1000, 1000, 1000, 1000],
+        net_debt: [0], dps,
+        shares_diluted: [100, 100, 100, 100, 100, 100, 100]
+      },
+      valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false }, wacc_derived: 10,
+        cost_of_equity_derived: 10, growth_terminal: 2, growth_stage1: 5 },
+      market: { price: 20 }
+    });
+    const vGap = S.runValuationEngine(mkMj([1.12, 1.10, null, 1.06, 1.04, 1.02, 1.00]));
+    const dGap = vGap.modelResults.ddm;
+    assert.equal(dGap.applicable, true);
+    assert.equal(dGap._debug_dpsGrowthYears, 6);
+    assert.ok(Math.abs(dGap._debug_g1DpsCagr - CAGR6) < 1e-9);
+    // Gemessen am Ausgangsstand 7b1fd10: 14.457970968495326
+    assert.ok(Math.abs(dGap.base - 14.223656551734546) < 1e-9, 'erhalten ' + dGap.base);
+    assert.ok(Math.abs(dGap.base - 14.457970968495326) > 0.2, 'Ausgangswert unveraendert');
+    assert.ok(dGap.base < 5 * 100, 'keine Kappung im Spiel');
+
+    // Vollstaendige Reihe: bit-genau wie am Ausgangsstand.
+    const vFull = S.runValuationEngine(mkMj([1.12, 1.10, 1.08, 1.06, 1.04, 1.02, 1.00]));
+    assert.ok(Math.abs(vFull.modelResults.ddm.base - 14.212416883291723) < 1e-12,
+      'erhalten ' + vFull.modelResults.ddm.base);
+  }
+
+  // ── Bestehende Kappungen bleiben erhalten ───────────────────────────
+  {
+    const o = D({ dps: [3.00, 2.00, 1.50, 1.20, 1.10, 1.00] });   // weit ueber 5 %
+    assert.equal(o.g1, 5, 'Kappung auf 5 % unveraendert');
+    assert.ok(/clamped to 5.00%/.test(o.g1Note || ''), o.g1Note);
+  }
 });

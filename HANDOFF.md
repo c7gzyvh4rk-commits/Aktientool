@@ -1,5 +1,329 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Korrekturchat 12D: fuenf Auditbefunde nach V1.0.65 behoben (V1.0.66)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, gepruefter
+Ausgangsbranch **`claude/chat12c2-final-edge-fixes`**, Ausgangscommit
+**`7b1fd106f17be0ed1d467a30e82573238b654903`** (V1.0.65). Arbeits- und
+Ergebnisbranch: **`claude/loving-newton-hcpo71`**. Dieser Branch stand vor
+Beginn auf `b023dc8` (dem Stand von `main`); `b023dc8` ist ein VORFAHR von
+`7b1fd10`, der Wechsel auf den geprueften Ausgangsstand war daher ein reiner
+Fast-Forward — es wurde nichts zurueckgesetzt und keine fremde Aenderung
+ueberschrieben (`git log 7b1fd10..origin/claude/loving-newton-hcpo71` war
+leer). `main` (`b023dc8`) wurde nicht angefasst. Eine `AGENTS.md` existiert in
+diesem Repository nicht. Tool-Datei:
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+Testbefehle: `npm test` und `node --test tests/*.test.mjs`.
+
+**Bestaetigte Testbaseline vor der Aenderung** (selbst auf `7b1fd10`
+ausgefuehrt): **1700 Rechen-Assertions — darin enthalten 434
+Fixture-Assertions — und 195 Node-Tests, Exit 0.** Die Fixture-Assertions sind
+Teil der 1700 und werden nicht zusaetzlich gezaehlt.
+
+**Auftrag.** Die fuenf Befunde eines unabhaengigen Auditberichts zu V1.0.65
+samt ihrer unmittelbaren Randfaelle. Kein Refactoring, keine neue
+Abhaengigkeit, keine Funktionserweiterung. Der DCF-Kern und alle nicht
+betroffenen Bewertungsformeln bleiben unveraendert.
+
+---
+
+### 1 · Quellenlage (wahrheitsgemaesz)
+
+Alle Rechennachweise sind **synthetische Datensaetze ueber die produktiven
+Aufrufwege** (`runValuationEngine`, `runFairValueSynthesizer`,
+`computeRelativeMultiplesFV`, `_deriveDdmGrowthInputs`,
+`parseSnapshotImportPayload`, `renderSnapshots`,
+`importMasterJsonFromTextarea`) — **keine Live-Validierung, kein reales
+Filing, kein SEC-/Yahoo-Abruf.** Ergaenzend wurde im vorinstallierten
+Chromium geprueft (siehe Abschnitt 5). Ein gruener Testlauf ersetzt weiterhin
+**keinen Abgleich mit echten veroeffentlichten Abschluessen**; dieser Abgleich
+steht weiterhin aus.
+
+### 2 · Reproduktion am unveraenderten Ausgangsstand
+
+Alle fuenf Befunde wurden zuerst auf `7b1fd10` reproduziert. Die fuenf neuen
+Tests `R42`–`R46` wurden gegen den unveraenderten Ausgangsstand ausgefuehrt und
+**schlagen dort alle fuenf fehl** (`# tests 52 · # pass 47 · # fail 5`).
+
+| # | gemessen auf `7b1fd10` |
+|---|---|
+| Befund 2 (EV/EBITDA) | EBITDA 250M, Multiplikator 10, 100M Aktien: **fehlende** Schulden und Liquiditaet ergaben **25,00 USD/Aktie** mit `available: true`. Ursache: `(f.total_debt && f.total_debt[0]) \|\| 0` bzw. `(f.cash && f.cash[0]) \|\| 0` — eine fehlende Angabe galt als ausdrueckliche Null. |
+| Befund 4 (Financials) | `financial` fuehrt `activeModels: ['p_tbv_gordon','excess_return']`. Beide lieferten **13,75 USD Basisszenario** (identisch bis 1e-9 in allen drei Szenarien). Die Synthese meldete `activeModelsCount: 2`, **`modelAgreement: 'high'`**, `_confidenceLevel: 'high'`, `modelFitConfidence: 72`. |
+| Befund 1 (Snapshot-ID) | `validateSnapshotRecordStructure()` akzeptierte jede nichtleere ID. Im Browser gemessen: der regulaere Importparser nahm einen Snapshot mit der ID `"><img src=x onerror="window.__pwned_img=1">` an (`ok: true`, 1 uebernommen); `renderSnapshots()` erzeugte daraus **3 echte `<img>`-Elemente und 6 fremde Ereignisattribute**, und **der eingeschleuste Code wurde tatsaechlich ausgefuehrt** (`window.__pwned_img === 1`). Damit ist die im Auditbericht offen gelassene Frage der tatsaechlichen Ausfuehrung beantwortet: sie fand statt. |
+| Befund 5 (Importe) | Master-JSON `null` → ungefangene `TypeError: Cannot read properties of null (reading 'meta')` (der Feldzugriff stand ausserhalb des try-Blocks). Snapshot mit Ticker `constructor` → `TypeError: byTicker[s.ticker].push is not a function`; `__proto__` verhielt sich gleich. |
+| Befund 3 (DDM) | DPS-Reihe `[1.12, 1.10, null, 1.06, 1.04, 1.02, 1.00]` (Anstieg 1,00 → 1,12 ueber SECHS Jahresintervalle mit einer Luecke): **2,2924556626 %**, ausgewiesen als **Fuenfjahreswachstum**. Richtig sind **1,9067623061 %**. Im echten DDM-Engine-Pfad: **14,457970968495326** statt **14,223656551734546** USD/Aktie. |
+
+### 3 · Was geaendert wurde
+
+**Befund 2 — die Vergleichsmultiples nutzen die gepruefte
+Nettoschuldenaufloesung.** `computeRelativeMultiplesFV()` bildet seine
+Eigenkapitalbruecke nicht mehr selbst. Neu ist `_resolveMultiplesEvBridge(f)`;
+sie ruft **`_resolveNetDebtForDcfBridge(f)`** — dieselbe Funktion wie die
+DCF-Wertbruecke, einschliesslich Umfangspruefung (`scopeComplete`),
+Periodensperre und period-keyed Verknuepfung von Schulden und Liquiditaet. Es
+gibt keine zweite, abweichende Schuldenlogik.
+
+Zum Datenkontext: `computeRelativeMultiplesFV()` wird an allen sechs
+Aufrufstellen mit demselben `mj` aufgerufen, aus dem auch `f.ebitda[0]`
+stammt — die Bruecke wird also aus genau derselben Fundamentaldatenbasis
+gebildet wie der Unternehmenswert, nicht aus einer anderen Periodenart.
+Zusaetzlich prueft `_resolveMultiplesEvBridge()`, was die DCF-Bruecke fuer sich
+allein nicht pruefen kann: **stimmt das Berichtsjahr des EBITDA mit dem
+Bilanzstichtag der Bruecke ueberein?** Weichen beide ab, gilt der Aktienwert
+als nicht ableitbar. Der operative Unternehmenswert (EV) bleibt in jedem
+Sperrfall getrennt ausgewiesen; nur der Wert JE AKTIE entfaellt. P/E und P/FCF
+bleiben unberuehrt verfuegbar.
+
+Gemessene Pflichtfaelle (EBITDA 250M · Multiplikator 10 · 100M Aktien):
+
+| Schulden-/Liquiditaetslage | V1.0.65 | V1.0.66 |
+|---|---|---|
+| beide fehlen | 25,00 „verfuegbar" | **gesperrt**, Grund genannt |
+| Schulden unbekannt, Cash ausdruecklich 0 | 25,00 | **gesperrt** |
+| beide ausdruecklich 0 | 25,00 | **25,00** (unveraendert) |
+| Schulden 500M, Cash 0 | 20,00 | **20,00** (unveraendert) |
+| Schulden 0, Cash 200M | 27,00 | **27,00** (Nettoliquiditaet, richtiges Vorzeichen) |
+| unvereinbare Bilanzperioden | 20,00 | **gesperrt**, Grund genannt |
+| EBITDA FY2025 gegen Bilanz FY2023 | 20,00 | **gesperrt**, Grund genannt |
+
+**Randfall `base <= 0` — Status und Ergebnis widersprechen sich nicht mehr.**
+Bis V1.0.65 filterte `r.base > 0` nichtpositive Werte wortlos aus Median UND
+Zaehlung, liess das Modell aber `available: true`. Ein nichtpositiver
+impliziter Wert je Aktie ist jedoch ein **Rechenergebnis** (Nettoschulden
+erreichen oder uebersteigen den Unternehmenswert), kein Datenmangel. Er wird
+jetzt als berechnet ausgewiesen (`available: true`, `nonPositive: true`) und
+**mit Begruendung** (`excludedFromMedian`) aus dem Median genommen; der
+wirtschaftliche Wert wird nicht geloescht und nicht als Datenluecke
+ausgegeben. Ein nicht darstellbares Ergebnis (`null`/`NaN`/`Infinity`) ist
+dagegen kein Wert und wird als nicht verfuegbar gekennzeichnet. Neu am
+Ergebnis: `computedCount`, `nonPositiveCount`, `bridgeBlockedCount`.
+
+Nachgezogene Anzeigen: die Fallback-Karte im Valuation-Block (gesperrte
+Modelle tragen jetzt die Marke „gesperrt" statt „fehlt", nennen den Grund und
+den weiterhin bestimmbaren EV; nichtpositive Werte tragen ihre Erklaerung), die
+Median-Zeile (zaehlt gesperrte und nichtpositive Modelle getrennt aus) und
+`renderMarket()` (gesperrte Modelle verschwinden nicht mehr wortlos aus der
+Tabelle, sondern stehen mit „nicht ableitbar" und Grund darin). Der
+Bewertungs-Fallback haengt unveraendert an `hasAny` und faellt damit korrekt
+auf `market_only` statt `relative_multiples`.
+
+**Befund 4 — Modellfamilien.** `modelPTbvGordon` und `modelExcessReturn` sind
+unter den hier implementierten Annahmen nicht zwei Bewertungen, sondern zwei
+Darstellungen derselben Rechnung. Die Umformung ist exakt, nicht
+naeherungsweise: weil der Buchwert mit genau `terminal_growth` fortgeschrieben
+wird und die Ueberrendite ein fester Anteil davon ist, teleskopiert die
+10-Jahres-Zerlegung mit Terminalwert zur geschlossenen Gordon-Form
+
+```
+B0 + Σ B0·(ROE−r)·(1+g)^(i−1)/(1+r)^i + TV  =  B0 + B0·(ROE−r)/(r−g)  =  B0·(ROE−g)/(r−g)
+```
+
+Neu deklariert sind `MODEL_FAMILIES`, `MODEL_FAMILY_INFO`,
+`_modelFamilyKey()`, `_independentFamilyCount()` und
+`_activeModelFamilyNotes()`. Ihre Wirkung beschraenkt sich auf **Zaehlung,
+Uebereinstimmung und daraus abgeleitete Vertrauenssignale**:
+
+* `modelAgreement` vergleicht nur noch **Vertreter unabhaengiger Familien**
+  (Median der Familienwerte). Bleibt nur eine Familie uebrig, ist das Ergebnis
+  `'n/a'` mit einer ausdruecklichen Begruendung in `modelAgreementReason` statt
+  `'high'`.
+* Neu in der Synthese: `independentModelCount` und `modelFamilyNotes`;
+  `activeModelsCount` bleibt die Zahl der gerechneten Darstellungen.
+* `modelFitConfidence` bewertet die **Familienzahl** statt der Modellzahl.
+
+**Keine doppelte Gewichtung entsteht neu und es bestand auch keine:** beide
+Modelle teilen sich bereits seit V1.0.x einen Slot (`_mfw.rim * 0.5` je
+Modell). Das wurde geprueft und unveraendert gelassen — der gewichtete
+Fair Value bleibt 13,75. Beide Berechnungen bleiben als alternative
+Darstellungen sichtbar; der Familienhinweis steht jetzt zusaetzlich **am
+Modellergebnis selbst** (`warnings`, `modelFamily`, `modelFamilyNote`), in der
+Fair-Value-Box, an der Konvergenzzeile, in der MoS-Zerlegung und im Snapshot
+(`output_signals.independent_models`, `output_signals.model_family_note`). Es
+wurde **keine neue Bewertungsmethode** eingefuehrt und **keine Annahme
+kuenstlich verschoben**, nur um abweichende Zahlen zu erzeugen.
+
+Gemessene Wirkung (`financial`, synthetische Referenzfirma):
+
+| Groesze | V1.0.65 | V1.0.66 |
+|---|---|---|
+| Einzelwerte Gordon / Excess Return (Basis) | 13,75 / 13,75 | **13,75 / 13,75** (unveraendert) |
+| `activeModelsCount` | 2 | 2 |
+| `independentModelCount` | — | **1** |
+| `modelAgreement` | `high` | **`n/a`** + Begruendung |
+| `_confidenceLevel` | `high` | **`medium`** |
+| `modelFitConfidence` | 72 | **55** |
+| Fair Value `range.base` | 13,75 | **13,75** (unveraendert) |
+
+Gegenprobe `standard_nonfin` (DCF + RIM, wirklich unabhaengig): zwei Familien,
+`modelAgreement` unveraendert berechnet, `modelFitConfidence` unveraendert 70,
+kein Familienhinweis.
+
+**Befund 1 und 5 — Importabsicherung.** Beide zusammen bearbeitet.
+
+*Snapshot-IDs und Aktionsknoepfe.* Zwei Massnahmen greifen gemeinsam, weil
+HTML-Escaping allein fuer Werte INNERHALB eines JavaScript-Ereignisattributs
+nicht genuegt:
+1. `SNAPSHOT_ID_PATTERN` (`/^[A-Za-z0-9._:-]{1,128}$/`) wird in
+   `validateSnapshotRecordStructure()` geprueft — **derselben Stelle**, die
+   Import UND Journal-Schutz bedient, es gibt keine zweite Liste. Die vom
+   Werkzeug erzeugten IDs (Base36 aus Zeitstempel und Zufall) und frueher
+   exportierte Kennungen erfuellen das Muster unveraendert; geprueft sind
+   `ok123`, `m5k2j9x1ab`, `AAPL-2026-01-02T03:04:05.000Z`, `snap_1.2`.
+   Ungueltige Datensaetze werden mit verstaendlicher Meldung zurueckgewiesen und
+   bleiben **unangetastet gespeichert** (kein automatisches Loeschen oder
+   Umschreiben — die bestehende Regel aus V1.0.46 gilt weiter).
+2. Die Aktionsknoepfe tragen **keine Inline-Ereignisattribute** mehr, sondern
+   `data-action` / `data-action-value`. `_installDomActionDelegation()`
+   verbindet EINEN `addEventListener('click', …)` und reicht den Attributwert
+   als **Zeichenkette** an `DOM_ACTION_HANDLERS` weiter; er wird nie
+   ausgewertet. Betroffen sind Laden, Neu-Rechnen und Loeschen im Journal sowie
+   — im gleichen begrenzten Umfang — `openOverrideModal` und `removeOverride`.
+
+*Importstruktur und Gruppierung.*
+* `importMasterJsonFromTextarea()` prueft jetzt den **Top-Level-Typ vor jedem
+  Feldzugriff**: `null`, Arrays, Zahlen und Zeichenketten werden kontrolliert
+  mit der Zusage abgewiesen, dass nichts importiert wurde und der vorhandene
+  Stand unveraendert bleibt. Kaputtes JSON bleibt wie bisher eine gemeldete
+  Parse-Meldung.
+* Die Journal-Gruppierung verwendet eine **`Map`** statt eines Objektliterals.
+  Damit gibt es keine geerbten Schluessel mehr; es wird **kein einzelner
+  Tickername verboten**. Geprueft: `constructor`, `__proto__`, `toString`,
+  `hasOwnProperty` und `AAPL`, einzeln und gemischt in einem Bestand.
+* `parseSnapshotImportPayload()` behandelte Top-Level-`null` und Nicht-Objekte
+  bereits korrekt; das wurde geprueft und nicht erneut implementiert. Die
+  Alles-oder-nichts-Regel bleibt: ein fehlgeschlagener Import uebernimmt nichts
+  und laesst den gespeicherten Bestand unveraendert.
+
+**Befund 3 — DDM-Annualisierung ueber die tatsaechlich vergangene Zeit.**
+`tryCagr()` in `_deriveDdmGrowthInputs()` zaehlte die VORHANDENEN Werte und
+annualisierte mit der gezaehlten Anzahl. Fehlte ein Zwischenjahr, lag der
+Stuetzwert weiter zurueck als angenommen — die Zeitspanne wurde verkuerzt und
+das Wachstum ueberschaetzt. Die **Auswahl** des Stuetzwerts ist unveraendert
+(der `years+1`-te positive Eintrag); annualisiert wird jetzt mit dem
+**tatsaechlichen Abstand**:
+
+* Liegen belastbare Berichtsperioden vor (`f._v4_meta.dps.periods`),
+  entscheidet deren Jahresabstand — damit wird auch eine Luecke erkannt, die
+  nur in den PERIODENLABELS steht, waehrend die Wertereihe lueckenlos ist.
+* Sonst gilt die dokumentierte Altdatenregel „ein Array-Platz = ein
+  Geschaeftsjahr". Eine Luecke im Array verkuerzt die Zeitspanne dabei nicht,
+  weil der Platzabstand sie mitzaehlt.
+* Sind Perioden vorhanden, aber nicht lesbar, wird **kein Zeitabstand
+  erfunden**: der Horizont gilt als nicht bestimmbar, der Grund wird in
+  `g1DpsNotes` und `g1Note` mitgefuehrt, und die bestehende Ersatzkette
+  (3y → 10y → Median-YoY → gedeckeltes Szenariowachstum) greift mit ihrer
+  eigenen Quellenangabe.
+* Eine **gemeldete Null** innerhalb der Zeitspanne ist eine wirtschaftliche
+  Angabe (Dividende ausgesetzt), keine Datenluecke. Ein durchgehender CAGR
+  beschreibt einen solchen Verlauf nicht — er bleibt mit Begruendung ohne Wert,
+  statt die Null zu uebergehen. Eine Null ausserhalb der verwendeten Spanne
+  aendert nichts.
+* **Quelle und Jahreszahl nennen die tatsaechlich gerechnete Zeitspanne**
+  (`dps_cagr_6y` statt `dps_cagr_5y`, `g1DpsGrowthYears: 6`).
+* Die Kappungen (0–5 % bzw. 0–3 % bei schwacher Datenbasis) sind **unveraendert
+  und wirken weiterhin ERST NACH** der Annualisierung.
+
+Gemessen: 1,00 → 1,12 ueber sechs Jahresintervalle mit Luecke ergibt
+**1,9067623061 %** statt der falsch annualisierten 2,2924556626 %;
+im echten DDM-Engine-Pfad **14,223656551734546** statt 14,457970968495326
+USD/Aktie. Die vollstaendige Reihe liefert **bit-genau** das bisherige Ergebnis
+(14,212416883291723).
+
+### 4 · Tests
+
+| Test | sichert ab |
+|---|---|
+| `R42` | Befund 2: alle sechs Pflichtfaelle der EV-Bruecke, Nettoliquiditaet mit richtigem Vorzeichen, EBITDA-/Bilanzjahr-Kompatibilitaet, dieselbe Sperre wie die DCF-Bruecke bei unvollstaendigem Schuldenumfang, unabhaengige Verfuegbarkeit von P/E und P/FCF, Randfall `base <= 0` (berechnet, begruendet aus dem Median, kein Datenmangel), Fallback bleibt `market_only` |
+| `R43` | Befund 4: echter Engine-/Synthese-Pfad; identische Einzelwerte bleiben erhalten, eine Familie statt zwei Modelle, `modelAgreement: 'n/a'` mit Begruendung, `_confidenceLevel` und `modelFitConfidence` korrigiert, Fair Value unveraendert, Familienhinweis am Modell, Gegenprobe mit wirklich unabhaengigen Modellen |
+| `R44` | Befund 1: Abweisung praeparierter IDs an der gemeinsamen Pruefstelle, Erhalt gueltiger bestehender IDs, Abweisung durch den regulaeren Importparser, ECHTER Renderer ohne Inline-Ereignisattribute, gespeicherter Schrott wird ausgewiesen statt ausgefuehrt und nicht veraendert, Ereignispfad ueber `_installDomActionDelegation()` (Wert bleibt Zeichenkette), Quelltextpruefung auf interpolierte `onclick`-Attribute |
+| `R45` | Befund 5: Master-JSON `null`/Array/String/Zahl ohne Ausnahme und ohne Erfolgsmeldung, Parse-Fehler unveraendert gemeldet, Ticker `constructor`/`__proto__`/`toString`/`hasOwnProperty` einzeln und gemischt, fehlgeschlagener Snapshot-Import laesst den Bestand unberuehrt, gueltiger Import geht weiterhin durch |
+| `R46` | Befund 3: alle sechs Pflichtfaelle der Annualisierung einschliesslich Luecke in den Periodenlabels, unlesbarer Perioden, gemeldeter Null und des echten DDM-Engine-Pfads (1,91 % liegt unter der Kappungsgrenze, der Fehler wird also nicht verdeckt); bestehende Kappung unveraendert |
+
+**Keine bestehende Testerwartung musste angepasst werden.** `R1`–`R41` und
+alle Fixture-Pruefungen bestehen unveraendert.
+
+**Gegenprobe:** `R42`–`R46` wurden gegen den unveraenderten Ausgangsstand
+`7b1fd10` ausgefuehrt und schlagen dort **alle fuenf** fehl
+(`# tests 52 · # pass 47 · # fail 5`).
+
+**Testergebnis nach der Aenderung:** `npm test` → **1700 Rechen-Assertions
+(darin 434 Fixture-Assertions), Exit 0**; `node --test tests/*.test.mjs` →
+**200 Node-Tests, Exit 0**. Node-Tests 195 → 200 (+5).
+
+### 5 · Browserpruefung (durchgefuehrt)
+
+Im vorinstallierten Chromium (`/opt/pw-browsers/chromium-1194`), angesteuert
+ueber das DevTools-Protokoll mit dem in Node 22 eingebauten WebSocket —
+**keine neue Projektabhaengigkeit**, die Treiberskripte liegen ausserhalb des
+Repositories. Die Datei wurde als `file://`-Dokument geladen; es gab **keine
+externen Requests**.
+
+* **Ausfuehrungsmarker, Ausgangsstand `7b1fd10`:** Snapshot mit der ID
+  `"><img src=x onerror="window.__pwned_img=1">` → Importparser `ok: true`,
+  **3 eingeschleuste `<img>`-Elemente, 6 fremde Ereignisattribute,
+  `window.__pwned_img === 1`** — der Code wurde ausgefuehrt. Master-JSON
+  `null` → `AUSNAHME: Cannot read properties of null (reading 'meta')`.
+  Ticker `constructor` → `AUSNAHME: byTicker[s.ticker].push is not a function`.
+* **Derselbe Marker, V1.0.66:** `window.__pwned_img` und `__pwned_quote`
+  bleiben `undefined`, **0** eingeschleuste `<img>`, **0** fremde
+  Ereignisattribute, **0** `onclick`-Attribute im Journal; der Eintrag wird als
+  unbrauchbar ausgewiesen und der gueltige Nachbareintrag bleibt bedienbar.
+* **Bedienung nach der Umstellung:** „Neu rechnen" und „Loeschen" erreichen
+  `loadSnapshotWithCurrentModel('ok123')` bzw. `deleteSnapshot('ok123')` ueber
+  die Delegation; `override-open` und `override-remove` erreichen
+  `openOverrideModal('hs-leverage')` bzw. `removeOverride('hs-leverage')`.
+* **Master-JSON ueber die echte Oberflaeche:** `null` und `[1,2,3]` erzeugen
+  keine Ausnahme, keine Erfolgsmeldung und die Meldung „Kein gueltiges
+  Master-JSON … Es wurde nichts importiert; der vorhandene Stand bleibt
+  unveraendert."
+* **Prototyp-Ticker:** `constructor`, `__proto__` und `AAPL` in einem Bestand
+  rendern fehlerfrei (9 Aktionsknoepfe).
+* **Geaenderte Anzeigen:** Markt-Vergleich ohne belegte Schulden zeigt „nicht
+  ableitbar" mit Grund, waehrend die P/E-Zeile 22,50 weiter ausweist; mit
+  ausdruecklichen Nullwerten erscheint 25,00. Die Fair-Value-Box eines
+  `financial`-Falls zeigt „Core-Modelle aktiv · 1 unabhaengige(s)", den
+  Familienhinweis („algebraisch identisch") und „Modell-Konvergenz: n/a —
+  Keine modelluebergreifende Uebereinstimmung bestimmbar …". Die DDM-Karte
+  zeigt „tatsaechlich 6 Jahre zwischen den verwendeten DPS-Werten" und die
+  Quelle `dps_cagr_6y`.
+
+**Nicht geprueft:** ein vollstaendiger Bedienungsdurchlauf (Tickerabruf,
+Speichern, Neuladen, Export) und jede Live-Abfrage gegen SEC oder Yahoo.
+
+### 6 · Offene Punkte (unveraendert bzw. neu benannt)
+
+* **Abgleich mit echten veroeffentlichten Abschluessen steht weiterhin aus** —
+  Einheiten, Perioden, Schuldenumfang, Aktienbasis, FY/TTM. Das ist der
+  naechste fachliche Pruefschritt und wird durch keinen Testlauf ersetzt.
+* **EPV bleibt deaktiviert.** `epv_floor` steht in JEDER Sektorklasse unter
+  `disabledModels` und taucht weder in `activeModels` noch in
+  `diagnosticModels` auf. Seine bekannten fachlichen Altprobleme bleiben
+  bestehen und sind **vor einer Reaktivierung** zu beheben: die
+  Null-Rueckfaelle bei Schulden und Liquiditaet in `modelEpvFloor()`
+  (dieselbe `|| 0`-Stelle wie in Befund 2) und der Maintenance-CapEx-Abzug
+  ohne korrespondierende Abschreibungszurechnung. In diesem Auftrag
+  ausdruecklich **nicht** angefasst.
+* **Ein interpoliertes Inline-Ereignisattribut verbleibt** im Tool:
+  `onchange="_handleGrowthAssumptionChange('${id.replace(...)}', this.value)"`
+  in der Assumptions-Eingabe. Der interpolierte Wert ist dort eine vom
+  Werkzeug selbst vergebene Feldkennung (`as-gr-…`), kein importierter Inhalt;
+  er lag ausserhalb des Auftragsumfangs. Eine Umstellung auf dieselbe
+  Delegation waere die konsequente Fortsetzung.
+* **Dauerhafte Verwaesserung** (`TERMINAL_DILUTION`), heuristische Synthese,
+  fehlende automatische Peers, externe Basisraten und EUR-Renditeszenarien
+  bleiben offen wie bisher dokumentiert.
+* **Andere Bewertungsmodelle** (insbesondere RIM) sind weiterhin nicht auf
+  demselben Pruefstand wie der DCF; Periodenkompatibilitaet und fachliche
+  Konsistenz sind dort systematisch nachzuziehen.
+* `main` (`b023dc8`) fuehrt weiterhin den urspruenglichen Stand. Ein
+  kontrollierter Merge eines geprueften Standes ist ein eigener Schritt und war
+  nicht Teil dieses Auftrags.
+
+**Keine Zusicherung der Fehlerfreiheit.** Die Auditgrenzen der vorherigen
+Korrekturchats bleiben bestehen.
+
+---
+
 ## Korrekturchat 12C.2: zwei Restfehler nach 12C.1 behoben (V1.0.65)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Ausgangsbranch

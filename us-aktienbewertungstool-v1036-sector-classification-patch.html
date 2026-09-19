@@ -13721,6 +13721,7 @@ function _deriveDdmGrowthInputs(f, val, scenarios) {
   let g1Source = 'unknown';
   let g1DpsGrowthYears = 0;
   let g1Note = null;
+  let g1DpsNotes = [];   // V1.0.66: erklaerte Sonderfaelle der Annualisierung
 
   // 1. Manueller Override
   if (val && typeof val.ddm_growth_phase1_pct === 'number' && !isNaN(val.ddm_growth_phase1_pct)) {
@@ -13737,9 +13738,67 @@ function _deriveDdmGrowthInputs(f, val, scenarios) {
     // CAGR über mehrere Horizonte berechnen
     // dpsArr[0] = aktuell, [n-1] = ältester
     // CAGR = (current/old)^(1/years) - 1
+    // ── V1.0.66 (Befund 3 des Auditberichts, Korrekturchat 12D) ──────────
+    // Bis V1.0.65 zaehlte diese Suche die VORHANDENEN Werte und annualisierte
+    // anschliessend mit der gezaehlten Anzahl. Fehlte ein Zwischenjahr, lag
+    // der gefundene Stuetzwert weiter zurueck als angenommen: der Abstand
+    // wurde verkuerzt, das Wachstum dadurch ueberschaetzt und die Beschriftung
+    // nannte eine Zeitspanne, die nicht gerechnet wurde. Gemessen: Anstieg
+    // 1,00 → 1,12 ueber SECHS Jahresintervalle mit einer Luecke ergab 2,2925 %
+    // als "5-Jahres-Wachstum" statt 1,9068 %.
+    //
+    // Annualisiert wird jetzt mit der TATSAECHLICH vergangenen Zeit zwischen
+    // den beiden verwendeten Werten:
+    //   · Liegen belastbare Berichtsperioden vor, entscheidet deren Abstand.
+    //   · Sonst gilt die dokumentierte Altdatenregel: ein Array-Platz = ein
+    //     Geschaeftsjahr. Eine LUECKE im Array verkuerzt die Zeitspanne dabei
+    //     NICHT, weil der Platzabstand sie mitzaehlt.
+    //   · Sind Perioden vorhanden, aber nicht lesbar, wird KEIN Zeitabstand
+    //     erfunden — der Horizont gilt als nicht bestimmbar und der Grund
+    //     wird mitgefuehrt.
+    // Die Kappung (0..5 % bzw. 0..3 %) bleibt unveraendert und wirkt WEITERHIN
+    // ERST NACH der Annualisierung.
+    const _dpsMeta     = (f && f._v4_meta && f._v4_meta.dps) || null;
+    const _dpsPeriods  = (_dpsMeta && Array.isArray(_dpsMeta.periods)) ? _dpsMeta.periods : null;
+    const _hasDpsPeriodCtx = !!(_dpsPeriods && _dpsPeriods.some(p => p != null));
+    const _yearAt = (idx) => {
+      if (!_hasDpsPeriodCtx) return null;
+      const p = _dpsPeriods[idx];
+      return (p == null || typeof _secPeriodYear !== 'function') ? null : _secPeriodYear(p);
+    };
+    // Tatsaechlich vergangene Jahre zwischen Platz 0 und Platz idx.
+    // Rueckgabe: { years } oder { unresolved: '<Grund>' }.
+    const _elapsedYears = (idx) => {
+      if (_hasDpsPeriodCtx) {
+        const yNew = _yearAt(0), yOld = _yearAt(idx);
+        if (yNew == null || yOld == null) {
+          return { unresolved: 'Berichtsperioden der DPS-Reihe sind angegeben, aber fuer die ' +
+                               'verwendeten Werte nicht lesbar — kein Zeitabstand angenommen' };
+        }
+        const d = yNew - yOld;
+        if (!(d > 0)) {
+          return { unresolved: 'Berichtsperioden der DPS-Reihe ergeben keinen positiven ' +
+                               'Zeitabstand (' + String(_dpsPeriods[idx]) + ' → ' + String(_dpsPeriods[0]) + ')' };
+        }
+        return { years: d };
+      }
+      return { years: idx };   // Altdatenregel: ein Platz = ein Geschaeftsjahr
+    };
+    // Eine GEMELDETE Null innerhalb der Zeitspanne ist eine wirtschaftliche
+    // Angabe (Dividende ausgesetzt), keine Datenluecke. Ein durchgehender
+    // CAGR beschreibt einen solchen Verlauf nicht — er bleibt dann ohne Wert
+    // und mit Begruendung, statt die Null zu uebergehen.
+    const _reportedZeroWithin = (idx) => {
+      for (let i = 1; i < idx; i++) {
+        if (dpsArr[i] === 0) return true;
+      }
+      return false;
+    };
+
+    const cagrNotes = [];
     const tryCagr = (years) => {
       if (positiveYears < years + 1) return null;
-      // Suche das (years)-te valide Element zurück
+      // Stuetzwert: der (years+1)-te POSITIVE Eintrag — unveraenderte Auswahl.
       let oldVal = null, oldIdx = -1;
       let seenPositive = 0;
       for (let i = 0; i < dpsArr.length; i++) {
@@ -13750,8 +13809,18 @@ function _deriveDdmGrowthInputs(f, val, scenarios) {
       }
       const newVal = dpsArr[0];
       if (oldVal == null || newVal == null || oldVal <= 0 || newVal <= 0) return null;
-      const cagr = (Math.pow(newVal / oldVal, 1 / years) - 1) * 100;
-      return cagr;
+      if (_reportedZeroWithin(oldIdx)) {
+        cagrNotes.push('Horizont ' + years + 'y: gemeldete Dividende 0 innerhalb der Zeitspanne — ' +
+                       'kein durchgehendes Wachstum annualisierbar');
+        return null;
+      }
+      const el = _elapsedYears(oldIdx);
+      if (el.unresolved) {
+        cagrNotes.push('Horizont ' + years + 'y: ' + el.unresolved);
+        return null;
+      }
+      const cagr = (Math.pow(newVal / oldVal, 1 / el.years) - 1) * 100;
+      return { cagr, years: el.years, requested: years };
     };
 
     const cagr3  = tryCagr(3);
@@ -13773,10 +13842,20 @@ function _deriveDdmGrowthInputs(f, val, scenarios) {
 
     // Wähle konservativ: bevorzugt 5Y-CAGR, dann 3Y, dann 10Y, dann Median-YoY
     let chosenGrowth = null;
-    if (cagr5 != null) { chosenGrowth = cagr5; g1Source = 'dps_cagr_5y'; g1DpsGrowthYears = 5; dpsCagrUsed = cagr5; }
-    else if (cagr3 != null) { chosenGrowth = cagr3; g1Source = 'dps_cagr_3y'; g1DpsGrowthYears = 3; dpsCagrUsed = cagr3; }
-    else if (cagr10 != null) { chosenGrowth = cagr10; g1Source = 'dps_cagr_10y'; g1DpsGrowthYears = 10; dpsCagrUsed = cagr10; }
-    else if (medYoy != null) { chosenGrowth = medYoy; g1Source = 'dps_median_yoy'; g1DpsGrowthYears = yoy.length; dpsMedianYoyUsed = medYoy; }
+    // V1.0.66: Quelle und Jahreszahl nennen die TATSAECHLICH gerechnete
+    // Zeitspanne (`chosen.years`), nicht den angefragten Horizont.
+    const chosen = (cagr5 != null) ? cagr5 : ((cagr3 != null) ? cagr3 : (cagr10 != null ? cagr10 : null));
+    if (chosen != null) {
+      chosenGrowth      = chosen.cagr;
+      g1DpsGrowthYears  = chosen.years;
+      g1Source          = 'dps_cagr_' + chosen.years + 'y';
+      dpsCagrUsed       = chosen.cagr;
+      if (chosen.years !== chosen.requested) {
+        cagrNotes.push('Horizont ' + chosen.requested + 'y angefragt, tatsaechlich ' + chosen.years +
+                       ' Jahre zwischen den verwendeten DPS-Werten (Luecke in der Reihe) — ' +
+                       'annualisiert wurde ueber ' + chosen.years + ' Jahre');
+      }
+    } else if (medYoy != null) { chosenGrowth = medYoy; g1Source = 'dps_median_yoy'; g1DpsGrowthYears = yoy.length; dpsMedianYoyUsed = medYoy; }
 
     if (chosenGrowth != null) {
       // Wenn DPS-Trend deutlich negativ → markieren, aber keine 0% erzwingen
@@ -13789,6 +13868,12 @@ function _deriveDdmGrowthInputs(f, val, scenarios) {
       if (clamped !== chosenGrowth) {
         g1Note = 'DPS-CAGR ' + chosenGrowth.toFixed(2) + '% clamped to ' + clamped.toFixed(2) + '%';
       }
+    }
+    // V1.0.66: nicht bestimmbare Horizonte und abweichende Zeitspannen bleiben
+    // sichtbar, statt wortlos zu verschwinden.
+    if (cagrNotes.length > 0) {
+      g1DpsNotes = cagrNotes.slice();
+      g1Note = (g1Note ? g1Note + ' · ' : '') + cagrNotes.join(' · ');
     }
   }
 
@@ -13838,6 +13923,7 @@ function _deriveDdmGrowthInputs(f, val, scenarios) {
     g1Source,
     g1Note,
     g1DpsGrowthYears,
+    g1DpsNotes,
     g1DpsCagr:  dpsCagrUsed,
     g1DpsMedianYoy: dpsMedianYoyUsed,
     g1DpsTrendNegative: dpsTrendNegative,
@@ -13949,6 +14035,79 @@ function _financialReturnAndBookMetric(mj) {
   };
 }
 
+// ════════════════════════════════════════════════════════════════
+// V1.0.66 (Befund 3, Korrekturchat 12D) · MODELLFAMILIEN
+// ════════════════════════════════════════════════════════════════
+//
+// `modelPTbvGordon` und `modelExcessReturn` sind unter den HIER
+// implementierten Annahmen nicht zwei unabhaengige Bewertungen, sondern zwei
+// Darstellungen DERSELBEN Rechnung. Beide beziehen Renditemasz, Buchbasis und
+// Wachstum aus `_financialReturnAndBookMetric()` und denselben Szenarien:
+//
+//   Gordon:         P = B0 · (ROE − g) / (r − g)
+//   Excess Return:  P = B0 + Σ B0·(ROE − r)·(1+g)^(i−1) / (1+r)^i + TV
+//                     = B0 + B0·(ROE − r)/(r − g)
+//                     = B0 · (ROE − g)/(r − g)
+//
+// Die Umformung ist exakt, nicht naeherungsweise: die 10-Jahres-Zerlegung mit
+// anschlieszendem Terminalwert teleskopiert zur geschlossenen Gordon-Form,
+// weil der Buchwert mit genau `terminal_growth` fortgeschrieben wird und die
+// Ueberrendite ein fester Anteil davon ist. Ihre Uebereinstimmung ist deshalb
+// eine algebraische Identitaet und KEINE modelluebergreifende Bestaetigung.
+//
+// Konsequenz (nur fuer Zaehlung, Uebereinstimmung und daraus abgeleitete
+// Vertrauenssignale): beide zaehlen als EINE Familie. Die Einzelwerte bleiben
+// unveraendert und beide Darstellungen bleiben sichtbar — es wird KEINE neue
+// Bewertungsmethode eingefuehrt und KEINE Annahme kuenstlich verschoben, nur
+// um abweichende Zahlen zu erzeugen.
+const MODEL_FAMILIES = {
+  p_tbv_gordon:  'financials_book_return',
+  excess_return: 'financials_book_return'
+};
+
+const MODEL_FAMILY_INFO = {
+  financials_book_return: {
+    label: 'Buchwert-/Renditemodelle (Financials)',
+    members: ['p_tbv_gordon', 'excess_return'],
+    note: 'P/TBV-Gordon und Excess Return verwenden dasselbe Renditemasz, ' +
+          'dieselbe Buchbasis und dieselben Szenarien; ihre Ergebnisse sind ' +
+          'algebraisch identisch. Ihre Uebereinstimmung ist deshalb KEINE ' +
+          'unabhaengige Bestaetigung der Bewertung. Fuer diese Familie liegt ' +
+          'keine modelluebergreifende Gegenpruefung vor.'
+  }
+};
+
+// Familienschluessel eines Modells (ohne Familie: der Modellschluessel selbst).
+function _modelFamilyKey(modelKey) {
+  return (modelKey != null && MODEL_FAMILIES[modelKey]) ? MODEL_FAMILIES[modelKey] : modelKey;
+}
+
+// Zahl der UNABHAENGIGEN Modellfamilien in einer Liste von Modellschluesseln.
+function _independentFamilyCount(modelKeys) {
+  const fams = new Set();
+  (modelKeys || []).forEach(k => { if (k != null) fams.add(_modelFamilyKey(k)); });
+  return fams.size;
+}
+
+// Hinweistexte zu allen Familien, die in dieser Liste MEHRFACH vertreten sind.
+function _activeModelFamilyNotes(modelKeys) {
+  const byFam = new Map();
+  (modelKeys || []).forEach(k => {
+    if (k == null) return;
+    const fk = _modelFamilyKey(k);
+    if (fk === k) return;
+    if (!byFam.has(fk)) byFam.set(fk, []);
+    byFam.get(fk).push(k);
+  });
+  const notes = [];
+  byFam.forEach((members, fk) => {
+    if (members.length < 2) return;
+    const info = MODEL_FAMILY_INFO[fk];
+    if (info) notes.push({ family: fk, label: info.label, members: members.slice(), note: info.note });
+  });
+  return notes;
+}
+
 function modelPTbvGordon(mj, scenarios) {
   const f = mj.fundamentals || {};
   const shares = (f.shares_diluted && f.shares_diluted[0]) || null;
@@ -13966,6 +14125,9 @@ function modelPTbvGordon(mj, scenarios) {
   };
   const warnings = [`Renditemaß: ${fin.returnLabel} (${fin.yearsUsed}y Median = ${fin.returnMetricMedian.toFixed(1)}%) · Buchbasis: ${fin.bookLabel}`];
   if (fin.fallbackUsed) warnings.push('FALLBACK auf ROE/BV — TBV unzureichend');
+  // V1.0.66 (Befund 3): die Abhaengigkeit steht am Modell selbst, nicht nur
+  // in der Synthese.
+  warnings.push(MODEL_FAMILY_INFO.financials_book_return.note);
 
   return {
     applicable: true,
@@ -13973,6 +14135,8 @@ function modelPTbvGordon(mj, scenarios) {
     base: calc(scenarios.base),
     optimistic: calc(scenarios.optimistic),
     warnings,
+    modelFamily: 'financials_book_return',
+    modelFamilyNote: MODEL_FAMILY_INFO.financials_book_return.note,
     modelName: 'P/' + fin.bookLabel + '-Gordon'
   };
 }
@@ -14006,12 +14170,17 @@ function modelExcessReturn(mj, scenarios) {
   };
   const warnings = [`Excess Return mit ${fin.returnLabel} ${fin.returnMetricMedian.toFixed(1)}% vs CoE`, 'BV-Wachstum vereinfacht auf terminal_growth [H]'];
   if (fin.fallbackUsed) warnings.push('FALLBACK auf ROE/BV');
+  // V1.0.66 (Befund 3): siehe MODEL_FAMILY_INFO — algebraisch identisch zu
+  // P/TBV-Gordon, daher keine unabhaengige Gegenpruefung.
+  warnings.push(MODEL_FAMILY_INFO.financials_book_return.note);
   return {
     applicable: true,
     conservative: calc(scenarios.conservative),
     base: calc(scenarios.base),
     optimistic: calc(scenarios.optimistic),
     warnings,
+    modelFamily: 'financials_book_return',
+    modelFamilyNote: MODEL_FAMILY_INFO.financials_book_return.note,
     modelName: 'Excess Return'
   };
 }
@@ -18008,13 +18177,19 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
   // V1.0.29: DDM im anchor-Modus = Core (wie primary)
   const _routerForCount  = (valuationResult.router) || {};
   const _ddmModeForCount = _routerForCount.ddmMode;
-  const activeModelsCount = nonEpv.filter(m => {
+  const _activeModelKeys = nonEpv.map(m => {
     const k = Object.keys(valuationResult.modelResults).find(key => valuationResult.modelResults[key] === m);
-    if (k === 'ddm' && _ddmModeForCount === 'diagnostic') return false;
-    if (k === 'ddm' && m._diagnosticLowDivergence) return false;
-    if (m._outlierExcluded) return false;
-    return true;
-  }).length;
+    if (k === 'ddm' && _ddmModeForCount === 'diagnostic') return null;
+    if (k === 'ddm' && m._diagnosticLowDivergence) return null;
+    if (m._outlierExcluded) return null;
+    return k;
+  }).filter(k => k != null);
+  const activeModelsCount = _activeModelKeys.length;
+  // V1.0.66 (Befund 3): Zahl der UNABHAENGIGEN Modellfamilien. Zwei
+  // Darstellungen derselben Rechnung (P/TBV-Gordon und Excess Return) sind
+  // eine Familie und duerfen keine zusaetzliche Verlaesslichkeit suggerieren.
+  const independentModelCount = _independentFamilyCount(_activeModelKeys);
+  const modelFamilyNotes      = _activeModelFamilyNotes(_activeModelKeys);
   const uncertaintyRatio = (rangeBase !== 0) ? (rangeOpt - rangeCons) / rangeBase : null;
 
   // ── Fix 6: Fair-Value-Bandbreiten-Sanity ─────────────────────
@@ -18037,14 +18212,37 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
     }
   }
 
+  // ── V1.0.66 (Befund 3) · Uebereinstimmung nur zwischen UNABHAENGIGEN
+  // Modellfamilien. Bis V1.0.65 verglich diese Stelle Einzelmodelle: fuer
+  // `financials` waren das P/TBV-Gordon und Excess Return, also zwei
+  // Darstellungen derselben Rechnung. Ihre zwangslaeufig identischen Werte
+  // ergaben maxDev = 0 und damit 'high' — eine algebraische Identitaet wurde
+  // als hohe Modellkonvergenz ausgewiesen. Innerhalb einer Familie wird
+  // deshalb EIN Vertreter gebildet (Median der Familienwerte, bei identischen
+  // Werten genau dieser Wert); verglichen werden nur noch die Vertreter.
   let modelAgreement = 'n/a';
-  if (baseP.length >= 2) {
-    const baseVals = baseP.map(p => p.value);
-    const med = _median(baseVals);
-    const maxDev = Math.max(...baseVals.map(v2 => Math.abs(v2 - med) / Math.abs(med)));
+  let modelAgreementReason = null;
+  const _famVals = new Map();
+  baseP.forEach(p => {
+    const fk = _modelFamilyKey(p.key);
+    if (!_famVals.has(fk)) _famVals.set(fk, []);
+    _famVals.get(fk).push(p.value);
+  });
+  const _famReps = Array.from(_famVals.values()).map(vals => _median(vals));
+  if (_famReps.length >= 2) {
+    const med = _median(_famReps);
+    const maxDev = Math.max(..._famReps.map(v2 => Math.abs(v2 - med) / Math.abs(med)));
     if (maxDev < config.model_agreement.high_max_dev) modelAgreement = 'high';
     else if (maxDev < config.model_agreement.medium_max_dev) modelAgreement = 'medium';
     else modelAgreement = 'low';
+  } else if (baseP.length >= 2) {
+    // Mehrere gewichtete Modelle, aber nur EINE unabhaengige Familie.
+    modelAgreementReason =
+      'Keine modelluebergreifende Uebereinstimmung bestimmbar: alle gewichteten ' +
+      'Modelle gehoeren derselben Modellfamilie (' +
+      (modelFamilyNotes.map(n => n.label).join(', ') || 'eine Familie') +
+      '). Uebereinstimmende Werte innerhalb einer Familie sind keine ' +
+      'unabhaengige Bestaetigung.';
   }
 
   const mc = config.mos;
@@ -18456,9 +18654,11 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
     // ── modelFitConfidence (0–100) ──────────────────────────────────
     let _mFC = 80;
 
-    // Anzahl aktiver Modelle
-    if (activeModelsCount <= 1) _mFC = Math.min(_mFC, 55);
-    else if (activeModelsCount === 2) _mFC = Math.min(_mFC, 72);
+    // Anzahl aktiver Modelle — V1.0.66 (Befund 3): maszgeblich ist die Zahl
+    // der UNABHAENGIGEN Familien. Zwei Darstellungen derselben Rechnung
+    // duerfen die Modellfit-Zuversicht nicht anheben.
+    if (independentModelCount <= 1) _mFC = Math.min(_mFC, 55);
+    else if (independentModelCount === 2) _mFC = Math.min(_mFC, 72);
 
     // Model-Divergenz-Caps (aus _divWeighted.ratio)
     const _divR = _divWeighted.ratio;
@@ -18774,6 +18974,9 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
     activeModelsCount,
     range: { conservative: rangeCons, base: rangeBase, optimistic: rangeOpt },
     uncertaintyRatio, modelAgreement: modelAgreementFinal,
+    modelAgreementReason,
+    independentModelCount,
+    modelFamilyNotes,
     mosComponents: {
       base: mosBase,
       qualityAddon: mosDataQualityAddon,
@@ -19658,9 +19861,81 @@ function buildSensitivityMatrix(mj, v) {
 // ────────────────────────────────────────────────────────────────
 // RELATIVE MULTIPLES — gemeinsame Logik
 // ────────────────────────────────────────────────────────────────
+// ── V1.0.66 (Befund 2, Korrekturchat 12D) · Eigenkapitalbruecke der ───────
+// Vergleichsmultiples
+//
+// Bis V1.0.65 bildete die EV/EBITDA-Vergleichsrechnung ihre Bruecke mit
+// `(f.total_debt && f.total_debt[0]) || 0` bzw. `(f.cash && f.cash[0]) || 0`.
+// Damit galt eine FEHLENDE Angabe als ausdrueckliche Null: ein Unternehmen
+// ohne gemeldete Schulden wurde wie ein schuldenfreies gerechnet und das
+// Ergebnis trotzdem als `available: true` ausgewiesen. Unbekannt ist nicht
+// schuldenfrei.
+//
+// Diese Funktion verwendet deshalb DIESELBE gepruefte Aufloesung wie die
+// DCF-Wertbruecke (`_resolveNetDebtForDcfBridge`) — einschliesslich
+// Umfangspruefung (`scopeComplete`), Periodensperre und period-keyed
+// Verknuepfung von Schulden und Liquiditaet. Es wird KEINE zweite,
+// abweichende Schuldenlogik gefuehrt.
+//
+// Zusaetzlich wird der Datenkontext geprueft, den die DCF-Bruecke fuer sich
+// allein nicht pruefen kann: der EBITDA-Zeitraum und der Bilanzstichtag der
+// Bruecke muessen zum selben Berichtsjahr gehoeren. Sonst entstuende ein
+// Unternehmenswert aus einem Geschaeftsjahr und ein Schuldenabzug aus einem
+// anderen.
+function _resolveMultiplesEvBridge(f) {
+  const fund = f || {};
+  const meta = fund._v4_meta || {};
+  const _period0 = (field) => {
+    const m = meta[field];
+    return (m && Array.isArray(m.periods) && m.periods[0] != null) ? m.periods[0] : null;
+  };
+
+  const res = (typeof _resolveNetDebtForDcfBridge === 'function')
+    ? _resolveNetDebtForDcfBridge(fund)
+    : { available: false, netDebtM: null, missing: ['Nettoschuldenaufloesung nicht verfuegbar'] };
+
+  if (!res || res.available !== true) {
+    const missing = (res && Array.isArray(res.missing) && res.missing.length > 0)
+      ? res.missing.join(', ')
+      : 'total_debt[0], cash_and_equivalents[0]/cash[0]';
+    const why = (res && res.reason)
+      ? res.reason
+      : 'Schulden und/oder Liquiditaet sind fuer die bewertete Periode nicht belegt.';
+    return {
+      available: false, netDebtM: null, source: null, period: null,
+      reason: 'Eigenkapitalbruecke nicht belegt (' + missing + '). ' + why +
+              ' Eine fehlende Angabe gilt NICHT als 0 — unbekannte Schulden ' +
+              'machen ein Unternehmen nicht schuldenfrei. Ausdruecklich ' +
+              'gemeldete Nullwerte bleiben gueltig.'
+    };
+  }
+
+  const bridgePeriod = res.period || _period0('net_debt') || _period0('total_debt');
+  const ebitdaPeriod = _period0('ebitda');
+  if (bridgePeriod != null && ebitdaPeriod != null &&
+      (typeof _secPeriodYear === 'function')) {
+    const yb = _secPeriodYear(bridgePeriod);
+    const ye = _secPeriodYear(ebitdaPeriod);
+    if (yb != null && ye != null && yb !== ye) {
+      return {
+        available: false, netDebtM: null, source: null, period: null,
+        reason: 'Unternehmenswert und Eigenkapitalbruecke stammen aus ' +
+                'unterschiedlichen Berichtsperioden (EBITDA ' + ebitdaPeriod +
+                ', Bilanzangaben ' + bridgePeriod + '). Ein Abzug ueber ' +
+                'Array-Indizes wuerde Geschaeftsjahre vermischen.'
+      };
+    }
+  }
+
+  return {
+    available: true, netDebtM: res.netDebtM,
+    source: res.source || null, period: bridgePeriod || null, reason: null
+  };
+}
+
 function computeRelativeMultiplesFV(mj) {
-  const f   = mj.fundamentals || {};
-  const m   = mj.market || {};
+  const f   = (mj && mj.fundamentals) || {};
+  const m   = (mj && mj.market) || {};
   const own = m.own_multiples_median || {};
   const shares = (f.shares_diluted && f.shares_diluted[0]) || null;
   const models = [];
@@ -19682,19 +19957,64 @@ function computeRelativeMultiplesFV(mj) {
   }
 
   if (own.ev_ebitda_10y != null && f.ebitda && f.ebitda[0] != null && shares) {
-    const td   = (f.total_debt && f.total_debt[0]) || 0;
-    const cash = (f.cash && f.cash[0]) || 0;
-    const ev   = own.ev_ebitda_10y * f.ebitda[0];
-    models.push({ id:'ev_ebitda_10y', label:'EV/EBITDA 10y Median',
-      multiple: own.ev_ebitda_10y, base: (ev - (td - cash)) / shares, available: true });
+    // V1.0.66 (Befund 2): gepruefte Nettoschuldenaufloesung statt `|| 0`.
+    const ev     = own.ev_ebitda_10y * f.ebitda[0];
+    const bridge = _resolveMultiplesEvBridge(f);
+    if (bridge.available) {
+      models.push({ id:'ev_ebitda_10y', label:'EV/EBITDA 10y Median',
+        multiple: own.ev_ebitda_10y, base: (ev - bridge.netDebtM) / shares, available: true,
+        enterpriseValueM: ev, netDebtM: bridge.netDebtM,
+        netDebtSource: bridge.source, netDebtPeriod: bridge.period });
+    } else {
+      // Der operative Unternehmenswert bleibt getrennt sichtbar; nur der
+      // daraus abgeleitete Wert JE AKTIE ist nicht belegbar.
+      models.push({ id:'ev_ebitda_10y', label:'EV/EBITDA 10y Median', available: false,
+        multiple: own.ev_ebitda_10y, base: null,
+        bridgeBlocked: true, enterpriseValueM: ev,
+        reason: bridge.reason });
+    }
   } else {
     models.push({ id:'ev_ebitda_10y', label:'EV/EBITDA 10y Median', available: false,
       reason: own.ev_ebitda_10y == null ? 'ev_ebitda_10y fehlt in market.own_multiples_median' : 'ebitda[0] oder shares_diluted[0] fehlt' });
   }
 
-  const available = models.filter(r => r.available && r.base != null && r.base > 0);
-  const median = available.length > 0 ? _median(available.map(r => r.base)) : null;
-  return { models, median, hasAny: available.length > 0, availableCount: available.length };
+  // ── V1.0.66 (Befund 2, Randfall) · Status und Ergebnis duerfen sich nicht
+  // widersprechen. Bis V1.0.65 filterte `r.base > 0` nichtpositive Werte
+  // wortlos aus Median UND Zaehlung, liess das Modell aber `available: true`.
+  // Ein nichtpositiver impliziter Preis ist jedoch ein RECHENERGEBNIS (z. B.
+  // Nettoschulden >= Unternehmenswert), kein Datenmangel. Er wird deshalb als
+  // berechnet ausgewiesen und nur begruendet aus dem Median genommen. Ein
+  // nicht darstellbares Ergebnis (null/NaN/Infinity) ist dagegen KEIN Wert und
+  // wird als nicht verfuegbar gekennzeichnet.
+  models.forEach(r => {
+    if (!r.available) return;
+    if (r.base == null || !isFinite(r.base)) {
+      r.available = false;
+      r.base = null;
+      r.reason = r.reason || 'Rechenergebnis nicht darstellbar (kein endlicher Wert).';
+      return;
+    }
+    if (r.base <= 0) {
+      r.nonPositive = true;
+      r.excludedFromMedian =
+        'Rechnerisch belegter impliziter Wert je Aktie <= 0' +
+        (r.id === 'ev_ebitda_10y'
+          ? ' (die Nettoschulden erreichen oder uebersteigen den Unternehmenswert).'
+          : '.') +
+        ' Das ist ein Ergebnis, kein fehlender Wert — als Referenzpreis aber ' +
+        'nicht verwendbar und daher nicht im Median.';
+    }
+  });
+  const usable = models.filter(r => r.available && r.nonPositive !== true);
+  const median = usable.length > 0 ? _median(usable.map(r => r.base)) : null;
+  return {
+    models, median,
+    hasAny: usable.length > 0,
+    availableCount: usable.length,
+    computedCount: models.filter(r => r.available).length,
+    nonPositiveCount: models.filter(r => r.nonPositive === true).length,
+    bridgeBlockedCount: models.filter(r => r.bridgeBlocked === true).length
+  };
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -19866,6 +20186,20 @@ function importMasterJsonFromTextarea() {
   try { parsed = JSON.parse(ta.value); }
   catch (e) {
     status.textContent = 'JSON-Parse-Fehler: ' + e.message;
+    status.className = 'import-status err';
+    return false;
+  }
+
+  // ── V1.0.66 (Befund 5): Top-Level-Typ VOR jedem Feldzugriff ──────────
+  // `JSON.parse('null')` liefert null, `JSON.parse('[]')` ein Array. Beides
+  // ist syntaktisch gueltiges JSON, aber kein Master-JSON. Bis V1.0.65 stand
+  // der erste Feldzugriff (`parsed.meta`) ausserhalb des try-Blocks — eine
+  // Datei mit dem Inhalt `null` erzeugte eine ungefangene TypeError-Ausnahme
+  // statt einer Fehlermeldung.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    status.textContent = 'Kein gültiges Master-JSON: erwartet wird ein JSON-Objekt, erhalten ' +
+      (parsed === null ? 'null' : (Array.isArray(parsed) ? 'ein Array' : typeof parsed)) +
+      '. Es wurde nichts importiert; der vorhandene Stand bleibt unverändert.';
     status.className = 'import-status err';
     return false;
   }
@@ -22765,7 +23099,9 @@ function buildRangeBoxFull(s) {
 
   return `
     <div class="box">
-      <div class="box-title">Fair Value Range <span class="box-tag" style="background:rgba(255,170,0,.12);color:var(--warn);border:1px solid rgba(255,170,0,.35)">heuristische Synthese</span> <span class="box-tag ok">${s.activeModelsCount || 0} Core-Modelle aktiv${(() => { const dm = (state.router && state.router.diagnosticModels && state.router.diagnosticModels.length) || 0; return dm > 0 ? ` + ${dm} Diagnosemodell` + (dm > 1 ? 'e' : '') : ''; })()}</span></div>
+      <div class="box-title">Fair Value Range <span class="box-tag" style="background:rgba(255,170,0,.12);color:var(--warn);border:1px solid rgba(255,170,0,.35)">heuristische Synthese</span> <span class="box-tag ok">${s.activeModelsCount || 0} Core-Modelle aktiv${(() => { const dm = (state.router && state.router.diagnosticModels && state.router.diagnosticModels.length) || 0; return dm > 0 ? ` + ${dm} Diagnosemodell` + (dm > 1 ? 'e' : '') : ''; })()}${(s.independentModelCount != null && s.independentModelCount < (s.activeModelsCount || 0)) ? ` · ${s.independentModelCount} unabhängige(s)` : ''}</span></div>
+      ${(Array.isArray(s.modelFamilyNotes) && s.modelFamilyNotes.length > 0) ? s.modelFamilyNotes.map(n => `
+      <div class="mv-disclaimer" style="margin-bottom:8px">⚠ <strong>${escapeHtml(n.label)}:</strong> ${escapeHtml(n.note)}</div>`).join('') : ''}
 
       <!-- Valuation Confidence — getrennt von Business Quality & Data Coverage -->
       <div style="margin-bottom:10px;padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px">
@@ -22783,7 +23119,7 @@ function buildRangeBoxFull(s) {
         </div>
       </div>
 
-      <div style="font-size:.6rem;color:var(--muted);margin-bottom:6px">Unsicherheit: ${(ur*100).toFixed(0)}% (${urLabel}) · Modell-Konvergenz: ${s.modelAgreement || '–'}</div>
+      <div style="font-size:.6rem;color:var(--muted);margin-bottom:6px">Unsicherheit: ${(ur*100).toFixed(0)}% (${urLabel}) · Modell-Konvergenz: ${s.modelAgreement || '–'}${s.modelAgreementReason ? ` — ${escapeHtml(s.modelAgreementReason)}` : ''}</div>
 
       <!-- ── BLOCK A: Base Fair Value + Marktpreis ── -->
       <div class="val-summary-grid">
@@ -22908,6 +23244,7 @@ function buildRangeBoxFull(s) {
             : '')
         }
         <div class="ml txt-caption" style="color:var(--muted)"><span>Model-Agreement (Diagnose, kein Add-on)</span><span>${s.modelAgreement || '–'}</span></div>
+        ${s.modelAgreementReason ? `<div class="ml txt-caption" style="color:var(--warn)"><span>${escapeHtml(s.modelAgreementReason)}</span><span></span></div>` : ''}
         ${mc2.buybackAddon > 0 || (mc2._buybackUpliftPct && mc2._buybackUpliftPct > 5) ? `<div class="ml txt-caption" style="color:var(--info);margin-top:4px;border-top:1px dashed var(--border);padding-top:4px"><span>ℹ Buyback-adjusted DCF ist Diagnose, kein Fair-Value-Anker. Buy Price basiert ausschließlich auf dem konservativen Hauptwert.</span></div>` : ''}
       </div>`;
       })() : ''}
@@ -23009,10 +23346,10 @@ function renderQuality() {
     let status, color, action = '';
     if (s.triggered && s.overridden) {
       status = 'OVERRIDDEN'; color = 'var(--warn)';
-      action = `<button class="snap-actions txt-caption" style="background:var(--surface);border:1px solid var(--border);color:var(--warn);padding:4px 8px;border-radius:4px;cursor:pointer;font-family:var(--font-mono)" onclick="removeOverride('${s.id}')">Override entfernen</button>`;
+      action = `<button class="snap-actions txt-caption" style="background:var(--surface);border:1px solid var(--border);color:var(--warn);padding:4px 8px;border-radius:4px;cursor:pointer;font-family:var(--font-mono)" type="button" data-action="override-remove" data-action-value="${escapeHtml(String(s.id))}">Override entfernen</button>`;
     } else if (s.triggered) {
       status = 'TRIGGERED'; color = 'var(--danger)';
-      action = `<button class="txt-caption" style="background:var(--surface);border:1px solid var(--danger);color:var(--danger);padding:4px 8px;border-radius:4px;cursor:pointer;font-family:var(--font-mono)" onclick="openOverrideModal('${s.id}')">Override...</button>`;
+      action = `<button class="txt-caption" style="background:var(--surface);border:1px solid var(--danger);color:var(--danger);padding:4px 8px;border-radius:4px;cursor:pointer;font-family:var(--font-mono)" type="button" data-action="override-open" data-action-value="${escapeHtml(String(s.id))}">Override...</button>`;
     } else if (s.schemaIncomplete) {
       status = 'SCHEMA-LÜCKE'; color = 'var(--info)';
     } else if (!s.dataAvailable) {
@@ -23440,16 +23777,18 @@ function buildValuationFallback(mj, syn, valResult) {
         </div>
         <div class="model-grid">
           ${rel.models.map(m => m.available ? `
-            <div class="model" style="border-left:3px solid var(--info)">
+            <div class="model" style="border-left:3px solid ${m.nonPositive ? 'var(--warn)' : 'var(--info)'}">
               <div class="mn"><span>${escapeHtml(m.label)}</span><span class="mtag" style="background:#1a232e;color:var(--info)">relativ</span></div>
               <div class="vals">
                 <div class="vl">Multiple</div><div class="vv">${m.multiple.toFixed(1)}x</div>
                 <div class="vl">Impl. Preis</div><div class="vv">${m.base.toFixed(2)}</div>
               </div>
+              ${m.nonPositive ? `<div class="reason" style="color:var(--warn)">${escapeHtml(m.excludedFromMedian || '')}</div>` : ''}
             </div>` : `
             <div class="model disabled">
-              <div class="mn"><span>${escapeHtml(m.label)}</span><span class="mtag off">fehlt</span></div>
+              <div class="mn"><span>${escapeHtml(m.label)}</span><span class="mtag off">${m.bridgeBlocked ? 'gesperrt' : 'fehlt'}</span></div>
               <div class="reason">${escapeHtml(m.reason || '')}</div>
+              ${(m.bridgeBlocked && m.enterpriseValueM != null) ? `<div class="reason">Operativer Unternehmenswert (EV) bleibt bestimmbar: ${m.enterpriseValueM.toFixed(1)}M — nur der Wert JE AKTIE ist ohne belegte Nettoschulden nicht ableitbar.</div>` : ''}
             </div>`
           ).join('')}
         </div>
@@ -23457,7 +23796,7 @@ function buildValuationFallback(mj, syn, valResult) {
         <div class="diagnostic" style="margin-top:10px;border-left:2px solid var(--info)">
           <div class="dl">Relativer Median-Referenzwert (kein Fair Value)</div>
           <span style="font-family:var(--font-serif);font-size:1.2rem;color:var(--info)">${rel.median.toFixed(2)}</span>
-          <span style="font-size:.6rem;color:var(--muted);margin-left:8px">Median aus ${rel.availableCount} historischen Multiple(s) — <strong>keine Intrinsic Valuation</strong></span>
+          <span style="font-size:.6rem;color:var(--muted);margin-left:8px">Median aus ${rel.availableCount} historischen Multiple(s) — <strong>keine Intrinsic Valuation</strong>${rel.nonPositiveCount > 0 ? ` · ${rel.nonPositiveCount} berechnete(r), aber nichtpositive(r) Wert(e) nicht im Median` : ''}${rel.bridgeBlockedCount > 0 ? ` · ${rel.bridgeBlockedCount} Modell(e) mangels belegter Nettoschulden gesperrt` : ''}</span>
         </div>` : ''}
       </div>`;
   } else {
@@ -23978,15 +24317,23 @@ function renderMarket() {
 
   const rel = computeRelativeMultiplesFV(mj);
   const f = mj.fundamentals || {};
-  const rows = rel.models.filter(m => m.available).map(m => ({
-    label: (function() {
-      if (m.id === 'pe_10y') return `Impliziter Preis bei eigenem PE-Median (${m.multiple.toFixed(1)}x × EPS ${(f.eps_diluted && f.eps_diluted[0] != null ? f.eps_diluted[0].toFixed(2) : '?')})`;
-      if (m.id === 'ev_ebitda_10y') return `Impliziter Preis bei eigenem EV/EBITDA-Median (${m.multiple.toFixed(1)}x)`;
-      if (m.id === 'p_fcf_10y') return `Impliziter Preis bei eigenem P/FCF-Median (${m.multiple.toFixed(1)}x)`;
-      return m.label;
-    })(),
-    value: m.base.toFixed(2)
-  }));
+  // V1.0.66 (Befund 2): gesperrte und nichtpositive Modelle verschwinden nicht
+  // mehr wortlos aus der Tabelle — ein gesperrtes Modell ist eine Aussage.
+  const _relLabel = (m) => {
+    if (m.id === 'pe_10y') return `Impliziter Preis bei eigenem PE-Median (${m.multiple.toFixed(1)}x × EPS ${(f.eps_diluted && f.eps_diluted[0] != null ? f.eps_diluted[0].toFixed(2) : '?')})`;
+    if (m.id === 'ev_ebitda_10y') return `Impliziter Preis bei eigenem EV/EBITDA-Median (${m.multiple.toFixed(1)}x)`;
+    if (m.id === 'p_fcf_10y') return `Impliziter Preis bei eigenem P/FCF-Median (${m.multiple.toFixed(1)}x)`;
+    return m.label;
+  };
+  const rows = rel.models
+    .filter(m => m.available || m.bridgeBlocked)
+    .map(m => ({
+      label: _relLabel(m),
+      value: m.available ? m.base.toFixed(2) : 'nicht ableitbar',
+      note: m.available
+        ? (m.nonPositive ? (m.excludedFromMedian || '') : '')
+        : (m.reason || '')
+    }));
 
   let html = `
     <div class="mv-card">
@@ -24000,7 +24347,8 @@ function renderMarket() {
     html += `<div class="muted-help">Keine eigenen Multiples-Mediane im Master-JSON unter market.own_multiples_median eingetragen.</div>`;
   } else {
     rows.forEach(r => {
-      html += `<div class="mv-row"><span class="lbl">${escapeHtml(r.label)}</span><span class="val">${r.value}</span></div>`;
+      html += `<div class="mv-row"><span class="lbl">${escapeHtml(r.label)}</span><span class="val">${escapeHtml(r.value)}</span></div>`;
+      if (r.note) html += `<div class="mv-row"><span class="lbl" style="color:var(--muted);font-size:.6rem">${escapeHtml(r.note)}</span><span class="val"></span></div>`;
     });
   }
 
@@ -25079,7 +25427,14 @@ function buildSnapshotRecord(ctx) {
       mos_total:          synthesis && synthesis.mosComponents && synthesis.mosComponents.total,
       model_agreement:    synthesis && synthesis.modelAgreement,
       uncertainty_ratio:  synthesis && synthesis.uncertaintyRatio,
-      active_models:      synthesis && synthesis.activeModelsCount
+      active_models:      synthesis && synthesis.activeModelsCount,
+      // V1.0.66 (Befund 3): die Zahl der UNABHAENGIGEN Modellfamilien wird
+      // mitgespeichert — sonst liesze sich spaeter nicht mehr erkennen, dass
+      // zwei gezaehlte Modelle dieselbe Rechnung waren.
+      independent_models: (synthesis && synthesis.independentModelCount != null)
+        ? synthesis.independentModelCount : null,
+      model_family_note:  (synthesis && Array.isArray(synthesis.modelFamilyNotes) && synthesis.modelFamilyNotes.length > 0)
+        ? synthesis.modelFamilyNotes.map(n => n.label + ': ' + n.note).join(' ') : null
     },
 
     // ── Kursvergleich (frueher "Forward-Check") ────────────────
@@ -25352,6 +25707,50 @@ function validateSnapshotNumericFields(rec) {
   return problems;
 }
 
+// ── V1.0.66 (Befund 1, Korrekturchat 12D) · zulaessige Snapshot-IDs ──────
+// Bis V1.0.65 genuegte ein nichtleerer Text. `renderSnapshots()` setzte die
+// ID danach ungeprueft in `onclick="loadSnapshot('…')"` ein — eine importierte
+// Datei konnte damit HTML und Ereignisbehandler in die Journal-Ausgabe
+// einschleusen. Zwei Massnahmen greifen jetzt gemeinsam:
+//   1. Die ID muss eine Kennung sein (dieses Muster, gepruefft an DERSELBEN
+//      Stelle wie alle anderen Strukturanforderungen — Import und Journal).
+//   2. Die Aktionsknoepfe tragen KEINE Inline-Ereignisattribute mehr, sondern
+//      data-Attribute und eine zentrale Delegation (siehe
+//      _installDomActionDelegation). HTML-Escaping allein genuegt fuer Werte
+//      INNERHALB eines JavaScript-Ereignisattributs nicht.
+const SNAPSHOT_ID_MAX_LEN = 128;
+const SNAPSHOT_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+
+// ── V1.0.66 (Befund 1) · zentrale Ereignisdelegation ────────────────────
+// Aktionen werden ueber `data-action` / `data-action-value` ausgezeichnet und
+// hier EINMAL per addEventListener verbunden. Aus einem importierten Wert
+// kann so kein ausfuehrbarer Code werden: der Wert ist ausschliesslich ein
+// Attributinhalt und wird als Zeichenkette an die Funktion uebergeben.
+const DOM_ACTION_HANDLERS = {
+  'snapshot-load':      (v) => loadSnapshot(v),
+  'snapshot-recompute': (v) => loadSnapshotWithCurrentModel(v),
+  'snapshot-delete':    (v) => deleteSnapshot(v),
+  'override-open':      (v) => openOverrideModal(v),
+  'override-remove':    (v) => removeOverride(v)
+};
+
+let _domActionDelegationInstalled = false;
+function _installDomActionDelegation() {
+  if (_domActionDelegationInstalled) return false;
+  if (typeof document === 'undefined' || !document || typeof document.addEventListener !== 'function') return false;
+  document.addEventListener('click', function (ev) {
+    const t = ev && ev.target;
+    const el = (t && typeof t.closest === 'function') ? t.closest('[data-action]') : null;
+    if (!el) return;
+    const handler = DOM_ACTION_HANDLERS[el.getAttribute('data-action')];
+    if (!handler) return;
+    if (typeof ev.preventDefault === 'function') ev.preventDefault();
+    handler(el.getAttribute('data-action-value'));
+  });
+  _domActionDelegationInstalled = true;
+  return true;
+}
+
 // ── V1.0.45: Mindeststruktur pruefen ─────────────────────────────
 // Die Anforderungen sind aus den TATSAECHLICHEN Aufrufern abgeleitet:
 //   · renderSnapshots  — s.ticker als Gruppenschluessel und escapeHtml,
@@ -25371,7 +25770,17 @@ function validateSnapshotRecordStructure(rec) {
   }
   const nonEmptyString = (v) => typeof v === 'string' && v.trim().length > 0;
 
-  if (!nonEmptyString(rec.id))     problems.push('Feld "id" fehlt oder ist kein nichtleerer Text (Journal-Aktionen und Laden brauchen es).');
+  if (!nonEmptyString(rec.id)) {
+    problems.push('Feld "id" fehlt oder ist kein nichtleerer Text (Journal-Aktionen und Laden brauchen es).');
+  } else if (!SNAPSHOT_ID_PATTERN.test(rec.id)) {
+    // V1.0.66 (Befund 1): Die ID wird im Journal als Kennung der Aktionsknoepfe
+    // gefuehrt. Sie darf deshalb nur aus Zeichen bestehen, die eine Kennung
+    // ausmachen — kein Markup, keine Anfuehrungszeichen, kein Leerraum. Die
+    // vom Werkzeug erzeugten IDs (Base36 aus Zeitstempel und Zufall) und
+    // frueher exportierte Kennungen erfuellen das Muster unveraendert.
+    problems.push('Feld "id" enthaelt unzulaessige Zeichen: ' + JSON.stringify(String(rec.id).slice(0, 80)) +
+      '. Zulaessig sind Buchstaben, Ziffern und . _ - : (max. ' + SNAPSHOT_ID_MAX_LEN + ' Zeichen).');
+  }
   if (!nonEmptyString(rec.ticker)) problems.push('Feld "ticker" fehlt oder ist kein nichtleerer Text (Journal gruppiert danach).');
   if (!nonEmptyString(rec.name))   problems.push('Feld "name" fehlt oder ist kein nichtleerer Text (Journal zeigt es an).');
 
@@ -25908,12 +26317,17 @@ function renderSnapshots() {
   }
 
   // Gruppiere nach Ticker für Delta-Vergleich
-  const byTicker = {};
+  // V1.0.66 (Befund 5): `{}` erbt von Object.prototype — ein Ticker
+  // `constructor` oder `__proto__` lieferte einen geerbten Wert, der zwar
+  // wahr ist, aber kein Array: `byTicker[s.ticker].push is not a function`
+  // sperrte das ganze Journal. Eine Map hat keine geerbten Schluessel; es
+  // wird KEIN einzelner Tickername verboten.
+  const byTicker = new Map();
   snaps.forEach(s => {
-    if (!byTicker[s.ticker]) byTicker[s.ticker] = [];
-    byTicker[s.ticker].push(s);
+    if (!byTicker.has(s.ticker)) byTicker.set(s.ticker, []);
+    byTicker.get(s.ticker).push(s);
   });
-  Object.values(byTicker).forEach(arr => arr.sort((a, b) => a.timestamp.localeCompare(b.timestamp)));
+  byTicker.forEach(arr => arr.sort((a, b) => a.timestamp.localeCompare(b.timestamp)));
 
   list.innerHTML = brokenNote + snaps.slice().reverse().map(s => {
     const bp      = s.output_signals && s.output_signals.buyPrice != null ? s.output_signals.buyPrice.toFixed(2)
@@ -25937,7 +26351,7 @@ function renderSnapshots() {
       versionBadge = `<span style="font-size:.48rem;padding:1px 5px;border-radius:3px;background:#1a2e1a;color:var(--accent2);letter-spacing:.04em;text-transform:uppercase;margin-left:5px">v${escapeHtml(bv)}</span>`;
     }
 
-    const tickerSnaps = byTicker[s.ticker] || [];
+    const tickerSnaps = byTicker.get(s.ticker) || [];
     const myIdx = tickerSnaps.findIndex(x => x.id === s.id);
     const prevSnap = myIdx > 0 ? tickerSnaps[myIdx - 1] : null;
     const delta = _snapDelta(s, prevSnap);
@@ -26003,9 +26417,9 @@ function renderSnapshots() {
             <div class="smeta">${escapeHtml(date)} · ${escapeHtml(verdict)} · ${escapeHtml(position)} · BP ${bp}${dvp ? ' · DVP ' + dvp : ''}${snapPrice ? ' · ' + snapPrice.toFixed(2) + ' Kurs' : ''}</div>
           </div>
           <div class="snap-actions" style="flex-shrink:0;margin-left:10px">
-            <button onclick="loadSnapshot('${s.id}')" title="Zeigt das damals gespeicherte Ergebnis unverändert an.">Gespeichertes Ergebnis</button>
-            <button onclick="loadSnapshotWithCurrentModel('${s.id}')" title="Rechnet die damals gespeicherten Inputs mit dem heutigen Modell neu. Der Snapshot bleibt unverändert.">Neu rechnen (aktuelles Modell)</button>
-            <button class="del" onclick="deleteSnapshot('${s.id}')">×</button>
+            <button type="button" data-action="snapshot-load" data-action-value="${escapeHtml(s.id)}" title="Zeigt das damals gespeicherte Ergebnis unverändert an.">Gespeichertes Ergebnis</button>
+            <button type="button" data-action="snapshot-recompute" data-action-value="${escapeHtml(s.id)}" title="Rechnet die damals gespeicherten Inputs mit dem heutigen Modell neu. Der Snapshot bleibt unverändert.">Neu rechnen (aktuelles Modell)</button>
+            <button type="button" class="del" data-action="snapshot-delete" data-action-value="${escapeHtml(s.id)}">×</button>
           </div>
         </div>
         ${deltaBlock}
@@ -29585,6 +29999,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const buildEl = document.getElementById('header-build-stamp');
   if (buildEl) buildEl.textContent = BUILD_STAMP;
   console.warn('[BUILD]', ENGINE_VERSION, DISPLAY_VERSION, BUILD_STAMP);
+  // V1.0.66 (Befund 1): Aktionsdelegation VOR dem ersten Rendern verbinden —
+  // die Journal-Knoepfe tragen keine Inline-Ereignisattribute mehr.
+  _installDomActionDelegation();
   // Globale RFR-Einstellung aus localStorage laden
   loadGlobalRfrSettings();
   renderSnapshots();
