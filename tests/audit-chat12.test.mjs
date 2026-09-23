@@ -3646,14 +3646,26 @@ test('R45 (Befund 5) ungueltige Importe werfen keine Ausnahme und beschaedigen n
   assert.equal(good.snapshots.length, 2);
 });
 
-test('R46 (Befund 3) DPS-Wachstum wird ueber die tatsaechlich vergangenen Jahre annualisiert', () => {
+test('R46 (Befund 3 / Restluecke 1) DPS-Wachstum nur aus belegten Berichtsperioden', () => {
+  // ── BERICHTIGTE ERWARTUNG (Korrekturchat 12E) ───────────────────────────
+  // Die urspruengliche Fassung dieses Tests (V1.0.66) schrieb ausdruecklich
+  // fest, dass eine DPS-Reihe OHNE Periodenangaben nach der Altdatenregel
+  // "ein Array-Platz = ein Jahr" ausgewertet werden darf, und erwartete dafuer
+  // `dps_cagr_5y`. Diese Erwartung war fachlich falsch: sie liess ein als
+  // GEMESSEN ausgewiesenes Fuenfjahres-CAGR entstehen, ohne dass irgendein
+  // Zeitabstand belegt war. Die Faelle, die einen echten Jahresabstand
+  // voraussetzen, tragen deshalb jetzt Periodenmetadaten; der Fall ganz ohne
+  // Perioden prueft die berichtigte Regel (keine historische Ableitung).
+  // Die Zahlen der belegten Faelle sind unveraendert.
   const D = (f) => S._deriveDdmGrowthInputs(f, {}, { base: {} });
+  const per = (...ys) => ({ dps: { periods: ys.map(y => y + '-12-31') } });
   const CAGR6 = (Math.pow(1.12 / 1.00, 1 / 6) - 1) * 100;   // 1,906762…%
   const CAGR5 = (Math.pow(1.12 / 1.00, 1 / 5) - 1) * 100;   // 2,292455…%
 
   // ── Pflichtfall 1: Luecke in der Wertereihe ueber sechs Jahresintervalle ─
   {
-    const o = D({ dps: [1.12, 1.10, null, 1.06, 1.04, 1.02, 1.00] });
+    const o = D({ dps: [1.12, 1.10, null, 1.06, 1.04, 1.02, 1.00],
+                  _v4_meta: per(2026, 2025, 2024, 2023, 2022, 2021, 2020) });
     assert.ok(Math.abs(o.g1DpsCagr - CAGR6) < 1e-9, 'erhalten ' + o.g1DpsCagr);
     assert.ok(Math.abs(o.g1DpsCagr - CAGR5) > 0.3, 'Ausgangsstand lieferte ' + CAGR5.toFixed(4) + '%');
     assert.equal(o.g1DpsGrowthYears, 6, 'Zeitspanne muss die tatsaechliche sein');
@@ -3661,11 +3673,13 @@ test('R46 (Befund 3) DPS-Wachstum wird ueber die tatsaechlich vergangenen Jahre 
     assert.ok((o.g1DpsNotes || []).some(n => /tatsaechlich 6 Jahre/.test(n)), JSON.stringify(o.g1DpsNotes));
     // Die Kappung greift erst NACH der Annualisierung und verdeckt sie nicht.
     assert.ok(Math.abs(o.g1 - CAGR6) < 1e-9, 'g1 ' + o.g1);
+    assert.equal(o.g1HistoryUnavailable, null);
   }
 
   // ── Pflichtfall 2: vollstaendige Reihe bleibt unveraendert ───────────
   {
-    const o = D({ dps: [1.12, 1.10, 1.08, 1.06, 1.04, 1.00] });
+    const o = D({ dps: [1.12, 1.10, 1.08, 1.06, 1.04, 1.00],
+                  _v4_meta: per(2026, 2025, 2024, 2023, 2022, 2021) });
     assert.ok(Math.abs(o.g1DpsCagr - CAGR5) < 1e-9, 'erhalten ' + o.g1DpsCagr);
     assert.equal(o.g1DpsGrowthYears, 5);
     assert.equal(o.g1Source, 'dps_cagr_5y');
@@ -3673,54 +3687,107 @@ test('R46 (Befund 3) DPS-Wachstum wird ueber die tatsaechlich vergangenen Jahre 
   }
 
   // ── Pflichtfall 3: fehlendes Jahr in den PERIODENLABELS selbst ───────
-  // Die Werte sind lueckenlos, aber 2024 fehlt — der Platzabstand allein
-  // wuerde hier 5 Jahre nennen.
   {
     const o = D({ dps: [1.12, 1.10, 1.06, 1.04, 1.02, 1.00],
-      _v4_meta: { dps: { periods: ['2026-12-31', '2025-12-31', '2023-12-31',
-                                   '2022-12-31', '2021-12-31', '2020-12-31'] } } });
+                  _v4_meta: per(2026, 2025, 2023, 2022, 2021, 2020) });
     assert.equal(o.g1DpsGrowthYears, 6, 'Periodenabstand entscheidet');
     assert.ok(Math.abs(o.g1DpsCagr - CAGR6) < 1e-9, 'erhalten ' + o.g1DpsCagr);
     assert.equal(o.g1Source, 'dps_cagr_6y');
   }
 
-  // ── Pflichtfall 4: Perioden vorhanden, aber nicht lesbar ─────────────
-  // Kein erfundener Zeitabstand; der Grund bleibt sichtbar.
-  {
-    const o = D({ dps: [1.12, 1.10, 1.08, 1.06, 1.04, 1.00],
-      _v4_meta: { dps: { periods: ['n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a'] } } });
-    assert.equal(o.g1DpsCagr, null, 'CAGR darf nicht geraten werden');
-    assert.notEqual(o.g1Source, 'dps_cagr_5y');
-    assert.ok((o.g1DpsNotes || []).some(n => /nicht lesbar/.test(n)), JSON.stringify(o.g1DpsNotes));
+  // ── Pflichtfall 4: fehlende oder unlesbare Periodenangaben ───────────
+  // BERICHTIGT: kein Index-Rueckfall mehr, und auch kein Ersatzweg, der
+  // trotzdem ein "historisches" Wachstum ausweist.
+  const scOf = { base: { growth_stage1: 7 } };
+  for (const [lbl, meta] of [
+    ['gar keine Perioden', undefined],
+    ['Perioden nur "n/a"', { dps: { periods: ['n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a'] } }]
+  ]) {
+    const f = { dps: [1.12, 1.10, 1.08, 1.06, 1.04, 1.00] };
+    if (meta) f._v4_meta = meta;
+    const o = S._deriveDdmGrowthInputs(f, {}, scOf);
+    assert.equal(o.g1DpsCagr, null, lbl + ': CAGR darf nicht geraten werden');
+    assert.equal(o.g1DpsMedianAnnualized, null, lbl + ': auch kein Ersatzweg mit Jahresrate');
+    assert.equal(o.g1DpsMedianYoy, null, lbl + ': keine als YoY bezeichnete Rate');
+    assert.ok(!/^dps_/.test(o.g1Source), lbl + ': Quelle ' + o.g1Source + ' behauptet Historie');
+    // Die Ersatzkette darf greifen — Quelle UND Grund bleiben erhalten.
+    assert.equal(o.g1Source, 'scenario_capped', lbl);
+    assert.ok(o.g1HistoryUnavailable, lbl + ': Grund fehlt');
+    assert.ok(/^Keine belegte DPS-Historie:/.test(o.g1Note || ''),
+      lbl + ': der Grund darf nicht ueberschrieben werden — ' + o.g1Note);
+    assert.ok(/capped/.test(o.g1Note || ''), lbl + ': Ersatzhinweis fehlt — ' + o.g1Note);
   }
-  // Gar keine Periodenangaben: dokumentierte Altdatenregel, unveraendert.
+  // Doppelte und rueckwaerts laufende Perioden ebenso.
+  for (const [lbl, periods] of [
+    ['doppeltes Berichtsjahr', ['2026-12-31', '2026-06-30', '2024-12-31']],
+    ['rueckwaerts laufend',    ['2020-12-31', '2022-12-31', '2024-12-31']]
+  ]) {
+    const o = S._deriveDdmGrowthInputs({ dps: [1.12, 1.10, 1.08], _v4_meta: { dps: { periods } } }, {}, scOf);
+    assert.ok(!/^dps_/.test(o.g1Source), lbl + ': ' + o.g1Source);
+    assert.ok(o.g1HistoryUnavailable, lbl);
+  }
+  // Manuelle Annahmen bleiben unberuehrt.
   {
-    const o = D({ dps: [1.12, 1.10, 1.08, 1.06, 1.04, 1.00] });
-    assert.equal(o.g1Source, 'dps_cagr_5y');
-    assert.ok(Math.abs(o.g1DpsCagr - CAGR5) < 1e-9);
+    const o = S._deriveDdmGrowthInputs({ dps: [1.12, 1.10, 1.08] },
+      { ddm_growth_phase1_pct: 4 }, scOf);
+    assert.equal(o.g1Source, 'manual');
+    assert.equal(o.g1, 4);
   }
 
   // ── Pflichtfall 5: gemeldete Null innerhalb der Historie ─────────────
-  // Eine Null ist eine wirtschaftliche Angabe (Dividende ausgesetzt), kein
-  // fehlender Wert — ein durchgehender CAGR beschreibt das nicht.
   {
-    const o = D({ dps: [1.12, 1.10, 0, 1.06, 1.04, 1.02, 1.00] });
+    const o = D({ dps: [1.12, 1.10, 0, 1.06, 1.04, 1.02, 1.00],
+                  _v4_meta: per(2026, 2025, 2024, 2023, 2022, 2021, 2020) });
     assert.equal(o.g1DpsCagr, null, 'CAGR ueber eine Null hinweg');
-    assert.equal(o.g1Source, 'dps_median_yoy', 'transparenter Ersatzweg');
+    assert.equal(o.g1Source, 'dps_median_annualized', 'transparenter Ersatzweg');
     assert.ok((o.g1DpsNotes || []).some(n => /gemeldete Dividende 0/.test(n)), JSON.stringify(o.g1DpsNotes));
     assert.ok(o.g1 != null, 'das Modell bleibt rechenbar');
+    // Die Null ist eine Angabe, keine Luecke: sie sperrt nur die Spannen,
+    // die ueber sie hinweg rechnen wuerden.
+    assert.equal(o.g1HistoryUnavailable, null);
   }
   // Eine Null AUSSERHALB der verwendeten Spanne aendert nichts.
   {
-    const o = D({ dps: [1.12, 1.10, 1.08, 1.06, 1.00, 0, 0] });
+    const o = D({ dps: [1.12, 1.10, 1.08, 1.06, 1.00, 0, 0],
+                  _v4_meta: per(2026, 2025, 2024, 2023, 2022, 2021, 2020) });
     assert.equal(o.g1Source, 'dps_cagr_3y');
     assert.equal(o.g1DpsGrowthYears, 3);
   }
 
-  // ── Pflichtfall 6: echter DDM-Engine-Pfad, Fehler nicht durch die
-  //    Kappung verdeckt (1,91 % liegt unter der 5-%-Grenze) ─────────────
+  // ── NEU (Restluecke 1): Median ANNUALISIERTER Intervallraten ─────────
+  // Der frueher "Median-YoY" genannte Ersatzweg rechnete `cur/prev − 1` ueber
+  // benachbarte Array-Plaetze — unabhaengig vom wirklichen Periodenabstand.
   {
-    const mkMj = (dps) => ({
+    const o = D({ dps: [1.04, 1.02, 1.00], _v4_meta: per(2026, 2024, 2022) });
+    const soll = (function () {
+      const r = [(Math.pow(1.04 / 1.02, 1 / 2) - 1) * 100, (Math.pow(1.02 / 1.00, 1 / 2) - 1) * 100]
+        .sort((a, b) => a - b);
+      return (r[0] + r[1]) / 2;
+    })();
+    assert.equal(o.g1Source, 'dps_median_annualized');
+    assert.ok(Math.abs(o.g1DpsMedianAnnualized - soll) < 1e-9, 'erhalten ' + o.g1DpsMedianAnnualized);
+    assert.ok(Math.abs(o.g1DpsMedianAnnualized - 0.9853411216) < 1e-6, 'erhalten ' + o.g1DpsMedianAnnualized);
+    assert.ok(Math.abs(o.g1DpsMedianAnnualized - 1.9803921568) > 0.9,
+      'Ausgangsstand lieferte 1,9803921568 % (nicht annualisiert)');
+    // Die Anzahl der Intervalle ist KEINE vergangene Jahreszahl.
+    assert.equal(o.g1DpsGrowthYears, null);
+    assert.equal(o.g1DpsIntervalCount, 2);
+    assert.equal(Array.from(o.g1DpsIntervalSpans).join(','), '2,2');
+    // "YoY" nur, wenn die Intervalle wirklich ein Jahr lang sind.
+    assert.equal(o.g1DpsMedianYoy, null, 'Zweijahresschritte sind kein YoY');
+  }
+  // Gegenprobe: echte Jahresintervalle duerfen weiterhin YoY heiszen.
+  {
+    const o = D({ dps: [1.06, 1.00, 0, 1.04, 1.02],
+                  _v4_meta: per(2026, 2025, 2024, 2023, 2022) });
+    assert.equal(o.g1Source, 'dps_median_annualized');
+    assert.equal(Array.from(o.g1DpsIntervalSpans).every(x => x === 1), true);
+    assert.ok(o.g1DpsMedianYoy != null, 'reine Jahresintervalle');
+  }
+
+  // ── Pflichtfall 6: echter DDM-Engine-Pfad ───────────────────────────
+  {
+    const mkMj = (dps, periods) => ({
       meta: { ticker: 'DIVX', sub_classification: 'dividend_aristocrat' },
       fundamentals: {
         revenue: [1000, 1000, 1000, 1000, 1000, 1000, 1000],
@@ -3731,32 +3798,332 @@ test('R46 (Befund 3) DPS-Wachstum wird ueber die tatsaechlich vergangenen Jahre 
         eps_diluted: [2, 2, 2, 2, 2, 2, 2],
         book_value: [1000, 1000, 1000, 1000, 1000, 1000, 1000],
         net_debt: [0], dps,
-        shares_diluted: [100, 100, 100, 100, 100, 100, 100]
+        shares_diluted: [100, 100, 100, 100, 100, 100, 100],
+        _v4_meta: { dps: { periods: periods.map(y => y + '-12-31') } }
       },
       valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false }, wacc_derived: 10,
         cost_of_equity_derived: 10, growth_terminal: 2, growth_stage1: 5 },
       market: { price: 20 }
     });
-    const vGap = S.runValuationEngine(mkMj([1.12, 1.10, null, 1.06, 1.04, 1.02, 1.00]));
+    const vGap = S.runValuationEngine(mkMj([1.12, 1.10, null, 1.06, 1.04, 1.02, 1.00],
+      [2026, 2025, 2024, 2023, 2022, 2021, 2020]));
     const dGap = vGap.modelResults.ddm;
     assert.equal(dGap.applicable, true);
     assert.equal(dGap._debug_dpsGrowthYears, 6);
     assert.ok(Math.abs(dGap._debug_g1DpsCagr - CAGR6) < 1e-9);
     // Gemessen am Ausgangsstand 7b1fd10: 14.457970968495326
     assert.ok(Math.abs(dGap.base - 14.223656551734546) < 1e-9, 'erhalten ' + dGap.base);
-    assert.ok(Math.abs(dGap.base - 14.457970968495326) > 0.2, 'Ausgangswert unveraendert');
     assert.ok(dGap.base < 5 * 100, 'keine Kappung im Spiel');
 
     // Vollstaendige Reihe: bit-genau wie am Ausgangsstand.
-    const vFull = S.runValuationEngine(mkMj([1.12, 1.10, 1.08, 1.06, 1.04, 1.02, 1.00]));
+    const vFull = S.runValuationEngine(mkMj([1.12, 1.10, 1.08, 1.06, 1.04, 1.02, 1.00],
+      [2026, 2025, 2024, 2023, 2022, 2021, 2020]));
     assert.ok(Math.abs(vFull.modelResults.ddm.base - 14.212416883291723) < 1e-12,
       'erhalten ' + vFull.modelResults.ddm.base);
+
+    // NEU: Zweijahresschritte mit gemeldeter Null — der Ersatzweg annualisiert.
+    const vSpan = S.runValuationEngine(mkMj([1.04, 1.02, 1.00, 0, 0.96, 0.94, 0.92],
+      [2026, 2024, 2022, 2020, 2018, 2016, 2014]));
+    const dSpan = vSpan.modelResults.ddm;
+    assert.equal(dSpan.applicable, true);
+    assert.equal(dSpan._debug_g1Source, 'dps_median_annualized');
+    assert.ok(Math.abs(dSpan._debug_g1DpsMedianAnnualized - 1.0266399558) < 1e-6,
+      'erhalten ' + dSpan._debug_g1DpsMedianAnnualized);
+    assert.ok(Math.abs(dSpan._debug_g1DpsMedianAnnualized - 2.0638297872) > 1,
+      'Ausgangsstand lieferte 2,0638297872 %');
+    assert.equal(dSpan._debug_dpsGrowthYears, null, 'Intervallzahl ist keine Jahreszahl');
+    assert.equal(dSpan._debug_g1DpsIntervalCount, 4);
+
+    // NEU: ohne Perioden gibt es kein gemessenes Wachstum — und das Modell
+    // sagt es auch.
+    const vNoPer = S.runValuationEngine((function () {
+      const m = mkMj([1.12, 1.10, 1.08, 1.06, 1.04, 1.02, 1.00],
+        [2026, 2025, 2024, 2023, 2022, 2021, 2020]);
+      delete m.fundamentals._v4_meta;
+      return m;
+    })());
+    const dNo = vNoPer.modelResults.ddm;
+    assert.equal(dNo.applicable, true, 'Ersatzkette bleibt rechenbar');
+    assert.ok(!/^dps_/.test(dNo._debug_g1Source), 'Quelle ' + dNo._debug_g1Source);
+    assert.ok(dNo._debug_g1HistoryUnavailable, 'Grund fehlt am Modellergebnis');
+    assert.ok((dNo.warnings || []).some(w => /KEIN gemessenes Wachstum/.test(w)),
+      'Warnung fehlt: ' + JSON.stringify(dNo.warnings));
   }
 
   // ── Bestehende Kappungen bleiben erhalten ───────────────────────────
   {
-    const o = D({ dps: [3.00, 2.00, 1.50, 1.20, 1.10, 1.00] });   // weit ueber 5 %
+    const o = D({ dps: [3.00, 2.00, 1.50, 1.20, 1.10, 1.00],
+                  _v4_meta: per(2026, 2025, 2024, 2023, 2022, 2021) });   // weit ueber 5 %
     assert.equal(o.g1, 5, 'Kappung auf 5 % unveraendert');
     assert.ok(/clamped to 5.00%/.test(o.g1Note || ''), o.g1Note);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// R47–R48 (Regression, Korrekturchat 12E) — die beiden verbliebenen
+// Restluecken der Vergleichsmultiples nach V1.0.66. Beide wurden zuerst am
+// unveraenderten Ausgangsstand `f44abc0` reproduziert.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Synthetischer Filer mit Quartalsdaten: FY2024 vollstaendig, 2025 nur Q1–Q3.
+// FY-EBITDA 250M zum 31.12.2024 gegen TTM-EBITDA 343,75M zum 30.09.2025.
+const _M6 = 1e6;
+const _QEnd = { 1: '-03-31', 2: '-06-30', 3: '-09-30', 4: '-12-31' };
+const _qF = (n) => (n === 4 ? '10-K' : '10-Q');
+const _qD = (y, n) => (n === 4 ? (y + 1) + '-02-15' : y + '-' + String(n * 3 + 2).padStart(2, '0') + '-01');
+const _cum4 = (q) => [q, 2 * q, 3 * q, 4 * q];
+const _cum3 = (q) => [q, 2 * q, 3 * q];
+const _qFlow = (spec) => ({ units: { USD: Object.keys(spec).flatMap(y => spec[y].map((v, i) => ({
+  start: y + '-01-01', end: y + _QEnd[i + 1], val: v * _M6, form: _qF(i + 1), filed: _qD(+y, i + 1), accn: 'f' + y + i }))) } });
+const _qInst = (spec) => ({ units: { USD: Object.keys(spec).flatMap(y => spec[y].map((v, i) => ({
+  end: y + _QEnd[i + 1], val: v * _M6, form: _qF(i + 1), filed: _qD(+y, i + 1), accn: 'i' + y + i }))) } });
+const _qShr = (spec) => ({ units: { shares: Object.keys(spec).flatMap(y => spec[y].map((v, i) => ({
+  start: y + '-' + String(i * 3 + 1).padStart(2, '0') + '-01', end: y + _QEnd[i + 1], val: v * _M6,
+  form: _qF(i + 1), filed: _qD(+y, i + 1), accn: 's' + y + i }))) } });
+const _flat = (v4, v3) => ({ 2022: [v4, v4, v4, v4], 2023: [v4, v4, v4, v4], 2024: [v4, v4, v4, v4], 2025: [v3, v3, v3] });
+
+function ttmFacts() {
+  return { 'us-gaap': {
+    Revenues:            _qFlow({ 2022: _cum4(250), 2023: _cum4(250), 2024: _cum4(250), 2025: _cum3(375) }),
+    OperatingIncomeLoss: _qFlow({ 2022: _cum4(50),  2023: _cum4(50),  2024: _cum4(50),  2025: _cum3(75) }),
+    NetIncomeLoss:       _qFlow({ 2022: _cum4(37.5), 2023: _cum4(37.5), 2024: _cum4(37.5), 2025: _cum3(56.25) }),
+    NetCashProvidedByUsedInOperatingActivities: _qFlow({ 2022: _cum4(50), 2023: _cum4(50), 2024: _cum4(50), 2025: _cum3(75) }),
+    PaymentsToAcquirePropertyPlantAndEquipment: _qFlow({ 2022: _cum4(12.5), 2023: _cum4(12.5), 2024: _cum4(12.5), 2025: _cum3(18.75) }),
+    DepreciationDepletionAndAmortization:       _qFlow({ 2022: _cum4(12.5), 2023: _cum4(12.5), 2024: _cum4(12.5), 2025: _cum3(18.75) }),
+    CashAndCashEquivalentsAtCarryingValue: _qInst(_flat(100, 100)),
+    DebtAndCapitalLeaseObligations:        _qInst(_flat(500, 500)),
+    LongTermDebtNoncurrent:                _qInst(_flat(500, 500)),
+    LongTermDebtCurrent:                   _qInst(_flat(0, 0)),
+    ShortTermBorrowings:                   _qInst(_flat(0, 0)),
+    FinanceLeaseLiabilityCurrent:          _qInst(_flat(0, 0)),
+    FinanceLeaseLiabilityNoncurrent:       _qInst(_flat(0, 0)),
+    AssetsCurrent:       _qInst(_flat(400, 400)),
+    LiabilitiesCurrent:  _qInst(_flat(500, 500)),
+    StockholdersEquity:  _qInst(_flat(3000, 3000)),
+    Assets:              _qInst(_flat(7000, 7000)),
+    WeightedAverageNumberOfDilutedSharesOutstanding: _qShr(_flat(100, 100))
+  }, dei: { EntityCommonStockSharesOutstanding: { units: { shares: [
+    { end: '2025-09-30', val: 100 * _M6, form: '10-Q', filed: '2025-11-01' } ] } } } };
+}
+
+// Rendert den Markt-Vergleich mit dem ECHTEN Renderer und liefert sein HTML.
+function renderMarketHtml(mj, v) {
+  const st = evalInApp('state');
+  const prevMj = st.masterJson, prevV = st.valuation, prevGet = S.document.getElementById;
+  let html = '';
+  st.masterJson = mj; st.valuation = v;
+  S.document.getElementById = (id) => (id === 'market-output')
+    ? { set innerHTML(x) { html = x; }, get innerHTML() { return html; } } : null;
+  try { S.renderMarket(); }
+  finally { S.document.getElementById = prevGet; st.masterJson = prevMj; st.valuation = prevV; }
+  return html;
+}
+
+test('R47 (Restluecke 2) Vergleichsmultiples folgen der gewaehlten Datenbasis und echten Periodenenden', () => {
+  // ── a) FY/TTM ────────────────────────────────────────────────────────
+  const mj = importSecFacts(ttmFacts(), { ticker: 'TTMX' });
+  mj.valuation.data_basis = 'ttm';
+  mj.market = Object.assign({}, mj.market, { price: 25, own_multiples_median: { ev_ebitda_10y: 10 } });
+
+  const rb = S.resolveDataBasis(mj);
+  assert.equal(rb.basis, 'ttm', 'TTM muss tatsaechlich ausgewaehlt sein: ' + (rb.reasons || []).join(' '));
+  const view = S.buildValuationBasisView(mj, rb);
+  assert.equal(mj.fundamentals.ebitda[0], 250, 'FY-EBITDA');
+  assert.equal(mj.fundamentals._v4_meta.ebitda.periods[0], '2024-12-31');
+  assert.equal(view.fundamentals.ebitda[0], 343.75, 'TTM-EBITDA');
+  assert.equal(view.fundamentals._v4_meta.ebitda.periods[0], '2025-09-30');
+
+  const v = S.runValuationEngine(mj);
+  assert.equal(v.dataBasis.selected, 'ttm');
+
+  // Die Vergleichsrechnung loest die Basis jetzt selbst ueber dieselbe
+  // Funktion auf wie die Modelle — auch mit dem ROHEN Master-JSON.
+  const rel = S.computeRelativeMultiplesFV(mj, v);
+  const ev  = rel.models.find(m => m.id === 'ev_ebitda_10y');
+  assert.equal(rel.basis, 'ttm');
+  assert.equal(ev.available, true, ev.reason);
+  assert.ok(Math.abs(ev.base - 30.375) < 1e-9,
+    'Ausgangsstand lieferte 21,00 (FY); erhalten ' + ev.base);
+  assert.equal(ev.netDebtM, 400);
+  assert.equal(rel.basisPeriod, '2025-09-30');
+
+  // Der ECHTE Renderer zeigt denselben Wert und nennt die Basis.
+  const html = renderMarketHtml(mj, v);
+  const shown = (html.match(/EV\/EBITDA-Median[^<]*<\/span><span class="val">([^<]*)/) || [])[1];
+  assert.equal(shown, '30.38', 'Ausgangsstand zeigte 21.00; erhalten ' + shown);
+  assert.ok(/TTM/.test(html), 'Datenbasis nicht ausgewiesen');
+  assert.ok(html.indexOf('2025-09-30') >= 0, 'Periode nicht ausgewiesen');
+
+  // Gegenprobe FY: dieselbe Datei, Basis fy ⇒ 21,00 und FY-Kennzeichnung.
+  const mjFy = JSON.parse(JSON.stringify(mj));
+  mjFy.valuation.data_basis = 'fy';
+  const vFy = S.runValuationEngine(mjFy);
+  assert.equal(vFy.dataBasis.selected, 'fy');
+  const relFy = S.computeRelativeMultiplesFV(mjFy, vFy);
+  const evFy  = relFy.models.find(m => m.id === 'ev_ebitda_10y');
+  assert.ok(Math.abs(evFy.base - 21) < 1e-9, 'erhalten ' + evFy.base);
+  assert.equal(relFy.basis, 'fy');
+  assert.equal(relFy.basisPeriod, '2024-12-31');
+
+  // Veraltetes Ergebnis: Auswahl gewechselt, aber nicht neu gerechnet ⇒
+  // keine Zahlen, sondern der Hinweis der gemeinsamen Aufloesung.
+  const mjMix = JSON.parse(JSON.stringify(mj));       // Auswahl: ttm
+  const relMix = S.computeRelativeMultiplesFV(mjMix, vFy);   // Ergebnis: fy
+  assert.equal(relMix.basisBlocked, true);
+  assert.equal(relMix.hasAny, false);
+  assert.equal(relMix.models.length, 0);
+  assert.ok(/neu berechnen/i.test(relMix.basisReason), relMix.basisReason);
+  const htmlMix = renderMarketHtml(mjMix, vFy);
+  assert.ok(/neu berechnen/i.test(htmlMix), 'Hinweis fehlt in der Anzeige');
+  assert.equal(/EV\/EBITDA-Median/.test(htmlMix), false, 'trotzdem Zahlen gezeigt');
+
+  // ── b) Periodenenden statt Jahreszahl ────────────────────────────────
+  const mkPer = (ebitdaEnd, bilanzEnd) => ({
+    fundamentals: { ebitda: [250], shares_diluted: [100], total_debt: [500], cash: [100],
+      _v4_meta: {
+        ebitda:     { periods: [ebitdaEnd], isFlowConcept: true,  unit: 'USD' },
+        total_debt: { periods: [bilanzEnd], isFlowConcept: false, unit: 'USD' },
+        cash:       { periods: [bilanzEnd], isFlowConcept: false, unit: 'USD' } } },
+    market: { own_multiples_median: { ev_ebitda_10y: 10 } }
+  });
+  const evOf = (a, b) => S.computeRelativeMultiplesFV(mkPer(a, b))
+    .models.find(m => m.id === 'ev_ebitda_10y');
+
+  // Passend: gleicher Stichtag.
+  {
+    const e = evOf('2025-12-31', '2025-12-31');
+    assert.equal(e.available, true, e.reason);
+    assert.ok(Math.abs(e.base - 21) < 1e-9);
+  }
+  // Deutlich verschiedene Stichtage IM SELBEN JAHR ⇒ gesperrt.
+  // Am Ausgangsstand ergaben beide Faelle wortlos 21,00.
+  for (const b of ['2025-03-31', '2025-09-30', '2025-06-30']) {
+    const e = evOf('2025-12-31', b);
+    assert.equal(e.available, false, 'Bilanzstichtag ' + b + ' wurde verbunden');
+    assert.ok(/unterschiedlichen Berichtsperioden/.test(e.reason), e.reason);
+    assert.ok(/Tage Abstand/.test(e.reason), e.reason);
+  }
+  // Abweichendes Geschaeftsjahresende bleibt innerhalb der Toleranz zulaessig.
+  // Am Ausgangsstand wurde dieser Fall durch den reinen Jahresvergleich
+  // faelschlich GESPERRT — die Jahreszahl war in beide Richtungen untauglich.
+  for (const b of ['2026-01-31', '2025-12-01']) {
+    const e = evOf('2025-12-31', b);
+    assert.equal(e.available, true, 'GJ-Ende ' + b + ' faelschlich gesperrt: ' + e.reason);
+  }
+  assert.equal(evalInApp('MULTIPLES_PERIOD_TOLERANCE_DAYS'), 45);
+  // Verschiedene Jahre bleiben gesperrt.
+  assert.equal(evOf('2025-12-31', '2023-12-31').available, false);
+
+  // Bekannter Widerspruch verschwindet nicht an fehlenden oder unlesbaren
+  // Metadaten: wer eine `periods`-Angabe fuehrt, muss einen Stichtag belegen.
+  {
+    const bad = mkPer('2025-12-31', '2025-03-31');
+    bad.fundamentals._v4_meta.total_debt.periods = [null];
+    bad.fundamentals._v4_meta.cash.periods = [null];
+    const e = S.computeRelativeMultiplesFV(bad).models.find(m => m.id === 'ev_ebitda_10y');
+    assert.equal(e.available, false, 'leerer Stichtag wurde verbunden');
+    assert.ok(/nicht bestimmbar/.test(e.reason), e.reason);
+  }
+  {
+    const bad = mkPer('2025-12-31', 'n/a');
+    const e = S.computeRelativeMultiplesFV(bad).models.find(m => m.id === 'ev_ebitda_10y');
+    assert.equal(e.available, false, 'unlesbarer Stichtag wurde verbunden');
+  }
+  {
+    // Nur die Schulden sind datiert, die Liquiditaet nicht.
+    const bad = mkPer('2025-12-31', '2025-03-31');
+    delete bad.fundamentals._v4_meta.cash.periods;
+    const e = S.computeRelativeMultiplesFV(bad).models.find(m => m.id === 'ev_ebitda_10y');
+    assert.equal(e.available, false, 'teilweise datierte Bruecke wurde verbunden');
+  }
+  // Eine als Zeitraumgroesze gemeldete Bilanzangabe traegt keine Bruecke.
+  {
+    const bad = mkPer('2025-12-31', '2025-12-31');
+    bad.fundamentals._v4_meta.total_debt.isFlowConcept = true;
+    const e = S.computeRelativeMultiplesFV(bad).models.find(m => m.id === 'ev_ebitda_10y');
+    assert.equal(e.available, false);
+    assert.ok(/Zeitraumgroesze/.test(e.reason), e.reason);
+  }
+
+  // ── Die Korrekturen aus V1.0.66 bleiben erhalten ─────────────────────
+  const plain = (fund) => S.computeRelativeMultiplesFV({
+    fundamentals: Object.assign({ ebitda: [250], shares_diluted: [100] }, fund),
+    market: { own_multiples_median: { ev_ebitda_10y: 10 } }
+  }).models.find(m => m.id === 'ev_ebitda_10y');
+  assert.equal(plain({}).available, false, 'fehlende Schulden');
+  assert.equal(plain({ cash: [0] }).available, false, 'Schulden unbekannt');
+  assert.ok(Math.abs(plain({ total_debt: [0], cash: [0] }).base - 25) < 1e-12);
+  assert.ok(Math.abs(plain({ total_debt: [500], cash: [0] }).base - 20) < 1e-12);
+  assert.ok(Math.abs(plain({ total_debt: [0], cash: [200] }).base - 27) < 1e-12);
+});
+
+test('R48 (Restluecke 3) die Fallback-Karte zeigt Sperrgruende und nichtpositive Ergebnisse', () => {
+  const build = (fund, own) => {
+    const mj = { meta: { ticker: 'FBX', sub_classification: 'standard_nonfin' },
+      fundamentals: Object.assign({ ebitda: [250], shares_diluted: [100], revenue: [1000] }, fund),
+      valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false } },
+      market: { price: 20, own_multiples_median: own } };
+    const rel = S.computeRelativeMultiplesFV(mj, null);
+    const syn = { fallbackMode: rel.hasAny ? 'relative_multiples' : 'market_only',
+                  relativeMultiples: rel, status: 'no_models_applicable', blockReason: 'Test' };
+    const html = S.buildValuationFallback(mj, syn,
+      { modelResults: {}, router: { activeModels: [], disabledModels: {} }, scenariosError: 'Test' });
+    return { rel, syn, html };
+  };
+  const NICHTS = /Weder Intrinsic-Valuation-Inputs noch historische Multiples/;
+
+  // ── Fall 1: nur ein gesperrtes EV/EBITDA-Modell ──────────────────────
+  {
+    const { rel, html } = build({}, { ev_ebitda_10y: 10 });
+    assert.equal(rel.hasAny, false);
+    assert.equal(rel.bridgeBlockedCount, 1);
+    assert.equal(NICHTS.test(html), false,
+      'Ausgangsstand behauptete hier "keine historischen Multiples verfuegbar"');
+    assert.ok(/Eigenkapitalbruecke nicht belegt/.test(html), 'Sperrgrund fehlt');
+    assert.ok(/Operativer Unternehmenswert/.test(html), 'bestimmbarer EV fehlt');
+    assert.ok(html.indexOf('2500.0M') >= 0, 'EV-Betrag fehlt');
+    assert.ok(/gesperrt/.test(html), 'Marke "gesperrt" fehlt');
+    assert.ok(/kein als Referenzpreis verwendbarer Vergleichswert/.test(html));
+    // Keine kuenstliche Verfuegbarkeit, kein Ersatzwert.
+    assert.equal(rel.median, null);
+    assert.equal(rel.availableCount, 0);
+    assert.equal(/Relativer Median-Referenzwert/.test(html), false);
+  }
+
+  // ── Fall 2: nur ein berechnetes nichtpositives Modell ────────────────
+  {
+    const { rel, html } = build({ total_debt: [3000], cash: [0] }, { ev_ebitda_10y: 10 });
+    assert.equal(rel.hasAny, false);
+    assert.equal(rel.nonPositiveCount, 1);
+    assert.equal(rel.computedCount, 1);
+    assert.equal(NICHTS.test(html), false,
+      'Ausgangsstand behauptete hier "keine historischen Multiples verfuegbar"');
+    assert.ok(html.indexOf('-5.00') >= 0, 'der berechnete Wert fehlt');
+    assert.ok(/Ergebnis, kein fehlender Wert/.test(html), 'Ausschlussgrund fehlt');
+    assert.equal(rel.median, null, 'Median bleibt ausgeschlossen');
+    assert.equal(rel.availableCount, 0);
+  }
+
+  // ── Fall 3: gemischt — positiv, gesperrt ─────────────────────────────
+  {
+    const { rel, html } = build({ eps_diluted: [2] }, { ev_ebitda_10y: 10, pe_10y: 15 });
+    assert.equal(rel.hasAny, true);
+    assert.equal(rel.availableCount, 1);
+    assert.equal(rel.bridgeBlockedCount, 1);
+    assert.equal(NICHTS.test(html), false);
+    assert.ok(/Eigenkapitalbruecke nicht belegt/.test(html), 'Sperrgrund fehlt');
+    assert.ok(html.indexOf('30.00') >= 0, 'der positive Wert fehlt');
+    assert.ok(/Relativer Median-Referenzwert/.test(html), 'Median fehlt');
+  }
+
+  // ── Fall 4: tatsaechlich keinerlei historische Multiples ─────────────
+  {
+    const { rel, html } = build({ total_debt: [0], cash: [0] }, {});
+    assert.equal(rel.hasAny, false);
+    assert.equal(rel.computedCount, 0);
+    assert.equal(rel.bridgeBlockedCount, 0);
+    assert.equal(rel.models.every(m => m.multiple == null), true);
+    assert.ok(NICHTS.test(html), 'hier ist die Aussage richtig');
+    assert.ok(/own_multiples_median/.test(html), 'der konkrete Grund fehlt');
   }
 });

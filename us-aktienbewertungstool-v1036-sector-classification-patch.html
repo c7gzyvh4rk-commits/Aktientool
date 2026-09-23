@@ -13710,6 +13710,81 @@ function modelEpvFloor(mj, scenarios, config) {
 //   1. val.ddm_growth_phase2_pct   (manuell)
 //   2. min(scenarios.base.terminal_growth, 2.5%)
 //   3. clamp 0..3%
+// ── V1.0.67 (Restluecke 1, Korrekturchat 12E) · belegte DPS-Zeitreihe ────
+//
+// V1.0.66 hatte die Annualisierung ueber die tatsaechlich vergangene Zeit
+// eingefuehrt, aber zwei Wege offen gelassen, auf denen weiterhin ein
+// ANGEBLICH GEMESSENES Jahreswachstum ohne belegte Zeitspanne entstand:
+//   · Fehlten Periodenangaben ganz, galt „ein Array-Platz = ein Jahr". Damit
+//     wurde ein Fuenfjahres-CAGR ausgewiesen, ohne dass irgendein Zeitabstand
+//     belegt war.
+//   · Der Median-YoY-Ersatzweg rechnete `cur/prev − 1` fuer BENACHBARTE
+//     Array-Werte, unabhaengig von deren wirklichem Periodenabstand — und
+//     lieferte selbst dann noch einen Wert, wenn der CAGR-Weg wegen
+//     unlesbarer Perioden bereits gesperrt war.
+//
+// Beide Wege beziehen ihre Beobachtungen jetzt aus DIESER Funktion. Sie
+// liefert nur dann eine Zeitreihe, wenn die Berichtsperioden sie belegen.
+// Es wird nichts geraten und nichts unterstellt.
+//
+// Rueckgabe:
+//   { ok: true,  observations: [{ index, value, year, period }] }   — neueste zuerst
+//   { ok: false, reason: '<Klartext>' }
+function _ddmDpsObservations(f) {
+  const fund = f || {};
+  const arr  = Array.isArray(fund.dps) ? fund.dps : [];
+  if (arr.length === 0) return { ok: false, observations: [], reason: 'Keine DPS-Reihe vorhanden.' };
+
+  const meta    = (fund._v4_meta && fund._v4_meta.dps) || null;
+  const periods = (meta && Array.isArray(meta.periods)) ? meta.periods : null;
+  if (!periods || !periods.some(p => p != null)) {
+    return { ok: false, observations: [], reason:
+      'Die DPS-Reihe traegt keine Berichtsperioden. Ohne belegte Zeitpunkte ist kein ' +
+      'Jahreswachstum messbar — die Position im Array ist kein Zeitnachweis.' };
+  }
+
+  const obs = [];
+  const unreadable = [];
+  for (let i = 0; i < arr.length; i++) {
+    if (arr[i] == null) continue;             // fehlender Wert: kein Datenpunkt
+    const p = (i < periods.length) ? periods[i] : null;
+    const y = (p == null || typeof _secPeriodYear !== 'function') ? null : _secPeriodYear(p);
+    if (y == null) { unreadable.push(String(p)); continue; }
+    obs.push({ index: i, value: arr[i], year: y, period: p });
+  }
+  if (obs.length === 0) {
+    return { ok: false, observations: [], reason:
+      'Zu keinem DPS-Wert ist eine lesbare Berichtsperiode angegeben' +
+      (unreadable.length > 0 ? ' (erhalten: ' + unreadable.slice(0, 3).join(', ') + ')' : '') + '.' };
+  }
+
+  // Doppelte Berichtsjahre: welcher Wert fuer dieses Jahr gilt, ist nicht
+  // entscheidbar. Es wird keiner ausgewaehlt.
+  const seen = new Map();
+  for (const o of obs) {
+    if (seen.has(o.year)) {
+      return { ok: false, observations: [], reason:
+        'Zwei DPS-Werte melden dasselbe Berichtsjahr (' + o.year + ': ' +
+        seen.get(o.year).period + ' und ' + o.period + ') — die Zeitreihe ist nicht eindeutig.' };
+    }
+    seen.set(o.year, o);
+  }
+  // Reihenfolge: Platz 0 ist der neueste Wert. Laeuft die Reihe rueckwaerts
+  // oder springt sie, ist die Zuordnung nicht belegt.
+  for (let k = 1; k < obs.length; k++) {
+    if (!(obs[k].year < obs[k - 1].year)) {
+      return { ok: false, observations: [], reason:
+        'Die Berichtsperioden der DPS-Reihe laufen nicht durchgehend rueckwaerts (' +
+        obs[k - 1].period + ' vor ' + obs[k].period + ') — die Zeitreihe ist nicht belegt.' };
+    }
+  }
+  const partial = (unreadable.length > 0)
+    ? ('Einzelne Berichtsperioden der DPS-Reihe sind nicht lesbar (' +
+       unreadable.slice(0, 3).join(', ') + ') — diese Werte bleiben unberuecksichtigt.')
+    : null;
+  return { ok: true, observations: obs, reason: null, partialReason: partial };
+}
+
 function _deriveDdmGrowthInputs(f, val, scenarios) {
   const baseSc = scenarios && scenarios.base ? scenarios.base : {};
   const dpsArr = Array.isArray(f.dps) ? f.dps : [];
@@ -13722,6 +13797,18 @@ function _deriveDdmGrowthInputs(f, val, scenarios) {
   let g1DpsGrowthYears = 0;
   let g1Note = null;
   let g1DpsNotes = [];   // V1.0.66: erklaerte Sonderfaelle der Annualisierung
+  // V1.0.67 (Restluecke 1): Der Grund, warum keine historische Ableitung
+  // moeglich war, darf von spaeteren Zuweisungen an g1Note NICHT ueberschrieben
+  // werden — er ist die Begruendung der Ersatzkette.
+  let g1HistoryUnavailable = null;
+  const cagrNotes = [];
+  let dpsMedianAnnualized = null;
+  let dpsIntervalCount = null;
+  let dpsIntervalSpans = null;
+  const _appendG1Note = (msg) => {
+    if (!msg) return;
+    g1Note = g1Note ? (g1Note + ' · ' + msg) : msg;
+  };
 
   // 1. Manueller Override
   if (val && typeof val.ddm_growth_phase1_pct === 'number' && !isNaN(val.ddm_growth_phase1_pct)) {
@@ -13731,119 +13818,82 @@ function _deriveDdmGrowthInputs(f, val, scenarios) {
 
   // 2. DPS-Historie auswerten
   let dpsCagrUsed = null;
-  let dpsMedianYoyUsed = null;
   let dpsTrendNegative = false;
 
-  if (g1 == null && positiveYears >= 3) {
-    // CAGR über mehrere Horizonte berechnen
-    // dpsArr[0] = aktuell, [n-1] = ältester
-    // CAGR = (current/old)^(1/years) - 1
-    // ── V1.0.66 (Befund 3 des Auditberichts, Korrekturchat 12D) ──────────
-    // Bis V1.0.65 zaehlte diese Suche die VORHANDENEN Werte und annualisierte
-    // anschliessend mit der gezaehlten Anzahl. Fehlte ein Zwischenjahr, lag
-    // der gefundene Stuetzwert weiter zurueck als angenommen: der Abstand
-    // wurde verkuerzt, das Wachstum dadurch ueberschaetzt und die Beschriftung
-    // nannte eine Zeitspanne, die nicht gerechnet wurde. Gemessen: Anstieg
-    // 1,00 → 1,12 ueber SECHS Jahresintervalle mit einer Luecke ergab 2,2925 %
-    // als "5-Jahres-Wachstum" statt 1,9068 %.
-    //
-    // Annualisiert wird jetzt mit der TATSAECHLICH vergangenen Zeit zwischen
-    // den beiden verwendeten Werten:
-    //   · Liegen belastbare Berichtsperioden vor, entscheidet deren Abstand.
-    //   · Sonst gilt die dokumentierte Altdatenregel: ein Array-Platz = ein
-    //     Geschaeftsjahr. Eine LUECKE im Array verkuerzt die Zeitspanne dabei
-    //     NICHT, weil der Platzabstand sie mitzaehlt.
-    //   · Sind Perioden vorhanden, aber nicht lesbar, wird KEIN Zeitabstand
-    //     erfunden — der Horizont gilt als nicht bestimmbar und der Grund
-    //     wird mitgefuehrt.
-    // Die Kappung (0..5 % bzw. 0..3 %) bleibt unveraendert und wirkt WEITERHIN
-    // ERST NACH der Annualisierung.
-    const _dpsMeta     = (f && f._v4_meta && f._v4_meta.dps) || null;
-    const _dpsPeriods  = (_dpsMeta && Array.isArray(_dpsMeta.periods)) ? _dpsMeta.periods : null;
-    const _hasDpsPeriodCtx = !!(_dpsPeriods && _dpsPeriods.some(p => p != null));
-    const _yearAt = (idx) => {
-      if (!_hasDpsPeriodCtx) return null;
-      const p = _dpsPeriods[idx];
-      return (p == null || typeof _secPeriodYear !== 'function') ? null : _secPeriodYear(p);
-    };
-    // Tatsaechlich vergangene Jahre zwischen Platz 0 und Platz idx.
-    // Rueckgabe: { years } oder { unresolved: '<Grund>' }.
-    const _elapsedYears = (idx) => {
-      if (_hasDpsPeriodCtx) {
-        const yNew = _yearAt(0), yOld = _yearAt(idx);
-        if (yNew == null || yOld == null) {
-          return { unresolved: 'Berichtsperioden der DPS-Reihe sind angegeben, aber fuer die ' +
-                               'verwendeten Werte nicht lesbar — kein Zeitabstand angenommen' };
-        }
-        const d = yNew - yOld;
-        if (!(d > 0)) {
-          return { unresolved: 'Berichtsperioden der DPS-Reihe ergeben keinen positiven ' +
-                               'Zeitabstand (' + String(_dpsPeriods[idx]) + ' → ' + String(_dpsPeriods[0]) + ')' };
-        }
-        return { years: d };
-      }
-      return { years: idx };   // Altdatenregel: ein Platz = ein Geschaeftsjahr
-    };
-    // Eine GEMELDETE Null innerhalb der Zeitspanne ist eine wirtschaftliche
-    // Angabe (Dividende ausgesetzt), keine Datenluecke. Ein durchgehender
-    // CAGR beschreibt einen solchen Verlauf nicht — er bleibt dann ohne Wert
-    // und mit Begruendung, statt die Null zu uebergehen.
-    const _reportedZeroWithin = (idx) => {
-      for (let i = 1; i < idx; i++) {
-        if (dpsArr[i] === 0) return true;
-      }
-      return false;
-    };
+  // ── V1.0.67 (Restluecke 1) · historische Ableitung nur aus belegter Zeit ─
+  // Beide historischen Wege — CAGR und Median der Intervallraten — beziehen
+  // ihre Datenpunkte aus _ddmDpsObservations(). Gibt es keine belegte
+  // Zeitreihe, entsteht KEIN historischer Wert; die Ersatzkette darunter
+  // (Szenario, Default) greift mit ihrer eigenen, ausgewiesenen Quelle.
+  const dpsObsRes = _ddmDpsObservations(f);
+  if (!dpsObsRes.ok) {
+    g1HistoryUnavailable = dpsObsRes.reason;
+  } else if (dpsObsRes.partialReason) {
+    cagrNotes.push(dpsObsRes.partialReason);
+  }
+  const dpsObs = dpsObsRes.ok ? dpsObsRes.observations : [];
+  // Nur POSITIVE Werte taugen als Stuetzpunkt einer Wachstumsrate; eine
+  // gemeldete 0 bleibt als Beobachtung erhalten (wirtschaftliche Angabe) und
+  // sperrt jede Spanne, die ueber sie hinweg rechnen wuerde.
+  const dpsPos = dpsObs.filter(o => o.value > 0);
 
-    const cagrNotes = [];
+  if (g1 == null && dpsObsRes.ok && positiveYears >= 3) {
+    const newest = dpsObs[0];
+    // Eine gemeldete Null zwischen zwei Beobachtungsjahren.
+    const _reportedZeroBetween = (yOld, yNew) =>
+      dpsObs.some(o => o.value === 0 && o.year > yOld && o.year < yNew);
+
+    // ── CAGR ueber einen angefragten Horizont ────────────────────────────
+    // Stuetzwert bleibt der (years+1)-te positive Datenpunkt; annualisiert
+    // wird ueber den TATSAECHLICHEN Jahresabstand der beiden Berichtsperioden.
     const tryCagr = (years) => {
-      if (positiveYears < years + 1) return null;
-      // Stuetzwert: der (years+1)-te POSITIVE Eintrag — unveraenderte Auswahl.
-      let oldVal = null, oldIdx = -1;
-      let seenPositive = 0;
-      for (let i = 0; i < dpsArr.length; i++) {
-        if (dpsArr[i] != null && dpsArr[i] > 0) {
-          seenPositive++;
-          if (seenPositive === years + 1) { oldVal = dpsArr[i]; oldIdx = i; break; }
-        }
+      if (dpsPos.length < years + 1) return null;
+      const newVal = (newest && newest.value > 0) ? newest : dpsPos[0];
+      const oldObs = dpsPos[years];
+      if (!newVal || !oldObs) return null;
+      const elapsed = newVal.year - oldObs.year;
+      if (!(elapsed > 0)) {
+        cagrNotes.push('Horizont ' + years + 'y: kein positiver Zeitabstand zwischen ' +
+                       oldObs.period + ' und ' + newVal.period);
+        return null;
       }
-      const newVal = dpsArr[0];
-      if (oldVal == null || newVal == null || oldVal <= 0 || newVal <= 0) return null;
-      if (_reportedZeroWithin(oldIdx)) {
+      if (_reportedZeroBetween(oldObs.year, newVal.year)) {
         cagrNotes.push('Horizont ' + years + 'y: gemeldete Dividende 0 innerhalb der Zeitspanne — ' +
                        'kein durchgehendes Wachstum annualisierbar');
         return null;
       }
-      const el = _elapsedYears(oldIdx);
-      if (el.unresolved) {
-        cagrNotes.push('Horizont ' + years + 'y: ' + el.unresolved);
-        return null;
-      }
-      const cagr = (Math.pow(newVal / oldVal, 1 / el.years) - 1) * 100;
-      return { cagr, years: el.years, requested: years };
+      const cagr = (Math.pow(newVal.value / oldObs.value, 1 / elapsed) - 1) * 100;
+      return { cagr, years: elapsed, requested: years };
     };
 
     const cagr3  = tryCagr(3);
     const cagr5  = tryCagr(5);
     const cagr10 = tryCagr(10);
 
-    // Median-YoY (alternative Schätzung, robuster gegen Endpunkte)
-    const yoy = [];
-    for (let i = 0; i < dpsArr.length - 1; i++) {
-      const cur = dpsArr[i], prev = dpsArr[i + 1];
-      if (cur != null && prev != null && prev > 0 && cur > 0) {
-        yoy.push((cur / prev - 1) * 100);
-      }
+    // ── Median ANNUALISIERTER Intervallraten ─────────────────────────────
+    // Ersetzt den frueheren „Median-YoY": dort wurde `cur/prev − 1` ueber
+    // benachbarte ARRAY-Plaetze gebildet und als Jahreswachstum ausgegeben,
+    // auch wenn zwischen beiden Werten mehrere Jahre lagen. Jetzt wird jedes
+    // Intervall ueber seine wirkliche Laenge annualisiert; der Name sagt, was
+    // gerechnet wurde, und die ANZAHL der Intervalle wird nicht als
+    // Jahreszahl ausgegeben.
+    const rates = [];
+    for (let k = 0; k + 1 < dpsObs.length; k++) {
+      const cur = dpsObs[k], prev = dpsObs[k + 1];
+      if (!(cur.value > 0) || !(prev.value > 0)) continue;   // 0 ist kein Stuetzpunkt
+      const span = cur.year - prev.year;
+      if (!(span > 0)) continue;
+      rates.push({ rate: (Math.pow(cur.value / prev.value, 1 / span) - 1) * 100, span });
     }
-    yoy.sort((a, b) => a - b);
-    const medYoy = yoy.length > 0
-      ? (yoy.length % 2 ? yoy[(yoy.length - 1) / 2] : (yoy[yoy.length / 2 - 1] + yoy[yoy.length / 2]) / 2)
+    rates.sort((a, b) => a.rate - b.rate);
+    const medRate = rates.length > 0
+      ? (rates.length % 2 ? rates[(rates.length - 1) / 2].rate
+                          : (rates[rates.length / 2 - 1].rate + rates[rates.length / 2].rate) / 2)
       : null;
 
-    // Wähle konservativ: bevorzugt 5Y-CAGR, dann 3Y, dann 10Y, dann Median-YoY
+    // Wähle konservativ: bevorzugt 5Y-CAGR, dann 3Y, dann 10Y, dann Median.
     let chosenGrowth = null;
-    // V1.0.66: Quelle und Jahreszahl nennen die TATSAECHLICH gerechnete
-    // Zeitspanne (`chosen.years`), nicht den angefragten Horizont.
+    // Quelle und Jahreszahl nennen die TATSAECHLICH gerechnete Zeitspanne.
     const chosen = (cagr5 != null) ? cagr5 : ((cagr3 != null) ? cagr3 : (cagr10 != null ? cagr10 : null));
     if (chosen != null) {
       chosenGrowth      = chosen.cagr;
@@ -13855,26 +13905,42 @@ function _deriveDdmGrowthInputs(f, val, scenarios) {
                        ' Jahre zwischen den verwendeten DPS-Werten (Luecke in der Reihe) — ' +
                        'annualisiert wurde ueber ' + chosen.years + ' Jahre');
       }
-    } else if (medYoy != null) { chosenGrowth = medYoy; g1Source = 'dps_median_yoy'; g1DpsGrowthYears = yoy.length; dpsMedianYoyUsed = medYoy; }
+    } else if (medRate != null) {
+      chosenGrowth          = medRate;
+      g1Source              = 'dps_median_annualized';
+      dpsMedianAnnualized   = medRate;
+      dpsIntervalCount      = rates.length;
+      dpsIntervalSpans      = rates.map(r => r.span);
+      // KEINE Jahreszahl: die Anzahl der Intervalle ist keine vergangene Zeit.
+      g1DpsGrowthYears      = null;
+      cagrNotes.push('Median der annualisierten Wachstumsraten aus ' + rates.length +
+                     ' Intervall(en) mit Laengen ' + rates.map(r => r.span + 'J').join(', ') +
+                     ' — kein CAGR ueber einen festen Horizont');
+    } else {
+      g1HistoryUnavailable = 'Aus den belegten Berichtsperioden laesst sich kein ' +
+        'Wachstumsintervall bilden (zu wenige positive DPS-Werte mit verschiedenen Berichtsjahren).';
+    }
 
     if (chosenGrowth != null) {
       // Wenn DPS-Trend deutlich negativ → markieren, aber keine 0% erzwingen
       if (chosenGrowth < 0) dpsTrendNegative = true;
       // Clamp auf 0..5% (Standard) bzw. 0..3% bei zyklisch/schwach
       // Heuristik: <5 positive Jahre = "schwache Datenbasis" → cap 3%
+      // Die Kappung wirkt AUSDRUECKLICH NACH der Annualisierung.
       const upperCap = (positiveYears < 5) ? 3 : 5;
       const clamped = Math.max(0, Math.min(upperCap, chosenGrowth));
       g1 = clamped;
       if (clamped !== chosenGrowth) {
-        g1Note = 'DPS-CAGR ' + chosenGrowth.toFixed(2) + '% clamped to ' + clamped.toFixed(2) + '%';
+        _appendG1Note('DPS-Wachstum ' + chosenGrowth.toFixed(2) + '% clamped to ' + clamped.toFixed(2) + '%');
       }
     }
-    // V1.0.66: nicht bestimmbare Horizonte und abweichende Zeitspannen bleiben
-    // sichtbar, statt wortlos zu verschwinden.
-    if (cagrNotes.length > 0) {
-      g1DpsNotes = cagrNotes.slice();
-      g1Note = (g1Note ? g1Note + ' · ' : '') + cagrNotes.join(' · ');
-    }
+  } else if (g1 == null && dpsObsRes.ok && positiveYears < 3) {
+    g1HistoryUnavailable = 'Weniger als drei positive DPS-Werte — keine historische ' +
+      'Wachstumsableitung.';
+  }
+  if (cagrNotes.length > 0) {
+    g1DpsNotes = cagrNotes.slice();
+    _appendG1Note(cagrNotes.join(' · '));
   }
 
   // 3. Fallback aus Szenario-Wachstum, gedeckelt auf 3%
@@ -13883,7 +13949,7 @@ function _deriveDdmGrowthInputs(f, val, scenarios) {
     g1 = Math.min(Math.max(sc, 0), 3);
     g1Source = 'scenario_capped';
     if (g1 !== sc) {
-      g1Note = 'scenario growth ' + sc.toFixed(2) + '% capped to ' + g1.toFixed(2) + '%';
+      _appendG1Note('scenario growth ' + sc.toFixed(2) + '% capped to ' + g1.toFixed(2) + '%');
     }
   }
 
@@ -13891,14 +13957,23 @@ function _deriveDdmGrowthInputs(f, val, scenarios) {
   if (g1 == null) {
     g1 = 2.0;
     g1Source = 'fallback_default';
-    g1Note = 'no DPS history, no scenario — using 2.0% safe default';
+    _appendG1Note('no DPS history, no scenario — using 2.0% safe default');
   }
 
   // Sonderfall: DPS-Trend deutlich negativ → erlaube 0% oder negativ NICHT, sondern
   // markiere nur. Negative DDM-Bewertung wäre numerisch fragwürdig; konservativ 0%.
   if (dpsTrendNegative && g1Source !== 'manual') {
     g1 = 0;
-    g1Note = (g1Note ? g1Note + ' · ' : '') + 'DPS trend negative — g1 forced to 0%';
+    _appendG1Note('DPS trend negative — g1 forced to 0%');
+  }
+
+  // V1.0.67 (Restluecke 1): Wenn die Ersatzkette gegriffen hat, steht ihr
+  // Grund VORNE in g1Note — er ist die wichtigste Aussage des Ergebnisses und
+  // darf nicht hinter Nebenhinweisen verschwinden.
+  if (g1HistoryUnavailable && g1Source !== 'manual') {
+    g1Note = g1Note
+      ? ('Keine belegte DPS-Historie: ' + g1HistoryUnavailable + ' · ' + g1Note)
+      : ('Keine belegte DPS-Historie: ' + g1HistoryUnavailable);
   }
 
   // ─── Terminal-Wachstum ────────────────────────────────────────
@@ -13924,8 +13999,19 @@ function _deriveDdmGrowthInputs(f, val, scenarios) {
     g1Note,
     g1DpsGrowthYears,
     g1DpsNotes,
+    // V1.0.67: Begruendung der Ersatzkette, maschinenlesbar neben dem Text.
+    g1HistoryUnavailable,
     g1DpsCagr:  dpsCagrUsed,
-    g1DpsMedianYoy: dpsMedianYoyUsed,
+    // V1.0.67: Median ANNUALISIERTER Intervallraten. `g1DpsMedianYoy` bleibt
+    // als Feldname erhalten, traegt aber nur noch einen Wert, wenn saemtliche
+    // verwendeten Intervalle tatsaechlich EIN Jahr lang sind — sonst ist die
+    // Bezeichnung "YoY" schlicht falsch.
+    g1DpsMedianAnnualized: dpsMedianAnnualized,
+    g1DpsIntervalCount:    dpsIntervalCount,
+    g1DpsIntervalSpans:    dpsIntervalSpans,
+    g1DpsMedianYoy: (dpsMedianAnnualized != null && Array.isArray(dpsIntervalSpans) &&
+                     dpsIntervalSpans.length > 0 && dpsIntervalSpans.every(x => x === 1))
+      ? dpsMedianAnnualized : null,
     g1DpsTrendNegative: dpsTrendNegative,
     g2,
     g2Source,
@@ -13973,6 +14059,12 @@ function modelDdm(mj, scenarios) {
   const payoutSanity = (eps0 != null && eps0 > 0) ? (dpsVal / eps0) : null;
 
   const warnings = [];
+  if (ddmInputs.g1HistoryUnavailable && ddmInputs.g1Source !== 'manual') {
+    // V1.0.67 (Restluecke 1): Quelle UND Grund bleiben sichtbar — ein
+    // Ersatzwert darf nicht wie eine Messung aussehen.
+    warnings.push('g1 ist KEIN gemessenes Wachstum (Quelle: ' + ddmInputs.g1Source +
+      '): ' + ddmInputs.g1HistoryUnavailable);
+  }
   if (ddmInputs.g1Note) warnings.push('g1: ' + ddmInputs.g1Note);
   if (ddmInputs.g1DpsTrendNegative) warnings.push('DPS-Trend negativ — Aristocrat-Status prüfen');
   if (payoutSanity != null && payoutSanity > 1.0) warnings.push('Payout > 100% — Dividende übersteigt EPS (suspicious)');
@@ -13992,6 +14084,13 @@ function modelDdm(mj, scenarios) {
     _debug_g1Note:          ddmInputs.g1Note,
     _debug_g1DpsCagr:       ddmInputs.g1DpsCagr,
     _debug_g1DpsMedianYoy:  ddmInputs.g1DpsMedianYoy,
+    // V1.0.67 (Restluecke 1): Median annualisierter Intervallraten,
+    // Intervallanzahl (KEINE Jahreszahl) und der Grund einer fehlenden
+    // historischen Ableitung bleiben am Ergebnis nachvollziehbar.
+    _debug_g1DpsMedianAnnualized: ddmInputs.g1DpsMedianAnnualized,
+    _debug_g1DpsIntervalCount:    ddmInputs.g1DpsIntervalCount,
+    _debug_g1DpsIntervalSpans:    ddmInputs.g1DpsIntervalSpans,
+    _debug_g1HistoryUnavailable:  ddmInputs.g1HistoryUnavailable,
     _debug_g1DpsTrendNeg:   ddmInputs.g1DpsTrendNegative,
     _debug_dpsGrowthYears:  ddmInputs.g1DpsGrowthYears,
     _debug_dpsPositiveYrs:  ddmInputs.dpsPositiveYears,
@@ -18119,7 +18218,8 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
   const optP   = makeWeightedSet('optimistic');
 
   if (baseP.length === 0) {
-    const rel = computeRelativeMultiplesFV(mj);
+    // V1.0.67 (Restluecke 2a): dieselbe Datenbasis wie die Modelle.
+    const rel = computeRelativeMultiplesFV(mj, valuationResult);
     return {
       status: 'no_models_applicable',
       activeModelsCount: 0,
@@ -19861,6 +19961,13 @@ function buildSensitivityMatrix(mj, v) {
 // ────────────────────────────────────────────────────────────────
 // RELATIVE MULTIPLES — gemeinsame Logik
 // ────────────────────────────────────────────────────────────────
+// V1.0.67 (Restluecke 2b): Zulaessiger Abstand zwischen dem Ende des
+// EBITDA-Zeitraums und dem Bilanzstichtag der Bruecke. Es gilt derselbe Wert,
+// den `_joinPeriodKeyed` fuer Geschaeftsjahresenden verwendet
+// (`maxEndDateSpreadDays`, Voreinstellung 45 Tage) — abweichende
+// Geschaeftsjahresenden bleiben damit zulaessig, ein Quartalsversatz nicht.
+const MULTIPLES_PERIOD_TOLERANCE_DAYS = 45;
+
 // ── V1.0.66 (Befund 2, Korrekturchat 12D) · Eigenkapitalbruecke der ───────
 // Vergleichsmultiples
 //
@@ -19890,6 +19997,22 @@ function _resolveMultiplesEvBridge(f) {
     return (m && Array.isArray(m.periods) && m.periods[0] != null) ? m.periods[0] : null;
   };
 
+  // V1.0.67 (Restluecke 2b) · Periodenart: eine Bilanzgroesze, die ausdruecklich als Zeitraumgroesze
+  // gemeldet ist, kann keine Stichtagsbruecke tragen.
+  const _flowFlag = (field) => {
+    const m = meta[field];
+    return (m && m.isFlowConcept === true);
+  };
+  if (_flowFlag('net_debt') || _flowFlag('total_debt') || _flowFlag('cash') ||
+      _flowFlag('cash_and_equivalents')) {
+    return {
+      available: false, netDebtM: null, source: null, period: null,
+      reason: 'Die Bilanzangaben der Eigenkapitalbruecke sind als Zeitraumgroesze ' +
+              'gemeldet (isFlowConcept). Ein Stichtagswert laesst sich daraus nicht ' +
+              'ableiten; Zeitraum- und Stichtagswerte werden nicht vermischt.'
+    };
+  }
+
   const res = (typeof _resolveNetDebtForDcfBridge === 'function')
     ? _resolveNetDebtForDcfBridge(fund)
     : { available: false, netDebtM: null, missing: ['Nettoschuldenaufloesung nicht verfuegbar'] };
@@ -19910,20 +20033,62 @@ function _resolveMultiplesEvBridge(f) {
     };
   }
 
+  // ── V1.0.67 (Restluecke 2b) · tatsaechliche Periodenenden statt Jahreszahl ─
+  // V1.0.66 verglich nur `_secPeriodYear`. Ein EBITDA zum 31.12.2025 und
+  // Bilanzangaben zum 31.03.2025 galten damit als vereinbar (gleiches Jahr),
+  // waehrend ein Geschaeftsjahresende am 31.01.2026 gegen den 31.12.2025
+  // faelschlich gesperrt wurde — die Jahreszahl ist in BEIDE Richtungen kein
+  // taugliches Kriterium. Maszgeblich ist jetzt der Abstand der Periodenenden
+  // mit derselben Toleranz, die `_joinPeriodKeyed` fuer Geschaeftsjahresenden
+  // verwendet (MULTIPLES_PERIOD_TOLERANCE_DAYS); es wird keine neue Regel
+  // erfunden.
   const bridgePeriod = res.period || _period0('net_debt') || _period0('total_debt');
   const ebitdaPeriod = _period0('ebitda');
-  if (bridgePeriod != null && ebitdaPeriod != null &&
-      (typeof _secPeriodYear === 'function')) {
-    const yb = _secPeriodYear(bridgePeriod);
-    const ye = _secPeriodYear(ebitdaPeriod);
-    if (yb != null && ye != null && yb !== ye) {
-      return {
-        available: false, netDebtM: null, source: null, period: null,
-        reason: 'Unternehmenswert und Eigenkapitalbruecke stammen aus ' +
-                'unterschiedlichen Berichtsperioden (EBITDA ' + ebitdaPeriod +
-                ', Bilanzangaben ' + bridgePeriod + '). Ein Abzug ueber ' +
-                'Array-Indizes wuerde Geschaeftsjahre vermischen.'
+
+  if (ebitdaPeriod != null) {
+    if (bridgePeriod == null) {
+      // Bekannter Widerspruch darf nicht an fehlenden Metadaten verschwinden:
+      // traegt die Bilanzseite ueberhaupt Periodenangaben, muss ihr Stichtag
+      // bestimmbar sein.
+      // Eine vorhandene `periods`-Angabe IST der Anspruch, period-keyed zu
+      // sein — auch wenn sie leer oder unlesbar ist. Sie darf den Widerspruch
+      // nicht dadurch aufloesen, dass sie nichts aussagt.
+      const _claimsPeriods = (field) => {
+        const m = meta[field];
+        return !!(m && Array.isArray(m.periods));
       };
+      const _bridgeHasCtx = ['net_debt', 'total_debt', 'cash_and_equivalents', 'cash'].some(
+        (fld) => _claimsPeriods(fld) ||
+          ((typeof _seriesHasPeriodContext === 'function') && _seriesHasPeriodContext(fund, fld)));
+      if (_bridgeHasCtx) {
+        return {
+          available: false, netDebtM: null, source: null, period: null,
+          reason: 'Der EBITDA-Zeitraum endet am ' + ebitdaPeriod + ', der Bilanzstichtag ' +
+                  'der Eigenkapitalbruecke ist trotz vorhandener Periodenangaben nicht ' +
+                  'bestimmbar. Ein Abzug ohne belegten Stichtag waere scheingenau.'
+        };
+      }
+    } else {
+      const days = (typeof _secPeriodDaysApart === 'function')
+        ? _secPeriodDaysApart(ebitdaPeriod, bridgePeriod) : null;
+      if (days == null) {
+        return {
+          available: false, netDebtM: null, source: null, period: null,
+          reason: 'Die Berichtsperioden von EBITDA (' + ebitdaPeriod + ') und ' +
+                  'Bilanzangaben (' + bridgePeriod + ') sind nicht als Datum lesbar — ' +
+                  'ihre Vereinbarkeit ist damit nicht nachweisbar.'
+        };
+      }
+      if (days > MULTIPLES_PERIOD_TOLERANCE_DAYS) {
+        return {
+          available: false, netDebtM: null, source: null, period: null,
+          reason: 'Unternehmenswert und Eigenkapitalbruecke stammen aus ' +
+                  'unterschiedlichen Berichtsperioden (EBITDA-Zeitraum endet ' + ebitdaPeriod +
+                  ', Bilanzstichtag ' + bridgePeriod + ' — ' + Math.round(days) +
+                  ' Tage Abstand, zulaessig sind ' + MULTIPLES_PERIOD_TOLERANCE_DAYS +
+                  '). Ein Abzug ueber verschiedene Stichtage wuerde Zeitraeume vermischen.'
+        };
+      }
     }
   }
 
@@ -19933,9 +20098,42 @@ function _resolveMultiplesEvBridge(f) {
   };
 }
 
-function computeRelativeMultiplesFV(mj) {
-  const f   = (mj && mj.fundamentals) || {};
-  const m   = (mj && mj.market) || {};
+// ── V1.0.67 (Restluecke 2a, Korrekturchat 12E) · gewaehlte Datenbasis ─────
+//
+// Bis V1.0.66 rechnete die Vergleichsrechnung immer auf den JAHRESREIHEN des
+// uebergebenen Master-JSON — auch wenn die Bewertung auf TTM lief. Gemessen:
+// FY-EBITDA 250M (31.12.2024) gegen TTM-EBITDA 343,75M (30.09.2025), also
+// 21,00 statt 30,375 USD je Aktie, ohne jede Kennzeichnung der Basis.
+//
+// Die Aufloesung geschieht jetzt ueber `resolveValuationView()` — DIESELBE
+// Funktion, die Haupt-DCF, Sensitivitaetsmatrix, Simulation und Reverse-DCF
+// verwenden. Es entsteht keine zweite, parallele Auflosungslogik, und die dort
+// bereits bestehenden Regeln gelten unveraendert weiter: eine unvollstaendige
+// TTM-Basis faellt auf das Geschaeftsjahr zurueck, und eine gespeicherte
+// Bewertung auf einer ANDEREN Basis (`mismatch`) liefert gar keine Zahlen,
+// sondern den Hinweis, neu zu rechnen.
+//
+// `valuation` ist das Ergebnis der Bewertungsengine (oder null, wenn es noch
+// keines gibt — dann entscheidet allein die im Master-JSON gewaehlte Basis).
+function computeRelativeMultiplesFV(mj, valuation) {
+  const _vw = (mj && typeof resolveValuationView === 'function')
+    ? resolveValuationView(mj, valuation) : null;
+  if (_vw && _vw.mismatch) {
+    return {
+      models: [], median: null, hasAny: false, availableCount: 0,
+      computedCount: 0, nonPositiveCount: 0, bridgeBlockedCount: 0,
+      basis: _vw.basis || null,
+      basisLabel: (typeof DATA_BASIS_LABELS === 'object' && _vw.basis)
+        ? (DATA_BASIS_LABELS[_vw.basis] || _vw.basis) : (_vw.basis || null),
+      basisPeriod: null,
+      basisBlocked: true,
+      basisReason: _vw.reason || 'Die gespeicherte Bewertung beruht auf einer anderen Datenbasis.'
+    };
+  }
+  const _viewMj = (_vw && _vw.ok && _vw.mj) ? _vw.mj : mj;
+  const _basis  = (_vw && _vw.basis) ? _vw.basis : 'fy';
+  const f   = (_viewMj && _viewMj.fundamentals) || {};
+  const m   = (_viewMj && _viewMj.market) || {};
   const own = m.own_multiples_median || {};
   const shares = (f.shares_diluted && f.shares_diluted[0]) || null;
   const models = [];
@@ -20007,7 +20205,19 @@ function computeRelativeMultiplesFV(mj) {
   });
   const usable = models.filter(r => r.available && r.nonPositive !== true);
   const median = usable.length > 0 ? _median(usable.map(r => r.base)) : null;
+  // V1.0.67: die tatsaechlich verwendete Basis und ihre Periode werden
+  // mitgegeben, damit die Anzeige sie nennen kann statt sie zu unterstellen.
+  const _ebitdaMeta = (f._v4_meta && f._v4_meta.ebitda) || null;
+  const _basisPeriod = (_ebitdaMeta && Array.isArray(_ebitdaMeta.periods) && _ebitdaMeta.periods[0] != null)
+    ? _ebitdaMeta.periods[0]
+    : ((_viewMj && _viewMj._data_basis_view && _viewMj._data_basis_view.period_label) || null);
   return {
+    basis: _basis,
+    basisLabel: (typeof DATA_BASIS_LABELS === 'object')
+      ? (DATA_BASIS_LABELS[_basis] || _basis) : _basis,
+    basisPeriod: _basisPeriod,
+    basisBlocked: false,
+    basisReason: null,
     models, median,
     hasAny: usable.length > 0,
     availableCount: usable.length,
@@ -20129,7 +20339,7 @@ function _applyValuationResult(mj, valuation, quality) {
       dataBasis: valuation.dataBasis || buildDataBasisReport(mj),
       _errorState: true
     };
-    const rel = computeRelativeMultiplesFV(mj);
+    const rel = computeRelativeMultiplesFV(mj, valuation);
     const _errPrice = (mj && mj.market && mj.market.price > 0) ? mj.market.price : null;
     // V11.9.12: currentPrice und _revenueAnomalyBlock durchreichen damit UI korrekt rendert
     const _isRevAnomaly = !!(valuation._revenueYoyAnomaly);
@@ -20156,7 +20366,7 @@ function _applyValuationResult(mj, valuation, quality) {
     status: 'synthesizer_error',
     blockReason: 'Interner Fehler im Fair-Value-Synthesizer (kein Hard Stop)',
     fallbackMode: 'market_only',
-    relativeMultiples: computeRelativeMultiplesFV(mj),
+    relativeMultiples: computeRelativeMultiplesFV(mj, valuation),
     range: null, buyPrice: null, position: 'blocked',
     activeModelsCount: 0, _noIntrinsicValuation: true
   };
@@ -20342,7 +20552,7 @@ function importMasterJsonFromTextarea() {
     state.synthesis = {
       status: 'shares_scale_invalid', valuationError: _sharesNorm.blockReason,
       blockReason: _sharesNorm.blockReason, fallbackMode: 'market_only',
-      relativeMultiples: computeRelativeMultiplesFV(parsed),
+      relativeMultiples: computeRelativeMultiplesFV(parsed, null),
       range: null, buyPrice: null, position: 'blocked',
       activeModelsCount: 0, _noIntrinsicValuation: true
     };
@@ -23740,7 +23950,7 @@ function buildValuationFallback(mj, syn, valResult) {
   const scenariosError = (valResult && valResult.scenariosError) ||
                          (syn && syn.valuationError) || 'Valuation-Inputs unvollständig';
   const fallbackMode   = (syn && syn.fallbackMode) || 'market_only';
-  const rel            = (syn && syn.relativeMultiples) || computeRelativeMultiplesFV(mj);
+  const rel            = (syn && syn.relativeMultiples) || computeRelativeMultiplesFV(mj, valResult);
   const router = (valResult && valResult.router) || sectorRouter(mj);
   const modelResults = (valResult && valResult.modelResults) || {};
   const modelReasonMap = {
@@ -23766,14 +23976,36 @@ function buildValuationFallback(mj, syn, valResult) {
       <div class="mn"><span>${escapeHtml(k)}</span><span class="mtag off">sektor-inaktiv</span></div>
       <div class="reason">${escapeHtml(why)}</div>
     </div>`) : [];
+  // ── V1.0.67 (Restluecke 3, Korrekturchat 12E) ────────────────────────────
+  // Bis V1.0.66 haengte diese Karte die GESAMTE Modellanzeige an
+  // `fallbackMode === 'relative_multiples' && rel.hasAny`. Blieb kein
+  // POSITIVER Vergleichswert uebrig, erschien „Weder Intrinsic-Valuation-
+  // Inputs noch historische Multiples verfuegbar." — auch dann, wenn ein
+  // Multiple sehr wohl vorlag und nur die Eigenkapitalbruecke fehlte, oder
+  // wenn ein Wert berechnet und danach begruendet aus dem Median genommen
+  // wurde. Die Aussage widersprach den Daten.
+  //
+  // Die Anzeige haengt jetzt daran, ob es ueberhaupt etwas zu zeigen gibt.
+  // Median, `hasAny`, Gewichtung und Synthese bleiben unveraendert: es wird
+  // kein `hasAny` erzwungen und kein Ersatzwert gebildet.
+  const _relHasAnything = Array.isArray(rel.models) && rel.models.length > 0 &&
+    ((rel.computedCount || 0) > 0 || (rel.bridgeBlockedCount || 0) > 0 ||
+     rel.models.some(m => m.multiple != null));
   let relHtml = '';
-  if (fallbackMode === 'relative_multiples' && rel.hasAny) {
+  if (rel.basisBlocked) {
+    relHtml = `
+      <div class="card">
+        <div class="import-status err">&#9888; ${escapeHtml(rel.basisReason || 'Datenbasis nicht aufloesbar.')}</div>
+      </div>`;
+  } else if (_relHasAnything) {
     relHtml = `
       <div class="card">
         <div class="mv-disclaimer" style="margin-bottom:10px">
           ⚠ <strong>Keine Intrinsic Valuation möglich.</strong> Die folgenden Werte basieren auf historischen eigenen Multiples —
           kein Discounted-Cashflow, keine Residualeinkommens-Bewertung. Sie zeigen nur, wo das Unternehmen bei
           Rückkehr zu historischen Multiples stünde. <strong>Kein Fair Value im fundamentalen Sinn.</strong>
+          ${rel.basisLabel ? ` Datenbasis: <strong>${escapeHtml(rel.basisLabel)}${rel.basisPeriod ? ' · ' + escapeHtml(String(rel.basisPeriod)) : ''}</strong>.` : ''}
+          ${!rel.hasAny ? `<div style="margin-top:6px">Es bleibt <strong>kein als Referenzpreis verwendbarer Vergleichswert</strong> übrig — die Gründe stehen an den Modellen. Der Median entfällt; kein Wert fließt in Range oder Buy Price.</div>` : ''}
         </div>
         <div class="model-grid">
           ${rel.models.map(m => m.available ? `
@@ -23800,10 +24032,13 @@ function buildValuationFallback(mj, syn, valResult) {
         </div>` : ''}
       </div>`;
   } else {
+    // Nur noch dieser Fall ist wirklich „nichts vorhanden": kein einziges
+    // Vergleichsmultiple im Master-JSON.
     relHtml = `
       <div class="card">
         <div class="mv-disclaimer">
           Weder Intrinsic-Valuation-Inputs noch historische Multiples verfügbar.
+          Es ist kein eigener Multiple-Median unter <code>market.own_multiples_median</code> hinterlegt.
           Nur Markt-Vergleich möglich — siehe Tab "Markt-Vergleich".
         </div>
       </div>`;
@@ -24173,13 +24408,14 @@ function renderValuation() {
             <div style="color:var(--text);font-size:.52rem;letter-spacing:.06em;text-transform:uppercase;margin-bottom:3px">DDM Inputs (Base)</div>
             dps0 = <strong style="color:var(--text)">${m._debug_dps0 != null ? m._debug_dps0.toFixed(4) : '–'}</strong> ·
             g1 used = <strong style="color:var(--text)">${m._debug_g1Used != null ? m._debug_g1Used.toFixed(2)+'%' : '–'}</strong>
-            ${m._debug_g1Source ? ` <span style="color:var(--muted)">(${escapeHtml(m._debug_g1Source)}${m._debug_dpsGrowthYears ? ', ' + m._debug_dpsGrowthYears + 'y' : ''})</span>` : ''} ·
+            ${m._debug_g1Source ? ` <span style="color:var(--muted)">(${escapeHtml(m._debug_g1Source)}${m._debug_dpsGrowthYears ? ', ' + m._debug_dpsGrowthYears + 'y' : (m._debug_g1DpsIntervalCount ? ', ' + m._debug_g1DpsIntervalCount + ' Intervall(e)' : '')})</span>` : ''} ·
             coe = <strong style="color:var(--text)">${m._debug_coeUsed != null ? m._debug_coeUsed.toFixed(2)+'%' : '–'}</strong> ·
             term g = <strong style="color:var(--text)">${m._debug_terminalGrowth != null ? m._debug_terminalGrowth.toFixed(2)+'%' : '–'}</strong>
             ${m._debug_terminalSource ? ` <span style="color:var(--muted)">(${escapeHtml(m._debug_terminalSource)})</span>` : ''}
             ${m._debug_payoutSanity != null ? ` · payout = <strong style="color:${m._debug_payoutSanity > 1 ? 'var(--warn)' : 'var(--text)'}">${(m._debug_payoutSanity*100).toFixed(0)}%</strong>${m._debug_payoutSanity > 1 ? ' ⚠ &gt;100% (Dividende übersteigt EPS)' : ''}` : ''}
             ${m._debug_dpsPositiveYrs != null ? ` · DPS+ years = <strong style="color:var(--text)">${m._debug_dpsPositiveYrs}</strong>` : ''}
             ${m._debug_g1Note ? `<div style="margin-top:3px;color:var(--muted);font-size:.5rem">↳ ${escapeHtml(m._debug_g1Note)}</div>` : ''}
+            ${m._debug_g1HistoryUnavailable ? `<div style="margin-top:3px;color:var(--warn);font-size:.5rem">↳ kein gemessenes Wachstum: ${escapeHtml(m._debug_g1HistoryUnavailable)}</div>` : ''}
             ${m._debug_g1DpsTrendNeg ? `<div style="margin-top:3px;color:var(--warn);font-size:.5rem">↳ DPS-Trend negativ — Aristocrat-Status prüfen</div>` : ''}
           </div>`
         : '';
@@ -24315,8 +24551,13 @@ function renderMarket() {
   const mj = state.masterJson;
   const v = state.valuation;
 
-  const rel = computeRelativeMultiplesFV(mj);
-  const f = mj.fundamentals || {};
+  // V1.0.67 (Restluecke 2a): Der Markt-Vergleich rechnet auf DERSELBEN
+  // Datenbasis wie die Bewertung. Bis V1.0.66 wurde hier immer das
+  // Master-JSON (Jahresreihen) uebergeben, auch bei ausgewaehlter TTM-Basis.
+  const rel = computeRelativeMultiplesFV(mj, v);
+  const f = ((rel && rel.basis === 'ttm' && typeof resolveValuationView === 'function')
+    ? (function () { const w = resolveValuationView(mj, v); return (w.ok && w.mj) ? w.mj.fundamentals : null; })()
+    : null) || mj.fundamentals || {};
   // V1.0.66 (Befund 2): gesperrte und nichtpositive Modelle verschwinden nicht
   // mehr wortlos aus der Tabelle — ein gesperrtes Modell ist eine Aussage.
   const _relLabel = (m) => {
@@ -24335,9 +24576,24 @@ function renderMarket() {
         : (m.reason || '')
     }));
 
+  // V1.0.67 (Restluecke 2a): Die verwendete Datenbasis wird genannt, nicht
+  // unterstellt. Bei einem Basiswechsel ohne Neuberechnung gibt es keine
+  // Zahlen, sondern den Hinweis aus der gemeinsamen Aufloesung.
+  const _basisTag = rel.basisLabel
+    ? `<span class="box-tag" style="background:#1a232e;color:var(--info)">${escapeHtml(rel.basisLabel)}${rel.basisPeriod ? ' · ' + escapeHtml(String(rel.basisPeriod)) : ''}</span>`
+    : '';
+  if (rel.basisBlocked) {
+    out.innerHTML = `
+      <div class="mv-card">
+        <div class="box-title">Markt-Vergleich <span class="box-tag na">kein Fair Value</span></div>
+        <div class="import-status err">&#9888; ${escapeHtml(rel.basisReason || 'Datenbasis nicht aufloesbar.')}</div>
+      </div>`;
+    return;
+  }
+
   let html = `
     <div class="mv-card">
-      <div class="box-title">Markt-Vergleich <span class="box-tag na">kein Fair Value</span></div>
+      <div class="box-title">Markt-Vergleich <span class="box-tag na">kein Fair Value</span>${_basisTag}</div>
       <div class="mv-disclaimer">
         Diese Werte sind <strong>kein Fair Value</strong>. Sie zeigen nur, wo das Unternehmen läge, wenn es zu seinen historischen Multiples zurückkehrte. Historische Multiples können strukturell falsch sein (Re-Rating, Sektor-Shift). Kein Wert in dieser Sektion fließt in die Fair-Value-Range oder den Buy Price.
       </div>

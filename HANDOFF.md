@@ -1,5 +1,217 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Korrekturchat 12E: drei Restluecken nach V1.0.66 geschlossen (V1.0.67)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Arbeits- und
+Ergebnisbranch **`claude/loving-newton-hcpo71`**, Ausgangscommit
+**`f44abc03d1c67394c6f58979162d42ec4c157848`** (V1.0.66) — zugleich die
+Branch-Spitze; nach `git fetch` gab es KEINE Nachfolgecommits
+(`git log f44abc0..origin/claude/loving-newton-hcpo71` war leer), der
+Arbeitsbaum war sauber. `main` (`b023dc8`) wurde nicht angefasst. Eine
+`AGENTS.md` existiert in diesem Repository nicht. Tool-Datei:
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+`npm test` (= `node test/run-all.js`) fuehrt beide Suiten aus; es wurde
+deshalb je Abnahme nur EIN Gesamtlauf gestartet.
+
+**Bestaetigte Testbaseline vor der Aenderung** (selbst auf `f44abc0`
+ausgefuehrt): **1700 Rechen-Assertions — darin 434 Fixture-Assertions — und
+200 Node-Tests, beide Suiten Exit 0.**
+
+**Auftrag.** Drei unabhaengig reproduzierte Restluecken nach V1.0.66. Kein
+Refactoring, keine neue Abhaengigkeit, keine Funktionserweiterung. Die
+Korrekturen aus V1.0.66 (Importabsicherung, Financials-Modellfamilie,
+Schuldenfaelle der EV-Bruecke) bleiben erhalten; DCF-Formeln und nicht
+betroffene Modelle unveraendert; EPV bleibt deaktiviert.
+
+---
+
+### 1 · Quellenlage (wahrheitsgemaesz)
+
+Alle Rechennachweise sind **synthetische Datensaetze ueber die produktiven
+Aufrufwege** (`importSecFacts` → `resolveDataBasis` →
+`buildValuationBasisView` → `runValuationEngine` → `renderMarket` /
+`buildValuationFallback`, sowie `_deriveDdmGrowthInputs` und `modelDdm`) —
+**keine Live-Validierung, kein reales Filing, kein SEC-/Yahoo-Abruf.**
+Ergaenzend wurde im vorinstallierten Chromium geprueft (Abschnitt 5). Der
+**Abgleich mit echten veroeffentlichten Abschluessen steht weiterhin aus** und
+ist der naechste, eigene Auftrag.
+
+### 2 · Reproduktion am unveraenderten Ausgangsstand `f44abc0`
+
+| # | gemessen auf `f44abc0` |
+|---|---|
+| **1a** DDM ohne Perioden | DPS `[1.12, 1.10, 1.08, 1.06, 1.04, 1.00]` OHNE Periodenangaben ⇒ `dps_cagr_5y`, **2,2924556626 %**, ohne jeden Hinweis auf einen unbelegten Zeitabstand. `_elapsedYears()` lieferte den Array-Index als Jahresabstand. |
+| **1b** Ersatzweg trotz Sperre | Dieselbe Reihe mit ausschliesslich `"n/a"` als Perioden ⇒ CAGR gesperrt, danach trotzdem `dps_median_yoy` mit **1,8867924528 %**. |
+| **1c** Median-YoY ohne Periodenabstand | DPS `[1.04, 1.02, 1.00]` zu 2026‑12‑31 / 2024‑12‑31 / 2022‑12‑31 ⇒ **1,9803921568 %** (`cur/prev − 1` ueber benachbarte Array-Plaetze). Annualisiert ergeben dieselben beiden Intervalle **0,9853411216 %**. |
+| **1d** Engine-Pfad | DPS `[1.04, 1.02, 1.00, 0, 0.96, 0.94, 0.92]` zu 2026/2024/2022/2020/2018/2016/2014 (je 31.12.) ⇒ Ersatzweg **2,0638297872 %**; der Median der annualisierten gueltigen positiven Intervalle betraegt **1,0266399558 %**. |
+| **2a** FY/TTM | Synthetischer Filer mit Quartalsdaten: FY-EBITDA **250M zum 31.12.2024**, TTM-EBITDA **343,75M zum 30.09.2025**, Multiplikator 10, Nettoschulden 400M, 100M Aktien. Engine-Datenbasis **`ttm`**; `renderMarket()` uebergab weiterhin `state.masterJson` ⇒ angezeigt **21,00 USD** (FY) statt **30,375 USD** (TTM), **ohne FY-Kennzeichnung**. Ein Basiswechsel ohne Neuberechnung zeigte Zahlen statt eines Hinweises. |
+| **2b** Periodenenden | `_resolveMultiplesEvBridge()` verglich nur `_secPeriodYear`. EBITDA 31.12.2025 gegen Bilanz **31.03.2025** bzw. **30.09.2025** ⇒ jeweils **21,00 USD ohne Warnung**. Umgekehrt wurde ein abweichendes **Geschaeftsjahresende 31.01.2026** faelschlich gesperrt — die Jahreszahl war in BEIDE Richtungen untauglich. |
+| **3** Fallback-Anzeige | `buildValuationFallback()` zeigte die Modellanzeige nur bei `fallbackMode === 'relative_multiples' && rel.hasAny`. Mit nur einem gesperrten EV/EBITDA-Modell bzw. nur einem berechneten Wert von **−5,00 USD** erschien stattdessen „Weder Intrinsic-Valuation-Inputs noch historische Multiples verfuegbar." — ohne Grund, ohne den bestimmbaren Unternehmenswert und ohne den berechneten Wert. |
+
+### 3 · Was geaendert wurde
+
+**Restluecke 1 — DDM: Periodenpruefung auf ALLE historischen Wachstumspfade.**
+Neu ist `_ddmDpsObservations(f)`. Sie ist die einzige Quelle der Datenpunkte
+fuer BEIDE historischen Wege und liefert nur dann eine Zeitreihe, wenn die
+Berichtsperioden sie belegen. Sie weist ab: fehlende Perioden, durchgehend
+unlesbare Perioden, **doppelte Berichtsjahre** und **nicht durchgehend
+rueckwaerts laufende** Reihen — jeweils mit Klartextbegruendung. Teilweise
+unlesbare Perioden lassen die uebrigen Punkte gelten und werden als Hinweis
+mitgefuehrt.
+
+* Die unbelegte Gleichsetzung „ein Array-Platz = ein Jahr" ist im
+  DDM-Wachstumspfad **entfallen**. Ohne belegte Zeit entsteht kein
+  historischer Wert.
+* Der CAGR-Weg annualisiert unveraendert ueber den TATSAECHLICHEN
+  Jahresabstand der beiden verwendeten Berichtsperioden.
+* Der frueher „Median-YoY" genannte Ersatzweg heisst jetzt
+  **`dps_median_annualized`** und annualisiert **jedes Intervall ueber seine
+  wirkliche Laenge**. Das Feld `g1DpsMedianYoy` traegt nur noch dann einen
+  Wert, wenn saemtliche verwendeten Intervalle tatsaechlich ein Jahr lang
+  sind — sonst waere die Bezeichnung „YoY" schlicht falsch.
+* **Die Anzahl der Intervalle wird nicht mehr als Jahreszahl ausgegeben:**
+  `g1DpsGrowthYears` ist auf diesem Weg `null`, die Zahl steht getrennt in
+  `g1DpsIntervalCount` (mit `g1DpsIntervalSpans`).
+* Greift die Ersatzkette (Szenario, Default), bleiben **Quelle UND Grund**
+  erhalten: `g1HistoryUnavailable` steht maschinenlesbar am Ergebnis und als
+  erster Teil von `g1Note`. Alle spaeteren Zuweisungen an `g1Note` haengen
+  ueber `_appendG1Note()` an, statt zu ueberschreiben. Das Modell traegt
+  zusaetzlich die Warnung „g1 ist KEIN gemessenes Wachstum (Quelle: …)".
+* Gemeldete Null-Dividenden bleiben wirtschaftliche Angaben: sie sperren nur
+  die Spannen, die ueber sie hinweg rechnen wuerden, und gelten nicht als
+  Datenluecke.
+* **Manuelle Wachstumsannahmen und alle Kappungen sind unveraendert**; die
+  Kappung wirkt ausdruecklich NACH der Annualisierung.
+
+Gemessen: 1a/1b liefern jetzt `scenario_capped` bzw. `fallback_default` mit
+Begruendung statt eines gemessenen CAGR; 1c ergibt **0,9853411215 %**; 1d
+ergibt **1,0266399558 %**. Das Sechsjahresbeispiel mit ausdruecklich belegten
+Perioden liefert unveraendert **1,9067623060 %** und im Engine-Pfad
+**14,223656551734546** USD/Aktie.
+
+**Restluecke 2a — EV/EBITDA folgt der gewaehlten Datenbasis.**
+`computeRelativeMultiplesFV(mj, valuation)` nimmt jetzt das Bewertungsergebnis
+entgegen und loest die Sicht ueber **`resolveValuationView()`** auf — dieselbe
+Funktion, die Haupt-DCF, Sensitivitaetsmatrix, Simulation und Reverse-DCF
+verwenden. Es entsteht **keine zweite, parallele Auflosungslogik**, und die
+dort bestehenden Regeln gelten unveraendert: eine unvollstaendige TTM-Basis
+faellt auf das Geschaeftsjahr zurueck, und eine gespeicherte Bewertung auf
+einer ANDEREN Basis (`mismatch`) liefert **gar keine Zahlen**, sondern den
+Hinweis, neu zu rechnen (`basisBlocked`, `basisReason`). EBITDA,
+Brueckenkomponenten und Aktienbasis stammen damit aus derselben aufgeloesten
+Sicht. Alle sechs Aufrufstellen reichen ihren Bewertungszustand durch
+(Synthesizer, beide Fehlerzustaende der Engine, `shares_scale_invalid`,
+Fallback-Karte, `renderMarket`). Das Ergebnis traegt `basis`, `basisLabel` und
+`basisPeriod`; beide Anzeigen nennen sie sichtbar.
+
+**Restluecke 2b — kompatible Periodenenden statt gleicher Jahreszahl.**
+`_resolveMultiplesEvBridge()` vergleicht jetzt die tatsaechlichen
+Periodenenden mit `_secPeriodDaysApart()` gegen
+`MULTIPLES_PERIOD_TOLERANCE_DAYS = 45` — derselbe Wert, den
+`_joinPeriodKeyed()` als `maxEndDateSpreadDays` fuer Geschaeftsjahresenden
+verwendet; es wurde keine neue Regel erfunden. Zusaetzlich:
+
+* Eine Bilanzangabe, die ausdruecklich als **Zeitraumgroesze**
+  (`isFlowConcept: true`) gemeldet ist, traegt keine Stichtagsbruecke.
+* **Bekannte Widersprueche verschwinden nicht an fehlenden Metadaten:** wer
+  eine `periods`-Angabe fuehrt, muss einen Stichtag belegen. Ist der
+  EBITDA-Zeitraum datiert und der Bilanzstichtag trotz vorhandener
+  Periodenangabe nicht bestimmbar, wird gesperrt.
+* Gueltige ausdrueckliche Nullwerte, Nettoliquiditaet und der
+  Altdatenpfad ohne jede Periodenangabe bleiben unveraendert zulaessig.
+
+**Restluecke 3 — Fallback-Anzeige.** Die Modellanzeige haengt nicht mehr an
+einem positiven Median, sondern daran, **ob es ueberhaupt etwas zu zeigen
+gibt** (`computedCount`, `bridgeBlockedCount` oder ein vorhandenes Multiple).
+Gesperrte Modelle nennen ihren Grund und den weiterhin bestimmbaren
+operativen Unternehmenswert; ein berechneter nichtpositiver Wert erscheint
+mit Betrag und Ausschlussgrund. Die Karte unterscheidet jetzt drei Lagen:
+fehlende Multiples (nur hier steht noch „Weder … verfuegbar", jetzt mit dem
+konkreten Hinweis auf `market.own_multiples_median`), fehlende
+Brueckenkomponenten und berechnete nichtpositive Ergebnisse. **Median,
+`hasAny`, Gewichtung und Synthese sind unveraendert** — es wird kein `hasAny`
+erzwungen und kein Ersatzwert gebildet.
+
+### 4 · Tests
+
+| Test | sichert ab |
+|---|---|
+| `R46` (**berichtigt**) | Restluecke 1: belegte Perioden entscheiden; fehlende, unlesbare, doppelte und rueckwaerts laufende Perioden erzeugen kein gemessenes Wachstum; Ersatzkette mit erhaltener Quelle und Begruendung; Median annualisierter Intervallraten samt Intervallanzahl (keine Jahreszahl); „YoY" nur bei echten Jahresintervallen; gemeldete Null; manuelle Annahme; Kappung; echter DDM-Engine-Pfad in drei Varianten |
+| `R47` (neu) | Restluecke 2: FY/TTM ueber Importweg, `resolveDataBasis`, Engine UND echten `renderMarket()`; Gegenprobe FY; Basiswechsel ohne Neuberechnung; Periodenenden (passend, Quartalsversatz, Geschaeftsjahres-Toleranz, verschiedene Jahre, unlesbare und teilweise fehlende Stichtage, Zeitraumgroesze); die Schuldenfaelle aus V1.0.66 bleiben erhalten |
+| `R48` (neu) | Restluecke 3: nur gesperrtes Modell, nur nichtpositives Modell, gemischt, gar keine Multiples — jeweils ueber `computeRelativeMultiplesFV()` und die echte Fallback-Karte; Median und `hasAny` bleiben unveraendert |
+
+**Begruendete Anpassung einer bestehenden Erwartung.** `R46` schrieb in der
+Fassung von V1.0.66 ausdruecklich fest, dass eine DPS-Reihe OHNE
+Periodenangaben nach der Altdatenregel „ein Array-Platz = ein Jahr"
+ausgewertet werden darf, und erwartete dafuer `dps_cagr_5y` mit
+2,2924556626 %. Diese Erwartung war fachlich falsch — sie liess ein als
+GEMESSEN ausgewiesenes Fuenfjahres-CAGR entstehen, ohne dass ein Zeitabstand
+belegt war. Die Faelle, die einen echten Jahresabstand voraussetzen, tragen
+jetzt Periodenmetadaten; der Fall ganz ohne Perioden prueft die berichtigte
+Regel. **Die Zahlen der belegten Faelle sind unveraendert** (1,9067623061 %,
+14,223656551734546, 14,212416883291723). Sonst wurde **keine** Erwartung
+angepasst; `R1`–`R45` und alle Fixture-Pruefungen bestehen unveraendert.
+
+**Gegenprobe (ausserhalb des Arbeitsstands, nicht committet).** `R46`, `R47`
+und `R48` wurden in einem separaten Arbeitsbaum auf `f44abc0` ausgefuehrt und
+schlagen dort **alle drei** fehl (`# tests 54 · # pass 51 · # fail 3`);
+`R42`–`R45` bestehen dort weiterhin — die Korrekturen aus V1.0.66 wurden also
+nicht aufgeweicht.
+
+**Testergebnis nach der Aenderung** (ein Lauf ueber den gemeinsamen Runner,
+`npm test`): **1700 Rechen-Assertions (darin 434 Fixture-Assertions), Exit 0**
+und **202 Node-Tests, Exit 0**. Node-Tests 200 → 202 (+2).
+
+### 5 · Browserpruefung (durchgefuehrt)
+
+Im vorinstallierten Chromium (`/opt/pw-browsers/chromium-1194`), angesteuert
+ueber das DevTools-Protokoll mit dem in Node 22 eingebauten WebSocket —
+**keine neue Projektabhaengigkeit**, die Treiberskripte liegen ausserhalb des
+Repositories. Die Datei wurde als `file://`-Dokument geladen, der Import lief
+ueber `importMasterJsonFromTextarea()`; es gab **keine externen Requests**.
+Jede Pruefung wurde auf BEIDEN Staenden ausgefuehrt.
+
+| Pruefung | `f44abc0` | V1.0.67 |
+|---|---|---|
+| TTM ausgewaehlt, Markt-Vergleich | **21,00**, keine Basisangabe | **30,38**, „TTM (letzte vier Quartale) · 2025-09-30" |
+| FY ausgewaehlt, Markt-Vergleich | 21,00, keine Basisangabe | **21,00**, „Letztes Geschaeftsjahr (FY) · 2024-12-31" |
+| Basiswechsel ohne Neuberechnung | Zahlen, kein Hinweis | **Hinweis „neu berechnen", keine Zahlen** |
+| DDM mit belegten Perioden | `dps_cagr_6y` + Hinweis | **unveraendert** `dps_cagr_6y` + Hinweis |
+| DDM ohne Perioden | `dps_cagr_6y` als gemessen | **`scenario_capped`**, „kein gemessenes Wachstum" + Grund |
+| Fallback, EV gesperrt | „Weder … verfuegbar", kein Grund, kein EV | **Grund und operativer EV sichtbar** |
+| Fallback, Wert −5,00 | „Weder … verfuegbar", Wert unsichtbar | **−5,00 mit Ausschlussgrund sichtbar** |
+
+**Technische Einschraenkung:** geprueft wurden ausschliesslich die geaenderten
+Anzeigen ueber den Import- und Renderpfad. Ein vollstaendiger
+Bedienungsdurchlauf (Tickerabruf, Speichern, Neuladen, Export) und jede
+Live-Abfrage gegen SEC oder Yahoo fanden **nicht** statt.
+
+### 6 · Verbleibende Grenzen
+
+* **Abgleich mit echten veroeffentlichten Abschluessen steht weiterhin aus**
+  (Einheiten, Perioden, Schuldenumfang, Aktienbasis, FY/TTM). Kein Testlauf
+  ersetzt ihn; er ist der naechste eigene Auftrag.
+* **EPV bleibt deaktiviert** (`epv_floor` steht in jeder Sektorklasse unter
+  `disabledModels`). Seine Altprobleme — die `|| 0`-Rueckfaelle bei Schulden
+  und Liquiditaet in `modelEpvFloor()` und der Maintenance-CapEx-Abzug ohne
+  korrespondierende Abschreibungszurechnung — sind weiterhin **vor einer
+  Reaktivierung** zu beheben und wurden auch hier nicht angefasst.
+* Ein interpoliertes Inline-Ereignisattribut verbleibt
+  (`_handleGrowthAssumptionChange`); der interpolierte Wert ist eine vom
+  Werkzeug selbst vergebene Feldkennung, kein importierter Inhalt.
+* Die 45-Tage-Toleranz der Periodenenden ist aus `_joinPeriodKeyed()`
+  uebernommen und damit eine **Konvention des Werkzeugs**, kein an realen
+  Abschluessen geprueftes Mass.
+* Dauerhafte Verwaesserung, heuristische Synthese, RIM-Periodenkompatibilitaet,
+  automatische Peers, externe Basisraten und EUR-Renditeszenarien bleiben
+  offen wie bisher dokumentiert.
+* `main` (`b023dc8`) fuehrt weiterhin den urspruenglichen Stand.
+
+**Keine Zusicherung der Fehlerfreiheit.** Die Auditgrenzen der vorherigen
+Korrekturchats bleiben bestehen.
+
+---
+
 ## Korrekturchat 12D: fuenf Auditbefunde nach V1.0.65 behoben (V1.0.66)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, gepruefter
