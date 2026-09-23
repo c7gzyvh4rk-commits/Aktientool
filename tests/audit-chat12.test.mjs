@@ -4127,3 +4127,380 @@ test('R48 (Restluecke 3) die Fallback-Karte zeigt Sperrgruende und nichtpositive
     assert.ok(/own_multiples_median/.test(html), 'der konkrete Grund fehlt');
   }
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// R49–R51 (Regression, Korrekturchat 12F) — drei unabhaengig bestaetigte
+// Restfehler nach V1.0.67. Jeder Test wurde zuerst am unveraenderten
+// Ausgangsstand `60fc159` ausgefuehrt und ist dort fehlgeschlagen.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Rendert die Bewertungsansicht ueber den ECHTEN Weg Engine → State →
+// Renderer und liefert Bewertung und HTML.
+function renderValuationHtml(mj) {
+  const st = evalInApp('state');
+  const prev = { mj: st.masterJson, v: st.valuation, s: st.synthesis, get: S.document.getElementById };
+  let html = '';
+  st.masterJson = mj;
+  const v = S.runValuationEngine(mj);
+  S._applyValuationResult(mj, v, null);
+  const syn = st.synthesis;
+  S.document.getElementById = (id) => (id === 'valuation-output')
+    ? { set innerHTML(x) { html = x; }, get innerHTML() { return html; } } : null;
+  try { S.renderValuation(); }
+  finally {
+    S.document.getElementById = prev.get;
+    st.masterJson = prev.mj; st.valuation = prev.v; st.synthesis = prev.s;
+  }
+  return { v, syn, html };
+}
+
+test('R49 (12F Befund 1) Betrag, Quelle und Periode der EV/EBITDA-Bruecke beschreiben dieselbe Angabe', () => {
+  const mk = (fund, meta) => ({
+    fundamentals: Object.assign({ ebitda: [250], shares_diluted: [100] }, fund, { _v4_meta: meta }),
+    market: { price: 20, own_multiples_median: { ev_ebitda_10y: 10 } }
+  });
+  const evOf = (mj) => {
+    const rel = S.computeRelativeMultiplesFV(mj);
+    return { rel, ev: rel.models.find(m => m.id === 'ev_ebitda_10y') };
+  };
+  const D25 = '2025-12-31';
+  const dated = (p) => ({ periods: [p], isFlowConcept: false, unit: 'USD' });
+
+  // ── Gegenbeispiel 1: net_debt[0] undatiert, total_debt/cash datiert ────
+  // Ausgangsstand: 16 USD/Aktie, Quelle net_debt[0], Stichtag 31.12.2025 —
+  // das Datum stammte aus total_debt, das zur Rechnung nichts beitrug.
+  {
+    const mj = mk({ net_debt: [900], total_debt: [500], cash: [100] }, {
+      ebitda:     { periods: [D25], isFlowConcept: true, unit: 'USD' },
+      net_debt:   { periods: [null], source_type: 'reported', unit: 'USD' },
+      total_debt: dated(D25), cash: dated(D25)
+    });
+    const { rel, ev } = evOf(mj);
+    assert.equal(ev.available, false, 'Ausgangsstand: 16 USD mit fremdem Stichtag');
+    assert.equal(ev.base, null);
+    assert.notEqual(ev.netDebtPeriod, D25, 'fremdes Datum angehaengt');
+    assert.ok(/nicht bestimmbar/.test(ev.reason), ev.reason);
+    assert.ok(/net_debt\[0\]/.test(ev.reason), 'verwendeter Betrag nicht genannt: ' + ev.reason);
+    assert.ok(/anderen Feldes/.test(ev.reason), ev.reason);
+    // Kein stiller Ersatz aus total_debt − cash (= 400 ⇒ 21 USD).
+    assert.equal(rel.hasAny, false);
+    assert.equal(rel.median, null);
+    assert.equal(ev.bridgeBlocked, true);
+    assert.equal(ev.enterpriseValueM, 2500, 'operativer EV bleibt sichtbar');
+    // Echter Renderer: kein Wert 16.00 und kein Ersatzwert 21.00.
+    const html = renderMarketHtml(mj, null);
+    assert.equal(html.indexOf('16.00'), -1, html);
+    assert.equal(html.indexOf('21.00'), -1, html);
+    assert.ok(/nicht ableitbar/.test(html));
+  }
+
+  // ── Gegenbeispiel 2: EBITDA mit periods [null], Nettoschulden datiert ─
+  // Ausgangsstand: die Pruefung wurde uebersprungen, weil ebitdaPeriod null war.
+  {
+    const mj = mk({ net_debt: [900] }, {
+      ebitda:   { periods: [null], isFlowConcept: true, unit: 'USD' },
+      net_debt: Object.assign(dated(D25), { source_type: 'reported' })
+    });
+    const { ev } = evOf(mj);
+    assert.equal(ev.available, false, 'Ausgangsstand: 16 USD als belegt ausgewiesen');
+    assert.ok(/Periodenende des EBITDA/.test(ev.reason), ev.reason);
+  }
+  // Beide Seiten fuehren Periodenangaben, keine ist lesbar ⇒ keine belegte Vereinbarkeit.
+  {
+    const { ev } = evOf(mk({ net_debt: [900] }, {
+      ebitda:   { periods: [null], isFlowConcept: true, unit: 'USD' },
+      net_debt: { periods: [null], source_type: 'reported' }
+    }));
+    assert.equal(ev.available, false);
+    assert.ok(/keine der beiden/.test(ev.reason), ev.reason);
+  }
+
+  // ── Korrekt datierte, direkt gemeldete Nettoschulden ─────────────────
+  {
+    const { ev } = evOf(mk({ net_debt: [900], total_debt: [500], cash: [100] }, {
+      ebitda:     { periods: [D25], isFlowConcept: true, unit: 'USD' },
+      net_debt:   Object.assign(dated(D25), { source_type: 'reported' }),
+      total_debt: dated(D25), cash: dated(D25)
+    }));
+    assert.equal(ev.available, true, ev.reason);
+    assert.ok(Math.abs(ev.base - 16) < 1e-12, 'erhalten ' + ev.base);
+    assert.equal(ev.netDebtSource, 'net_debt[0]');
+    assert.equal(ev.netDebtPeriod, D25);
+    assert.equal(ev.netDebtM, 900);
+  }
+  // Das Datum des VERWENDETEN Betrags entscheidet — nicht das eines anderen Feldes.
+  {
+    const { ev } = evOf(mk({ net_debt: [900], total_debt: [500], cash: [100] }, {
+      ebitda:     { periods: [D25], isFlowConcept: true, unit: 'USD' },
+      net_debt:   dated('2024-12-31'),
+      total_debt: dated(D25), cash: dated(D25)
+    }));
+    assert.equal(ev.available, false, 'net_debt zum 31.12.2024 gegen EBITDA 31.12.2025');
+    assert.ok(/unterschiedlichen Berichtsperioden/.test(ev.reason), ev.reason);
+  }
+
+  // ── Korrekt abgeleitete Nettoschulden (period-keyed) ─────────────────
+  {
+    const { ev } = evOf(mk({ total_debt: [500], cash: [100] }, {
+      ebitda: { periods: [D25], isFlowConcept: true, unit: 'USD' },
+      total_debt: dated(D25), cash: dated(D25)
+    }));
+    assert.equal(ev.available, true, ev.reason);
+    assert.ok(Math.abs(ev.base - 21) < 1e-12, 'erhalten ' + ev.base);
+    assert.ok(/period-keyed/.test(ev.netDebtSource), ev.netDebtSource);
+    assert.equal(ev.netDebtPeriod, D25);
+  }
+
+  // ── Zulaessige manuelle Altdaten ohne jede Periodenangabe ────────────
+  {
+    const { ev } = evOf(mk({ net_debt: [900] }, undefined));
+    assert.equal(ev.available, true, ev.reason);
+    assert.ok(Math.abs(ev.base - 16) < 1e-12);
+    assert.equal(ev.netDebtPeriod, null, 'kein Datum erfunden');
+  }
+  {
+    // EBITDA datiert, Bruecke ganz ohne Periodenangaben: bestehende Regel.
+    const { ev } = evOf(mk({ net_debt: [900] }, {
+      ebitda: { periods: [D25], isFlowConcept: true, unit: 'USD' } }));
+    assert.equal(ev.available, true, ev.reason);
+    assert.equal(ev.netDebtPeriod, null);
+  }
+  {
+    // Spiegelbild: EBITDA ganz ohne Periodenangaben, Bruecke datiert.
+    const { ev } = evOf(mk({ net_debt: [900] }, { net_debt: dated(D25) }));
+    assert.equal(ev.available, true, ev.reason);
+    assert.equal(ev.netDebtPeriod, D25);
+  }
+
+  // ── Null- und Nettoliquiditaetsfaelle bleiben unveraendert ───────────
+  const plain = (fund) => evOf(mk(fund, undefined)).ev;
+  assert.ok(Math.abs(plain({ net_debt: [0] }).base - 25) < 1e-12);
+  assert.ok(Math.abs(plain({ net_debt: [-200] }).base - 27) < 1e-12);
+  assert.ok(Math.abs(plain({ total_debt: [0], cash: [0] }).base - 25) < 1e-12);
+  assert.ok(Math.abs(plain({ total_debt: [0], cash: [200] }).base - 27) < 1e-12);
+  assert.equal(plain({ cash: [0] }).available, false, 'Schulden unbekannt');
+  {
+    const e = evOf(mk({ net_debt: [-200] }, {
+      ebitda: { periods: [D25], isFlowConcept: true, unit: 'USD' },
+      net_debt: dated(D25) })).ev;
+    assert.ok(Math.abs(e.base - 27) < 1e-12, 'datierte Nettoliquiditaet');
+  }
+
+  // ── Gemeinsame DCF-Aufloesung ist unveraendert ───────────────────────
+  // Der DCF-Resolver wurde nicht angefasst; seine Verbraucher erhalten
+  // dieselbe Rueckgabe wie vorher (kein neues Periodenfeld fuer net_debt[0]).
+  {
+    const r = S._resolveNetDebtForDcfBridge({ net_debt: [900], total_debt: [500], cash: [100],
+      _v4_meta: { net_debt: { periods: [null], source_type: 'reported' },
+                  total_debt: dated(D25), cash: dated(D25) } });
+    assert.equal(r.available, true);
+    assert.equal(r.netDebtM, 900);
+    assert.equal(r.source, 'net_debt[0]');
+    assert.equal(r.period, undefined);
+  }
+});
+
+test('R50 (12F Befund 2) undatierte Null-Dividenden bleiben wirtschaftliche Information', () => {
+  const D = (dps, periods, val) => S._deriveDdmGrowthInputs(
+    { dps, _v4_meta: { dps: { periods } } }, val || {}, { base: { growth_stage1: 5, terminal_growth: 2 } });
+  const Y = (...ys) => ys.map(y => (y == null ? null : y + '-12-31'));
+  const DPS = [1.12, 1.10, 0, 1.06, 1.04, 1.02, 1.00];
+  const P_ALL = Y(2026, 2025, 2024, 2023, 2022, 2021, 2020);
+  const CAGR6 = (Math.pow(1.12 / 1.00, 1 / 6) - 1) * 100;          // 1,9067623061 %
+  // Median der vier unbeeintraechtigten Jahresintervalle (2026/25, 2023/22, 2022/21, 2021/20).
+  const r = [1.12 / 1.10, 1.06 / 1.04, 1.04 / 1.02, 1.02 / 1.00].map(x => (x - 1) * 100).sort((a, b) => a - b);
+  const MED = (r[1] + r[2]) / 2;
+
+  // ── Datierte Null: bestehende Modellregel ────────────────────────────
+  const dated = D(DPS, P_ALL);
+  assert.equal(dated.g1Source, 'dps_median_annualized');
+  assert.ok(Math.abs(dated.g1 - MED) < 1e-12, 'erhalten ' + dated.g1);
+
+  // ── Undatierte Null (null bzw. unlesbar) ─────────────────────────────
+  // Ausgangsstand: der Datenpunkt wurde verworfen ⇒ dps_cagr_6y 1,9067623061 %.
+  for (const p2 of [null, 'n/a']) {
+    const P = P_ALL.slice(); P[2] = p2;
+    const o = D(DPS, P);
+    assert.notEqual(o.g1Source, 'dps_cagr_6y', 'CAGR ueber die Unterbrechung (Periode ' + p2 + ')');
+    assert.ok(Math.abs(o.g1 - CAGR6) > 0.01, 'Ausgangsstand lieferte ' + CAGR6);
+    assert.equal(o.g1Source, dated.g1Source, 'gleiche Regel wie bei datierter Null');
+    assert.ok(Math.abs(o.g1 - dated.g1) < 1e-12, 'erhalten ' + o.g1);
+    assert.deepEqual(Array.from(o.g1DpsUndatedZeros), [2]);
+    assert.ok(o.g1DpsUndatedExcludedSpans.length >= 1);
+    assert.ok(/ohne lesbare Berichtsperiode/.test(o.g1Note), o.g1Note);
+    // Kein erfundenes Jahr fuer die Null.
+    assert.equal(/2024/.test(o.g1DpsUndatedExcludedSpans.join(' ')), false,
+      JSON.stringify(o.g1DpsUndatedExcludedSpans));
+  }
+
+  // ── Echte fehlende Zahl: kein Datenpunkt, keine Unterbrechung ────────
+  {
+    const o = D([1.12, 1.10, null, 1.06, 1.04, 1.02, 1.00], P_ALL);
+    assert.equal(o.g1Source, 'dps_cagr_6y');
+    assert.ok(Math.abs(o.g1 - CAGR6) < 1e-9);
+    assert.deepEqual(Array.from(o.g1DpsUndatedZeros), []);
+  }
+
+  // ── Null ausserhalb der nachweislich verwendeten Spanne ──────────────
+  {
+    const CAGR5 = (Math.pow(1.12 / 1.02, 1 / 5) - 1) * 100;
+    const dps = [1.12, 1.10, 1.08, 1.06, 1.04, 1.02, 0];
+    const o = D(dps, Y(2026, 2025, 2024, 2023, 2022, 2021, null));
+    assert.equal(o.g1Source, 'dps_cagr_5y');
+    assert.ok(Math.abs(o.g1 - CAGR5) < 1e-9, 'erhalten ' + o.g1);
+    assert.deepEqual(Array.from(o.g1DpsUndatedZeros), [6]);
+    assert.deepEqual(Array.from(o.g1DpsUndatedExcludedSpans), [], 'unbeeintraechtigt');
+    const oD = D(dps, Y(2026, 2025, 2024, 2023, 2022, 2021, 2020));
+    assert.ok(Math.abs(oD.g1 - o.g1) < 1e-12, 'wie datiert');
+  }
+
+  // ── Keine belegbare Spanne ⇒ Ersatzkette mit Quelle UND Grund ────────
+  {
+    const o = D([1.12, 0, 1.08, 0, 1.04], Y(2026, null, 2024, null, 2022));
+    assert.equal(o.g1Source, 'scenario_capped');
+    assert.ok(/ohne lesbare Berichtsperiode/.test(o.g1HistoryUnavailable), o.g1HistoryUnavailable);
+    assert.ok(/^Keine belegte DPS-Historie/.test(o.g1Note), o.g1Note);
+  }
+
+  // ── Manuelle Annahme und Kappung unveraendert ───────────────────────
+  {
+    const P = P_ALL.slice(); P[2] = null;
+    const o = D(DPS, P, { ddm_growth_phase1_pct: 4 });
+    assert.equal(o.g1Source, 'manual');
+    assert.equal(o.g1, 4);
+    const c = D([3.00, 2.00, 0, 1.20, 1.10, 1.00], Y(2026, 2025, null, 2023, 2022, 2021));
+    assert.equal(c.g1, 5, 'Kappung auf 5 % nach der Annualisierung');
+    assert.ok(/clamped to 5.00%/.test(c.g1Note), c.g1Note);
+  }
+
+  // ── Echter DDM-Engine-Pfad bis zur Anzeige ───────────────────────────
+  const mkMj = (dps, periods) => ({
+    meta: { ticker: 'DIVX', sub_classification: 'dividend_aristocrat' },
+    fundamentals: {
+      revenue: [1000, 1000, 1000, 1000, 1000, 1000, 1000],
+      ebit: [200, 200, 200, 200, 200, 200, 200],
+      ebitda: [250, 250, 250, 250, 250, 250, 250],
+      capex: [50, 50, 50, 50, 50, 50, 50],
+      fcf: [150, 150, 150, 150, 150, 150, 150],
+      eps_diluted: [2, 2, 2, 2, 2, 2, 2],
+      book_value: [1000, 1000, 1000, 1000, 1000, 1000, 1000],
+      net_debt: [0], dps,
+      shares_diluted: [100, 100, 100, 100, 100, 100, 100],
+      _v4_meta: { dps: { periods } }
+    },
+    valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false }, wacc_derived: 10,
+      cost_of_equity_derived: 10, growth_terminal: 2, growth_stage1: 5 },
+    market: { price: 20 }
+  });
+  {
+    const P = P_ALL.slice(); P[2] = null;
+    const { v, html } = renderValuationHtml(mkMj(DPS, P));
+    const d = v.modelResults.ddm;
+    const dDated = S.runValuationEngine(mkMj(DPS, P_ALL)).modelResults.ddm;
+    assert.equal(d.applicable, true);
+    assert.equal(d._debug_g1Source, 'dps_median_annualized', 'Ausgangsstand: dps_cagr_6y');
+    assert.deepEqual(Array.from(d._debug_g1DpsUndatedZeros), [2]);
+    assert.ok(Math.abs(d.base - dDated.base) < 1e-12, 'wie bei datierter Null: ' + d.base + ' / ' + dDated.base);
+    assert.ok(/ohne lesbare Berichtsperiode/.test(html), 'Begruendung fehlt in der Anzeige');
+    assert.equal(/dps_cagr_6y/.test(html), false);
+  }
+  {
+    // Fuenf positive Jahre (Router-Schwelle), jede Spanne schliesst eine
+    // undatierte Null ein.
+    const { v, html } = renderValuationHtml(mkMj([1.12, 0, 1.10, 0, 1.08, 0, 1.06, 0, 1.04],
+      Y(2026, null, 2024, null, 2022, null, 2020, null, 2018)));
+    const d = v.modelResults.ddm;
+    assert.equal(d._debug_g1Source, 'scenario_capped');
+    assert.ok((d.warnings || []).some(w => /KEIN gemessenes Wachstum/.test(w) && /ohne lesbare Berichtsperiode/.test(w)),
+      JSON.stringify(d.warnings));
+    assert.ok(/kein gemessenes Wachstum: Gemeldete Dividende 0 ohne lesbare Berichtsperiode/.test(html),
+      'Quelle und Grund der Ersatzannahme fehlen in der Anzeige');
+  }
+});
+
+test('R51 (12F Befund 3) vorhandene Multiples werden von fehlenden Berechnungsgrundlagen unterschieden', () => {
+  const NICHTS = /kein eigener Multiple-Median/;
+  const mkMj = (fund, own) => ({
+    meta: { ticker: 'FBX', sub_classification: 'standard_nonfin' },
+    fundamentals: Object.assign({ revenue: [1000] }, fund),
+    valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false } },
+    market: { price: 20, own_multiples_median: own }
+  });
+  const run = (fund, own) => {
+    const mj = mkMj(fund, own);
+    const r = renderValuationHtml(mj);
+    const rel = r.syn.relativeMultiples;
+    return { rel, html: r.html, market: renderMarketHtml(mj, r.v), by: (id) => rel.models.find(m => m.id === id) };
+  };
+
+  // ── Multiple vorhanden, Input fehlt ──────────────────────────────────
+  const cases = [
+    ['ev_ebitda_10y', { shares_diluted: [100] },             { ev_ebitda_10y: 10 }, ['ebitda[0]']],
+    ['ev_ebitda_10y', { ebitda: [250] },                     { ev_ebitda_10y: 10 }, ['shares_diluted[0]']],
+    ['pe_10y',        {},                                    { pe_10y: 15 },        ['eps_diluted[0]']],
+    ['p_fcf_10y',     { shares_diluted: [100] },             { p_fcf_10y: 20 },     ['fcf[0]']],
+    ['p_fcf_10y',     { fcf: [100] },                        { p_fcf_10y: 20 },     ['shares_diluted[0]']],
+    ['p_fcf_10y',     {},                                    { p_fcf_10y: 20 },     ['fcf[0]', 'shares_diluted[0]']]
+  ];
+  for (const [id, fund, own, missing] of cases) {
+    const tag = id + ' ohne ' + missing.join('+');
+    const { rel, html, market, by } = run(fund, own);
+    const m = by(id);
+    assert.equal(m.available, false, tag);
+    assert.equal(m.multiplePresent, true, tag);
+    assert.equal(m.multiple, own[id], tag + ': Multiple fehlt in den Ergebnisdaten');
+    assert.deepEqual(Array.from(m.missingInputs), missing, tag);
+    for (const x of missing) assert.ok(m.reason.indexOf(x) >= 0, tag + ': ' + m.reason);
+    // Median, hasAny und Synthese unveraendert.
+    assert.equal(rel.hasAny, false, tag);
+    assert.equal(rel.median, null, tag);
+    assert.equal(rel.availableCount, 0, tag);
+    assert.equal(rel.presentCount, 1, tag);
+    // Fallback-Karte (Engine → State → Renderer): keine falsche Behauptung.
+    assert.equal(NICHTS.test(html), false, tag + ': Ausgangsstand behauptete "kein Multiple hinterlegt"');
+    assert.ok(/Input fehlt/.test(html), tag);
+    for (const x of missing) assert.ok(html.indexOf(x) >= 0, tag + ': fehlender Input nicht angezeigt');
+    // Markt-Vergleich: ebenso keine falsche Behauptung.
+    assert.equal(/Keine eigenen Multiples-Mediane/.test(market), false, tag);
+    for (const x of missing) assert.ok(market.indexOf(x) >= 0, tag + ': Markt-Vergleich nennt Input nicht');
+  }
+
+  // ── Gegenfall: tatsaechlich keine Multiples ──────────────────────────
+  {
+    const { rel, html, market } = run({ ebitda: [250], shares_diluted: [100], eps_diluted: [2], fcf: [100] }, {});
+    assert.equal(rel.presentCount, 0);
+    assert.equal(rel.models.every(m => m.multiplePresent === false), true);
+    assert.ok(NICHTS.test(html), 'hier ist die Aussage richtig');
+    assert.ok(/Keine eigenen Multiples-Mediane/.test(market));
+  }
+
+  // ── Gemischt: berechnet, Input fehlt, Multiple fehlt ─────────────────
+  {
+    const { rel, html, market, by } = run({ eps_diluted: [2] }, { pe_10y: 15, p_fcf_10y: 20 });
+    assert.equal(by('pe_10y').available, true);
+    assert.ok(Math.abs(by('pe_10y').base - 30) < 1e-12);
+    assert.equal(by('p_fcf_10y').multiplePresent, true);
+    assert.deepEqual(Array.from(by('p_fcf_10y').missingInputs), ['fcf[0]', 'shares_diluted[0]']);
+    assert.equal(by('ev_ebitda_10y').multiplePresent, false);
+    assert.ok(/ev_ebitda_10y fehlt in market.own_multiples_median/.test(by('ev_ebitda_10y').reason));
+    assert.equal(rel.hasAny, true);
+    assert.equal(rel.availableCount, 1);
+    assert.ok(Math.abs(rel.median - 30) < 1e-12, 'Median unveraendert: ' + rel.median);
+    assert.equal(rel.presentCount, 2);
+    assert.equal(rel.inputMissingCount, 1);
+    assert.equal(NICHTS.test(html), false);
+    assert.ok(/Relativer Median-Referenzwert/.test(html));
+    assert.ok(/Input fehlt/.test(html));
+    assert.ok(market.indexOf('30.00') >= 0);
+    assert.ok(market.indexOf('fcf[0]') >= 0);
+  }
+
+  // ── Nichtpositive Werte bleiben ausgeschlossen ───────────────────────
+  {
+    const { rel, by } = run({ eps_diluted: [-1] }, { pe_10y: 15 });
+    assert.equal(by('pe_10y').available, true);
+    assert.equal(by('pe_10y').nonPositive, true);
+    assert.equal(rel.hasAny, false);
+    assert.equal(rel.median, null);
+  }
+});

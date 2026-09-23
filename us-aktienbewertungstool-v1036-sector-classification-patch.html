@@ -13745,15 +13745,28 @@ function _ddmDpsObservations(f) {
 
   const obs = [];
   const unreadable = [];
+  // V1.0.68 (Korrekturchat 12F, Befund 2): Eine GEMELDETE Null-Dividende
+  // ohne lesbare Berichtsperiode ist trotzdem eine wirtschaftliche Angabe
+  // (Dividendenunterbrechung). Bis V1.0.67 wurde sie hier wie ein
+  // unbrauchbarer Datenpunkt verworfen; danach rechnete der CAGR-Weg ueber
+  // die Unterbrechung hinweg, als habe es sie nie gegeben. Sie bleibt jetzt
+  // mit ihrem Platz in der gemeldeten Reihe erhalten — OHNE Jahreszahl und
+  // ohne erfundene zeitliche Zuordnung. Eine echte fehlende Zahl (null) ist
+  // dagegen keine Angabe und bleibt, wie bisher, kein Datenpunkt.
+  const undatedZeros = [];
   for (let i = 0; i < arr.length; i++) {
     if (arr[i] == null) continue;             // fehlender Wert: kein Datenpunkt
     const p = (i < periods.length) ? periods[i] : null;
     const y = (p == null || typeof _secPeriodYear !== 'function') ? null : _secPeriodYear(p);
-    if (y == null) { unreadable.push(String(p)); continue; }
+    if (y == null) {
+      unreadable.push(String(p));
+      if (arr[i] === 0) undatedZeros.push({ index: i, value: 0, period: p == null ? null : p });
+      continue;
+    }
     obs.push({ index: i, value: arr[i], year: y, period: p });
   }
   if (obs.length === 0) {
-    return { ok: false, observations: [], reason:
+    return { ok: false, observations: [], undatedZeros, reason:
       'Zu keinem DPS-Wert ist eine lesbare Berichtsperiode angegeben' +
       (unreadable.length > 0 ? ' (erhalten: ' + unreadable.slice(0, 3).join(', ') + ')' : '') + '.' };
   }
@@ -13780,9 +13793,13 @@ function _ddmDpsObservations(f) {
   }
   const partial = (unreadable.length > 0)
     ? ('Einzelne Berichtsperioden der DPS-Reihe sind nicht lesbar (' +
-       unreadable.slice(0, 3).join(', ') + ') — diese Werte bleiben unberuecksichtigt.')
+       unreadable.slice(0, 3).join(', ') + ') — diese Werte bleiben unberuecksichtigt' +
+       (undatedZeros.length > 0
+         ? '; gemeldete Dividende 0 ohne lesbare Periode an Platz ' +
+           undatedZeros.map(z => z.index).join(', ') + ' bleibt als Unterbrechung erhalten'
+         : '') + '.')
     : null;
-  return { ok: true, observations: obs, reason: null, partialReason: partial };
+  return { ok: true, observations: obs, undatedZeros, reason: null, partialReason: partial };
 }
 
 function _deriveDdmGrowthInputs(f, val, scenarios) {
@@ -13832,6 +13849,16 @@ function _deriveDdmGrowthInputs(f, val, scenarios) {
     cagrNotes.push(dpsObsRes.partialReason);
   }
   const dpsObs = dpsObsRes.ok ? dpsObsRes.observations : [];
+  // V1.0.68 (Befund 2): gemeldete Null-Dividenden ohne lesbare Periode.
+  const dpsUndatedZeros = (dpsObsRes.ok && Array.isArray(dpsObsRes.undatedZeros))
+    ? dpsObsRes.undatedZeros : [];
+  const undatedExcludedSpans = [];
+  const _noteUndatedExclusion = (what, zs) => {
+    undatedExcludedSpans.push(what);
+    cagrNotes.push(what + ': gemeldete Dividende 0 ohne lesbare Berichtsperiode an Platz ' +
+      zs.map(z => z.index).join(', ') + ' liegt innerhalb der Reihe — Zulaessigkeit der ' +
+      'Spanne nicht belegbar, ausgeschlossen');
+  };
   // Nur POSITIVE Werte taugen als Stuetzpunkt einer Wachstumsrate; eine
   // gemeldete 0 bleibt als Beobachtung erhalten (wirtschaftliche Angabe) und
   // sperrt jede Spanne, die ueber sie hinweg rechnen wuerde.
@@ -13842,6 +13869,15 @@ function _deriveDdmGrowthInputs(f, val, scenarios) {
     // Eine gemeldete Null zwischen zwei Beobachtungsjahren.
     const _reportedZeroBetween = (yOld, yNew) =>
       dpsObs.some(o => o.value === 0 && o.year > yOld && o.year < yNew);
+    // V1.0.68 (Befund 2): Eine gemeldete Null OHNE lesbare Periode hat kein
+    // Jahr. Belegt ist nur ihr Platz in der gemeldeten Reihe, deren datierte
+    // Werte nachweislich rueckwaerts laufen. Jede Spanne, deren Endpunkte
+    // diesen Platz einschliessen, koennte die Unterbrechung enthalten — ihre
+    // Zulaessigkeit ist damit nicht belegbar, sie wird ausgeschlossen.
+    // Spannen, die den Platz nicht einschliessen, sind unbeeintraechtigt.
+    // Es wird KEIN Jahr zugeordnet; die Null wird nicht ersatzweise datiert.
+    const _undatedZeroWithin = (oOld, oNew) =>
+      dpsUndatedZeros.filter(z => z.index > oNew.index && z.index < oOld.index);
 
     // ── CAGR ueber einen angefragten Horizont ────────────────────────────
     // Stuetzwert bleibt der (years+1)-te positive Datenpunkt; annualisiert
@@ -13860,6 +13896,11 @@ function _deriveDdmGrowthInputs(f, val, scenarios) {
       if (_reportedZeroBetween(oldObs.year, newVal.year)) {
         cagrNotes.push('Horizont ' + years + 'y: gemeldete Dividende 0 innerhalb der Zeitspanne — ' +
                        'kein durchgehendes Wachstum annualisierbar');
+        return null;
+      }
+      const _uz = _undatedZeroWithin(oldObs, newVal);
+      if (_uz.length > 0) {
+        _noteUndatedExclusion('Horizont ' + years + 'y (' + oldObs.period + ' bis ' + newVal.period + ')', _uz);
         return null;
       }
       const cagr = (Math.pow(newVal.value / oldObs.value, 1 / elapsed) - 1) * 100;
@@ -13883,6 +13924,11 @@ function _deriveDdmGrowthInputs(f, val, scenarios) {
       if (!(cur.value > 0) || !(prev.value > 0)) continue;   // 0 ist kein Stuetzpunkt
       const span = cur.year - prev.year;
       if (!(span > 0)) continue;
+      const _uzI = _undatedZeroWithin(prev, cur);
+      if (_uzI.length > 0) {
+        _noteUndatedExclusion('Intervall ' + prev.period + ' bis ' + cur.period, _uzI);
+        continue;
+      }
       rates.push({ rate: (Math.pow(cur.value / prev.value, 1 / span) - 1) * 100, span });
     }
     rates.sort((a, b) => a.rate - b.rate);
@@ -13919,6 +13965,15 @@ function _deriveDdmGrowthInputs(f, val, scenarios) {
     } else {
       g1HistoryUnavailable = 'Aus den belegten Berichtsperioden laesst sich kein ' +
         'Wachstumsintervall bilden (zu wenige positive DPS-Werte mit verschiedenen Berichtsjahren).';
+      // V1.0.68 (Befund 2): Lag es an einer undatierten Null-Dividende, wird
+      // das als Grund genannt — sonst saehe die Ersatzkette wie ein reiner
+      // Datenmangel aus.
+      if (undatedExcludedSpans.length > 0) {
+        g1HistoryUnavailable = 'Gemeldete Dividende 0 ohne lesbare Berichtsperiode (Platz ' +
+          dpsUndatedZeros.map(z => z.index).join(', ') + ') — ob die Wachstumsspannen ' +
+          'ueber diese Unterbrechung reichen, ist nicht belegbar; alle in Frage kommenden ' +
+          'Spannen sind ausgeschlossen (' + undatedExcludedSpans.join('; ') + ').';
+      }
     }
 
     if (chosenGrowth != null) {
@@ -14013,6 +14068,10 @@ function _deriveDdmGrowthInputs(f, val, scenarios) {
                      dpsIntervalSpans.length > 0 && dpsIntervalSpans.every(x => x === 1))
       ? dpsMedianAnnualized : null,
     g1DpsTrendNegative: dpsTrendNegative,
+    // V1.0.68 (Befund 2): undatierte Null-Dividenden und die deshalb
+    // ausgeschlossenen Spannen bleiben nachvollziehbar.
+    g1DpsUndatedZeros: dpsUndatedZeros.map(z => z.index),
+    g1DpsUndatedExcludedSpans: undatedExcludedSpans.slice(),
     g2,
     g2Source,
     dpsPositiveYears: positiveYears
@@ -14091,6 +14150,8 @@ function modelDdm(mj, scenarios) {
     _debug_g1DpsIntervalCount:    ddmInputs.g1DpsIntervalCount,
     _debug_g1DpsIntervalSpans:    ddmInputs.g1DpsIntervalSpans,
     _debug_g1HistoryUnavailable:  ddmInputs.g1HistoryUnavailable,
+    _debug_g1DpsUndatedZeros:     ddmInputs.g1DpsUndatedZeros,
+    _debug_g1DpsUndatedExcludedSpans: ddmInputs.g1DpsUndatedExcludedSpans,
     _debug_g1DpsTrendNeg:   ddmInputs.g1DpsTrendNegative,
     _debug_dpsGrowthYears:  ddmInputs.g1DpsGrowthYears,
     _debug_dpsPositiveYrs:  ddmInputs.dpsPositiveYears,
@@ -20042,59 +20103,94 @@ function _resolveMultiplesEvBridge(f) {
   // mit derselben Toleranz, die `_joinPeriodKeyed` fuer Geschaeftsjahresenden
   // verwendet (MULTIPLES_PERIOD_TOLERANCE_DAYS); es wird keine neue Regel
   // erfunden.
-  const bridgePeriod = res.period || _period0('net_debt') || _period0('total_debt');
+  // ── V1.0.68 (Korrekturchat 12F, Befund 1) · Betrag und Periode aus
+  // DERSELBEN Angabe ─────────────────────────────────────────────────────
+  // Bis V1.0.67 lautete die Zeile hier
+  //   `res.period || _period0('net_debt') || _period0('total_debt')`.
+  // Stammte der Betrag aus einem eigenstaendig gemeldeten `net_debt[0]` OHNE
+  // lesbaren Stichtag, wurde ihm das Datum von `total_debt` angehaengt —
+  // einem Feld, das zur Rechnung gar nicht beigetragen hatte. Gemessen:
+  // net_debt[0] = 900 (periods [null]) neben total_debt 500 / cash 100 zum
+  // 31.12.2025 ⇒ 16 USD/Aktie, „Quelle net_debt[0], Stichtag 31.12.2025".
+  //
+  // Jetzt beschreibt der Periodennachweis ausschliesslich die Angabe, deren
+  // Betrag tatsaechlich verwendet wird:
+  //   · `net_debt[0]`                 ⇒ nur `_v4_meta.net_debt.periods[0]`;
+  //   · period-keyed total_debt − cash ⇒ die Periode der Verknuepfung;
+  //   · Indexpfad ohne Periodenkontext ⇒ keine Periode (Altdaten).
+  // Es wird kein Datum eines unbenutzten Feldes uebernommen und kein Betrag
+  // aus anderen Feldern ersatzweise gebildet.
+  const _claimsPeriods = (field) => {
+    const m = meta[field];
+    return !!(m && Array.isArray(m.periods));
+  };
+  // Periodenkontext einer Seite: eine gefuehrte `periods`-Angabe (auch leer
+  // oder unlesbar) oder ein sonstiger Periodenkontext der Datenaufbereitung.
+  const _sideHasCtx = (fields) => fields.some(
+    (fld) => _claimsPeriods(fld) ||
+      ((typeof _seriesHasPeriodContext === 'function') && _seriesHasPeriodContext(fund, fld)));
+
+  let bridgePeriod = null;
+  let bridgePeriodField = null;
+  if (res.source === 'net_debt[0]') {
+    bridgePeriod = _period0('net_debt');
+    bridgePeriodField = bridgePeriod != null ? 'net_debt' : null;
+  } else if (res.period != null) {
+    bridgePeriod = res.period;
+    bridgePeriodField = 'total_debt/cash (period-keyed)';
+  }
   const ebitdaPeriod = _period0('ebitda');
 
-  if (ebitdaPeriod != null) {
-    if (bridgePeriod == null) {
-      // Bekannter Widerspruch darf nicht an fehlenden Metadaten verschwinden:
-      // traegt die Bilanzseite ueberhaupt Periodenangaben, muss ihr Stichtag
-      // bestimmbar sein.
-      // Eine vorhandene `periods`-Angabe IST der Anspruch, period-keyed zu
-      // sein — auch wenn sie leer oder unlesbar ist. Sie darf den Widerspruch
-      // nicht dadurch aufloesen, dass sie nichts aussagt.
-      const _claimsPeriods = (field) => {
-        const m = meta[field];
-        return !!(m && Array.isArray(m.periods));
-      };
-      const _bridgeHasCtx = ['net_debt', 'total_debt', 'cash_and_equivalents', 'cash'].some(
-        (fld) => _claimsPeriods(fld) ||
-          ((typeof _seriesHasPeriodContext === 'function') && _seriesHasPeriodContext(fund, fld)));
-      if (_bridgeHasCtx) {
-        return {
-          available: false, netDebtM: null, source: null, period: null,
-          reason: 'Der EBITDA-Zeitraum endet am ' + ebitdaPeriod + ', der Bilanzstichtag ' +
-                  'der Eigenkapitalbruecke ist trotz vorhandener Periodenangaben nicht ' +
-                  'bestimmbar. Ein Abzug ohne belegten Stichtag waere scheingenau.'
-        };
-      }
-    } else {
-      const days = (typeof _secPeriodDaysApart === 'function')
-        ? _secPeriodDaysApart(ebitdaPeriod, bridgePeriod) : null;
-      if (days == null) {
-        return {
-          available: false, netDebtM: null, source: null, period: null,
-          reason: 'Die Berichtsperioden von EBITDA (' + ebitdaPeriod + ') und ' +
-                  'Bilanzangaben (' + bridgePeriod + ') sind nicht als Datum lesbar — ' +
-                  'ihre Vereinbarkeit ist damit nicht nachweisbar.'
-        };
-      }
-      if (days > MULTIPLES_PERIOD_TOLERANCE_DAYS) {
-        return {
-          available: false, netDebtM: null, source: null, period: null,
-          reason: 'Unternehmenswert und Eigenkapitalbruecke stammen aus ' +
-                  'unterschiedlichen Berichtsperioden (EBITDA-Zeitraum endet ' + ebitdaPeriod +
-                  ', Bilanzstichtag ' + bridgePeriod + ' — ' + Math.round(days) +
-                  ' Tage Abstand, zulaessig sind ' + MULTIPLES_PERIOD_TOLERANCE_DAYS +
-                  '). Ein Abzug ueber verschiedene Stichtage wuerde Zeitraeume vermischen.'
-        };
-      }
+  // Liegt auf einer Seite der Bruecke Periodenkontext vor, muss diese Seite
+  // ihren Stichtag bzw. ihr Periodenende auch belegen. Beide Seiten werden
+  // gleich behandelt (V1.0.67 pruefte nur die Bilanzseite). Nur wenn eine
+  // Seite GAR KEINE Periodenangaben fuehrt — manuelle Altdaten —, bleibt es
+  // bei der bestehenden Regel, die solche Daten ungeprueft zulaesst.
+  const bridgeHasCtx = _sideHasCtx(['net_debt', 'total_debt', 'cash_and_equivalents', 'cash']);
+  const ebitdaHasCtx = _sideHasCtx(['ebitda']);
+  const _blocked = (reason) => ({
+    available: false, netDebtM: null, source: null, period: null, reason
+  });
+
+  if (ebitdaPeriod != null && bridgePeriod != null) {
+    const days = (typeof _secPeriodDaysApart === 'function')
+      ? _secPeriodDaysApart(ebitdaPeriod, bridgePeriod) : null;
+    if (days == null) {
+      return _blocked('Die Berichtsperioden von EBITDA (' + ebitdaPeriod + ') und ' +
+                'Bilanzangaben (' + bridgePeriod + ') sind nicht als Datum lesbar — ' +
+                'ihre Vereinbarkeit ist damit nicht nachweisbar.');
     }
+    if (days > MULTIPLES_PERIOD_TOLERANCE_DAYS) {
+      return _blocked('Unternehmenswert und Eigenkapitalbruecke stammen aus ' +
+                'unterschiedlichen Berichtsperioden (EBITDA-Zeitraum endet ' + ebitdaPeriod +
+                ', Bilanzstichtag ' + bridgePeriod + ' — ' + Math.round(days) +
+                ' Tage Abstand, zulaessig sind ' + MULTIPLES_PERIOD_TOLERANCE_DAYS +
+                '). Ein Abzug ueber verschiedene Stichtage wuerde Zeitraeume vermischen.');
+    }
+  } else if (ebitdaPeriod != null && bridgeHasCtx) {
+    // Bekannter Widerspruch darf nicht an fehlenden Metadaten verschwinden.
+    // Eine vorhandene `periods`-Angabe IST der Anspruch, period-keyed zu
+    // sein — auch wenn sie leer oder unlesbar ist.
+    return _blocked('Der EBITDA-Zeitraum endet am ' + ebitdaPeriod + ', der Bilanzstichtag ' +
+            'des verwendeten Betrags (' + (res.source || 'Nettoschulden') + ') ist trotz ' +
+            'vorhandener Periodenangaben nicht bestimmbar. Das Datum eines anderen Feldes wird ' +
+            'nicht uebernommen; ein Abzug ohne belegten Stichtag waere scheingenau.');
+  } else if (bridgePeriod != null && ebitdaHasCtx) {
+    // Spiegelbild: Bilanz datiert, EBITDA fuehrt Periodenangaben ohne
+    // lesbares Periodenende (z. B. `periods: [null]`).
+    return _blocked('Der Bilanzstichtag der Eigenkapitalbruecke ist ' + bridgePeriod +
+            ', das Periodenende des EBITDA ist trotz vorhandener Periodenangaben nicht ' +
+            'bestimmbar. Die Vereinbarkeit beider Seiten ist damit nicht nachweisbar.');
+  } else if (ebitdaPeriod == null && bridgePeriod == null && ebitdaHasCtx && bridgeHasCtx) {
+    return _blocked('EBITDA und Eigenkapitalbruecke fuehren Periodenangaben, keine der beiden ' +
+            'Seiten belegt aber ein lesbares Periodenende. Eine Vereinbarkeit wird nicht ' +
+            'behauptet.');
   }
 
   return {
     available: true, netDebtM: res.netDebtM,
-    source: res.source || null, period: bridgePeriod || null, reason: null
+    source: res.source || null, period: bridgePeriod || null,
+    periodField: bridgePeriodField, reason: null
   };
 }
 
@@ -20122,6 +20218,7 @@ function computeRelativeMultiplesFV(mj, valuation) {
     return {
       models: [], median: null, hasAny: false, availableCount: 0,
       computedCount: 0, nonPositiveCount: 0, bridgeBlockedCount: 0,
+      presentCount: null, inputMissingCount: null,
       basis: _vw.basis || null,
       basisLabel: (typeof DATA_BASIS_LABELS === 'object' && _vw.basis)
         ? (DATA_BASIS_LABELS[_vw.basis] || _vw.basis) : (_vw.basis || null),
@@ -20138,20 +20235,41 @@ function computeRelativeMultiplesFV(mj, valuation) {
   const shares = (f.shares_diluted && f.shares_diluted[0]) || null;
   const models = [];
 
+  // ── V1.0.68 (Korrekturchat 12F, Befund 3) · Multiple vorhanden ≠ Wert
+  // berechenbar ─────────────────────────────────────────────────────────
+  // Bis V1.0.67 trug ein nicht verfuegbares Modell keinen `multiple`-Wert,
+  // auch wenn das Multiple hinterlegt war und nur EPS, FCF, EBITDA oder die
+  // Aktienanzahl fehlten. Die Anzeigen schlossen daraus „kein Multiple
+  // hinterlegt". Jetzt werden beide Aussagen getrennt gefuehrt:
+  //   · `multiplePresent` / `multiple` — das Multiple liegt vor;
+  //   · `missingInputs`                — welche Berechnungsgrundlage fehlt.
+  // Median, `hasAny`, Gewichtung und der Ausschluss nichtpositiver Werte
+  // haengen weiterhin ausschliesslich an `available`/`base`.
+  const _missingOf = (pairs) => pairs.filter(p => !p[1]).map(p => p[0]);
+  const _unavailable = (id, label, multiple, missingInputs) => {
+    if (multiple == null) {
+      return { id, label, available: false, multiplePresent: false, missingInputs: [],
+        reason: id + ' fehlt in market.own_multiples_median' };
+    }
+    return { id, label, available: false, multiplePresent: true, multiple, base: null,
+      missingInputs,
+      reason: 'Multiple hinterlegt, Berechnungsgrundlage fehlt: ' + missingInputs.join(', ') };
+  };
+
   if (own.p_fcf_10y != null && f.fcf && f.fcf[0] != null && shares) {
-    models.push({ id:'p_fcf_10y', label:'P/FCF 10y Median',
+    models.push({ id:'p_fcf_10y', label:'P/FCF 10y Median', multiplePresent: true,
       multiple: own.p_fcf_10y, base: (own.p_fcf_10y * f.fcf[0]) / shares, available: true });
   } else {
-    models.push({ id:'p_fcf_10y', label:'P/FCF 10y Median', available: false,
-      reason: own.p_fcf_10y == null ? 'p_fcf_10y fehlt in market.own_multiples_median' : 'fcf[0] oder shares_diluted[0] fehlt' });
+    models.push(_unavailable('p_fcf_10y', 'P/FCF 10y Median', own.p_fcf_10y, _missingOf([
+      ['fcf[0]', !!(f.fcf && f.fcf[0] != null)], ['shares_diluted[0]', !!shares]])));
   }
 
   if (own.pe_10y != null && f.eps_diluted && f.eps_diluted[0] != null) {
-    models.push({ id:'pe_10y', label:'P/E 10y Median',
+    models.push({ id:'pe_10y', label:'P/E 10y Median', multiplePresent: true,
       multiple: own.pe_10y, base: own.pe_10y * f.eps_diluted[0], available: true });
   } else {
-    models.push({ id:'pe_10y', label:'P/E 10y Median', available: false,
-      reason: own.pe_10y == null ? 'pe_10y fehlt in market.own_multiples_median' : 'eps_diluted[0] fehlt' });
+    models.push(_unavailable('pe_10y', 'P/E 10y Median', own.pe_10y, _missingOf([
+      ['eps_diluted[0]', !!(f.eps_diluted && f.eps_diluted[0] != null)]])));
   }
 
   if (own.ev_ebitda_10y != null && f.ebitda && f.ebitda[0] != null && shares) {
@@ -20159,21 +20277,23 @@ function computeRelativeMultiplesFV(mj, valuation) {
     const ev     = own.ev_ebitda_10y * f.ebitda[0];
     const bridge = _resolveMultiplesEvBridge(f);
     if (bridge.available) {
-      models.push({ id:'ev_ebitda_10y', label:'EV/EBITDA 10y Median',
+      models.push({ id:'ev_ebitda_10y', label:'EV/EBITDA 10y Median', multiplePresent: true,
         multiple: own.ev_ebitda_10y, base: (ev - bridge.netDebtM) / shares, available: true,
         enterpriseValueM: ev, netDebtM: bridge.netDebtM,
-        netDebtSource: bridge.source, netDebtPeriod: bridge.period });
+        netDebtSource: bridge.source, netDebtPeriod: bridge.period,
+        netDebtPeriodField: bridge.periodField || null });
     } else {
       // Der operative Unternehmenswert bleibt getrennt sichtbar; nur der
       // daraus abgeleitete Wert JE AKTIE ist nicht belegbar.
       models.push({ id:'ev_ebitda_10y', label:'EV/EBITDA 10y Median', available: false,
-        multiple: own.ev_ebitda_10y, base: null,
+        multiplePresent: true, multiple: own.ev_ebitda_10y, base: null,
+        missingInputs: ['Nettoschulden (belegt)'],
         bridgeBlocked: true, enterpriseValueM: ev,
         reason: bridge.reason });
     }
   } else {
-    models.push({ id:'ev_ebitda_10y', label:'EV/EBITDA 10y Median', available: false,
-      reason: own.ev_ebitda_10y == null ? 'ev_ebitda_10y fehlt in market.own_multiples_median' : 'ebitda[0] oder shares_diluted[0] fehlt' });
+    models.push(_unavailable('ev_ebitda_10y', 'EV/EBITDA 10y Median', own.ev_ebitda_10y, _missingOf([
+      ['ebitda[0]', !!(f.ebitda && f.ebitda[0] != null)], ['shares_diluted[0]', !!shares]])));
   }
 
   // ── V1.0.66 (Befund 2, Randfall) · Status und Ergebnis duerfen sich nicht
@@ -20223,7 +20343,11 @@ function computeRelativeMultiplesFV(mj, valuation) {
     availableCount: usable.length,
     computedCount: models.filter(r => r.available).length,
     nonPositiveCount: models.filter(r => r.nonPositive === true).length,
-    bridgeBlockedCount: models.filter(r => r.bridgeBlocked === true).length
+    bridgeBlockedCount: models.filter(r => r.bridgeBlocked === true).length,
+    // V1.0.68: vorhandene Multiples unabhaengig von ihrer Berechenbarkeit.
+    presentCount: models.filter(r => r.multiplePresent === true).length,
+    inputMissingCount: models.filter(r => r.multiplePresent === true && !r.available &&
+      r.bridgeBlocked !== true && Array.isArray(r.missingInputs) && r.missingInputs.length > 0).length
   };
 }
 
@@ -23990,7 +24114,9 @@ function buildValuationFallback(mj, syn, valResult) {
   // kein `hasAny` erzwungen und kein Ersatzwert gebildet.
   const _relHasAnything = Array.isArray(rel.models) && rel.models.length > 0 &&
     ((rel.computedCount || 0) > 0 || (rel.bridgeBlockedCount || 0) > 0 ||
-     rel.models.some(m => m.multiple != null));
+     rel.models.some(m => m.multiple != null || m.multiplePresent === true));
+  // V1.0.68 (Befund 3): Multiple-Wert sicher formatieren (auch nichtnumerische Angaben).
+  const _fmtMult = (x) => (typeof x === 'number' && isFinite(x)) ? x.toFixed(1) + 'x' : String(x);
   let relHtml = '';
   if (rel.basisBlocked) {
     relHtml = `
@@ -24018,7 +24144,8 @@ function buildValuationFallback(mj, syn, valResult) {
               ${m.nonPositive ? `<div class="reason" style="color:var(--warn)">${escapeHtml(m.excludedFromMedian || '')}</div>` : ''}
             </div>` : `
             <div class="model disabled">
-              <div class="mn"><span>${escapeHtml(m.label)}</span><span class="mtag off">${m.bridgeBlocked ? 'gesperrt' : 'fehlt'}</span></div>
+              <div class="mn"><span>${escapeHtml(m.label)}</span><span class="mtag off">${m.bridgeBlocked ? 'gesperrt' : (m.multiplePresent ? 'Input fehlt' : 'fehlt')}</span></div>
+              ${m.multiplePresent ? `<div class="vals"><div class="vl">Multiple</div><div class="vv">${escapeHtml(_fmtMult(m.multiple))}</div></div>` : ''}
               <div class="reason">${escapeHtml(m.reason || '')}</div>
               ${(m.bridgeBlocked && m.enterpriseValueM != null) ? `<div class="reason">Operativer Unternehmenswert (EV) bleibt bestimmbar: ${m.enterpriseValueM.toFixed(1)}M — nur der Wert JE AKTIE ist ohne belegte Nettoschulden nicht ableitbar.</div>` : ''}
             </div>`
@@ -24560,14 +24687,18 @@ function renderMarket() {
     : null) || mj.fundamentals || {};
   // V1.0.66 (Befund 2): gesperrte und nichtpositive Modelle verschwinden nicht
   // mehr wortlos aus der Tabelle — ein gesperrtes Modell ist eine Aussage.
+  // V1.0.68 (Befund 3): ein hinterlegtes Multiple mit fehlender
+  // Berechnungsgrundlage erscheint mit dem fehlenden Input, statt die Zeile
+  // wegzulassen und „keine Multiples eingetragen" zu behaupten.
+  const _mx = (x) => (typeof x === 'number' && isFinite(x)) ? x.toFixed(1) + 'x' : String(x);
   const _relLabel = (m) => {
-    if (m.id === 'pe_10y') return `Impliziter Preis bei eigenem PE-Median (${m.multiple.toFixed(1)}x × EPS ${(f.eps_diluted && f.eps_diluted[0] != null ? f.eps_diluted[0].toFixed(2) : '?')})`;
-    if (m.id === 'ev_ebitda_10y') return `Impliziter Preis bei eigenem EV/EBITDA-Median (${m.multiple.toFixed(1)}x)`;
-    if (m.id === 'p_fcf_10y') return `Impliziter Preis bei eigenem P/FCF-Median (${m.multiple.toFixed(1)}x)`;
+    if (m.id === 'pe_10y') return `Impliziter Preis bei eigenem PE-Median (${_mx(m.multiple)} × EPS ${(f.eps_diluted && f.eps_diluted[0] != null ? f.eps_diluted[0].toFixed(2) : '?')})`;
+    if (m.id === 'ev_ebitda_10y') return `Impliziter Preis bei eigenem EV/EBITDA-Median (${_mx(m.multiple)})`;
+    if (m.id === 'p_fcf_10y') return `Impliziter Preis bei eigenem P/FCF-Median (${_mx(m.multiple)})`;
     return m.label;
   };
   const rows = rel.models
-    .filter(m => m.available || m.bridgeBlocked)
+    .filter(m => m.available || m.bridgeBlocked || m.multiplePresent === true)
     .map(m => ({
       label: _relLabel(m),
       value: m.available ? m.base.toFixed(2) : 'nicht ableitbar',

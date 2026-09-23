@@ -1,5 +1,192 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Korrekturchat 12F: drei Restfehler nach V1.0.67 behoben (V1.0.68)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Arbeits- und
+Ergebnisbranch **`claude/loving-newton-hcpo71`**. Nach `git fetch` stand die
+Branch-Spitze exakt auf dem Referenzcommit
+**`60fc1591331057430ca3fb16c3c825ababfec648`** (V1.0.67); es gab KEINE
+Nachfolgecommits, der Arbeitsbaum war sauber. Die Sitzung startete auf dem
+Hilfsbranch `claude/loving-newton-hcpo71-j1nnmg`, der nur den alten `main`
+(`b023dc8`) enthaelt — er wurde nicht verwendet und nicht veraendert; gearbeitet
+wurde auf `claude/loving-newton-hcpo71`. `main` wurde nicht angefasst. Eine
+`AGENTS.md` existiert in diesem Repository weiterhin nicht. Tool-Datei:
+`us-aktienbewertungstool-v1036-sector-classification-patch.html`.
+
+**Bestaetigte Testbaseline vor der Aenderung** (selbst auf `60fc159`, ein Lauf
+`npm test`): **1700 Rechen-Assertions — darin 434 Fixture-Assertions — und
+202 Node-Tests, beide Suiten Exit 0.**
+
+**Auftrag.** Drei unabhaengig bestaetigte Restfehler nach V1.0.67. Kein
+Refactoring, keine neue Abhaengigkeit, keine neue Bewertungsmethode.
+Importabsicherung, Financials-Modellfamilie und FY-/TTM-Korrekturen bleiben
+erhalten; DCF-Formeln und der gemeinsame DCF-Nettoschuldenresolver
+(`_resolveNetDebtForDcfBridge`) sind unveraendert; EPV bleibt deaktiviert.
+
+---
+
+### 1 · Reproduktion am unveraenderten Ausgangsstand `60fc159`
+
+Alle Nachweise sind **synthetische Datensaetze ueber die produktiven
+Aufrufwege** — keine Live-Validierung, kein reales Filing.
+
+| # | gemessen auf `60fc159` |
+|---|---|
+| **1a** Bruecke, fremdes Datum | EBITDA 250 (31.12.2025), Multiplikator 10, 100 Aktien; `net_debt[0] = 900` mit `_v4_meta.net_debt = { periods: [null], source_type: 'reported' }`; `total_debt[0] = 500`, `cash[0] = 100` je 31.12.2025 ⇒ **verfuegbar, 16 USD/Aktie, Quelle `net_debt[0]`, `netDebtPeriod` 2025-12-31** — das Datum stammte aus `total_debt`, das zur Rechnung nichts beitrug. |
+| **1b** Bruecke, EBITDA undatiert | EBITDA mit `periods: [null]`, `net_debt[0] = 900` zum 31.12.2025 ⇒ **verfuegbar, 16 USD/Aktie** — die Kompatibilitaetspruefung wurde uebersprungen, weil `ebitdaPeriod` null war. |
+| **2** DDM, undatierte Null | DPS `[1.12, 1.10, 0, 1.06, 1.04, 1.02, 1.00]`, Perioden 2026…2020 (je 31.12.). Mit datierter Null: `dps_median_annualized` 1,9419306184 %. Nur das Datum der Null entfernt ⇒ **`dps_cagr_6y` 1,9067623061 %** — der Datenpunkt wurde verworfen und das CAGR lief ueber die Unterbrechung. |
+| **3** Multiples | `ev_ebitda_10y = 10` ohne EBITDA; `pe_10y = 15` ohne EPS; `p_fcf_10y = 20` ohne Aktienanzahl ⇒ Modelleintrag **ohne `multiple`**, `buildValuationFallback()` zeigte jeweils **„Es ist kein eigener Multiple-Median … hinterlegt."** |
+
+### 2 · Was geaendert wurde
+
+**Befund 1 — `_resolveMultiplesEvBridge()`: Betrag, Quelle und Periode aus
+derselben Angabe.** Die Zeile
+`res.period || _period0('net_debt') || _period0('total_debt')` ist entfallen.
+Der Periodennachweis beschreibt jetzt ausschliesslich die Angabe, deren
+Betrag verwendet wird:
+
+* Quelle `net_debt[0]` ⇒ nur `_v4_meta.net_debt.periods[0]`;
+* period-keyed `total_debt − cash` ⇒ die Periode der Verknuepfung
+  (`res.period` aus `_joinPeriodKeyed`);
+* Indexpfad ohne Periodenkontext (manuelle Altdaten) ⇒ keine Periode.
+
+Die Pruefung ist **symmetrisch**. Jede Seite (EBITDA; Bruecke) ist entweder
+datiert, fuehrt Periodenangaben ohne lesbares Ende (`periods` vorhanden, auch
+`[null]`, oder sonstiger Periodenkontext der Datenaufbereitung) oder fuehrt gar
+keine Periodenangaben (Altdaten):
+
+| EBITDA \ Bruecke | datiert | Angaben, aber undatiert | ohne Angaben |
+|---|---|---|---|
+| datiert | Abstand ≤ 45 Tage, sonst Sperre (unveraendert) | **Sperre** | zulaessig (unveraendert) |
+| Angaben, aber undatiert | **Sperre (neu)** | **Sperre (neu)** | zulaessig |
+| ohne Angaben | zulaessig (unveraendert) | zulaessig | zulaessig (unveraendert) |
+
+Es wird kein Datum eines unbenutzten Feldes uebernommen und **kein Betrag
+ersatzweise aus anderen Feldern gebildet** (im Fall 1a entsteht also NICHT
+stillschweigend 21 USD aus 500 − 100). Das Ergebnis traegt zusaetzlich
+`periodField` (am Modell `netDebtPeriodField`). Der DCF-Resolver
+`_resolveNetDebtForDcfBridge` wurde **nicht** geaendert — seine Rueckgabe fuer
+alle bestehenden Verbraucher ist identisch (in `R49` festgehalten).
+
+**Befund 2 — DDM: undatierte Null-Dividenden bleiben Information.**
+`_ddmDpsObservations()` verwirft eine gemeldete `0` ohne lesbare Periode nicht
+mehr stillschweigend, sondern fuehrt sie in `undatedZeros` (Platz in der
+gemeldeten Reihe, **keine Jahreszahl**). `_deriveDdmGrowthInputs()` schliesst
+jede Wachstumsspanne — CAGR-Horizont wie Einzelintervall des annualisierten
+Medians — aus, deren beide Endpunkte den Platz der undatierten Null
+einschliessen; die Zulaessigkeit einer solchen Spanne ist nicht belegbar.
+Spannen, die den Platz nicht einschliessen, bleiben nutzbar. Grundlage ist
+allein die gemeldete Reihenfolge, deren datierte Werte bereits nachweislich
+rueckwaerts laufen muessen; der Null wird kein Jahr zugeordnet.
+
+* Jede Ausschliessung steht als Klartext in `g1Note`/`g1DpsNotes`,
+  maschinenlesbar in `g1DpsUndatedZeros` und `g1DpsUndatedExcludedSpans`
+  (am Modell `_debug_g1DpsUndatedZeros`, `_debug_g1DpsUndatedExcludedSpans`).
+* Bleibt keine Spanne uebrig, nennt `g1HistoryUnavailable` die undatierte
+  Null als Grund; die Ersatzkette (Szenario/Default) behaelt Quelle und
+  Grund bis zur Modellwarnung „g1 ist KEIN gemessenes Wachstum …" und zur
+  DDM-Anzeige („kein gemessenes Wachstum: …").
+* Eine echte fehlende Zahl (`null`) ist weiterhin kein Datenpunkt und keine
+  Unterbrechung. Manuelle Wachstumsannahmen, Kappungen und die bestehende
+  Annualisierung sind unveraendert.
+
+Gemessen: Das Gegenbeispiel mit undatierter Null liefert jetzt dasselbe wie
+mit datierter Null — `dps_median_annualized`, **1,9419306184 %**, im
+Engine-Pfad bit-gleicher DDM-Basiswert.
+
+**Befund 3 — Multiple vorhanden ≠ Vergleichswert berechenbar.**
+`computeRelativeMultiplesFV()` fuehrt beides getrennt: `multiplePresent` und
+`multiple` bleiben auch am nicht verfuegbaren Eintrag erhalten, `missingInputs`
+nennt den tatsaechlich fehlenden Input (`ebitda[0]`, `eps_diluted[0]`,
+`fcf[0]`, `shares_diluted[0]` — einzeln statt „A oder B fehlt"). Neu am
+Ergebnis: `presentCount`, `inputMissingCount` (bei Basis-Mismatch `null`).
+
+* `buildValuationFallback()`: die Aussage „kein eigener Multiple-Median …
+  hinterlegt" erscheint nur noch, wenn tatsaechlich kein Multiple vorliegt;
+  sonst zeigt die Karte das Modell mit Marke „Input fehlt", dem Multiple und
+  dem fehlenden Input.
+* `renderMarket()`: dieselbe Unterscheidung — die Zeile erscheint mit
+  „nicht ableitbar" und dem fehlenden Input statt „Keine eigenen
+  Multiples-Mediane … eingetragen". Multiples werden dort sicher formatiert.
+* **Median, `hasAny`, `availableCount`, Synthesegewichtung und der Ausschluss
+  nichtpositiver Werte sind unveraendert.**
+
+### 3 · Tests
+
+| Test | sichert ab |
+|---|---|
+| `R49` (neu) | Befund 1: beide Gegenbeispiele; beide Seiten undatiert; korrekt datierte direkt gemeldete Nettoschulden (16 USD, Periode und Quelle passend); Datum des verwendeten Betrags entscheidet; korrekt abgeleitete period-keyed Nettoschulden (21 USD); Altdaten ohne Periodenangaben (beide Richtungen); Null- und Nettoliquiditaetsfaelle; echter `renderMarket()`; DCF-Resolver unveraendert |
+| `R50` (neu) | Befund 2: datierte Null, undatierte Null (`null` und unlesbar), echte fehlende Zahl, Null ausserhalb der verwendeten Spanne, keine belegbare Spanne ⇒ Ersatzkette mit Grund, manuelle Annahme, Kappung; **echter DDM-Engine-Pfad** (`runValuationEngine` → `_applyValuationResult` → `renderValuation`) in zwei Varianten |
+| `R51` (neu) | Befund 3: sechs Faelle „Multiple vorhanden, Input fehlt" (EV/EBITDA, P/E, P/FCF) ueber Engine → State → Fallback-Karte und `renderMarket()`; Gegenfall ohne Multiples; gemischte verfuegbare/nicht verfuegbare Modelle mit unveraendertem Median; nichtpositiver Wert bleibt ausgeschlossen |
+
+**Bestehende Erwartungen: keine angepasst.** Eine Zwischenfassung der neuen
+Sperrbegruendung hatte den in `R47` geprueften Wortlaut „nicht bestimmbar"
+geaendert; statt die Erwartung anzupassen, wurde der etablierte Wortlaut im
+Produktcode beibehalten. `R1`–`R48` und alle Fixture-Pruefungen bestehen
+unveraendert.
+
+**Gegenprobe (ausserhalb des Arbeitsstands, nicht committet).** Die neue
+Testdatei wurde in einem temporaeren `git worktree` auf `60fc159` ausgefuehrt
+(`R42`–`R51`): **`R49`, `R50`, `R51` schlagen dort fehl, `R42`–`R48`
+bestehen** (`# tests 10 · # pass 7 · # fail 3`). Zusaetzlich wurden dort per
+Einmalskript alle Gegenbeispiele aus Abschnitt 1 nachgemessen (16 USD mit
+Datum 2025-12-31 in 1a und 1b; `dps_cagr_6y` 1,9067623061 %; Fallback-Text in
+allen drei Multiple-Faellen). Worktree und Skripte wurden danach entfernt.
+
+**Testergebnis nach der Aenderung** (ein Lauf `npm test`): **1700
+Rechen-Assertions (darin 434 Fixture-Assertions), Exit 0** und **205
+Node-Tests, Exit 0**. Node-Tests 202 → 205 (+3).
+
+### 4 · Verbleibende Grenzen
+
+* **Browserpruefung in diesem Chat NICHT durchgefuehrt.** Geprueft wurde der
+  echte Renderer-Code in Node (HTML-Strings aus `renderValuation`,
+  `buildValuationFallback`, `renderMarket`), nicht die Darstellung im Browser.
+* Die Zuordnung einer undatierten Null zu Spannen stuetzt sich auf die
+  **gemeldete Reihenfolge** der DPS-Reihe (bei datierten Werten ist sie
+  nachweislich rueckwaerts laufend). Eine undatierte Null, deren Platz in der
+  Reihe selbst falsch waere, kann das Werkzeug nicht erkennen.
+* Nettoschulden, die direkt gemeldet, aber undatiert sind, sperren die
+  EV/EBITDA-Bruecke jetzt auch dann, wenn daneben datierte Schulden- und
+  Liquiditaetswerte vorliegen — bewusst, weil kein Ersatzbetrag gebildet wird.
+  Ob dieser Fall im SEC-Importpfad auftreten kann, wurde nicht untersucht.
+* Der DCF-Resolver prueft weiterhin keinen EBITDA-/Bilanzstichtag (er kennt
+  keinen EBITDA-Zeitraum); das war nicht Gegenstand dieses Auftrags.
+* **Abgleich mit echten veroeffentlichten Abschluessen steht weiterhin aus.**
+* **EPV bleibt deaktiviert**; seine Altprobleme (`|| 0`-Rueckfaelle in
+  `modelEpvFloor()`, Maintenance-CapEx ohne D&A-Gegenbuchung) sind vor einer
+  Reaktivierung zu beheben und wurden nicht angefasst.
+* Die uebrigen offenen Punkte aus 12E (45-Tage-Toleranz als
+  Werkzeugkonvention, interpoliertes Inline-Ereignisattribut, Verwaesserung,
+  Synthese-Heuristik, RIM-Periodenkompatibilitaet usw.) bestehen unveraendert.
+* `main` (`b023dc8`) fuehrt weiterhin den urspruenglichen Stand.
+
+### 5 · Uebergabe an „Folgechat B — Browser-Abnahme"
+
+Stand fuer die Abnahme: Branch `claude/loving-newton-hcpo71`, Ergebniscommit
+dieses Chats (V1.0.68). Vorgeschlagene Pruefungen im vorinstallierten Chromium
+(`file://`-Dokument, Import ueber `importMasterJsonFromTextarea()`, keine
+externen Requests), jeweils gegen `60fc159` und V1.0.68:
+
+1. **Bruecke 1a/1b** (Datensaetze wie in `R49`): Markt-Vergleich und
+   Fallback-Karte zeigen fuer EV/EBITDA „nicht ableitbar"/„gesperrt" mit Grund
+   und operativem EV — **kein 16,00 und kein 21,00**. Gegenprobe korrekt
+   datierter Nettoschulden: 16,00 mit Quelle `net_debt[0]`.
+2. **DDM undatierte Null** (Datensatz wie in `R50`, Engine-Teil): DDM-Karte
+   zeigt `dps_median_annualized`, 1,94 %, und den Hinweis „ohne lesbare
+   Berichtsperiode"; Variante ohne belegbare Spanne zeigt „kein gemessenes
+   Wachstum: Gemeldete Dividende 0 ohne lesbare Berichtsperiode …".
+3. **Multiples** (Datensaetze wie in `R51`): Fallback-Karte mit Marke „Input
+   fehlt", Multiple und fehlendem Input; kein „kein eigener Multiple-Median";
+   Gegenfall ohne Multiples zeigt diese Aussage weiterhin.
+4. Stichprobe, dass FY/TTM-Anzeige, Import-Absicherung und Financials-Familie
+   unveraendert wirken.
+
+**Keine Zusicherung der Fehlerfreiheit.** Die Auditgrenzen der vorherigen
+Korrekturchats bleiben bestehen.
+
+---
+
 ## Korrekturchat 12E: drei Restluecken nach V1.0.66 geschlossen (V1.0.67)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Arbeits- und
