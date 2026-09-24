@@ -118,17 +118,91 @@ Die Kopien lagen nur vorübergehend im Arbeitsbaum und sind nicht committet.
   TTM („Prüfzone“ bzw. „gesperrt“). Das wurde nicht untersucht, weil es nicht
   zum Auftrag gehört.
 
+**Übergabe an D2 (Produktkorrekturen):** siehe den folgenden Abschnitt
+„Nachbesserung am Anzeigenabgleich“. Er ersetzt die frühere Forderung nach
+vollständigen Testläufen vor und nach jeder Korrektur.
+
+### D1-Nachbesserung: zwei Prüflücken in `checkPanels()`
+
+**Ausgangsstand:** Branch-Spitze `48b22ef` (= Referenzvorfahr, keine
+Nachfolgeänderungen). Keine `AGENTS.md`. Die Produktdatei ist unverändert.
+
+**Lücke 1: fehlendes Marktpanel.** Die Marktprüfungen liefen nur, wenn der Text
+„Markt-Vergleich“ enthielt. Ein leeres, fehlendes oder fremdes Panel wurde
+übersprungen und bestand.
+**Korrektur:**
+* Die Erfassung nimmt jetzt die Erwartung aus derselben Produktfunktion wie
+  `renderMarket` auf: `computeRelativeMultiplesFV` → `c.market`. Sie enthält
+  Basis, Periode, die Sperre der Basis mit Grund und die darstellbaren Zeilen.
+* `checkPanels` verlangt:
+  * dass die Ansicht erfasst und nicht leer ist;
+  * dass die Engine-Erwartung vorliegt;
+  * dass die Ansicht „Markt-Vergleich … kein Fair Value“ gerendert ist. Der
+    Initialzustand „Noch kein Markt-Vergleich“ und jeder andere Inhalt schlagen
+    fehl.
+* Produktive Leerzustände bestehen nur mit ihrem konkreten Grund:
+  * Bei gesperrter Datenbasis muss der Sperrgrund der Engine sichtbar sein.
+  * „Keine eigenen Multiples-Mediane“ ist nur zulässig, wenn die Engine keine
+    darstellbare Zeile hat. Sonst muss jede Zeile mit ihrem Engine-Wert oder
+    mit „nicht ableitbar“ erscheinen.
+* Jeder Fehlschlag gilt als Abweichung und führt zu Exit 1.
+
+**Lücke 2: Sperrgrund der Modelle.** Bisher genügte „rim:“ irgendwo im
+Bewertungspanel.
+**Korrektur:** Verlangt wird „<modell>: <Grund der aktuellen Engine-Sperre>“.
+Leerraum und Großschreibung werden dabei nicht unterschieden. Davor darf kein
+weiteres Zeichen des Modellnamens stehen, sodass „rim_buyback: …“ nicht für
+„rim“ zählt. Ein fehlender, fremder oder vertauschter Grund schlägt fehl.
+
+**Neu:**
+* `checkPanels` ist exportiert. `main()` startet nur beim Aufruf als Programm;
+  das Verhalten des Programms ist unverändert.
+* `tests/real-data/check-panels.test.mjs` mit 13 Tests. Sie importieren die
+  echte Prüffunktion und brauchen keinen Browser.
+* `tests/real-data/fixtures/check-panels-captures.json`: echte FY- und
+  TTM-Erfassung aus `replay-import.mjs --selftest`, gekürzt, rund 48 KB.
+* `npm run test:audit-tool` führt jetzt beide Testdateien aus.
+
+**Nachweis.** Die neuen Tests liefen gegen `checkPanels` mit Export, aber noch
+ohne Reparatur: Exit 1, 11 von 13 rot. Unerkannt blieben:
+* leeres Marktpanel;
+* fehlendes Marktpanel;
+* Fehlertext statt Markt-Vergleich;
+* fehlende Engine-Erwartung;
+* unbegründeter Leerzustand;
+* falscher Zeilenwert;
+* fehlender, falscher oder vertauschter Sperrgrund.
+
+Die beiden grünen Tests prüfen Fälle, die schon vorher korrekt behandelt
+wurden: Leerraum und Großschreibung sowie Grund nur unter `rim_buyback`. Nach
+der Reparatur: 13/13, Exit 0.
+
+**Auf dem fertigen Stand je einmal ausgeführt:**
+
+| Befehl | Ergebnis | Exit |
+|---|---|---|
+| `npm run test:audit-tool` | 20/20 (13 `checkPanels` + 7 Browser) | 0 |
+| `npm run test:browser` | 158/158 | 0 |
+| `npm test` | 1700 Assertions (434 Fixture), 206/206 Node-Tests | 0 |
+
+Offen ist kein Test. Ein erneuter Realdatenabgleich findet weiterhin erst in D3
+statt.
+
 **Übergabe an D2 (Produktkorrekturen).** Die Reihenfolge bleibt wie im Bericht
-§7: F-2, F-1, F-4, F-3, F-5, danach I-1 mit P-1. Keine dieser Korrekturen ist
-vorgezogen. Vor und nach jeder Korrektur laufen:
-* `node tests/real-data/repro-findings.mjs`;
-* `npm test`;
-* `npm run test:browser`;
-* `npm run test:audit-tool`.
+§7: F-2, F-1, F-4, F-3, F-5, danach I-1 mit P-1. Nichts davon ist vorgezogen.
+
+Testvorgehen (**berichtigt**):
+* **Je Korrektur** laufen gezielte Regressionen:
+  * der betroffene Befund in `node tests/real-data/repro-findings.mjs`, vorher
+    `BESTEHT` und nachher `BEHOBEN`;
+  * ein neuer Test, der den Fehler vor der Korrektur erkennt;
+  * die direkt betroffenen Tests, z. B. `npm run test:sec` oder `test:core`.
+* **Zum Abschluss** von D2 laufen einmal die vollständigen Suiten: `npm test`,
+  `npm run test:browser` und `npm run test:audit-tool`.
 
 Nach F-3 kann bei MCD erstmals TTM entstehen. Dann greift der reparierte
-TTM-Zweig des Werkzeugs. D3 wiederholt danach den Realdatenlauf mit dem
-reparierten Werkzeug. Chat D bleibt bis D3 offen.
+TTM-Zweig des Werkzeugs. D3 wiederholt den Realdatenlauf. Chat D bleibt bis D3
+offen.
 
 ---
 

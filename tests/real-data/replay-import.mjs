@@ -42,7 +42,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execSync } from 'node:child_process';
 import { launch, findChrome } from '../browser/cdp.mjs';
@@ -229,6 +229,15 @@ const CAPTURE_JS = `(() => {
     }
     models[k] = pick;
   }
+  // Erwartung an den Markt-Vergleich aus derselben Produktfunktion, mit der
+  // renderMarket rechnet: Basis, Sperre der Basis mit Grund, darstellbare Zeilen.
+  try {
+    const rel = computeRelativeMultiplesFV(mj, state.valuation);
+    out.market = { basis: rel.basis || null, basisLabel: rel.basisLabel || null, basisPeriod: rel.basisPeriod || null,
+      basisBlocked: !!rel.basisBlocked, basisReason: rel.basisReason || null,
+      rows: (rel.models || []).filter(m => m.available || m.bridgeBlocked || m.multiplePresent === true)
+        .map(m => ({ id: m.id, available: !!m.available, base: m.available ? m.base : null })) };
+  } catch (e) { out.market = { error: String((e && e.message) || e) }; }
   const gates = {};
   for (const [kk, vv] of Object.entries(v)) if (/gate|block|excluded|inactive|skipped|unavailable|status|warn/i.test(kk)) gates[kk] = vv;
   const rm = state.synthesis && state.synthesis.relativeMultiples;
@@ -243,7 +252,7 @@ const CAPTURE_JS = `(() => {
 
 // Abgleich der Ansichten mit dem Ausweis der Engine fuer DIESEN Schritt. Es
 // wird nur gelesen und verglichen; Ersatztexte erzeugt das Werkzeug nicht.
-function checkPanels(c) {
+export function checkPanels(c) {
   const res = [];
   const add = (name, ok, detail) => res.push({ name, ok: !!ok, detail: detail || null });
   const b = c.basis;
@@ -254,10 +263,12 @@ function checkPanels(c) {
   if (c.requested_by_replay) add('angeforderte Basis in der Engine angekommen', b.requested === c.requested_by_replay, b.requested);
   if (b.requested === 'ttm' && b.selected !== 'ttm') add('TTM angefordert, aber nicht verwendet: Rueckfall mit Grund ausgewiesen',
     b.fallback && b.fallback.active && b.fallback.reasons.length > 0, JSON.stringify(b.fallback));
-  // innerText gibt die per CSS erzwungene Grossschreibung wieder; verglichen
-  // wird deshalb ohne Beachtung der Gross-/Kleinschreibung.
-  const U = (x) => String(x == null ? '' : x).toLocaleUpperCase('de-DE');
+  // innerText gibt die per CSS erzwungene Grossschreibung und den Zeilenumbruch
+  // der Darstellung wieder; verglichen wird deshalb ohne Beachtung von Gross-/
+  // Kleinschreibung und mit zusammengefasstem Leerraum.
+  const U = (x) => String(x == null ? '' : x).toLocaleUpperCase('de-DE').replace(/\s+/g, ' ').trim();
   const has = (t, x) => U(t).includes(U(x));
+  const snip = (t) => U(t).slice(0, 120);
   const own = c.basisLabels[b.selected], other = c.basisLabels[b.selected === 'ttm' ? 'fy' : 'ttm'];
   const p = b.period || {};
   const periodText = b.selected === 'ttm' ? (p.start + ' – ' + p.end) : p.end;
@@ -273,14 +284,46 @@ function checkPanels(c) {
       add('valuation: Basiswert ' + k + ' = Engine-Ergebnis', vt.includes(m.base.toFixed(2)), m.base.toFixed(2));
     }
   }
-  for (const bm of (b.blocked_models || [])) add('valuation: Sperre von ' + bm.model + ' auf dieser Basis sichtbar', has(vt, bm.model + ':'), bm.reason);
-  const mk = c.panels.market || '';
-  if (has(mk, 'Markt-Vergleich')) {
-    add('market: Basisangabe = verwendete Basis', has(mk, own) && !has(mk, other), own);
-    add('market: Periode der verwendeten Basis', !!p.end && mk.includes(p.end), p.end);
-    if (c.reverseDcf && c.reverseDcf.impliedGrowth != null) {
-      const g = c.reverseDcf.impliedGrowth.toFixed(1) + '%';
-      add('market: Reverse-DCF-Wert = Engine-Ergebnis', mk.includes(g), g);
+  // Modellsperre: Der Grund der AKTUELLEN Engine-Sperre muss beim richtigen
+  // Modell stehen („<modell>: <grund>“). Der Modellname allein genuegt nicht,
+  // und ein laengerer Name (rim_buyback) zaehlt nicht fuer rim.
+  const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  for (const bm of (b.blocked_models || [])) {
+    const re = new RegExp('(^|[^A-Z0-9_])' + esc(U(bm.model + ': ' + bm.reason)));
+    add('valuation: Sperre von ' + bm.model + ' mit dem Engine-Grund sichtbar', re.test(U(vt)), bm.reason);
+  }
+  // Markt-Vergleich: Die Ansicht muss vorhanden sein. Leer, fehlend oder mit
+  // anderem Inhalt ist ein Fehlschlag. Erwartet wird, was die Produktfunktion
+  // des Renderers (computeRelativeMultiplesFV, erfasst als c.market) liefert;
+  // produktive Leerzustaende bestehen nur mit ihrem konkreten Grund.
+  const mk = (c.panels || {}).market;
+  const M = c.market;
+  add('market: Ansicht erfasst und nicht leer', typeof mk === 'string' && mk.trim().length > 0,
+    typeof mk === 'string' ? 'leer' : 'nicht erfasst');
+  add('market: Engine-Erwartung erfasst', !!M && !M.error, M ? M.error : 'c.market fehlt');
+  if (typeof mk === 'string' && mk.trim() && M && !M.error) {
+    const isView = has(mk, 'Markt-Vergleich') && has(mk, 'kein Fair Value') && !has(mk, 'Noch kein Markt-Vergleich');
+    add('market: erwartete Ansicht „Markt-Vergleich“ gerendert', isView, snip(mk));
+    if (M.basisBlocked) {
+      add('market: Sperre der Datenbasis mit dem Engine-Grund', !!M.basisReason && has(mk, M.basisReason), M.basisReason);
+    } else {
+      const tag = M.basisLabel + (M.basisPeriod ? ' · ' + M.basisPeriod : '');
+      add('market: Basisangabe = verwendete Basis', M.basisLabel === own && has(mk, tag) && !has(mk, other), tag);
+      add('market: Periode der verwendeten Basis', !!p.end && M.basisPeriod === p.end && mk.includes(p.end), p.end);
+      const EMPTY = 'Keine eigenen Multiples-Mediane im Master-JSON';
+      if (M.rows.length === 0) {
+        add('market: Leerzustand „keine Multiples“ mit Grund (Engine: keine darstellbare Zeile)', has(mk, EMPTY), EMPTY);
+      } else {
+        add('market: Zeilen vorhanden, kein Leerzustand', !has(mk, EMPTY), M.rows.map(r => r.id).join(', '));
+        for (const r of M.rows) {
+          const want = r.available ? r.base.toFixed(2) : 'nicht ableitbar';
+          add('market: Zeile ' + r.id + ' = Engine-Ergebnis', has(mk, want), want);
+        }
+      }
+      if (c.reverseDcf && c.reverseDcf.impliedGrowth != null) {
+        const g = c.reverseDcf.impliedGrowth.toFixed(1) + '%';
+        add('market: Reverse-DCF-Wert = Engine-Ergebnis', mk.includes(g), g);
+      }
     }
   }
   return res;
@@ -509,4 +552,8 @@ async function main() {
   process.exit(exit);
 }
 
-main().catch(e => { console.error('NICHT AUSGEFUEHRT: ' + (e && e.stack || e)); process.exit(2); });
+// Nur als Programm starten; beim Import (Regressionstests von checkPanels)
+// laeuft nichts.
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main().catch(e => { console.error('NICHT AUSGEFUEHRT: ' + (e && e.stack || e)); process.exit(2); });
+}

@@ -77,7 +77,14 @@ Zwei Skripte, die nicht zu `npm test` gehören.
    REPLAY_SCRIPT=pfad/zu/replay-import.mjs npm run test:audit-tool
    ```
 
-   Die Tests starten das Skript als eigenen Prozess gegen zwei synthetische
+   `check-panels.test.mjs` prüft die Abgleichsfunktion `checkPanels()` direkt
+   (ohne Browser) an einer echten, gekürzten Erfassung
+   (`fixtures/check-panels-captures.json`). Abgedeckt sind:
+   * leeres, fehlendes oder fremdes Marktpanel;
+   * berechtigte Leerzustände nur mit ihrem Grund;
+   * der Sperrgrund beim richtigen Modell.
+
+   Die Browser-Tests (`replay-import.browser.test.mjs`) starten das Skript als eigenen Prozess gegen zwei synthetische
    Filer in einem temporären Verzeichnis: SYNTR mit Quartalen (FY: Umsatz 1000,
    EBITDA 250, Ende 2024-12-31; TTM: 1375 / 343,75, Ende 2025-09-30) und SYNTN
    nur mit 10-K-Angaben (kein TTM). Sie prüfen Werte und Perioden, die
