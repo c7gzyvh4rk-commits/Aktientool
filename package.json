@@ -1,0 +1,13 @@
+{
+  "name": "aktientool",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Testinfrastruktur für das US-Aktienbewertungstool (einzelne HTML-Datei) und der als Modul ladbare Bewertungskern (src/dcf-core.js). Kein Build, keine Laufzeit-Abhängigkeiten.",
+  "scripts": {
+    "test": "node test/run-all.js",
+    "test:calc": "node test/run-calc-tests.js",
+    "test:sec": "node --test tests/*.test.mjs",
+    "test:core": "node --test tests/dcf-core.test.mjs tests/dcf-core-isolation.test.mjs",
+    "test:browser": "node tests/browser/acceptance.mjs"
+  }
+}
