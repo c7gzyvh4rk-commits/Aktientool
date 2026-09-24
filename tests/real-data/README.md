@@ -33,11 +33,56 @@ Zwei Skripte, die nicht zu `npm test` gehören.
    Der Bericht wird nach `tests/real-data/out/<TICKER>-report.json` geschrieben
    (nicht versioniert). Er enthält:
    * das Master-JSON vor dem Import;
-   * je Feld Werte, Perioden, Formulare, `filed`, Tag und Herkunft;
-   * FY- und TTM-Sicht;
-   * Modellergebnisse, Router mit aktiven und deaktivierten Modellen und Gründen;
-   * den Text der Anzeigen;
+   * drei Erfassungen: `fy` (nach dem Import), `ttmView` (TTM angefordert) und
+     `fyReturn` (zurück auf FY). Jede enthält:
+     * `basis`: angeforderte und **tatsächlich verwendete** Datenbasis
+       (`requested`, `selected`, `ttm_used`), TTM-Verfügbarkeit, Rückfall mit
+       Gründen, Zeitraum, gesperrte Modelle;
+     * `fields`: je Feld Wert, Einheit, Periode, bei TTM die
+       Komponentenperioden (Quartale, Stichtag, Aktienquartale oder
+       Bestandteile abgeleiteter Größen), Herkunft, Tag, `filed`, Ableitung und
+       Größenart (Stromgröße, Stichtag, Aktien-Durchschnitt). Fehlende
+       Metadaten stehen ausdrücklich in `metadataMissing`;
+     * `shareConcepts`: gewichteter Durchschnitt getrennt von der aktuellen
+       Aktienzahl am Stichtag;
+     * Modellergebnisse, Router, Reverse DCF;
+     * `panels`: die Texte der Ansichten Übersicht, Bewertung, Markt-Vergleich,
+       Qualität und Annahmen, jeweils nach dem Neurendern in diesem Schritt;
+     * `checks`: Abgleich der Ansichten mit dem Engine-Ausweis;
+   * `integrity`: SHA-256 der Fundamentaldaten nach dem Import und am Ende;
    * die bedienten Quellen mit SHA-256.
+
+   **Erfassungsweg (seit D1).** Die Feldwerte kommen aus der Bewertungssicht,
+   mit der die Engine rechnet: `resolveValuationView()` (dieselbe Paarung
+   `resolveDataBasis` + `buildValuationBasisView` wie in `runValuationEngine`).
+   Bei FY ist das das Master-JSON, bei TTM die daraus erzeugte TTM-Sicht. Das
+   Werkzeug rechnet nichts selbst nach und schreibt einer TTM-Größe keine
+   Jahres-Metadaten zu; ein von der Engine nur geerbter Jahres-Tag steht
+   getrennt in `engine_inherited_fy_tag`. Die Datenbasis wird über die Auswahl
+   im Reiter „Annahmen“ umgestellt. Jede Ansicht wird über ihren Reiter
+   geöffnet (echter Mausklick). Gelesen wird erst, wenn der Renderer den
+   Ausgabebereich nachweislich ersetzt hat und die neue Berechnung vorliegt.
+
+   Exit-Codes: 0 = vollständig und Abgleich bestanden · 1 = Import blockiert,
+   Fehler oder Abweichung zwischen Anzeige und Engine (`ABWEICHUNG …` in der
+   Ausgabe) · 2 = nicht ausführbar.
+
+   **Regressionstests des Werkzeugs** (brauchen Chromium, deshalb nicht in
+   `npm test`):
+
+   ```sh
+   npm run test:audit-tool
+   # = node --test tests/real-data/replay-import.browser.test.mjs
+   # gegen eine andere Fassung des Skripts:
+   REPLAY_SCRIPT=pfad/zu/replay-import.mjs npm run test:audit-tool
+   ```
+
+   Die Tests starten das Skript als eigenen Prozess gegen zwei synthetische
+   Filer in einem temporären Verzeichnis: SYNTR mit Quartalen (FY: Umsatz 1000,
+   EBITDA 250, Ende 2024-12-31; TTM: 1375 / 343,75, Ende 2025-09-30) und SYNTN
+   nur mit 10-K-Angaben (kein TTM). Sie prüfen Werte und Perioden, die
+   Übereinstimmung der Ansichten mit der Basis, den Weg FY → TTM → FY, den
+   ausgewiesenen Rückfall und die Unveränderlichkeit der FY-Daten.
 
 3. **Bestätigte Befunde reproduzieren.** Das läuft ohne Netz und ohne Browser:
 

@@ -21,6 +21,17 @@ produktiven Funktionen `secFetchAll` und `secConfirmImport` auf und bedient sie
 mit den gespeicherten SEC-Dateien. Yahoo war abgeschaltet, ein Kurs wurde nicht
 gesetzt.
 
+> **Nachtrag D1 (Zuverlässigkeit des Werkzeugs).** Die für dieses Audit
+> verwendete Fassung von `replay-import.mjs` hatte zwei Fehler. Beide sind in D1
+> behoben und durch Regressionstests abgesichert (`npm run test:audit-tool`):
+> (1) Die TTM-Sicht las die Felder aus `state.masterJson.fundamentals` und wies
+> damit die Jahreswerte als TTM aus. (2) Die Ansichten wurden nach einem
+> Basiswechsel ohne Neurendern gelesen. Auf die Befunde dieses Berichts wirkten
+> sich die Fehler nach Aktenlage nicht aus: Für MCD und JNJ bildete das Tool kein
+> TTM (§2, §3, F-3). Deshalb fand kein Basiswechsel statt, und die Ansichten
+> stammten aus dem Rendern nach dem Import. Durch einen erneuten Lauf mit der
+> reparierten Fassung ist das **nicht** bestätigt. Das ist Aufgabe von D3.
+
 ## 2 · Abgleich MCD (FY2025)
 
 | Kennzahl | Originalquelle (10-K FY2025) | Toolwert | Periode/Einheit | Ergebnis |
@@ -210,5 +221,7 @@ korrekt den gemeldeten Tags.
   weil das Tool für beide Unternehmen kein TTM bildet.
 * Die Anzeigen wurden als Text ausgelesen (headless Chromium), nicht visuell
   geprüft.
+* Das Werkzeug hatte beim Auditlauf die beiden in §1 (Nachtrag D1) genannten
+  Fehler. Behoben ist das seit D1; der erneute Realdatenlauf steht aus (D3).
 * Die Rohdaten sind nicht versioniert (`tests/real-data/cache/`, rund 8 MB).
   Versioniert sind nur die wortgetreuen Auszüge mit Quell-Hash.

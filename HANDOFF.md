@@ -1,5 +1,137 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Folgechat D1: Auditwerkzeug repariert (Vorbereitung für D2/D3)
+
+**Ausgangsstand.** Auditbranch `claude/audit-real-data-mcd-jnj` an der Spitze
+`11c32fa` (= bekannter Referenzvorfahr, keine Nachfolgeänderungen auf dem
+Remote). Der Arbeitsbaum war sauber. Keine `AGENTS.md`. Die Produktdatei ist
+**unverändert**. Geändert wurden nur das Werkzeug, seine Tests und die Dokumentation.
+
+**Baseline vor der Änderung** (selbst ausgeführt): `npm test` Exit 0 (1700
+Rechen-Assertions, davon 434 Fixture-Assertions; 206/206 Node-Tests),
+`npm run test:browser` Exit 0 (158/158).
+
+**Befund 1: falsche TTM-Felder.** `replay-import.mjs` las für FY und TTM aus
+`state.masterJson.fundamentals`. Die Engine rechnet bei TTM aber auf einer
+eigenen Sicht (`buildValuationBasisView`). Reproduziert mit dem synthetischen
+Filer (`--selftest --price 25`): `basis.selected = ttm`, Periode bis
+2025-09-30, aber `ttmView.fields.revenue` = 1000 und `ebitda` = 250, jeweils
+mit FY-Perioden 2024-12-31.
+**Korrektur:** Die Felder werden aus `resolveValuationView(state.masterJson,
+state.valuation)` gelesen. Das ist dieselbe Paarung `resolveDataBasis` +
+`buildValuationBasisView` wie in `runValuationEngine` und `renderMarket`. Das
+Werkzeug rechnet nichts selbst.
+Je Feld werden erfasst:
+* Wert und Einheit (Berichtseinheit, Quelleinheit, Reiheneinheit);
+* Periode; bei TTM die Komponentenperioden, also Quartale mit Beginn und Ende,
+  der Bilanzstichtag, die Aktienquartale oder die Bestandteile von
+  EBITDA/FCF/Nettoschulden;
+* Herkunft, Tag, `filed`, Ableitung und Größenart;
+* fehlende Metadaten ausdrücklich in `metadataMissing`.
+
+Für TTM-Werte werden keine Jahres-Metadaten übernommen. Einen von der Engine
+nur geerbten Jahres-Tag weist das Werkzeug getrennt aus
+(`engine_inherited_fy_tag`). Felder außerhalb der TTM-Sicht erscheinen ohne
+Metadaten.
+Die Aktienbegriffe stehen getrennt in `shareConcepts`: gewichteter Durchschnitt
+gegenüber der aktuellen Aktienzahl am Stichtag.
+Ist TTM nicht verfügbar, wird TTM trotzdem über die Oberfläche angefordert. Der
+Bericht zeigt dann den tatsächlichen Rückfall: `requested ttm`, `selected fy`,
+`ttm_used false`, `fallback.reasons`.
+
+**Befund 2: veraltete Paneltexte.** Nach dem Basiswechsel rendert das Produkt
+nur die aktive Ansicht neu (`_handleDataBasisChange`). Das Skript las die
+übrigen Panels trotzdem. Reproduziert: In der TTM-Erfassung zeigten
+Bewertungs- und Marktansicht weiterhin „Letztes Geschäftsjahr (FY) ·
+2024-12-31“.
+**Korrektur:**
+* Die Basis wird über die Auswahl im Reiter „Annahmen“ umgestellt.
+  Abgeschlossen ist der Wechsel erst, wenn `data_basis` und
+  `dataBasis.requested` den neuen Wert tragen und ein neues
+  `state.valuation`-Objekt vorliegt.
+* Jede Ansicht wird per echtem Mausklick auf ihren Reiter geöffnet
+  (`switchTab` → `render…`). Gelesen wird erst, wenn eine vor dem Klick gesetzte
+  unsichtbare Markierung durch das Neurendern verschwunden ist. Das Skript
+  wartet dabei nicht auf feste Zeiten.
+* Die Texte werden je Schritt gespeichert (`fy`, `ttmView`, `fyReturn`) und
+  mit dem Engine-Ausweis abgeglichen (`checks`). Verglichen werden die Basis
+  und der Zeitraum in den Ansichten „Bewertung“ und „Annahmen“, die
+  DCF/RIM-Basiswerte, sichtbare Modellsperren sowie Basisangabe, Periode und
+  Reverse-DCF-Wert im Markt-Vergleich.
+* Eine Abweichung ergibt Exit 1.
+* Die SHA-256 der Fundamentaldaten wird nach dem Import und am Ende verglichen.
+
+**Neu:**
+* `tests/real-data/replay-import.browser.test.mjs` mit 7 Tests;
+* npm-Skript `test:audit-tool`.
+
+Die Tests starten das echte Skript als Prozess gegen zwei synthetische Filer in
+einem Temp-Verzeichnis. Das Browserprofil ist frisch, es gibt keine externen
+Abrufe.
+* SYNTR hat Quartalsdaten: FY 1000/250 bis 2024-12-31, TTM 1375/343,75 bis
+  2025-09-30.
+* SYNTN hat nur 10-K-Angaben und damit kein TTM.
+
+Die Tests gehören nicht zu `npm test`, weil sie Chromium brauchen.
+
+**Nachweis, dass die Tests die Fehler erkennen.** Die Tests liefen mit
+`REPLAY_SCRIPT=…` gegen:
+* die Fassung von `11c32fa`: Exit 1, 6 von 7 Tests rot. Die Meldungen lauten
+  u. a. „Umsatz TTM: 1000“ und „TTM-Marktansicht nennt TTM: Markt-Vergleich …
+  Letztes Geschäftsjahr (FY) · 2024-12-31“;
+* eine Mutante mit Feldern wieder aus `state.masterJson`: Exit 1, nur der
+  TTM-Erfassungstest rot („Umsatz TTM: 1000“);
+* eine Mutante, die ohne Neurendern liest: Exit 1, der Ansichtentest rot. Auch
+  der Selbstabgleich des Skripts meldet `ABWEICHUNG` für die TTM-Bewertungs-
+  und Marktansicht.
+
+Die Kopien lagen nur vorübergehend im Arbeitsbaum und sind nicht committet.
+
+**Nach der Reparatur ausgeführt:**
+
+| Befehl | Ergebnis | Exit |
+|---|---|---|
+| `npm run test:audit-tool` | 7/7 | 0 |
+| `npm test` | 1700 Assertions (434 Fixture), 206/206 Node-Tests | 0 |
+| `npm run test:browser` | 158/158 | 0 |
+| `node tests/real-data/replay-import.mjs --selftest` | Abgleich 40/40 | 0 |
+| `node tests/real-data/repro-findings.mjs` | 5 von 5 Befunden bestehen (unverändert) | 0 |
+
+**Einschränkungen:**
+* **Kein erneuter Realdatenabgleich.** Die SEC-Rohdaten (`cache/`) sind nicht
+  versioniert und in dieser Sitzung nicht vorhanden. Nach Aktenlage hat das
+  Tool für MCD und JNJ kein TTM gebildet. Dann lief der fehlerhafte TTM-Zweig
+  nicht, und die Ansichten stammten aus dem Rendern nach dem Import. Die
+  Befunde F-1 bis F-5 sind davon also voraussichtlich nicht betroffen.
+  Bestätigt ist das erst mit D3.
+* Die Einheit einer TTM-Größe ist die Berichtseinheit der TTM-Datenbasis. Eine
+  Quelleinheit je Feld hat die TTM-Sicht nicht. Das Werkzeug weist das als
+  fehlend aus und ergänzt nichts.
+* Abgeleitete TTM-Größen (EBITDA, FCF, Nettoschulden) tragen selbst weder Tag
+  noch `filed`. Beides steht nur bei ihren Bestandteilen
+  (`components.derivedFrom`).
+* FY-`eps_diluted` hat im synthetischen Fall keine Periodenmetadaten. Das wird
+  als fehlend ausgewiesen.
+* Der Abgleich prüft Textinhalte, keine visuelle Darstellung. Die Übersicht wird
+  erfasst, aber nicht auf die Basis geprüft. Sie nennt keine Datenbasis.
+* Die Einordnung der Übersicht wechselt im synthetischen Fall zwischen FY und
+  TTM („Prüfzone“ bzw. „gesperrt“). Das wurde nicht untersucht, weil es nicht
+  zum Auftrag gehört.
+
+**Übergabe an D2 (Produktkorrekturen).** Die Reihenfolge bleibt wie im Bericht
+§7: F-2, F-1, F-4, F-3, F-5, danach I-1 mit P-1. Keine dieser Korrekturen ist
+vorgezogen. Vor und nach jeder Korrektur laufen:
+* `node tests/real-data/repro-findings.mjs`;
+* `npm test`;
+* `npm run test:browser`;
+* `npm run test:audit-tool`.
+
+Nach F-3 kann bei MCD erstmals TTM entstehen. Dann greift der reparierte
+TTM-Zweig des Werkzeugs. D3 wiederholt danach den Realdatenlauf mit dem
+reparierten Werkzeug. Chat D bleibt bis D3 offen.
+
+---
+
 ## Folgechat D: Realdaten-Audit MCD / JNJ (Stichtag 2026-09-24)
 
 **Ausgangsstand.** `main` = `8b42fea` (V1.0.70). Auditbranch

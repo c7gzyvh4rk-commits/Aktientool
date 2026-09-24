@@ -25,8 +25,19 @@
 // --selftest prueft nur die Mechanik mit dem SYNTHETISCHEN Filer der
 // Browser-Abnahme. Das ist KEINE Validierung mit echten Daten.
 //
-// Exit: 0 = Lauf vollstaendig · 1 = Import blockiert/Fehler · 2 = nicht
-// ausfuehrbar (kein Browser, fehlende Dateien).
+// Erfassung (seit D1): drei Schritte `fy` → `ttmView` (TTM angefordert) →
+// `fyReturn`. Die Datenbasis wird ueber die Auswahl im Reiter „Annahmen“
+// umgestellt, jede Ansicht ueber ihren Reiter geoeffnet und erst nach
+// nachgewiesenem Neurendern gelesen. Die Feldwerte stammen aus der
+// Bewertungssicht, mit der die Engine rechnet (resolveValuationView), nicht aus
+// state.masterJson.fundamentals. Ist TTM nicht verfuegbar, weist `ttmView` den
+// tatsaechlichen Rueckfall aus (basis.requested 'ttm', basis.selected 'fy',
+// fallback.reasons). `checks` gleicht die Ansichten mit dem Engine-Ausweis ab.
+// Regressionstests: tests/real-data/replay-import.browser.test.mjs.
+//
+// Exit: 0 = Lauf vollstaendig, Abgleich bestanden · 1 = Import blockiert,
+// Fehler oder Abweichung zwischen Anzeige und Engine · 2 = nicht ausfuehrbar
+// (kein Browser, fehlende Dateien).
 // ═══════════════════════════════════════════════════════════════════════════
 import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -49,6 +60,231 @@ const FIELDS = ['revenue', 'ebit', 'da', 'ebitda', 'cfo', 'capex', 'fcf',
   'operating_lease_liability_current', 'operating_lease_liability_noncurrent', 'operating_lease_liabilities',
   'cash_and_equivalents', 'shares_diluted', 'shares_basic', 'eps_diluted', 'dps', 'dps_direct',
   'dividends_paid', 'net_income', 'book_value', 'total_equity'];
+
+// Groessenart je Feld. Sie bestimmt, wie Wert und Periode zu lesen sind:
+// Stromgroesse = Summe ueber einen Zeitraum, Stichtag = Bilanzwert an einem
+// Tag, Aktien = gewichteter Durchschnitt eines Zeitraums (nicht die aktuelle
+// Aktienzahl am Stichtag, die getrennt unter shareConcepts steht).
+const KIND = {
+  revenue: 'Stromgroesse', ebit: 'Stromgroesse', da: 'Stromgroesse', ebitda: 'Stromgroesse',
+  cfo: 'Stromgroesse', capex: 'Stromgroesse', fcf: 'Stromgroesse', dividends_paid: 'Stromgroesse',
+  net_income: 'Stromgroesse', eps_diluted: 'Stromgroesse je Aktie', dps: 'Stromgroesse je Aktie',
+  dps_direct: 'Stromgroesse je Aktie',
+  total_debt: 'Stichtag', net_debt: 'Stichtag', debt_short_term: 'Stichtag', debt_long_term_current: 'Stichtag',
+  debt_long_term_noncurrent: 'Stichtag', finance_lease_current: 'Stichtag', finance_lease_noncurrent: 'Stichtag',
+  operating_lease_liability_current: 'Stichtag', operating_lease_liability_noncurrent: 'Stichtag',
+  operating_lease_liabilities: 'Stichtag', cash_and_equivalents: 'Stichtag', book_value: 'Stichtag',
+  total_equity: 'Stichtag',
+  shares_diluted: 'Aktien: gewichteter Durchschnitt, verwaessert',
+  shares_basic: 'Aktien: gewichteter Durchschnitt, unverwaessert'
+};
+
+// Bestandteile der in buildValuationBasisView abgeleiteten TTM-Groessen
+// (nur zur Zuordnung der Bestandteil-Metadaten; es wird nichts berechnet).
+const DERIVED = { ebitda: ['ebit', 'da'], fcf: ['cfo', 'capex'], net_debt: ['total_debt', 'cash_and_equivalents'] };
+
+// Ausgelesene Ansichten und der Bereich, den ihr Renderer jeweils ersetzt.
+const PANELS = ['overview', 'valuation', 'market', 'quality', 'assumptions'];
+const PANEL_OUTPUT = { overview: 'overview-content', valuation: 'valuation-output', market: 'market-output',
+  quality: 'quality-output', assumptions: 'assumptions-output' };
+
+// Erfassung im Browser. Gelesen wird die Bewertungssicht, die die Engine
+// tatsaechlich verwendet: resolveValuationView() — dieselbe Paarung
+// resolveDataBasis + buildValuationBasisView wie in runValuationEngine und im
+// Markt-Vergleich. Bei FY ist das das Master-JSON selbst, bei TTM die daraus
+// erzeugte TTM-Sicht. Das Werkzeug rechnet NICHTS selbst nach und uebernimmt
+// fuer TTM-Werte keine Jahres-Metadaten.
+const CAPTURE_JS = `(() => {
+  const FIELDS = ${JSON.stringify(FIELDS)};
+  const KIND = ${JSON.stringify(KIND)};
+  const DERIVED = ${JSON.stringify(DERIVED)};
+  const mj = state.masterJson, v = state.valuation || {};
+  const rep = v.dataBasis || null;
+  const w = resolveValuationView(mj, state.valuation);
+  const out = {
+    requestedInMasterJson: (mj.valuation && mj.valuation.data_basis) || null,
+    engineView: { ok: w.ok, basis: w.basis, mismatch: w.mismatch, reason: w.reason },
+    basis: rep ? { requested: rep.requested, selected: rep.selected, label: rep.label,
+      ttm_available: rep.ttm_available, ttm_used: rep.selected === 'ttm', fallback: rep.fallback,
+      period: rep.period, publication: rep.publication, blocked_models: rep.blocked_models,
+      covered_fields: rep.covered_fields, missing_fields: rep.missing_fields, warnings: rep.warnings } : null,
+    basisLabels: DATA_BASIS_LABELS
+  };
+  if (!w.ok || !w.mj) { out.fields = null; out.fieldsUnavailableReason = w.reason || 'Bewertungssicht nicht aufloesbar'; }
+  else {
+    const view = w.mj, f = view.fundamentals || {}, meta = f._v4_meta || {};
+    const isTtm = w.basis === 'ttm';
+    const ds = isTtm ? w.resolved.dataset : null;
+    const dv = view._data_basis_view || null;
+    const covered = (dv && dv.covered_fields) || [], cleared = (dv && dv.cleared_fields) || [];
+    out.reportingUnit = isTtm ? ((ds && ds.reporting_unit) || null) : ((mj.meta && mj.meta.reporting_unit) || null);
+    const seriesFor = (k) => {
+      if (!ds) return null;
+      for (const grp of ['flows', 'instants']) {
+        const G = ds[grp] || {};
+        for (const key of Object.keys(G)) if (G[key] && G[key].app_field === k) return { grp, s: G[key] };
+      }
+      if (k === 'shares_diluted' && ds.shares) return { grp: 'shares', s: ds.shares };
+      if (k === 'eps_diluted' && ds.eps) return { grp: 'eps', s: ds.eps };
+      return null;
+    };
+    const first = (a) => Array.isArray(a) ? (a.length ? a[0] : null) : (a == null ? null : a);
+    out.fields = {};
+    for (const k of FIELDS) {
+      const raw = f[k];
+      let m = meta[k] || null;
+      let status;
+      if (isTtm) {
+        if (covered.indexOf(k) >= 0) status = 'TTM-Groesse der Engine';
+        else if (cleared.indexOf(k) >= 0) status = 'in der TTM-Sicht geleert (kein TTM-Wert, Jahreswert nicht eingemischt)';
+        else { status = 'nicht Teil der TTM-Sicht'; m = null; }
+      } else status = raw == null ? 'nicht vorhanden' : 'Jahreswert';
+      const vals = Array.isArray(raw) ? raw : (raw === undefined ? null : raw);
+      const rec = {
+        concept: KIND[k] || 'unbekannt', basis: w.basis, status,
+        value: first(vals), values: Array.isArray(vals) ? vals.slice(0, 3) : vals,
+        unit: { reporting: out.reportingUnit, source: (m && m.unit) || null },
+        period: { type: (m && m.period_type) || null, end: m && Array.isArray(m.periods) ? (m.periods[0] || null) : null,
+          periods: m && Array.isArray(m.periods) ? m.periods.slice(0, 3) : null },
+        provenance: m ? { source_type: m.source_type || null, source_reference: m.source_reference || null,
+          // FY: Tag wie ihn die Produktdatei selbst liest (_secSourceTag). TTM:
+          // nur der Tag der verwendeten Quartalsdaten; einen von der
+          // Jahresreihe geerbten Tag weist das Werkzeug NICHT als TTM-Tag aus.
+          tag: isTtm ? (m.ttm_used_tag || (m.source_tag_inherited === true ? null : (m.source_tag || null))) : _secSourceTag(m),
+          engine_inherited_fy_tag: (isTtm && m.source_tag_inherited === true) ? (m.source_tag || null) : null,
+          method: m.ttm_method || null, cross_check: m.ttm_cross_check || null,
+          forms: m.forms ? m.forms.slice(0, 3) : null, filed: m.filed ? m.filed.slice(0, 3) : null,
+          accns: m.accns ? m.accns.slice(0, 3) : null,
+          derivation: m.notes ? String(m.notes).slice(0, 600) : null,
+          unavailablePeriods: m.unavailablePeriods || null, derivationWarnings: m.derivationWarnings || null } : null
+      };
+      const sr = seriesFor(k);
+      if (sr && covered.indexOf(k) >= 0) {
+        const s = sr.s;
+        rec.unit.series = s.unit || null;
+        if (sr.grp === 'flows') {
+          const w0 = (s.windows || [])[0] || null;
+          const dw = (ds.windows || []).find(x => w0 && x.start === w0.start && x.end === w0.end) || null;
+          rec.components = w0 ? { start: w0.start, end: w0.end, days: w0.durationDays, quarters: w0.quarters,
+            quarterStarts: dw ? dw.quarterStarts : null, quarterEnds: dw ? dw.quarterEnds : null,
+            filed: w0.filed || null, basisCounts: w0.basisCounts || null } : null;
+          rec.provenance.tag = s.used_tag || rec.provenance.tag;
+          rec.provenance.filed = s.filed ? [s.filed] : null;
+        } else if (sr.grp === 'instants') {
+          rec.components = { asOf: (s.dates || [])[0] || null };
+          rec.provenance.tag = s.used_tag || rec.provenance.tag;
+          rec.provenance.filed = s.filed ? [s.filed] : null;
+        } else if (sr.grp === 'shares') {
+          rec.components = { end: (s.ends || [])[0] || null,
+            quarters: ((s.quarters_used || [])[0] || []).map(q => ({ start: q.start, end: q.end, days: q.days, value: q.value, filed: q.filed, form: q.form })) };
+          rec.provenance.filed = s.latest_filed ? [s.latest_filed] : null;
+        } else {
+          rec.components = { end: (s.ends || [])[0] || null, cross_check: s.cross_check || null };
+        }
+      }
+      const missing = [];
+      if (rec.value != null) {
+        if (!rec.unit.reporting && !rec.unit.source && !rec.unit.series) missing.push('Einheit');
+        if (!rec.period.end) missing.push('Periode');
+        if (!rec.provenance) missing.push('Herkunft');
+        else {
+          if (!rec.provenance.tag && !/us-gaap:|dei:/.test(rec.provenance.source_reference || '')) missing.push('Tag');
+          if (!rec.provenance.filed) missing.push('filed');
+        }
+      }
+      rec.metadataMissing = missing;
+      out.fields[k] = rec;
+    }
+    for (const k of FIELDS) {
+      const rec = out.fields[k];
+      // Abgeleitete TTM-Groessen (ebitda, fcf, net_debt): Die Engine bildet sie
+      // in buildValuationBasisView aus zwei TTM-Reihen; welche, steht in ihrer
+      // Notiz. Hier werden nur die Angaben der erfassten Bestandteile daneben
+      // gestellt — nicht nachgerechnet.
+      if (isTtm && covered.indexOf(k) >= 0 && !rec.components && DERIVED[k]) {
+        rec.components = { derivedFrom: DERIVED[k].map(x => ({ field: x,
+          end: out.fields[x] ? out.fields[x].period.end : null,
+          tag: out.fields[x] && out.fields[x].provenance ? out.fields[x].provenance.tag : null,
+          filed: out.fields[x] && out.fields[x].provenance ? out.fields[x].provenance.filed : null })) };
+      }
+    }
+    out.viewCoverage = dv ? { covered_fields: covered, cleared_fields: cleared, period: dv.period } : null;
+  }
+  const sb = (rep && rep.share_basis) || {};
+  out.shareConcepts = {
+    weightedAverage: { value: sb.weighted_average_ttm != null ? sb.weighted_average_ttm : (sb.weighted_average_fy != null ? sb.weighted_average_fy : null),
+      method: sb.weighted_average_method || null, unit: sb.unit || null, filed: sb.weighted_average_filed || null },
+    currentOutstanding: { value: sb.current_shares != null ? sb.current_shares : null, asOf: sb.current_shares_as_of || null,
+      source: sb.current_shares_source || null },
+    marketSharesOutstandingDerived: (mj.market && mj.market.shares_outstanding_derived != null) ? mj.market.shares_outstanding_derived : null,
+    note: sb.note || null
+  };
+  const models = {};
+  for (const [k, r] of Object.entries(v.modelResults || {})) {
+    if (!r || typeof r !== 'object') continue;
+    const pick = {};
+    for (const [kk, vv] of Object.entries(r)) {
+      if (/^(base|bear|bull|available|status)$|reason|warn|block|unavail|netDebt|shares|bridge|equity|period|basis/i.test(kk)
+          && (vv == null || typeof vv !== 'object' || Array.isArray(vv))) pick[kk] = Array.isArray(vv) ? vv.slice(0, 12) : vv;
+    }
+    models[k] = pick;
+  }
+  const gates = {};
+  for (const [kk, vv] of Object.entries(v)) if (/gate|block|excluded|inactive|skipped|unavailable|status|warn/i.test(kk)) gates[kk] = vv;
+  const rm = state.synthesis && state.synthesis.relativeMultiples;
+  Object.assign(out, { router: v.router || null, reverseDcf: { status: v._reverseDcfStatus, reason: v._reverseDcfStatusReason,
+      impliedGrowth: v.reverseDcfImpliedGrowth != null ? v.reverseDcfImpliedGrowth : null },
+    gates, models, multiples: rm ? rm.models : null, range: state.synthesis && state.synthesis.range,
+    price: mj.market && mj.market.price,
+    shares_meta: mj.meta && { shares_source: mj.meta.shares_source, shares_normalization: mj.meta.shares_normalization },
+    secFetch: mj._sec_fetch || (mj.meta && mj.meta._sec_fetch) || null });
+  return out;
+})()`;
+
+// Abgleich der Ansichten mit dem Ausweis der Engine fuer DIESEN Schritt. Es
+// wird nur gelesen und verglichen; Ersatztexte erzeugt das Werkzeug nicht.
+function checkPanels(c) {
+  const res = [];
+  const add = (name, ok, detail) => res.push({ name, ok: !!ok, detail: detail || null });
+  const b = c.basis;
+  add('Engine-Ausweis der Datenbasis vorhanden', !!b);
+  add('Bewertungssicht aufloesbar (keine Mischung zweier Basen)', c.engineView && c.engineView.ok, c.engineView && c.engineView.reason);
+  if (!b) return res;
+  add('Engine-Sicht und Bewertungsergebnis auf derselben Basis', c.engineView.basis === b.selected, c.engineView.basis + ' / ' + b.selected);
+  if (c.requested_by_replay) add('angeforderte Basis in der Engine angekommen', b.requested === c.requested_by_replay, b.requested);
+  if (b.requested === 'ttm' && b.selected !== 'ttm') add('TTM angefordert, aber nicht verwendet: Rueckfall mit Grund ausgewiesen',
+    b.fallback && b.fallback.active && b.fallback.reasons.length > 0, JSON.stringify(b.fallback));
+  // innerText gibt die per CSS erzwungene Grossschreibung wieder; verglichen
+  // wird deshalb ohne Beachtung der Gross-/Kleinschreibung.
+  const U = (x) => String(x == null ? '' : x).toLocaleUpperCase('de-DE');
+  const has = (t, x) => U(t).includes(U(x));
+  const own = c.basisLabels[b.selected], other = c.basisLabels[b.selected === 'ttm' ? 'fy' : 'ttm'];
+  const p = b.period || {};
+  const periodText = b.selected === 'ttm' ? (p.start + ' – ' + p.end) : p.end;
+  for (const panel of ['valuation', 'assumptions']) {
+    const t = c.panels[panel] || '';
+    add(panel + ': Datenbasis-Karte nennt die verwendete Basis', has(t, 'Datenbasis der Bewertung') && has(t, own), own);
+    add(panel + ': Zeitraum der verwendeten Basis sichtbar', !!periodText && has(t, periodText), periodText);
+  }
+  // Modellwerte der Bewertungsansicht = Ergebnisse DIESER Berechnung.
+  const vt = c.panels.valuation || '';
+  for (const [k, m] of Object.entries(c.models || {})) {
+    if (typeof m.base === 'number' && isFinite(m.base)) {
+      add('valuation: Basiswert ' + k + ' = Engine-Ergebnis', vt.includes(m.base.toFixed(2)), m.base.toFixed(2));
+    }
+  }
+  for (const bm of (b.blocked_models || [])) add('valuation: Sperre von ' + bm.model + ' auf dieser Basis sichtbar', has(vt, bm.model + ':'), bm.reason);
+  const mk = c.panels.market || '';
+  if (has(mk, 'Markt-Vergleich')) {
+    add('market: Basisangabe = verwendete Basis', has(mk, own) && !has(mk, other), own);
+    add('market: Periode der verwendeten Basis', !!p.end && mk.includes(p.end), p.end);
+    if (c.reverseDcf && c.reverseDcf.impliedGrowth != null) {
+      const g = c.reverseDcf.impliedGrowth.toFixed(1) + '%';
+      add('market: Reverse-DCF-Wert = Engine-Ergebnis', mk.includes(g), g);
+    }
+  }
+  return res;
+}
 
 function args() {
   const a = process.argv.slice(2);
@@ -150,56 +386,90 @@ async function main() {
     if (!report.pendingMasterJson) throw new Error('Kein Master-JSON erzeugt: ' + report.fetchStatus);
     report.mappingDiag = await ev("(document.getElementById('sec-mapping-diag') || {}).innerText || ''");
     // Produktiver Import (= Knopf „Import bestaetigen“).
+    // secConfirmImport arbeitet synchron; gewartet wird trotzdem auf den
+    // sichtbaren Abschluss (importiert oder ausdruecklich blockiert).
     await ev('secConfirmImport()');
-    await sleep(500);
+    await waitFor('(!!state.masterJson && !!state.masterJson.meta && state.masterJson.meta.ticker === ' + JSON.stringify(o.ticker)
+      + ' && !!state.valuation) || /blockiert/.test((document.getElementById(\'sec-status\') || {}).innerText || \'\')', 15000);
     report.importStatus = await ev("(document.getElementById('sec-status') || {}).innerText || ''");
     report.imported = await ev('!!(state.masterJson && state.masterJson.meta && state.masterJson.meta.ticker === ' + JSON.stringify(o.ticker) + ')');
     if (!report.imported) { exit = 1; throw new Error('Import blockiert: ' + report.importStatus); }
+    // Oberflaechenhelfer. Jede Ansicht wird ueber ihren Reiter geoeffnet
+    // (echter Mausklick → switchTab → render…), jede Datenbasis ueber die
+    // Auswahl im Reiter „Annahmen“ (change → _handleDataBasisChange). Gewartet
+    // wird auf nachgewiesene Zustandsaenderungen, nicht auf feste Zeiten.
+    let seq = 0;
+    const click = async (findJs, what) => {
+      const id = 'replay' + (++seq);
+      const box = await ev(`(() => { const el = (${findJs}); if (!el) return null;
+        el.scrollIntoView({ block: 'center', inline: 'center' }); el.setAttribute('data-replay', '${id}');
+        const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height }; })()`);
+      if (!box || box.w === 0 || box.h === 0) throw new Error('Nicht klickbar/sichtbar: ' + what);
+      const top = await ev(`(() => { const e = document.elementFromPoint(${box.x}, ${box.y}); const t = document.querySelector('[data-replay="${id}"]'); return !!(e && t && (e === t || t.contains(e))); })()`);
+      if (!top) throw new Error('Element verdeckt: ' + what);
+      for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
+        await P.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
+      }
+    };
+    // Reiter oeffnen und das Neurendern NACHWEISEN: Vor dem Klick bekommt der
+    // Ausgabebereich eine unsichtbare Markierung. Erst wenn der Renderer den
+    // Bereich ersetzt hat (Markierung weg) und das Panel aktiv ist, wird gelesen.
+    const openPanel = async (name) => {
+      const token = 'stale-' + (++seq);
+      const placed = await ev(`(() => { const c = document.getElementById(${JSON.stringify(PANEL_OUTPUT[name])}); if (!c) return false;
+        const s = document.createElement('span'); s.hidden = true; s.setAttribute('data-replay-stale', '${token}'); c.appendChild(s); return true; })()`);
+      if (!placed) throw new Error('Ausgabebereich fehlt: ' + PANEL_OUTPUT[name]);
+      await click(`document.querySelector('#tabs button[onclick="switchTab(\\'${name}\\')"]')`, 'Reiter ' + name);
+      const ok = await waitFor(`document.getElementById('panel-${name}').classList.contains('active') && !document.querySelector('[data-replay-stale="${token}"]')`, 15000);
+      if (!ok) throw new Error('Ansicht ' + name + ' wurde nach dem Oeffnen nicht neu gerendert.');
+      return ev(`document.getElementById('panel-${name}').innerText`);
+    };
+    const selectBasis = async (target) => {
+      await openPanel('assumptions');
+      await ev('window.__replayPrevValuation = state.valuation; true');
+      const T = JSON.stringify(target);
+      await ev(`(() => { const s = document.getElementById('as-data-basis'); if (!s) throw new Error('Auswahl as-data-basis fehlt');
+        s.focus(); s.value = ${T}; if (s.value !== ${T}) throw new Error('Option ' + ${T} + ' fehlt');
+        s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+      const ok = await waitFor(`!!state.masterJson.valuation && state.masterJson.valuation.data_basis === ${T} && !!state.valuation
+        && state.valuation !== window.__replayPrevValuation && !!state.valuation.dataBasis && state.valuation.dataBasis.requested === ${T}`, 15000);
+      if (!ok) throw new Error('Datenbasis ' + target + ' wurde nicht neu berechnet.');
+    };
+    const fundamentalsHash = async () => createHash('sha256')
+      .update(await ev('JSON.stringify(state.masterJson.fundamentals)')).digest('hex');
+    report.integrity = { fundamentalsSha256AfterImport: await fundamentalsHash() };
+
     if (o.price != null) {
       // Kurs = ausdrueckliche Annahme, getrennt von Abschlussdaten.
-      await ev(`(() => { if (typeof renderAssumptions === 'function') renderAssumptions(true); const el = document.getElementById('as-price'); el.value = ${JSON.stringify(String(o.price))}; recalcFromAssumptions(); })()`);
-      await sleep(300);
+      await openPanel('assumptions');
+      await ev('window.__replayPrevValuation = state.valuation; true');
+      await ev(`(() => { const el = document.getElementById('as-price'); el.value = ${JSON.stringify(String(o.price))}; recalcFromAssumptions(); })()`);
+      if (!await waitFor('state.valuation !== window.__replayPrevValuation', 15000)) throw new Error('Kurs-Annahme ohne Neuberechnung.');
     }
-    const snap = async () => ev(`(() => {
-      const mj = state.masterJson, f = mj.fundamentals || {}, meta = f._v4_meta || {};
-      const fields = {};
-      for (const k of ${JSON.stringify(FIELDS)}) {
-        const m = meta[k] || null;
-        fields[k] = { values: Array.isArray(f[k]) ? f[k].slice(0, 3) : (f[k] ?? null),
-          periods: m && m.periods ? m.periods.slice(0, 3) : null, forms: m && m.forms ? m.forms.slice(0, 3) : null,
-          filed: m && m.filed ? m.filed.slice(0, 3) : null, accns: m && m.accns ? m.accns.slice(0, 3) : null,
-          source_reference: m && m.source_reference || null, unit: m && m.unit || null,
-          source_type: m && m.source_type || null, notes: m && m.notes ? String(m.notes).slice(0, 600) : null,
-          unavailablePeriods: m && m.unavailablePeriods || null, derivationWarnings: m && m.derivationWarnings || null };
-      }
-      const models = {};
-      for (const [k, r] of Object.entries((state.valuation && state.valuation.modelResults) || {})) {
-        if (!r || typeof r !== 'object') continue;
-        const pick = {};
-        for (const [kk, vv] of Object.entries(r)) {
-          if (/^(base|bear|bull|available|status)$|reason|warn|block|unavail|netDebt|shares|bridge|equity|period|basis/i.test(kk)
-              && (vv == null || typeof vv !== 'object' || Array.isArray(vv))) pick[kk] = Array.isArray(vv) ? vv.slice(0, 12) : vv;
-        }
-        models[k] = pick;
-      }
-      const rm = state.synthesis && state.synthesis.relativeMultiples;
-      const v = state.valuation || {};
-      const gates = {};
-      for (const [kk, vv] of Object.entries(v)) if (/gate|block|excluded|inactive|skipped|unavailable|status|warn/i.test(kk)) gates[kk] = vv;
-      return { basis: v.dataBasis, router: v.router || null, reverseDcf: { status: v._reverseDcfStatus, reason: v._reverseDcfStatusReason }, valuationKeys: Object.keys(v), synthesisKeys: Object.keys(state.synthesis || {}), gates, fields, ttm: f._ttm || null, models,
-        multiples: rm ? rm.models : null, range: state.synthesis && state.synthesis.range,
-        price: mj.market && mj.market.price, shares_meta: mj.meta && { shares_source: mj.meta.shares_source, shares_normalization: mj.meta.shares_normalization },
-        secFetch: mj._sec_fetch || mj.meta && mj.meta._sec_fetch || null };
-    })()`);
-    report.fy = await snap();
-    const hasTtm = await ev("!!(state.valuation && state.valuation.dataBasis && state.valuation.dataBasis.ttm_available)");
-    if (hasTtm) {
-      await ev(`(() => { const s = document.getElementById('as-data-basis'); if (!s) { renderAssumptions(true); } const t = document.getElementById('as-data-basis'); t.value = 'ttm'; t.dispatchEvent(new Event('change', { bubbles: true })); })()`);
-      await sleep(400);
-      report.ttmView = await snap();
-    } else report.ttmView = { unavailable: true, dataBasis: report.fy.basis };
-    report.panels = {};
-    for (const p of ['overview', 'valuation', 'market', 'quality']) report.panels[p] = await ev(`(document.getElementById('panel-${p}') || {}).innerText || ''`);
+
+    // Erfassung: FY → TTM (angefordert) → zurueck auf FY. Je Schritt die
+    // Eingaben, mit denen die Engine TATSAECHLICH rechnet, und die Texte der
+    // danach neu gerenderten Ansichten.
+    const capture = async (step, requested) => {
+      if (requested) await selectBasis(requested);
+      const c = await ev(CAPTURE_JS);
+      c.step = step;
+      c.requested_by_replay = requested || null;
+      c.panels = {};
+      for (const p of PANELS) c.panels[p] = await openPanel(p);
+      c.checks = checkPanels(c);
+      return c;
+    };
+    report.fy = await capture('fy', null);
+    report.ttmView = await capture('ttm', 'ttm');
+    report.fyReturn = await capture('fy-return', 'fy');
+    report.integrity.fundamentalsSha256AtEnd = await fundamentalsHash();
+    report.integrity.fundamentalsUnchanged = report.integrity.fundamentalsSha256AtEnd === report.integrity.fundamentalsSha256AfterImport;
+    report.checks = [
+      ...['fy', 'ttmView', 'fyReturn'].flatMap(k => report[k].checks.map(x => Object.assign({ capture: k }, x))),
+      { capture: '-', name: 'Master-JSON-Fundamentaldaten durch die Erfassung unveraendert', ok: report.integrity.fundamentalsUnchanged }
+    ];
+    if (report.checks.some(x => !x.ok)) exit = 1;
   } catch (e) {
     report.error = String(e && e.message || e); if (!exit) exit = 1;
   } finally {
@@ -214,14 +484,26 @@ async function main() {
   console.log(`Ticker ${o.ticker} · Commit ${commit} (lokale Aenderungen: ${dirty}) · ${o.selftest ? 'SELBSTTEST, synthetisch' : 'Daten: ' + dataDir}`);
   for (const s of served) console.log('  Quelle ' + (s.missing ? 'FEHLT ' : '') + s.url + (s.sha256 ? ' · sha256 ' + s.sha256.slice(0, 16) + ' · ' + s.bytes + ' B' : ''));
   if (report.error) console.log('FEHLER: ' + report.error);
-  if (report.fy) {
-    console.log('\nFeld | Wert[0] (FY) | Periode[0] | Tag | Quelle');
-    for (const [k, v] of Object.entries(report.fy.fields)) {
-      const val = Array.isArray(v.values) ? v.values[0] : v.values;
-      console.log(`${k} | ${val ?? '—'} | ${v.periods ? v.periods[0] : '—'} | ${(v.source_reference || '—').slice(0, 90)} | ${v.source_type || '—'}`);
+  const fmt = (x) => x == null ? '—' : (typeof x === 'number' ? String(+x.toFixed(4)) : String(x));
+  for (const [key, title] of [['fy', 'FY'], ['ttmView', 'TTM angefordert'], ['fyReturn', 'zurueck auf FY']]) {
+    const c = report[key];
+    if (!c) continue;
+    const b = c.basis || {};
+    console.log(`\n== ${title}: verwendet ${b.selected || '?'} (angefordert ${b.requested || '?'}; TTM verfuegbar: ${b.ttm_available}; Rueckfall: ${b.fallback && b.fallback.active ? b.fallback.reasons.join(' | ') : 'nein'})`);
+    if (!c.fields) { console.log('  keine Felder: ' + c.fieldsUnavailableReason); continue; }
+    console.log('Feld | Art | Wert[0] | Periode | Komponenten | Tag | fehlende Metadaten');
+    for (const [k, f] of Object.entries(c.fields)) {
+      if (f.value == null && f.status !== 'TTM-Groesse der Engine') continue;
+      const comp = f.components ? (f.components.quarters ? (Array.isArray(f.components.quarters) ? f.components.quarters.map(q => typeof q === 'string' ? q : q.end).join(',') : '') : (f.components.asOf || f.components.end || '')) : '';
+      console.log(`${k} | ${f.concept} | ${fmt(f.value)} | ${f.period.end || '—'} | ${comp || '—'} | ${(f.provenance && f.provenance.tag) || '—'} | ${f.metadataMissing.join(',') || '—'}`);
     }
-    console.log('\nModell | base | verfuegbar | Grund');
-    for (const [k, m] of Object.entries(report.fy.models)) console.log(`${k} | ${m.base ?? '—'} | ${m.available ?? '—'} | ${JSON.stringify(Object.fromEntries(Object.entries(m).filter(([x]) => /reason|block|unavail/i.test(x)))).slice(0, 200)}`);
+    console.log('Modell | base | verfuegbar | Grund');
+    for (const [k, m] of Object.entries(c.models || {})) console.log(`${k} | ${m.base ?? '—'} | ${m.available ?? '—'} | ${JSON.stringify(Object.fromEntries(Object.entries(m).filter(([x]) => /reason|block|unavail/i.test(x)))).slice(0, 200)}`);
+  }
+  if (report.checks) {
+    const bad = report.checks.filter(x => !x.ok);
+    console.log(`\nAbgleich Anzeige ↔ Engine: ${report.checks.length - bad.length}/${report.checks.length} bestanden`);
+    for (const x of bad) console.log(`  ABWEICHUNG [${x.capture}] ${x.name}${x.detail ? ' — ' + x.detail : ''}`);
   }
   console.log('\nBericht: ' + out + (rejected.length ? ' · abgewiesene Anfragen: ' + rejected.length : '') + (exceptions.length ? ' · Ausnahmen: ' + exceptions.length : ''));
   process.exit(exit);
