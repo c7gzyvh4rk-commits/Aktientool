@@ -1,5 +1,36 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Folgechat D: Realdaten-Audit MCD / JNJ — blockiert, Werkzeug vorbereitet
+
+**Ausgangsstand bestätigt.** `main` = `8b42fea` (Merge PR #1, V1.0.70,
+Produktdatei-Blob `ac0ae781…` = browsergeprüfter Stand). Auditbranch
+`claude/audit-real-data-mcd-jnj`. Keine `AGENTS.md`.
+
+**Blockade.** Die Netzrichtlinie der Umgebung sperrt `data.sec.gov`,
+`www.sec.gov` und die IR-Seiten von MCD und JNJ. **Es wurde kein realer Wert
+abgeglichen, und es gibt keinen bestätigten Datenbefund.** Details, Prüfpunkte
+P-1 bis P-7 und Grenzen stehen in `AUDIT-REAL-DATA-MCD-JNJ.md`.
+
+**Neu (nicht Teil von `npm test`):**
+* `tests/real-data/fetch-sources.mjs` lädt die SEC-Quellen, schneidet sie auf
+  den Stichtag und schreibt ein Manifest mit SHA-256.
+* `tests/real-data/replay-import.mjs` spielt den produktiven Importweg
+  (`secFetchAll` → `secConfirmImport`) im Browser mit diesen Dateien nach.
+  Nachgewiesen ist nur die Mechanik (`--selftest`, synthetisch, Exit 0).
+* `tests/browser/fixtures.mjs` exportiert zusätzlich `ttmFacts()`
+  (für den Selbsttest; sonst unverändert).
+
+Tests nach den Änderungen: `npm test` mit 1700 Assertions (434) und 206 Tests,
+Exit 0. `npm run test:browser` 158/158, Exit 0.
+
+**Nächster Schritt (Folgechat D wiederholen).** Netzfreigabe für `data.sec.gov`
+und `www.sec.gov` einrichten. Dann `fetch-sources.mjs MCD JNJ --cutoff <Stichtag>`
+und `replay-import.mjs MCD` bzw. `JNJ` ausführen und die Abgleichstabellen im
+Auditbericht füllen (Anleitung: `tests/real-data/README.md`).
+
+---
+
+
 ## Folgechat C: Freigabe nach `main` (V1.0.70)
 
 **Freigegebene Version: V1.0.70** (Entwicklungszaehlung dieses HANDOFF).

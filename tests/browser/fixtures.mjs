@@ -32,7 +32,7 @@ const qShr = (spec) => ({ units: { shares: Object.keys(spec).flatMap(y => spec[y
   form: form(i + 1), filed: filed(+y, i + 1), accn: 's' + y + i }))) } });
 const flat = (v4, v3) => ({ 2022: [v4, v4, v4, v4], 2023: [v4, v4, v4, v4], 2024: [v4, v4, v4, v4], 2025: [v3, v3, v3] });
 
-function ttmFacts() {
+export function ttmFacts() {
   return { 'us-gaap': {
     Revenues:            qFlow({ 2022: cum4(250), 2023: cum4(250), 2024: cum4(250), 2025: cum3(375) }),
     OperatingIncomeLoss: qFlow({ 2022: cum4(50),  2023: cum4(50),  2024: cum4(50),  2025: cum3(75) }),
