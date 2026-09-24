@@ -218,7 +218,7 @@ async function main() {
     check('keine Ausnahme beim Laden', exceptions.length === 0, exceptions.join(' | '));
 
     // ══════════════════════════════════════════════════════════════════════
-    sec('1 · EV/EBITDA-Bruecke: Periodenpruefung je Seite (V1.0.69)');
+    sec('1 · EV/EBITDA-Bruecke: Periodenpruefung je Seite (V1.0.69) und gueltige Kalenderdaten (V1.0.70)');
     const bridgeCases = FX.bridgeCases();
     for (const c of bridgeCases) {
       const status = await importViaUi(c.mj);

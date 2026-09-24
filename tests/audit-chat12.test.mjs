@@ -4576,3 +4576,118 @@ test('R51 (12F Befund 3) vorhandene Multiples werden von fehlenden Berechnungsgr
     assert.equal(rel.median, null);
   }
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// R52 (Regression, Folgechat B.1) — Datumsvalidierung der EV/EBITDA-Bruecke.
+// Bis V1.0.69 galt ein Stichtag als lesbar, sobald `new Date(p)` ein Datum
+// lieferte. JavaScript normalisiert dabei unmoegliche Tage: "2025-02-30"
+// wird zum 2. Maerz und erzeugte so eine scheinbar bestaetigte
+// Periodenkompatibilitaet mit einem Stichtag 2025-03-02 (16 USD freigegeben).
+// Zuerst am unveraenderten Ausgangsstand `e5e8b02` ausgefuehrt und dort
+// fehlgeschlagen.
+// ═══════════════════════════════════════════════════════════════════════════
+test('R52 (B.1) nur gueltige Kalenderdaten belegen einen Stichtag der EV/EBITDA-Bruecke', () => {
+  const mk = (ebitdaP, ndP, fund) => ({
+    meta: { ticker: 'DATX', sub_classification: 'standard_nonfin' },
+    fundamentals: Object.assign({ ebitda: [250], shares_diluted: [100], net_debt: [900] }, fund || {}, {
+      _v4_meta: Object.assign({},
+        ebitdaP === undefined ? {} : { ebitda: { periods: [ebitdaP], isFlowConcept: true, unit: 'USD' } },
+        ndP === undefined ? {} : { net_debt: { periods: [ndP], isFlowConcept: false, source_type: 'reported', unit: 'USD' } })
+    }),
+    valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false } },
+    market: { price: 20, own_multiples_median: { ev_ebitda_10y: 10 } }
+  });
+  const evOf = (mj) => S.computeRelativeMultiplesFV(mj).models.find(m => m.id === 'ev_ebitda_10y');
+  const blocked = (e, tag) => {
+    assert.equal(e.available, false, tag + ': freigegeben (' + e.base + ')');
+    assert.equal(e.base, null, tag);
+    assert.equal(e.bridgeBlocked, true, tag);
+    assert.equal(e.enterpriseValueM, 2500, tag + ': operativer EV');
+  };
+  const free16 = (e, tag) => {
+    assert.equal(e.available, true, tag + ': ' + e.reason);
+    assert.ok(Math.abs(e.base - 16) < 1e-12, tag + ': ' + e.base);
+  };
+
+  // ── Gegenbeispiel: 30. Februar gegen 2. Maerz ───────────────────────
+  {
+    const mj = mk('2025-02-30', '2025-03-02');
+    const e = evOf(mj);
+    blocked(e, '2025-02-30 / 2025-03-02');
+    assert.ok(/2025-02-30/.test(e.reason), 'ungueltiger Wert nicht genannt: ' + e.reason);
+    assert.ok(/kein gueltiges Kalenderdatum/.test(e.reason), e.reason);
+    assert.ok(/Periodenende des EBITDA/.test(e.reason), e.reason);
+    // Echter Pfad Engine → State → Renderer.
+    const r = renderValuationHtml(mj);
+    const ev = r.syn.relativeMultiples.models.find(m => m.id === 'ev_ebitda_10y');
+    assert.equal(ev.available, false, 'Engine/State gibt frei');
+    const market = renderMarketHtml(mj, r.v);
+    assert.equal(market.indexOf('16.00'), -1, 'Markt-Vergleich gibt 16.00 frei');
+    assert.ok(/nicht ableitbar/.test(market));
+    assert.ok(/2025-02-30/.test(market), 'Sperrgrund fehlt in der Anzeige');
+    assert.ok(/Operativer Unternehmenswert \(EV\) bleibt bestimmbar: 2500\.0M/.test(market), 'EV fehlt');
+  }
+  // ── Ungueltige Tages- und Monatsangaben, beide Seiten ───────────────
+  for (const [a, b, tag] of [
+    ['2025-04-30', '2025-04-31', 'April hat 30 Tage (Bruecke)'],
+    ['2025-04-31', '2025-04-30', 'April hat 30 Tage (EBITDA)'],
+    ['2023-02-28', '2023-02-29', '2023 kein Schaltjahr'],
+    ['2100-02-28', '2100-02-29', '2100 kein Schaltjahr'],
+    ['2025-12-31', '2025-12-32', 'Tag 32'],
+    ['2025-12-31', '2025-12-00', 'Tag 0'],
+    ['2025-12-31', '2025-13-31', 'Monat 13'],
+    ['2025-00-31', '2025-12-31', 'Monat 0'],
+    ['2025-12-31', '2025-6-30', 'unvollstaendiges Format'],
+    ['2025-12-31', '31.12.2025', 'fremdes Format'],
+    ['2025-12-31', '2025', 'nur Jahreszahl']
+  ]) {
+    const e = evOf(mk(a, b));
+    blocked(e, tag);
+    assert.ok(/kein gueltiges Kalenderdatum/.test(e.reason), tag + ': ' + e.reason);
+  }
+  // Ungueltiger Stichtag bei metadatenfreier Gegenseite ebenfalls gesperrt.
+  blocked(evOf(mk(undefined, '2025-02-30')), 'Bruecke 2025-02-30, EBITDA ohne Metadaten');
+  blocked(evOf(mk('2025-02-30', undefined)), 'EBITDA 2025-02-30, Bruecke ohne Metadaten');
+
+  // ── Gueltige Kalenderdaten ──────────────────────────────────────────
+  free16(evOf(mk('2025-12-31', '2025-12-31')), 'gleicher Stichtag');
+  free16(evOf(mk('2024-02-29', '2024-02-29')), 'gueltiger Schalttag');
+  free16(evOf(mk('2000-02-29', '2000-02-29')), 'Schalttag 2000');
+  free16(evOf(mk('2024-02-29', '2024-03-31')), 'Schalttag gegen Quartalsende (31 Tage)');
+  free16(evOf(mk('2026-01-31', '2025-12-31')), 'abweichendes Geschaeftsjahresende');
+  // 45-Tage-Toleranz unveraendert: 45 zulaessig, 46 gesperrt.
+  free16(evOf(mk('2025-12-31', '2026-02-14')), '45 Tage');
+  {
+    const e = evOf(mk('2025-12-31', '2026-02-15'));
+    assert.equal(e.available, false);
+    assert.ok(/unterschiedlichen Berichtsperioden/.test(e.reason), e.reason);
+  }
+  // Eine Seite datiert, die andere ganz ohne Metadaten: bestehende Regel.
+  free16(evOf(mk('2024-02-29', undefined)), 'EBITDA Schalttag, Bruecke ohne Metadaten');
+  free16(evOf(mk(undefined, '2024-02-29')), 'Bruecke Schalttag, EBITDA ohne Metadaten');
+
+  // ── null und "n/a" bleiben gesperrt, Altdaten bleiben zulaessig ────
+  for (const bad of [null, 'n/a']) {
+    blocked(evOf(mk(undefined, bad)), 'net_debt ' + bad);
+    blocked(evOf(mk(bad, undefined)), 'ebitda ' + bad);
+    blocked(evOf(mk('2025-12-31', bad)), 'EBITDA datiert, net_debt ' + bad);
+  }
+  free16(evOf(mk(undefined, undefined)), 'metadatenfreie Altdaten');
+
+  // ── P/E und P/FCF unberuehrt ────────────────────────────────────────
+  {
+    const mj = mk('2025-02-30', '2025-03-02', { eps_diluted: [2], fcf: [300] });
+    mj.market.own_multiples_median.pe_10y = 15;
+    mj.market.own_multiples_median.p_fcf_10y = 20;
+    const rel = S.computeRelativeMultiplesFV(mj);
+    const by = (id) => rel.models.find(m => m.id === id);
+    assert.equal(by('ev_ebitda_10y').available, false);
+    assert.ok(Math.abs(by('pe_10y').base - 30) < 1e-12);
+    assert.ok(Math.abs(by('p_fcf_10y').base - 60) < 1e-12);
+  }
+
+  // ── Gemeinsame Datumsfunktionen unveraendert ─────────────────────────
+  assert.equal(S._secPeriodDaysApart('2025-12-31', '2026-02-14'), 45);
+  assert.equal(S.parseIsoDate('2025-02-30'), null);
+  assert.equal(S.parseIsoDate('2024-02-29'), Date.UTC(2024, 1, 29));
+});

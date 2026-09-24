@@ -20163,7 +20163,16 @@ function _resolveMultiplesEvBridge(f) {
   // Nur eine Seite ganz ohne Periodenangaben (manuelle Altdaten) bleibt nach
   // der bestehenden Regel ungeprueft zulaessig. Toleranz und DCF-Resolver
   // sind unveraendert; es wird kein fremder Stichtag uebernommen.
-  const _readable = (p) => p != null && !isNaN(new Date(p).getTime());
+  // V1.0.70 (Folgechat B.1): Lesbar heisst GUELTIGES KALENDERDATUM im
+  // Format JJJJ-MM-TT — dem einzigen Periodenformat, das der produktive
+  // SEC-Import liefert (`periods = end`). Bis V1.0.69 genuegte
+  // `new Date(p)`; das normalisiert unmoegliche Tage stillschweigend
+  // ("2025-02-30" → 2. Maerz) und erzeugte so eine scheinbar bestaetigte
+  // Periodenkompatibilitaet (gemessen: 16 USD gegen einen Stichtag
+  // 2025-03-02). `parseIsoDate` (UTC, Rueckrechnungspruefung) wird
+  // unveraendert mitbenutzt.
+  const _readable = (p) => parseIsoDate(p) != null;
+  const _invalidNote = ' — kein gueltiges Kalenderdatum im Format JJJJ-MM-TT';
   const ebitdaOk = _readable(ebitdaPeriod);
   const bridgeOk = _readable(bridgePeriod);
   const ebitdaBad = ebitdaHasCtx && !ebitdaOk;
@@ -20186,7 +20195,7 @@ function _resolveMultiplesEvBridge(f) {
               'behauptet.');
     }
     return _blocked('Die Berichtsperioden von EBITDA (' + _shown(ebitdaPeriod) + ') und ' +
-              'Bilanzangaben (' + _shown(bridgePeriod) + ') sind nicht als Datum lesbar — ' +
+              'Bilanzangaben (' + _shown(bridgePeriod) + ') sind nicht als Datum lesbar' + _invalidNote + '; ' +
               'ihre Vereinbarkeit ist damit nicht nachweisbar.');
   } else if (bridgeBad) {
     // Bekannter Widerspruch darf nicht an fehlenden Metadaten verschwinden.
@@ -20197,7 +20206,7 @@ function _resolveMultiplesEvBridge(f) {
                               : 'Der ') + 'Bilanzstichtag ' +
             'des verwendeten Betrags (' + (res.source || 'Nettoschulden') + ') ist trotz ' +
             'vorhandener Periodenangaben nicht bestimmbar (gemeldet: ' + _shown(bridgePeriod) +
-            '). Das Datum eines anderen Feldes wird nicht uebernommen; ein Abzug ohne ' +
+            _invalidNote + '). Das Datum eines anderen Feldes wird nicht uebernommen; ein Abzug ohne ' +
             'belegten Stichtag waere scheingenau.');
   } else if (ebitdaBad) {
     // Spiegelbild: EBITDA fuehrt Periodenangaben ohne lesbares Periodenende
@@ -20205,7 +20214,7 @@ function _resolveMultiplesEvBridge(f) {
     // gar keine Periodenangaben fuehrt.
     return _blocked((bridgeOk ? 'Der Bilanzstichtag der Eigenkapitalbruecke ist ' + bridgePeriod + ', das '
                               : 'Das ') + 'Periodenende des EBITDA ist trotz vorhandener ' +
-            'Periodenangaben nicht bestimmbar (gemeldet: ' + _shown(ebitdaPeriod) + '). Die ' +
+            'Periodenangaben nicht bestimmbar (gemeldet: ' + _shown(ebitdaPeriod) + _invalidNote + '). Die ' +
             'Vereinbarkeit mit der Eigenkapitalbruecke ist damit nicht nachweisbar.');
   }
 

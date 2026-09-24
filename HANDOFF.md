@@ -1,5 +1,111 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Folgechat B.1: Datumsvalidierung der EV/EBITDA-Bruecke (V1.0.70)
+
+**Ausgangsstand.** Branch `claude/loving-newton-hcpo71`, nach `git fetch`
+HEAD = `origin/claude/loving-newton-hcpo71` =
+**`e5e8b0267a4dd04936ef3ea55193208a787894b3`** (keine Nachfolgecommits),
+Arbeitsbaum sauber, keine `AGENTS.md`. `main` (`b023dc8`) unberuehrt.
+
+**Baseline selbst ausgefuehrt auf `e5e8b02`:** `npm test` — 1700
+Rechen-Assertions (darin 434 Fixture-Assertions), Exit 0; 205 Node-Tests,
+Exit 0. `npm run test:browser` — 148/148 bestanden, Exit 0.
+
+### 1 · Fehler und Reproduktion
+
+`_resolveMultiplesEvBridge()` hielt eine Periode fuer lesbar, sobald
+`new Date(p)` ein Datum lieferte. JavaScript normalisiert unmoegliche Tage
+(`"2025-02-30"` → 2. Maerz). Gemessen auf `e5e8b02` ueber
+`computeRelativeMultiplesFV()` (EBITDA 250, Multiple 10, 100 Aktien,
+`net_debt[0] = 900`):
+
+| EBITDA-Periode | Bruecke (`net_debt`) | `e5e8b02` | V1.0.70 |
+|---|---|---|---|
+| `2025-02-30` | `2025-03-02` | **frei, 16 USD** | gesperrt |
+| `2025-04-30` | `2025-04-31` | **frei, 16 USD** | gesperrt |
+| `2023-02-28` | `2023-02-29` | **frei, 16 USD** | gesperrt |
+| `2100-02-28` | `2100-02-29` | **frei, 16 USD** | gesperrt |
+| ohne Metadaten | `2025-02-30` | **frei, 16 USD** | gesperrt |
+| `2025-12-31` | `2025-12-32` / `-00` / `2025-13-31` / `31.12.2025` | gesperrt | gesperrt (jetzt mit Kalendergrund) |
+| `2025-12-31` | `2025-6-30` / `2025` | gesperrt (nur wegen Abstand) | gesperrt (Kalendergrund) |
+| `2024-02-29` | `2024-02-29` | frei, 16 USD | frei, 16 USD |
+
+Im Browser auf `e5e8b02`: Markt-Vergleich zeigte fuer den 30. Februar
+„16.00" ohne Sperrgrund.
+
+### 2 · Unterstuetzte Periodenformate (vor der Aenderung geprueft)
+
+* Produktiver SEC-Import: `meta.periods = sorted.map(e => e.end)` — das
+  SEC-`end`-Feld, stets `JJJJ-MM-TT`. TTM-Sichten ebenso (`2025-09-30`).
+* Manuelle/Altdaten im Repository: `periods: null` (gilt als metadatenfrei),
+  `"n/a"`, und die Jahreszahl `'2024'`/`'2023'` nur in den In-Page-Tests
+  GT-6a/b (Schulden-Fallback; sie beruehren die EV-Bruecke nicht und bestehen
+  unveraendert). Kein anderes Format im Produkt, in Fixtures oder Tests.
+
+### 3 · Korrektur (eng)
+
+In `_resolveMultiplesEvBridge()` gilt eine Periode nur noch als Stichtags-
+nachweis, wenn sie ein **gueltiges Kalenderdatum im Format `JJJJ-MM-TT`**
+ist. Dafuer wird die vorhandene, unveraenderte Funktion `parseIsoDate()`
+(UTC, Rueckrechnungspruefung, bisher im SEC-Quartalsnormalisierer) benutzt;
+**keine gemeinsame Datumsfunktion wurde geaendert** (`_secPeriodDaysApart`,
+`_ttmParseIso` unberuehrt; R52 sichert `_secPeriodDaysApart` = 45 Tage und
+`parseIsoDate` fest). Sperrgruende nennen den gemeldeten Wert und „kein
+gueltiges Kalenderdatum im Format JJJJ-MM-TT". Unveraendert: 45-Tage-
+Toleranz, Ausnahme fuer vollstaendig metadatenfreie Altdaten, keine
+Uebernahme fremder Stichtage, kein Ersatzbetrag, DCF-Formeln, gemeinsame
+Nettoschuldenaufloesung, P/E- und P/FCF-Regeln. Der operative EV bleibt
+sichtbar.
+
+**Bewusste Verhaltensaenderung:** Eine reine Jahreszahl (`'2024'`) oder ein
+Datum mit Uhrzeit ist kein Stichtag im unterstuetzten Format und sperrt die
+Bruecke jetzt auch dann, wenn beide Seiten dasselbe Jahr tragen (bisher
+Abstand 0 Tage ⇒ frei). Kein produktiver Weg liefert solche Angaben.
+
+In der Zulaessigkeitsmatrix von Folgechat B bedeutet „datiert (lesbar)" ab
+V1.0.70 „gueltiges Kalenderdatum `JJJJ-MM-TT`".
+
+### 4 · Tests
+
+| Test | Inhalt |
+|---|---|
+| `R52` (neu) | 30.02./02.03. inkl. echtem Pfad Engine → State → `renderValuation`/`renderMarket` (kein 16.00, Sperrgrund mit `2025-02-30`, EV 2500.0M); ungueltige Tage (31.04., 29.02.2023/2100, Tag 0/32), Monate 0/13, Fremdformate, Jahreszahl; ungueltiges Datum bei metadatenfreier Gegenseite (beide Richtungen); gueltige Daten inkl. Schalttag 2024-02-29 und 2000-02-29, Schalttag gegen 31.03., abweichendes GJ-Ende; 45 Tage frei / 46 gesperrt; `null`/`"n/a"` gesperrt; metadatenfreie Altdaten 16 USD; P/E 30 und P/FCF 60 unberuehrt |
+| Browser | zwei neue Faelle in Abschnitt 1: `2025-02-30`/`2025-03-02` (Import, Markt-Vergleich „nicht ableitbar" mit Sperrgrund und EV 2500.0M, Fallback-Karte, Zustand) und Gegenprobe Schalttag `2024-02-29` (16.00 frei) |
+
+**Bestehende Erwartungen: keine angepasst.** R1–R51 unveraendert gruen.
+
+**Gegenprobe** (temporaerer `git worktree` auf `e5e8b02` mit den neuen
+Testdateien, danach entfernt): `R52` scheitert („2025-02-30 / 2025-03-02:
+freigegeben (16)"), 57 uebrige Audit-Tests bestehen; Browser-Abnahme
+**153/158, 5 fehlgeschlagen** — genau der neue Fall (16.00 freigegeben).
+
+**Nach der Korrektur** (je ein Lauf): `npm test` — **1700
+Rechen-Assertions (darin 434 Fixture), Exit 0; 206 Node-Tests, Exit 0**
+(205 → 206 durch R52). Browser-Abnahme: siehe Abschnitt 5.
+
+### 5 · Gepruefter Produktstand
+
+Produktdatei-Blob **`ac0ae781bd4d2de9478143dda4735075b8d9a7e9`**.
+Abnahmelauf auf dem sauberen Commit: siehe Nachtrag unten.
+
+### 6 · Verbleibende Grenzen
+
+* Nur synthetische Daten; kein Abgleich mit echten Filings.
+* Die Kalenderpruefung gilt fuer die EV/EBITDA-Bruecke. Andere Verbraucher
+  von `new Date(...)`-Perioden (u. a. `_secPeriodDaysApart` in
+  `_joinPeriodKeyed`) wurden nicht umgestellt; sie verarbeiten SEC-Daten, die
+  nur gueltige `end`-Daten enthalten.
+* Uebrige Grenzen aus Folgechat B bestehen unveraendert.
+
+### 7 · Uebergabe an „Folgechat C — main aktualisieren"
+
+Grundlage ist die Spitze von `claude/loving-newton-hcpo71` (Nachtrag unten).
+Vor dem Aktualisieren von `main` erwartet: `npm test` 1700 (434) + 206,
+`npm run test:browser` 158/158, jeweils Exit 0. Die Angabe „148/148" in
+Folgechat B ist damit ueberholt.
+
+---
+
 ## Folgechat B: Browser-Abnahme und Periodenrestluecke der EV-Bruecke (V1.0.69)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Arbeits- und

@@ -118,6 +118,17 @@ export function bridgeCases() {
       mj: mk('BRF', { net_debt: [900] }, {
         ebitda: { periods: [null], isFlowConcept: true, unit: 'USD' },
         net_debt: Object.assign(dated(D25), { source_type: 'reported' }) }) },
+    // V1.0.70: unmoeglicher Kalendertag darf nicht zum 2. Maerz normalisiert
+    // werden und so eine Periodenkompatibilitaet vortaeuschen.
+    { name: 'V1.0.70 EBITDA 2025-02-30 gegen net_debt 2025-03-02', expect: 'blocked',
+      reason: /Periodenende des EBITDA[^\n]*2025-02-30[^\n]*kein gueltiges Kalenderdatum/,
+      mj: mk('BRI', { net_debt: [900] }, {
+        ebitda: { periods: ['2025-02-30'], isFlowConcept: true, unit: 'USD' },
+        net_debt: Object.assign(dated('2025-03-02'), { source_type: 'reported' }) }) },
+    { name: 'Gegenprobe V1.0.70: gueltiger Schalttag 2024-02-29', expect: '16.00',
+      mj: mk('BRJ', { net_debt: [900] }, {
+        ebitda: { periods: ['2024-02-29'], isFlowConcept: true, unit: 'USD' },
+        net_debt: Object.assign(dated('2024-02-29'), { source_type: 'reported' }) }) },
     { name: 'Gegenprobe: net_debt korrekt datiert', expect: '16.00',
       mj: mk('BRG', { net_debt: [900] }, {
         ebitda: { periods: [D25], isFlowConcept: true, unit: 'USD' },
