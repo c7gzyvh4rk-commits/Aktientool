@@ -12,7 +12,9 @@ Zwei Skripte, die nicht zu `npm test` gehören.
    Die Dateien landen in `tests/real-data/cache/` (nicht versioniert), zusammen mit
    `manifest.json` (URL, Abrufzeit, SHA-256). `--cutoff` entfernt alle Fakten mit
    `filed` nach dem Datenstichtag. Das Original bleibt als `*.raw.json` erhalten.
-   Exit 2 bedeutet: Quelle nicht erreichbar.
+   Exit 2 bedeutet: Quelle nicht erreichbar. Hinter einem HTTP-Proxy (z. B. in
+   der Cloud-Umgebung) braucht Node zusätzlich
+   `NODE_USE_ENV_PROXY=1` und gegebenenfalls `NODE_EXTRA_CA_CERTS=<CA-Datei>`.
 
 2. **Produktiven Import nachspielen.** Das läuft ohne Netz, nur mit lokalem Chromium:
 
@@ -36,6 +38,17 @@ Zwei Skripte, die nicht zu `npm test` gehören.
    * Modellergebnisse, Router mit aktiven und deaktivierten Modellen und Gründen;
    * den Text der Anzeigen;
    * die bedienten Quellen mit SHA-256.
+
+3. **Bestätigte Befunde reproduzieren.** Das läuft ohne Netz und ohne Browser:
+
+   ```sh
+   node tests/real-data/repro-findings.mjs
+   ```
+
+   Das Skript nutzt nur die wortgetreuen SEC-Auszüge in `excerpts/` (mit
+   Quell-URL, Abrufzeit und SHA-256 der Rohdatei) und die produktiven
+   Funktionen. Je Befund meldet es `BESTEHT` oder `BEHOBEN`. Es gehört bewusst
+   nicht zu `npm test`, weil es falsches Verhalten festhält.
 
 `--selftest` belegt nur, dass die Mechanik funktioniert. Er ist **keine**
 Prüfung mit echten Daten.

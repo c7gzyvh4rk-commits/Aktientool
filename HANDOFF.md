@@ -1,32 +1,55 @@
 # HANDOFF — US-Aktienbewertungstool
 
-## Folgechat D: Realdaten-Audit MCD / JNJ — blockiert, Werkzeug vorbereitet
+## Folgechat D: Realdaten-Audit MCD / JNJ (Stichtag 2026-09-24)
 
-**Ausgangsstand bestätigt.** `main` = `8b42fea` (Merge PR #1, V1.0.70,
-Produktdatei-Blob `ac0ae781…` = browsergeprüfter Stand). Auditbranch
-`claude/audit-real-data-mcd-jnj`. Keine `AGENTS.md`.
+**Ausgangsstand.** `main` = `8b42fea` (V1.0.70). Auditbranch
+`claude/audit-real-data-mcd-jnj`. Die Produktdatei ist **unverändert**. Keine
+`AGENTS.md`. Der erste Lauf war am Netz gescheitert; nach Freigabe von
+`data.sec.gov` und `www.sec.gov` wurde das Audit vollständig durchgeführt.
 
-**Blockade.** Die Netzrichtlinie der Umgebung sperrt `data.sec.gov`,
-`www.sec.gov` und die IR-Seiten von MCD und JNJ. **Es wurde kein realer Wert
-abgeglichen, und es gibt keinen bestätigten Datenbefund.** Details, Prüfpunkte
-P-1 bis P-7 und Grenzen stehen in `AUDIT-REAL-DATA-MCD-JNJ.md`.
+**Geprüft.** MCD 10-K FY2025 (`0000063908-26-000035`) und JNJ 10-K FY2025
+(`0000200406-26-000016`), jeweils über den produktiven Importweg
+(`secFetchAll` → `secConfirmImport`, im Browser mit gespeicherten SEC-Dateien)
+und abgeglichen gegen GuV, Bilanz, Kapitalflussrechnung und Anhang. Details:
+`AUDIT-REAL-DATA-MCD-JNJ.md`.
 
-**Neu (nicht Teil von `npm test`):**
-* `tests/real-data/fetch-sources.mjs` lädt die SEC-Quellen, schneidet sie auf
-  den Stichtag und schreibt ein Manifest mit SHA-256.
-* `tests/real-data/replay-import.mjs` spielt den produktiven Importweg
-  (`secFetchAll` → `secConfirmImport`) im Browser mit diesen Dateien nach.
-  Nachgewiesen ist nur die Mechanik (`--selftest`, synthetisch, Exit 0).
-* `tests/browser/fixtures.mjs` exportiert zusätzlich `ttmFacts()`
-  (für den Selbsttest; sonst unverändert).
+**Korrekt übernommen:**
+* MCD und JNJ: Umsatz, CFO, CapEx, FCF, Liquidität, EPS, DPS, Ø verwässerte
+  Aktien [0], Eigenkapital bzw. Buchwert;
+* MCD: Operating Income, Finance-Leasing;
+* JNJ: D&A.
 
-Tests nach den Änderungen: `npm test` mit 1700 Assertions (434) und 206 Tests,
-Exit 0. `npm run test:browser` 158/158, Exit 0.
+**Bestätigte Fehler** (Reproduktion: `node tests/real-data/repro-findings.mjs`,
+5 von 5 bestehen):
+* **F-1:** MCD-D&A aus falschem Tag (457 statt 2,199), dadurch EBITDA −12 %.
+* **F-2:** Der Jahresschlüssel nach Kalenderjahr verliert bei 52/53-Wochen-Jahren
+  ein Geschäftsjahr (JNJ FY2022) und kürzt die Historie.
+* **F-3:** Quartalsabgleich ohne Rundungstoleranz, dadurch kein MCD-TTM.
+* **F-4:** Gemischt skalierte MCD-Aktienreihe, dadurch „Net Share Issuance
+  −100 %“.
+* **F-5:** Lease-bereinigter ROIC paart per Index statt per Periode.
 
-**Nächster Schritt (Folgechat D wiederholen).** Netzfreigabe für `data.sec.gov`
-und `www.sec.gov` einrichten. Dann `fetch-sources.mjs MCD JNJ --cutoff <Stichtag>`
-und `replay-import.mjs MCD` bzw. `JNJ` ausführen und die Abgleichstabellen im
-Auditbericht füllen (Anleitung: `tests/real-data/README.md`).
+**Berechtigte Sperren:**
+* MCD DCF-Brücke: Die Schulden-Tags widersprechen sich. Die richtige
+  Aufteilung steht nur im Anhang.
+* MCD RIM: negatives Eigenkapital.
+* JNJ: Finance-Leasing ohne Betrag.
+
+Der JNJ-DCF fehlt, weil der Zinsaufwand als `InterestExpenseNonoperating`
+getaggt ist und diesen Tag der Import nicht kennt (I-1). Die Behebung braucht
+eine fachliche Entscheidung, siehe Bericht §4.
+
+**Neu:**
+* `tests/real-data/fetch-sources.mjs`, `replay-import.mjs`, `repro-findings.mjs`;
+* `tests/real-data/excerpts/` (wortgetreue Auszüge, zusammen rund 64 KB);
+* README.
+
+Tests: `npm test` mit 1700 Assertions (434) und 206 Tests, Exit 0.
+`npm run test:browser` 158/158.
+
+**Nächster Schritt.** Korrekturaufträge in der Reihenfolge von Bericht §7:
+F-2, F-1, F-4, F-3, F-5, danach I-1 mit P-1. Bei jedem Auftrag vorher und
+nachher `repro-findings.mjs` ausführen.
 
 ---
 
