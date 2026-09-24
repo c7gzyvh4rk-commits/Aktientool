@@ -175,7 +175,13 @@ Keine Bewertungsmethode umgebaut, keine Rechenformel geaendert.
 * Produktdatei `us-aktienbewertungstool-v1036-sector-classification-patch.html`,
   Git-Blob **`0e2439323f2de37fb4d3e078719c7596dee35ac9`** (identisch in allen
   Ergebniscommits dieses Chats).
-* Abnahmelauf auf dem sauberen Ergebniscommit: siehe Nachtrag unten.
+* **Abnahmelauf auf dem sauberen Commit `ba807fbf204bf86eef2fa222bfcc43cc293af608`**
+  (Arbeitsbaum ohne lokale Aenderungen, `npm run test:browser`, Chromium
+  141.0.7390.37 headless, Node v22.22.2): **148 Pruefungen · 148 bestanden ·
+  0 fehlgeschlagen, `ERGEBNIS: BESTANDEN`, Exit 0.** Abgewiesen wurde nur die
+  Google-Fonts-Anfrage; 7 Dialoge (alert/confirm) wurden bedient. Der
+  nachfolgende Commit aendert nur diese Dokumentation (Produktdatei-Blob
+  unveraendert).
 * Wiederholung: **`npm run test:browser`** (Exit 0 = bestanden).
 
 ### 7 · Verbleibende Grenzen
@@ -195,7 +201,7 @@ Keine Bewertungsmethode umgebaut, keine Rechenformel geaendert.
 ### 8 · Uebergabe an „Folgechat C — main aktualisieren"
 
 * Grundlage: Branch `claude/loving-newton-hcpo71`, Ergebniscommit dieses
-  Chats (Nachtrag unten). `main` steht weiterhin auf `b023dc8`.
+  Chats (Spitze von `claude/loving-newton-hcpo71`; Produktstand `ba807fb`). `main` steht weiterhin auf `b023dc8`.
 * Vor dem Aktualisieren von `main` auf dem Zielstand ausfuehren:
   `npm test` (erwartet 1700 + 205, Exit 0) und `npm run test:browser`
   (erwartet 148/148, Exit 0).
