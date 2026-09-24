@@ -86,7 +86,11 @@ Rechen-Assertions (darin 434 Fixture), Exit 0; 206 Node-Tests, Exit 0**
 ### 5 · Gepruefter Produktstand
 
 Produktdatei-Blob **`ac0ae781bd4d2de9478143dda4735075b8d9a7e9`**.
-Abnahmelauf auf dem sauberen Commit: siehe Nachtrag unten.
+**Abnahmelauf auf dem sauberen Commit `0397737b45a2b611e3d1fe88ccb1b965ccb23311`**
+(`npm run test:browser`, Chromium 141.0.7390.37 headless, Node v22.22.2,
+Arbeitsbaum ohne lokale Aenderungen): **158 Pruefungen · 158 bestanden · 0
+fehlgeschlagen, `ERGEBNIS: BESTANDEN`, Exit 0.** Der Folgecommit aendert nur
+diese Dokumentation (Produktdatei-Blob unveraendert).
 
 ### 6 · Verbleibende Grenzen
 
@@ -99,7 +103,7 @@ Abnahmelauf auf dem sauberen Commit: siehe Nachtrag unten.
 
 ### 7 · Uebergabe an „Folgechat C — main aktualisieren"
 
-Grundlage ist die Spitze von `claude/loving-newton-hcpo71` (Nachtrag unten).
+Grundlage ist die Spitze von `claude/loving-newton-hcpo71` (Produktstand `0397737`).
 Vor dem Aktualisieren von `main` erwartet: `npm test` 1700 (434) + 206,
 `npm run test:browser` 158/158, jeweils Exit 0. Die Angabe „148/148" in
 Folgechat B ist damit ueberholt.
