@@ -1,5 +1,37 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Folgechat C: Freigabe nach `main` (V1.0.70)
+
+**Freigegebene Version: V1.0.70** (Entwicklungszaehlung dieses HANDOFF).
+Das sichtbare UI-Badge zeigt weiterhin `V1.0.35-base-rate-lite`
+(`ENGINE_VERSION`/`DISPLAY_VERSION` bewusst nicht gebumpt, da Fixtures die
+Kennung exakt pinnen) — das ist kein abweichender Stand.
+
+**Art des Stands: Analyseprototyp.** Alle Pruefungen beruhen auf
+synthetischen Daten. **Reale Abschlussdaten wurden noch nicht systematisch
+abgeglichen**; das ist Aufgabe von „Folgechat D — reale Unternehmensdaten
+pruefen" und keine Zusicherung der Richtigkeit fuer reale Unternehmen.
+
+| | |
+|---|---|
+| Starten | `us-aktienbewertungstool-v1036-sector-classification-patch.html` direkt im Browser oeffnen (einzelne Datei, kein Build) |
+| Automatisierte Tests | `npm test` (Node ≥ 20; beide Suiten: Rechen-/Regressionstests und `node --test tests/*.test.mjs`) |
+| Browser-Smoke-Test | `npm run test:browser` (Node ≥ 22, lokales Chromium/Chrome, ggf. `CHROME_PATH`; Details `tests/browser/README.md`) |
+| CI | GitHub Actions „Rechentests" (`.github/workflows/tests.yml`) fuehrt `npm test` aus, nicht die Browser-Abnahme |
+
+**Freigabepruefung** auf `claude/loving-newton-hcpo71` =
+`f19f81d017fe3503842d941413f2433d16b9f4b6` (Produktdatei-Blob
+`ac0ae781…` identisch mit dem browsergeprueften Commit `0397737`; danach
+nur HANDOFF geaendert). `main` (`b023dc8`) ist Vorfahr, ohne eigene
+Aenderungen. Selbst ausgefuehrt: `npm test` — 1700 Rechen-Assertions (434
+Fixture), 206 Node-Tests, beide Exit 0; `npm run test:browser` — 158/158
+bestanden, Exit 0 (Chromium 141, Node v22.22.2, sauberer Arbeitsbaum).
+GitHub Actions auf `f19f81d`: erfolgreich. Kein dokumentierter offener
+Blocker; die bekannten Grenzen (Abschnitte B.1 §6, B §7) bestehen fort.
+
+---
+
+
 ## Folgechat B.1: Datumsvalidierung der EV/EBITDA-Bruecke (V1.0.70)
 
 **Ausgangsstand.** Branch `claude/loving-newton-hcpo71`, nach `git fetch`
