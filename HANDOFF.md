@@ -1,5 +1,209 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Folgechat B: Browser-Abnahme und Periodenrestluecke der EV-Bruecke (V1.0.69)
+
+**Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Arbeits- und
+Ergebnisbranch **`claude/loving-newton-hcpo71`**. Nach `git fetch` stand die
+Branch-Spitze auf **`5fdd27ccc74091cfe27aff8408cf6bd99c81a7ee`** (V1.0.68,
+Folgechat A = Korrekturchat 12F); Referenzvorfahr `60fc159` ist Vorfahr,
+Arbeitsbaum sauber. Folgechat A ist abgeschlossen (drei Befunde, `R49`–`R51`,
+eigener HANDOFF-Abschnitt). Die Sitzung startete auf dem Hilfsbranch
+`claude/stock-tool-browser-acceptance-ykejsj` (= alter `main` `b023dc8`); er
+wurde nicht als Arbeitsgrundlage verwendet. Eine `AGENTS.md` existiert
+weiterhin nicht. `main` wurde nicht angefasst, kein Merge, kein Deployment.
+
+**Testbaseline vor der Aenderung** (`5fdd27c`, laut 12F und hier fuer
+`tests/audit-chat12.test.mjs` nachvollzogen): 1700 Rechen-Assertions (darin
+434 Fixture-Assertions), 205 Node-Tests.
+
+---
+
+### 1 · Restluecke in `_resolveMultiplesEvBridge()` (vor der Abnahme behoben)
+
+**Reproduktion auf `5fdd27c`** (synthetisch, produktiver Aufrufweg
+`computeRelativeMultiplesFV`; im Browser zusaetzlich ueber Import und
+Markt-Vergleich): EBITDA 250 ohne Periodenmetadaten, `net_debt[0] = 900` mit
+`_v4_meta.net_debt.periods: ["n/a"]`, Multiple 10, 100 Aktien ⇒ **verfuegbar,
+16,00 USD**, Markt-Vergleich „16.00" ohne Periodenwarnung. Ebenso mit
+`periods: [null]` und umgekehrt (EBITDA `periods: [null]` bzw. `["n/a"]`,
+Bruecke ganz ohne Periodenmetadaten) — alle vier Faelle 16,00 USD.
+
+**Ursache.** V1.0.68 sperrte eine Seite mit Periodenangaben ohne lesbares
+Datum nur, wenn die GEGENSEITE ebenfalls Periodenangaben fuehrte; `"n/a"`
+galt zudem als „vorhandene Periode" und umging die Pruefung ganz.
+
+**Korrektur (eng).** Jede Seite wird unabhaengig geprueft: Fuehrt sie
+Periodenangaben (`_v4_meta.<feld>.periods` oder sonstigen Periodenkontext),
+muss sie einen **lesbaren** Stichtag fuer den tatsaechlich verwendeten Betrag
+liefern — sonst Sperre mit Begruendung, die die betroffene Seite und den
+gemeldeten Wert nennt. Unveraendert: 45-Tage-Toleranz, gemeinsamer
+DCF-Resolver `_resolveNetDebtForDcfBridge`, Ausnahme fuer vollstaendig
+metadatenfreie Altdaten, kein Ersatzbetrag aus anderen Feldern, kein fremder
+Stichtag. Der operative EV bleibt bestimmbar; P/E und P/FCF sind unberuehrt.
+
+**Gueltige Zulaessigkeitsmatrix (V1.0.69):**
+
+| EBITDA \ Bruecke | datiert (lesbar) | Angaben, aber nicht lesbar (`null`, `"n/a"` …) | ohne Angaben (Altdaten) |
+|---|---|---|---|
+| datiert (lesbar) | Abstand ≤ 45 Tage, sonst Sperre | Sperre | zulaessig |
+| Angaben, aber nicht lesbar | Sperre | Sperre | **Sperre** (V1.0.68: zulaessig) |
+| ohne Angaben (Altdaten) | zulaessig | **Sperre** (V1.0.68: zulaessig) | zulaessig |
+
+Die Matrix im 12F-Abschnitt ist entsprechend berichtigt und gekennzeichnet.
+
+**Nachweise.** `R49` erweitert: beide Richtungen, jeweils `null` und `"n/a"`
+bei vollstaendig metadatenfreier Gegenseite (Zustand, Sperrgrund, EV 2500,
+echter `renderMarket()` ohne „16.00" mit Sperrgrund und EV); leeres bzw.
+fachfremdes `_v4_meta` bleibt Altdaten (16 USD); datiertes EBITDA mit
+`net_debt` `"n/a"` gesperrt; P/E 30 und P/FCF 60 unberuehrt. Gegenprobe in
+einem temporaeren `git worktree` auf `5fdd27c`: **`R49` scheitert**
+(„net_debt periods [null]: 16 USD freigegeben"), R42–R48, R50, R51 bestehen;
+nach der Korrektur bestehen R42–R51. Die Browser-Abnahme auf `5fdd27c`:
+**22 von 146 Pruefungen scheitern** (Skriptstand vor Aufnahme von 7.7b; alle vier neuen Brueckenfaelle zeigen
+„16.00", dazu die EV-Anzeige, siehe B-1).
+
+### 2 · Reproduzierbare Browser-Abnahme (neu im Repository)
+
+| | |
+|---|---|
+| Befehl | **`npm run test:browser`** (= `node tests/browser/acceptance.mjs`) |
+| Laufzeit | Node ≥ 22 (eingebautes WebSocket), keine npm-Abhaengigkeit |
+| Browser | lokales Chromium/Chrome; `CHROME_PATH` oder Standardpfade (`/opt/pw-browsers/chromium`, `/usr/bin/chromium`, `google-chrome` …) |
+| Dateien | `tests/browser/cdp.mjs` (CDP-Treiber), `tests/browser/acceptance.mjs` (Abnahme), `tests/browser/fixtures.mjs` (synthetische Daten), `tests/browser/README.md` |
+| Status | `PASS`/`FAIL` je Pruefung; Exit 0 bestanden · 1 fehlgeschlagen · 2 nicht ausfuehrbar |
+| Produktstand | im Kopf und am Ende ausgegeben (Git-Commit, Hinweis auf lokale Aenderungen) |
+| Isolation | frisches temporaeres Profil und Download-Verzeichnis (danach geloescht); Namensaufloesung gesperrt, Proxy aus, jede nicht-lokale Anfrage per CDP `Fetch` abgewiesen und protokolliert |
+
+`npm test` erhaelt **keine** Browserpflicht (`test/run-all.js` sammelt nur
+`tests/*.test.mjs` der obersten Ebene).
+
+### 3 · Was tatsaechlich im Browser ausgefuehrt wurde
+
+Headless **Chromium 141.0.7390.37** (`/opt/pw-browsers/chromium`), Node
+v22.22.2, Produktdatei als `file://`-Dokument. Bedienung ueber echte
+CDP-Eingabeereignisse (Mausklick auf sichtbare, nicht verdeckte Elemente;
+Tastatureingabe; `DOM.setFileInputFiles` auf die echten Datei-Felder; echte
+Downloads). Das Auswahlfeld der Datenbasis wird per echtem `change`-Ereignis
+bedient (nicht ueber die native Auswahlliste). Zwei ausdruecklich markierte
+Zustandseingriffe: Altbestand mit Angriffs-ID direkt im `localStorage` (der
+Import weist solche IDs ab) und „Datenbasis ohne Neuberechnung" (die
+Oberflaeche rechnet beim Umschalten sofort neu).
+
+1. **EV/EBITDA-Bruecke** (8 Datensaetze ueber die Oberflaeche importiert): die
+   vier V1.0.69-Faelle und die 12F-Faelle 1a/1b zeigen im Markt-Vergleich
+   „nicht ableitbar" mit Sperrgrund und operativem EV 2500.0M, in der
+   Fallback-Karte „gesperrt" mit Grund und EV — kein 16.00/21.00. Gegenproben
+   (korrekt datiert; metadatenfreie Altdaten): 16.00 freigegeben.
+2. **Multiples vorhanden, Input fehlt** (EV/EBITDA, P/E, P/FCF): Multiple und
+   fehlender Input sichtbar, Marke „Input fehlt", keine Aussage „kein eigener
+   Multiple-Median"; Gegenfall ohne Multiples behaelt die Aussage.
+3. **Nichtpositiver Aktienwert**: −5.00 mit „Ergebnis, kein fehlender Wert",
+   kein Median-Referenzwert.
+4. **DDM**: undatierte Null ⇒ `dps_median_annualized` mit Hinweis „ohne
+   lesbare Berichtsperiode"; ohne belegbare Spanne ⇒ `scenario_capped` mit
+   „kein gemessenes Wachstum: Gemeldete Dividende 0 ohne lesbare
+   Berichtsperiode …".
+5. **Financials**: 2 Darstellungen, 1 unabhaengige Familie, Agreement `n/a`,
+   Hinweis „derselben Modellfamilie"; kein Uebereinstimmungssignal.
+6. **Snapshot-ID-Angriffe** (drei IDs mit `<img onerror>`, Quote-Ausbruch und
+   Attribut-Ausbruch; nur Marker `window.__pwned`/`__accMarker`): Datei-Import
+   abgelehnt, Bestand leer; Altbestand als „unbrauchbar" ausgewiesen, weder
+   ausgefuehrt noch umgeschrieben; nach Klicks kein Marker, kein `<img>`, kein
+   Ereignisattribut.
+7. **Zusammenhaengender Ablauf** mit synthetischem TTM-Filer `SYNTB`
+   (Quartalsdaten, ueber den produktiven SEC-Aufbereitungsweg in Node
+   erzeugt, dann ueber die Textarea importiert): FY 21.00 (2024-12-31) →
+   g1 auf 7 % und „Neu berechnen" (DCF steigt, Feld als manuell gefuehrt) →
+   TTM 30.38 (2025-09-30), g1 bleibt 7, DCF weicht ab → Snapshot speichern →
+   Seite neu laden → „Gespeichertes Ergebnis": Eingaben (g1, Kurs,
+   Datenbasis), alle Modellwerte und Synthese (Range, Buy Price, Position,
+   Agreement, Gewichte) identisch, Status „Original-Bewertung geladen" →
+   veraltetes Ergebnis (Zustandseingriff): keine Zahlen, Hinweis „neu
+   berechnen" → Basiswechsel auf dem geladenen Ergebnis: als Neuberechnung
+   gekennzeichnet (B-2) → „Neu rechnen (aktuelles Modell)": gekennzeichnet,
+   Snapshot unveraendert, gleiche Modellwerte → Snapshot-Export und
+   Master-JSON-Export als echte Downloads → ungueltige Importe (`null`,
+   Array, kaputtes JSON, ohne Bloecke; Snapshot-Datei mit falscher Struktur,
+   unlesbare Datei): abgewiesen, aktiver Datensatz und Bestand unveraendert →
+   Loeschen (Abbruch, dann Bestaetigung) → Re-Import der Exportdatei:
+   inhaltlich identisch, gleiche Werte → Master-JSON-Export ueber das
+   Datei-Feld re-importiert: g1 7, TTM, gleiche Modellwerte → Hard Stop
+   „Going Concern": Override mit zu kurzer Begruendung abgewiesen, dann
+   aktiv, zweiter Snapshot gespeichert, geladen und geloescht; der andere
+   Snapshot bleibt byte-gleich; „Override entfernen" wirkt danach ohne
+   Ausnahme und ohne Bestandsaenderung; Dialog erneut oeffnen/abbrechen.
+8. **Abschluss**: keine unbehandelte Ausnahme; einzige externe Anfrage war die
+   Google-Fonts-Einbindung der Seite (abgewiesen); keine SEC-/Yahoo-Anfrage.
+
+**Ergebnis auf dem Ergebnisstand: 148 Pruefungen, 148 bestanden — Browser-
+Abnahme (synthetisch) BESTANDEN.** Exakter Lauf und Commit: Abschnitt 6.
+
+### 4 · Befunde und Behebungen
+
+| # | Befund (reproduziert) | Behebung |
+|---|---|---|
+| **1a** | Restluecke der Periodenpruefung (Abschnitt 1) | `_resolveMultiplesEvBridge()`: jede Seite unabhaengig; `R49` erweitert |
+| **B-1** | Bei gesperrter EV/EBITDA-Bruecke zeigte der **Markt-Vergleich** nur den Sperrgrund, **nicht den operativen EV**. Der EV stand allein in der Fallback-Karte, die bei vorhandenen Intrinsic-Modellen nicht erscheint — dort war er dann nirgends sichtbar. | `renderMarket()`: Hinweis „Operativer Unternehmenswert (EV) bleibt bestimmbar: …M — nur der Wert JE AKTIE ist … nicht ableitbar" (Wortlaut der Fallback-Karte). Nur Anzeige; `R49` und Browser pruefen ihn. |
+| **B-2** | Nach „Gespeichertes Ergebnis" rechnete ein **Basiswechsel** (ebenso ein Wechsel der Geschaeftsmodell-Klassifikation) neu, die Oberflaeche behauptete aber weiter „**Original-Bewertung geladen**" und zeigte keinen Neubewertungs-Hinweis. Auf `5fdd27c` gemessen: nach Wechsel auf TTM `_usingCurrentEngine = false`, Status unveraendert. `recalcFromAssumptions()` markierte das schon, setzte das Flag aber erst nach dem Rendern der Uebersicht. | Gemeinsamer Helfer `_markSnapshotRecomputed()` in allen drei Neuberechnungswegen: Flag, Statuszeile („Nach einer Änderung mit dem aktuellen Modell neu berechnet — der Snapshot selbst bleibt unverändert.") und Uebersichts-Hinweis. Snapshot-Bestand unberuehrt (Browser 7.7b). |
+
+Keine Bewertungsmethode umgebaut, keine Rechenformel geaendert.
+
+**Beobachtungen, bewusst NICHT geaendert:**
+
+* **Market-Data-Tabelle (Annahmen-Tab):** Risk-free Rate und ERP werden im
+  gespeicherten Rohformat mit „%" angezeigt (synthetischer Datensatz:
+  „0.04 %" neben „WACC 9.00 %"). Das Eingabefeld akzeptiert ausdruecklich
+  „dez. oder %"; eine Korrektur verlangt eine fachliche Festlegung der
+  Einheit und ist kein eindeutiger Kleinfehler.
+* **Veraltetes Ergebnis:** Ueber die Oberflaeche entsteht kein gemischter
+  Stand, weil das Umschalten sofort neu rechnet. Der Hinweis „neu berechnen"
+  wurde deshalb per markiertem Zustandseingriff geprueft.
+* **Externe Fonts:** Die Seite bindet Google Fonts ein. Im Test abgewiesen;
+  im normalen Betrieb ist das eine externe Anfrage (kein SEC-/Yahoo-Abruf).
+
+### 5 · Tests
+
+* `npm test` (ein Lauf nach allen Produktaenderungen): **1700
+  Rechen-Assertions (darin 434 Fixture-Assertions), Exit 0**, und **205
+  Node-Tests, Exit 0**. Anzahl unveraendert, weil `R49` erweitert und kein
+  neuer Test angelegt wurde.
+* `npm run test:browser`: siehe Abschnitt 6.
+* Bestehende Erwartungen: keine angepasst.
+
+### 6 · Gepruefter Produktstand und Wiederholung
+
+* Produktdatei `us-aktienbewertungstool-v1036-sector-classification-patch.html`,
+  Git-Blob **`0e2439323f2de37fb4d3e078719c7596dee35ac9`** (identisch in allen
+  Ergebniscommits dieses Chats).
+* Abnahmelauf auf dem sauberen Ergebniscommit: siehe Nachtrag unten.
+* Wiederholung: **`npm run test:browser`** (Exit 0 = bestanden).
+
+### 7 · Verbleibende Grenzen
+
+* **Nur synthetische Daten.** Kein echtes Filing, kein SEC-/Yahoo-Abruf, kein
+  Abgleich mit veroeffentlichten Abschluessen — die Abnahme belegt die
+  Bedienpfade und Anzeigen, nicht die Richtigkeit fuer reale Unternehmen.
+* Headless Chromium auf Linux, eine Fenstergroesse (1400×1000). Kein Firefox/
+  Safari, keine mobile Darstellung, keine visuelle Pruefung (Layout, Farben).
+* Native Auswahllisten und Datei-Dialoge werden ueber CDP bedient
+  (`change`-Ereignis, `setFileInputFiles`), nicht per Maus.
+* Der SEC-Abrufweg (`secFetchAll`, Proxy) ist bewusst nicht Teil der Abnahme.
+* Die offenen Punkte aus 12E/12F (EPV deaktiviert, 45-Tage-Toleranz als
+  Werkzeugkonvention, DCF-Resolver ohne EBITDA-Stichtag, Verwaesserung usw.)
+  bestehen unveraendert.
+
+### 8 · Uebergabe an „Folgechat C — main aktualisieren"
+
+* Grundlage: Branch `claude/loving-newton-hcpo71`, Ergebniscommit dieses
+  Chats (Nachtrag unten). `main` steht weiterhin auf `b023dc8`.
+* Vor dem Aktualisieren von `main` auf dem Zielstand ausfuehren:
+  `npm test` (erwartet 1700 + 205, Exit 0) und `npm run test:browser`
+  (erwartet 148/148, Exit 0).
+* Die Browser-Abnahme ist **synthetisch bestanden**; sie ersetzt keinen
+  Abgleich mit echten Unternehmensdaten.
+
+---
+
 ## Korrekturchat 12F: drei Restfehler nach V1.0.67 behoben (V1.0.68)
 
 **Ausgangsstand.** Repository `c7gzyvh4rk-commits/Aktientool`, Arbeits- und
@@ -58,8 +262,18 @@ keine Periodenangaben (Altdaten):
 | EBITDA \ Bruecke | datiert | Angaben, aber undatiert | ohne Angaben |
 |---|---|---|---|
 | datiert | Abstand ≤ 45 Tage, sonst Sperre (unveraendert) | **Sperre** | zulaessig (unveraendert) |
-| Angaben, aber undatiert | **Sperre (neu)** | **Sperre (neu)** | zulaessig |
-| ohne Angaben | zulaessig (unveraendert) | zulaessig | zulaessig (unveraendert) |
+| Angaben, aber undatiert | **Sperre (neu)** | **Sperre (neu)** | ~~zulaessig~~ → **Sperre (V1.0.69)** |
+| ohne Angaben | zulaessig (unveraendert) | ~~zulaessig~~ → **Sperre (V1.0.69)** | zulaessig (unveraendert) |
+
+> **Berichtigt in Folgechat B (V1.0.69).** Die beiden durchgestrichenen
+> Felder waren in V1.0.68 als „zulaessig" umgesetzt und hier so beschrieben.
+> Das war falsch: Eine Seite, die Periodenangaben fuehrt, aber kein lesbares
+> Datum belegt, wurde nur gesperrt, wenn auch die Gegenseite
+> Periodenangaben fuehrte. Gemessen auf `5fdd27c`: EBITDA ohne Metadaten,
+> `net_debt[0] = 900` mit `periods: ["n/a"]` bzw. `[null]` ⇒ **16,00 USD
+> freigegeben**, im Markt-Vergleich ohne Periodenwarnung; ebenso umgekehrt.
+> Seit V1.0.69 wird jede Seite unabhaengig geprueft. Die gueltige Matrix
+> steht im Abschnitt „Folgechat B" oben.
 
 Es wird kein Datum eines unbenutzten Feldes uebernommen und **kein Betrag
 ersatzweise aus anderen Feldern gebildet** (im Fall 1a entsteht also NICHT

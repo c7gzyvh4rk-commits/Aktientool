@@ -20152,14 +20152,26 @@ function _resolveMultiplesEvBridge(f) {
     available: false, netDebtM: null, source: null, period: null, reason
   });
 
-  if (ebitdaPeriod != null && bridgePeriod != null) {
-    const days = (typeof _secPeriodDaysApart === 'function')
-      ? _secPeriodDaysApart(ebitdaPeriod, bridgePeriod) : null;
-    if (days == null) {
-      return _blocked('Die Berichtsperioden von EBITDA (' + ebitdaPeriod + ') und ' +
-                'Bilanzangaben (' + bridgePeriod + ') sind nicht als Datum lesbar — ' +
-                'ihre Vereinbarkeit ist damit nicht nachweisbar.');
-    }
+  // ── V1.0.69 (Folgechat B) · jede Seite UNABHAENGIG pruefen ──────────────
+  // V1.0.68 sperrte eine Seite mit Periodenangaben ohne lesbares Ende nur,
+  // wenn auch die GEGENSEITE Periodenangaben fuehrte. Gemessen: EBITDA ohne
+  // Metadaten, `net_debt[0] = 900` mit `periods: ["n/a"]` bzw. `[null]` ⇒
+  // 16 USD/Aktie freigegeben, im Markt-Vergleich ohne Periodenwarnung; ebenso
+  // umgekehrt (EBITDA `periods: [null]`, Bruecke ohne Metadaten).
+  // Jetzt gilt fuer jede Seite fuer sich: Fuehrt sie Periodenangaben, muss sie
+  // einen LESBAREN Stichtag fuer den tatsaechlich verwendeten Betrag liefern.
+  // Nur eine Seite ganz ohne Periodenangaben (manuelle Altdaten) bleibt nach
+  // der bestehenden Regel ungeprueft zulaessig. Toleranz und DCF-Resolver
+  // sind unveraendert; es wird kein fremder Stichtag uebernommen.
+  const _readable = (p) => p != null && !isNaN(new Date(p).getTime());
+  const ebitdaOk = _readable(ebitdaPeriod);
+  const bridgeOk = _readable(bridgePeriod);
+  const ebitdaBad = ebitdaHasCtx && !ebitdaOk;
+  const bridgeBad = bridgeHasCtx && !bridgeOk;
+  const _shown = (p) => (p == null ? 'leer' : String(p));
+
+  if (ebitdaOk && bridgeOk) {
+    const days = _secPeriodDaysApart(ebitdaPeriod, bridgePeriod);
     if (days > MULTIPLES_PERIOD_TOLERANCE_DAYS) {
       return _blocked('Unternehmenswert und Eigenkapitalbruecke stammen aus ' +
                 'unterschiedlichen Berichtsperioden (EBITDA-Zeitraum endet ' + ebitdaPeriod +
@@ -20167,24 +20179,34 @@ function _resolveMultiplesEvBridge(f) {
                 ' Tage Abstand, zulaessig sind ' + MULTIPLES_PERIOD_TOLERANCE_DAYS +
                 '). Ein Abzug ueber verschiedene Stichtage wuerde Zeitraeume vermischen.');
     }
-  } else if (ebitdaPeriod != null && bridgeHasCtx) {
+  } else if (ebitdaBad && bridgeBad) {
+    if (ebitdaPeriod == null && bridgePeriod == null) {
+      return _blocked('EBITDA und Eigenkapitalbruecke fuehren Periodenangaben, keine der beiden ' +
+              'Seiten belegt aber ein lesbares Periodenende. Eine Vereinbarkeit wird nicht ' +
+              'behauptet.');
+    }
+    return _blocked('Die Berichtsperioden von EBITDA (' + _shown(ebitdaPeriod) + ') und ' +
+              'Bilanzangaben (' + _shown(bridgePeriod) + ') sind nicht als Datum lesbar — ' +
+              'ihre Vereinbarkeit ist damit nicht nachweisbar.');
+  } else if (bridgeBad) {
     // Bekannter Widerspruch darf nicht an fehlenden Metadaten verschwinden.
     // Eine vorhandene `periods`-Angabe IST der Anspruch, period-keyed zu
-    // sein — auch wenn sie leer oder unlesbar ist.
-    return _blocked('Der EBITDA-Zeitraum endet am ' + ebitdaPeriod + ', der Bilanzstichtag ' +
+    // sein — auch wenn sie leer oder unlesbar ist, und auch wenn das EBITDA
+    // selbst keine Periodenangaben fuehrt.
+    return _blocked((ebitdaOk ? 'Der EBITDA-Zeitraum endet am ' + ebitdaPeriod + ', der '
+                              : 'Der ') + 'Bilanzstichtag ' +
             'des verwendeten Betrags (' + (res.source || 'Nettoschulden') + ') ist trotz ' +
-            'vorhandener Periodenangaben nicht bestimmbar. Das Datum eines anderen Feldes wird ' +
-            'nicht uebernommen; ein Abzug ohne belegten Stichtag waere scheingenau.');
-  } else if (bridgePeriod != null && ebitdaHasCtx) {
-    // Spiegelbild: Bilanz datiert, EBITDA fuehrt Periodenangaben ohne
-    // lesbares Periodenende (z. B. `periods: [null]`).
-    return _blocked('Der Bilanzstichtag der Eigenkapitalbruecke ist ' + bridgePeriod +
-            ', das Periodenende des EBITDA ist trotz vorhandener Periodenangaben nicht ' +
-            'bestimmbar. Die Vereinbarkeit beider Seiten ist damit nicht nachweisbar.');
-  } else if (ebitdaPeriod == null && bridgePeriod == null && ebitdaHasCtx && bridgeHasCtx) {
-    return _blocked('EBITDA und Eigenkapitalbruecke fuehren Periodenangaben, keine der beiden ' +
-            'Seiten belegt aber ein lesbares Periodenende. Eine Vereinbarkeit wird nicht ' +
-            'behauptet.');
+            'vorhandener Periodenangaben nicht bestimmbar (gemeldet: ' + _shown(bridgePeriod) +
+            '). Das Datum eines anderen Feldes wird nicht uebernommen; ein Abzug ohne ' +
+            'belegten Stichtag waere scheingenau.');
+  } else if (ebitdaBad) {
+    // Spiegelbild: EBITDA fuehrt Periodenangaben ohne lesbares Periodenende
+    // (z. B. `periods: [null]`) — gleich, ob die Bruecke datiert ist oder
+    // gar keine Periodenangaben fuehrt.
+    return _blocked((bridgeOk ? 'Der Bilanzstichtag der Eigenkapitalbruecke ist ' + bridgePeriod + ', das '
+                              : 'Das ') + 'Periodenende des EBITDA ist trotz vorhandener ' +
+            'Periodenangaben nicht bestimmbar (gemeldet: ' + _shown(ebitdaPeriod) + '). Die ' +
+            'Vereinbarkeit mit der Eigenkapitalbruecke ist damit nicht nachweisbar.');
   }
 
   return {
@@ -21277,6 +21299,25 @@ function buildDataBasisCard(mj, valuation, opts) {
   </div>`;
 }
 
+// V1.0.69 (Folgechat B, Browser-Abnahme): Ein geladenes GESPEICHERTES
+// Ergebnis, das durch eine Aenderung neu gerechnet wird, ist ab dann eine
+// Neuberechnung mit dem aktuellen Modell. recalcFromAssumptions() markierte
+// das schon; Basis- und Klassifikationswechsel rechneten neu, liessen aber
+// „Original-Bewertung geladen" stehen und zeigten keinen Hinweis — obwohl
+// die angezeigten Zahlen nicht mehr die gespeicherten waren.
+function _markSnapshotRecomputed() {
+  if (state._loadedFromSnapshot && !state._usingCurrentEngine) {
+    state._usingCurrentEngine = true;
+    const el = g('import-master-status');
+    if (el && /Original-Bewertung geladen/.test(el.textContent || '')) {
+      el.textContent = el.textContent.replace('Original-Bewertung geladen.',
+        'Nach einer Änderung mit dem aktuellen Modell neu berechnet — der Snapshot selbst bleibt unverändert.');
+      el.className = 'import-status info';
+    }
+    if (g('panel-overview') && g('panel-overview').classList.contains('active')) renderOverview();
+  }
+}
+
 // ── Datenbasis der Bewertung umschalten (V1.0.55) ─────────────────
 // Die Auswahl steht im Master-JSON (valuation.data_basis) und wird mit
 // gespeichert. Umgestellt wird nur, was die Daten hergeben: resolveDataBasis
@@ -21310,6 +21351,7 @@ function _handleDataBasisChange(newValue) {
   if (g('panel-valuation').classList.contains('active')) renderValuation();
   if (g('panel-market').classList.contains('active')) renderMarket();
   if (g('panel-growth').classList.contains('active')) renderGrowth();
+  _markSnapshotRecomputed();
   flashLiveBadge();
 }
 
@@ -21340,6 +21382,7 @@ function _handleSubClassificationChange(newValue) {
   if (g('panel-valuation').classList.contains('active')) renderValuation();
   if (g('panel-market').classList.contains('active')) renderMarket();
   if (g('panel-growth').classList.contains('active')) renderGrowth();
+  _markSnapshotRecomputed();
   flashLiveBadge();
 }
 
@@ -21635,9 +21678,8 @@ function recalcFromAssumptions() {
 
   // Snapshot-Reproducibility: Wenn aus Snapshot geladen und noch nicht auf aktuelle Engine umgestellt,
   // jetzt markieren dass aktuelle Engine aktiv ist (Nutzer hat manuell neu berechnet).
-  if (state._loadedFromSnapshot && !state._usingCurrentEngine) {
-    state._usingCurrentEngine = true;
-  }
+  // V1.0.69: gemeinsamer Helfer — setzt zusaetzlich Status und Hinweis.
+  _markSnapshotRecomputed();
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -24704,7 +24746,15 @@ function renderMarket() {
       value: m.available ? m.base.toFixed(2) : 'nicht ableitbar',
       note: m.available
         ? (m.nonPositive ? (m.excludedFromMedian || '') : '')
-        : (m.reason || '')
+        : (m.reason || '') +
+          // V1.0.69 (Folgechat B, Browser-Abnahme): Bei gesperrter Bruecke
+          // bleibt der bestimmbare operative EV auch hier sichtbar — bisher
+          // stand er nur in der Fallback-Karte, die bei vorhandenen
+          // Intrinsic-Modellen gar nicht erscheint.
+          ((m.bridgeBlocked && typeof m.enterpriseValueM === 'number' && isFinite(m.enterpriseValueM))
+            ? ' Operativer Unternehmenswert (EV) bleibt bestimmbar: ' + m.enterpriseValueM.toFixed(1) +
+              'M — nur der Wert JE AKTIE ist ohne belegte Nettoschulden nicht ableitbar.'
+            : '')
     }));
 
   // V1.0.67 (Restluecke 2a): Die verwendete Datenbasis wird genannt, nicht

@@ -4271,6 +4271,78 @@ test('R49 (12F Befund 1) Betrag, Quelle und Periode der EV/EBITDA-Bruecke beschr
     assert.equal(ev.available, true, ev.reason);
     assert.equal(ev.netDebtPeriod, D25);
   }
+  {
+    // Leeres bzw. fachfremdes `_v4_meta` ist weiterhin „ohne Angaben".
+    for (const meta of [{}, { revenue: dated(D25) }]) {
+      const { ev } = evOf(mk({ net_debt: [900] }, meta));
+      assert.equal(ev.available, true, ev.reason);
+      assert.ok(Math.abs(ev.base - 16) < 1e-12);
+    }
+  }
+
+  // ── Folgechat B (V1.0.69): jede Seite wird UNABHAENGIG von der
+  // Gegenseite geprueft. Fuehrt eine Seite Periodenangaben, muss sie einen
+  // lesbaren Stichtag fuer den verwendeten Betrag liefern — auch wenn die
+  // Gegenseite gar keine Periodenangaben fuehrt. Ausgangsstand 5fdd27c:
+  // jeweils 16 USD/Aktie ohne Periodenwarnung im Markt-Vergleich.
+  for (const bad of [null, 'n/a']) {
+    // a) Bruecke fuehrt Angaben ohne lesbares Datum, EBITDA ganz ohne Angaben.
+    {
+      const mj = mk({ net_debt: [900] }, {
+        net_debt: { periods: [bad], source_type: 'reported', unit: 'USD' } });
+      const { rel, ev } = evOf(mj);
+      assert.equal(ev.available, false, `net_debt periods [${bad}]: 16 USD freigegeben`);
+      assert.equal(ev.base, null);
+      assert.equal(ev.bridgeBlocked, true);
+      assert.equal(ev.enterpriseValueM, 2500, 'operativer EV bleibt sichtbar');
+      assert.ok(/Bilanzstichtag/.test(ev.reason) && /net_debt\[0\]/.test(ev.reason), ev.reason);
+      assert.equal(rel.hasAny, false);
+      const html = renderMarketHtml(mj, null);
+      assert.equal(html.indexOf('16.00'), -1, html);
+      assert.ok(/nicht ableitbar/.test(html), html);
+      assert.ok(/Bilanzstichtag/.test(html), 'Sperrgrund fehlt in der Anzeige');
+      assert.ok(/Operativer Unternehmenswert \(EV\) bleibt bestimmbar: 2500\.0M/.test(html),
+        'operativer EV fehlt im Markt-Vergleich');
+    }
+    // b) EBITDA fuehrt Angaben ohne lesbares Datum, Bruecke ganz ohne Angaben.
+    {
+      const mj = mk({ net_debt: [900] }, {
+        ebitda: { periods: [bad], isFlowConcept: true, unit: 'USD' } });
+      const { rel, ev } = evOf(mj);
+      assert.equal(ev.available, false, `ebitda periods [${bad}]: 16 USD freigegeben`);
+      assert.equal(ev.base, null);
+      assert.equal(ev.bridgeBlocked, true);
+      assert.equal(ev.enterpriseValueM, 2500, 'operativer EV bleibt sichtbar');
+      assert.ok(/Periodenende des EBITDA/.test(ev.reason), ev.reason);
+      assert.equal(rel.hasAny, false);
+      const html = renderMarketHtml(mj, null);
+      assert.equal(html.indexOf('16.00'), -1, html);
+      assert.ok(/nicht ableitbar/.test(html), html);
+      assert.ok(/Periodenende des EBITDA/.test(html), 'Sperrgrund fehlt in der Anzeige');
+      assert.ok(/Operativer Unternehmenswert \(EV\) bleibt bestimmbar: 2500\.0M/.test(html),
+        'operativer EV fehlt im Markt-Vergleich');
+    }
+  }
+  // Unlesbares Datum auf der Seite der period-keyed Ableitung wird nicht
+  // durch ein fremdes Datum ersetzt (EBITDA datiert, net_debt undatiert).
+  {
+    const { ev } = evOf(mk({ net_debt: [900] }, {
+      ebitda: { periods: [D25], isFlowConcept: true, unit: 'USD' },
+      net_debt: { periods: ['n/a'], source_type: 'reported' } }));
+    assert.equal(ev.available, false, ev.reason);
+  }
+  // P/E und P/FCF bleiben von der Sperre unberuehrt.
+  {
+    const mj = mk({ net_debt: [900], eps_diluted: [2], fcf: [300] }, {
+      net_debt: { periods: ['n/a'], source_type: 'reported' } });
+    mj.market.own_multiples_median.pe_10y = 15;
+    mj.market.own_multiples_median.p_fcf_10y = 20;
+    const rel = S.computeRelativeMultiplesFV(mj);
+    const by = (id) => rel.models.find(m => m.id === id);
+    assert.equal(by('ev_ebitda_10y').available, false);
+    assert.ok(Math.abs(by('pe_10y').base - 30) < 1e-12);
+    assert.ok(Math.abs(by('p_fcf_10y').base - 60) < 1e-12);
+  }
 
   // ── Null- und Nettoliquiditaetsfaelle bleiben unveraendert ───────────
   const plain = (fund) => evOf(mk(fund, undefined)).ev;
