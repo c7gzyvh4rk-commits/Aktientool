@@ -1,5 +1,104 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Folgechat D2-Nachbesserung: drei Restlücken geschlossen (V1.0.72)
+
+**Ausgangsstand.** Auditbranch `claude/audit-real-data-mcd-jnj`, Spitze
+`8fa2492` (= geprüfter Referenzcommit, keine Nachfolgeänderungen auf dem
+Remote), Arbeitsbaum sauber, keine `AGENTS.md`. Baseline selbst ausgeführt:
+`npm test` Exit 0 (1700 Rechenprüfungen, 247/247 Node-Tests),
+`check-panels.test.mjs` 13/13, `repro-findings.mjs` 0 von 6 (Exit 0).
+
+**N-1 · Leasing-ROIC ohne günstigeren Rückfall** (`computeRoicMinusWacc`).
+Reproduziert: retail, sechs Jahre, EBIT 200, Buchwert 500, Schulden 600,
+Liquidität 100, Steuer 25 %, WACC 8 %, Leasing 500. Fünf Leasingjahre: 10 %,
++2 pp (korrekt). Vier oder ein Leasingjahr: „ok“, 15 %, **+7 pp**, kein Hinweis.
+Ursache: gesperrt wurde nur bei fehlendem jüngstem Leasingjahr. Korrektur:
+Erforderlichkeit (Leasing belegt und retail oder > 20 % am jüngsten
+periodengleichen Jahr — bestehende Regel) wird getrennt von der Mindesthistorie
+(5 periodengleiche Jahre einschließlich des jüngsten) geprüft. Erforderlich,
+aber nicht erfüllt ⇒ `insufficient_data` mit Grund („nur für 4 von 6 Jahren
+periodengleich gemeldet (mindestens 5 erforderlich)“); der unbereinigte Wert
+steht nur in `informational`, nicht in `value`/`roicReported`, und erzeugt keinen
+Score. Unwesentliches Leasing außerhalb retail und periodenfreie Altdaten bleiben
+nach der bisherigen Regel.
+
+**N-2 · Net Debt/EBITDA: jede Periodenangabe für sich**
+(`computeNetDebtToEbitda`, neu `_netDebtEbitdaPeriodCheck`, MoS-Zuschlag).
+Reproduziert: `net_debt [900]`, `ebitda [250]` mit a) EBITDA `[null]`,
+b) EBITDA `["n/a"]`, c) Nettoschulden `[null]` ⇒ jeweils „ok“ 3.60. Ursache:
+Verglichen wurde nur, wenn beide Seiten ein Datum hatten. Korrektur nach der
+Regel der EV/EBITDA-Brücke (V1.0.69/70): Führt eine Seite Periodenangaben,
+braucht sie ein gültiges Kalenderdatum (`parseIsoDate`) für den tatsächlich
+verwendeten Betrag; die Nettoschulden-Seite richtet sich nach der vom Resolver
+gewählten Quelle (`net_debt[0]` ⇒ nur `net_debt`; verknüpft ⇒ Periode der
+Verknüpfung; Indexpfad ⇒ Schulden/Liquidität). Nur vollständig metadatenfreie
+Seiten bleiben Altdaten. Resolver, 45-Tage-Toleranz und Multiple-Sperren
+unverändert. Anzeige: Die MoS-Aufschlüsselung zeigt bei gesperrter Kennzahl
+„Leverage Add-on (nicht bewertbar — …) n/a“ statt „–“, damit der Ausfall nicht
+als geringe Verschuldung erscheint (keine neue MoS-Methodik).
+
+**N-3 · ASC-842-Eröffnungswert ausgeschlossen.** Quelle geprüft (Company Facts,
+Stichtag 2026-09-24): Im 10-K FY2019 `0000063908-20-000022` meldet MCD zum
+2018-12-31 `OperatingLeaseLiabilityCurrent` und `…Noncurrent` = **0**, zum
+2019-01-01 `OperatingLeaseLiability` = 12,500; FY2019 läuft 2019-01-01 bis
+2019-12-31. Der Wert ist der Anfangsbestand FY2019 nach Einführung von ASC 842,
+kein Endbestand FY2018 — Gleichwertigkeit widerlegt. Korrektur ohne
+MCD-Sonderfall und ohne Januar-Pauschale: Ein Stichtag, an dem eine
+EBIT-Geschäftsperiode **beginnt** und keine endet, wird im ROIC nicht verknüpft
+(`_openingBalanceExcluded` nennt ihn). In `_extractFyValues` gewinnt bei zwei
+Stichtagen unter einem Geschäftsjahr der Hauptstichtag eines 10-K (spätestes
+Datum des Tags im Bericht) statt der neueren Meldung. JNJ FY2022 (Ende
+2023-01-01 = Periodenende), die JNJ-Historie und Kalenderjahre bleiben. Die
+45-Tage-Toleranz ist unverändert.
+
+**Nachweise.** `tests/real-data-findings.test.mjs` +14 Tests (N-1 6, N-2 5,
+N-3 3). Gegen die Produktdatei von `8fa2492` (Datei getauscht, danach
+zurückgesetzt): alle 10 Fehlerfall-Tests scheitern am **falschen Ergebnis**
+(`actual: 'ok'`, Verhältnis `4`, Paar `'2019-01-01'`); die 4 Erhaltungstests
+(fünf Leasingjahre, fehlende jüngste Periode/Altdaten, gültige/unvereinbare/
+metadatenfreie Perioden, JNJ 2023-01-01) bestehen vorher und nachher. Der
+MoS-Test nutzt Fall a, weil `["n/a"]` am alten Stand zufällig schon über den
+Jahresvergleich gesperrt war. `repro-findings.mjs` prüft die Leasingpaare jetzt
+unabhängig von `_secPeriodYear`: identischer Stichtag und kein
+EBIT-Periodenbeginn (aus den Rohfakten) — am Stand `8fa2492` „1 von 6 bestehen“
+(F-5, Paar 2018-12-31↔2019-01-01), danach 0 von 6.
+Browser-Abnahme Abschnitt 9 (29 Prüfungen, Import über die Oberfläche,
+Rendern von Qualität, Übersicht, Bewertung; frisches Profil, synthetische
+Daten): am Stand `8fa2492` 187 Prüfungen, 18 fehlgeschlagen — genau die
+Fehlerfälle —, danach 187/187.
+
+**Auf dem fertigen Stand ausgeführt:**
+
+| Befehl | Ergebnis | Exit |
+|---|---|---|
+| `npm test` | 1700 Rechenprüfungen; 261/261 Node-Tests | 0 |
+| `npm run test:audit-tool` | 20/20 (13 checkPanels + 7 Browser) | 0 |
+| `npm run test:browser` | 187/187 | 0 |
+| `node tests/real-data/replay-import.mjs --selftest` | 52/52 | 0 |
+| `node tests/real-data/repro-findings.mjs` | 0 von 6 bestehen | 0 |
+| `replay-import.mjs MCD` / `JNJ` (Importkontrolle, Originaldaten) | 43/46 bzw. 46/49 | 1 |
+
+Die Replay-Abweichungen sind dieselben wie vor D2 und gehören nicht zu diesem
+Auftrag: MCD „valuation: Basiswert ddm“ (diagnostisches DDM 108.90 nicht im
+Bewertungspanel) und JNJ „market: Periode der verwendeten Basis 2025-12-28“.
+Keine Prüfung wurde abgeschwächt.
+
+**Einschränkungen.** Die Eröffnungsregel braucht Periodenanfänge des EBIT
+(`_v4_meta.ebit.starts`, vom SEC-Import geliefert); ohne sie gilt die bisherige
+Stichtagsregel. In `_extractFyValues` hilft die Hauptstichtag-Regel nur, wenn
+ein 10-K den Jahresendstichtag für denselben Tag meldet; sonst bleibt die
+bisherige Auswahl (für MCD greift dann der ROIC-Ausschluss). Die Regel ist nur
+im ROIC angewendet; Net Debt/EBITDA vergleicht weiterhin Geschäftsjahr und
+45 Tage.
+
+**Übergabe an D3.** Chat D bleibt offen. Voraussetzungen für den abschließenden
+Abgleich: (1) MCD-DDM im Bewertungspanel, (2) JNJ-Periodenanzeige im
+Markt-Vergleich — jeweils klären, ob Werkzeugregel oder Anzeige anzupassen ist.
+Weiter offen wie in D2 beschrieben: MCD-TTM (belegte `decimals=-5`, Q4-Aktien,
+Schuldenstichtag), I-1 bis I-5.
+
+---
+
 ## Folgechat D2: Bestätigte Produktfehler korrigiert (V1.0.71)
 
 **Ausgangsstand.** Auditbranch `claude/audit-real-data-mcd-jnj`, Spitze

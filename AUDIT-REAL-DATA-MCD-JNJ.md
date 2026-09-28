@@ -276,3 +276,29 @@ bis I-5, B-1 bis B-4, M-1 bis M-3.
 * FY2018 von MCD wird mit dem ASC-842-Eröffnungswert des Operating-Leasings zum
   2019-01-01 verknüpft (1 Tag Abstand, Übergangswert). Das ist die bisherige
   45-Tage-Stichtagsregel; fachlich zu bestätigen.
+
+## 10 · Nachtrag D2-Nachbesserung — drei Restlücken (V1.0.72)
+
+Ausgangsstand `8fa2492` (unverändert, sauber). Nach D2 unabhängig reproduziert
+und hier über die produktiven Funktionen bestätigt:
+
+| # | Lücke am Stand `8fa2492` | Ursache | Korrektur | Status |
+|---|---|---|---|---|
+| N-1 | Leasing-ROIC, retail, Leasing nur für 4 (bzw. 1) von 6 Jahren: „ok“, 15 %, +7 pp, kein Hinweis (5 Jahre korrekt 10 % / +2 pp) | Die Sperre griff nur bei fehlendem jüngstem Leasingjahr; „erforderlich, aber zu wenige Jahre“ fiel auf den unbereinigten ROIC zurück | Erforderlichkeit (Leasing belegt, retail oder > 20 %) getrennt von der Mindesthistorie (5 periodengleiche Jahre inkl. jüngstem). Erforderlich, aber nicht erfüllt ⇒ `insufficient_data` mit konkretem Grund; unbereinigter Wert nur in `informational`, kein Score. Periodenfreie Altdaten unverändert | geschlossen |
+| N-2 | Net Debt/EBITDA mit `net_debt [900]`, `ebitda [250]` und a) EBITDA `[null]`, b) EBITDA `["n/a"]`, c) Nettoschulden `[null]`: „ok“ 3.60; MoS-Zuschlag daraus | Vergleich nur, wenn beide Seiten ein Datum hatten | Jede Seite für sich (Regel der EV/EBITDA-Brücke): Führt sie Periodenangaben, braucht sie ein gültiges Kalenderdatum für den tatsächlich verwendeten Betrag (Quelle des Resolvers). Resolver, 45-Tage-Toleranz und Multiple-Sperren unverändert. MoS-Aufschlüsselung zeigt „nicht bewertbar … n/a“ statt „–“ | geschlossen |
+| N-3 | MCD: EBIT FY2018 (Ende 2018-12-31) ↔ Operating-Leasing zum 2019-01-01 | Jahresschlüssel (1.–7. Januar → Vorjahr) + 45-Tage-Regel | Quelle geprüft: Im 10-K FY2019 (`0000063908-20-000022`) meldet MCD zum 2018-12-31 `OperatingLeaseLiabilityCurrent`/`Noncurrent` = 0 und zum 2019-01-01 `OperatingLeaseLiability` 12,500 (ASC-842-Einführung); FY2019 beginnt am 2019-01-01. Gleichwertigkeit ist damit widerlegt. Regel: Ein Stichtag, an dem eine EBIT-Geschäftsperiode beginnt und keine endet, ist Eröffnungsbestand und wird nicht verknüpft (`_openingBalanceExcluded`). In `_extractFyValues` entscheidet bei zwei Stichtagen unter einem Geschäftsjahr der Hauptstichtag eines 10-K | ausgeschlossen |
+
+JNJs FY2022 (Ende 2023-01-01), die wiederhergestellte Historie und normale
+Kalenderjahresenden bleiben unverändert (Tests N-3, F-2).
+
+Nachweise: 14 neue Tests in `tests/real-data-findings.test.mjs` (N-1 bis N-3);
+am Stand `8fa2492` scheitern die 10 Fehlerfall-Tests am falschen Ergebnis
+(„ok“, Verhältnis 4.0, Paar 2019-01-01), die 4 Erhaltungstests bestehen vorher
+und nachher. Browser-Abnahme Abschnitt 9 (29 Prüfungen, UI-Import und Rendern):
+am Stand `8fa2492` 18 Fehlschläge, danach 0. `repro-findings.mjs` prüft die
+Leasingpaare jetzt unabhängig (gleicher Stichtag, kein EBIT-Periodenbeginn aus
+den Rohfakten): am Stand `8fa2492` BESTEHT F-5, danach BEHOBEN.
+
+Offen für D3 (unverändert): Replay-Abweichungen MCD „Basiswert ddm“ und JNJ
+„market: Periode der verwendeten Basis 2025-12-28“ — Voraussetzung für den
+abschließenden Abgleich.
