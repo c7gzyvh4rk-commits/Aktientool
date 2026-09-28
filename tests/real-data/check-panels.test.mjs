@@ -124,3 +124,72 @@ test('Grund nur unter laengerem Modellnamen (rim_buyback) zaehlt nicht fuer rim'
   assert.ok(c.panels.valuation.includes('rim_buyback: ' + RIM));
   assert.ok(failed(checkPanels(c), /Sperre von rim\b/).length > 0);
 });
+
+// ── D3-Vorbereitung: Diagnosemodelle (MCD-Fall) ───────────────────────────
+// Die Engine rechnet ein Diagnosemodell (Router `diagnosticModels`), das
+// Produkt zeigt es sichtbar, aber ungewichtet. Die Karte unten ist der
+// wortgetreue Text der Bewertungsansicht aus dem MCD-Replay (V1.0.73).
+const DIAG_CARD = '\nDDM\nDDM DIAGNOSTISCH\nBase\n108.90\nDiagnosemodell — nicht gewichtet, kein Fair Value; fließt nicht in Range oder Buy Price.\n';
+const withDiag = (card) => {
+  const c = cap('fy');
+  c.router = { activeModels: ['dcf', 'rim'], diagnosticModels: ['ddm'] };
+  c.models = Object.assign({}, c.models, { ddm: { base: 108.90190445495523 } });
+  c.panels.valuation += card;
+  return c;
+};
+
+test('Diagnosemodell mit Wert und Kennzeichnung besteht', () => {
+  const res = checkPanels(withDiag(DIAG_CARD));
+  assert.deepEqual(failed(res), []);
+  assert.ok(res.some(x => x.ok && /Diagnosemodell ddm/.test(x.name)), 'Rollenpruefung gelaufen');
+});
+
+test('Diagnosemodell fehlt in der Ansicht: schlaegt fehl (keine Ausnahme)', () => {
+  const res = checkPanels(withDiag(''));
+  assert.ok(failed(res, /Basiswert ddm\b/).length > 0);
+  assert.ok(failed(res, /Diagnosemodell ddm/).length > 0);
+});
+
+test('Diagnosemodell mit falschem Wert schlaegt fehl', () => {
+  const res = checkPanels(withDiag(DIAG_CARD.replace('108.90', '108.91')));
+  assert.ok(failed(res, /Basiswert ddm\b/).length > 0);
+  assert.ok(failed(res, /Diagnosemodell ddm/).length > 0);
+});
+
+test('Diagnosemodell als aktives Kernmodell dargestellt schlaegt fehl', () => {
+  const res = checkPanels(withDiag('\nDDM\nAKTIV\ncons\n90.00\nbase\n108.90\nopt\n120.00\n'));
+  assert.deepEqual(failed(res, /Basiswert ddm\b/), [], 'Wert selbst stimmt');
+  assert.ok(failed(res, /Diagnosemodell ddm/).length > 0, 'Rolle falsch');
+});
+
+test('Kennzeichnung bei einem anderen Modell zaehlt nicht fuer ddm', () => {
+  const res = checkPanels(withDiag('\nEPV_FLOOR\nDIAGNOSTISCH\n\nDDM\nAKTIV\nbase\n108.90\n'));
+  assert.ok(failed(res, /Diagnosemodell ddm/).length > 0);
+});
+
+test('aktives Modell (auch in diagnosticModels) braucht keine Diagnosekennzeichnung', () => {
+  const c = withDiag('\nDDM\nAKTIV\nbase\n108.90\n');
+  c.router.activeModels.push('ddm');
+  assert.deepEqual(failed(checkPanels(c)), []);
+});
+
+// ── D3-Vorbereitung: Periode der Basis im Markt-Vergleich (JNJ-Fall) ──────
+test('Markt-Vergleich ohne Periode (Stand vor V1.0.73) schlaegt fehl', () => {
+  const c = cap('fy');
+  c.market.basisPeriod = null;
+  c.panels.market = c.panels.market.replace('LETZTES GESCHÄFTSJAHR (FY) · 2024-12-31', 'LETZTES GESCHÄFTSJAHR (FY)');
+  assert.ok(failed(market(checkPanels(c)), /Periode der verwendeten Basis/).length > 0);
+});
+
+test('veraltete Periode im Markt-Vergleich schlaegt fehl, auch wenn Engine-Erwartung und Anzeige uebereinstimmen', () => {
+  const c = cap('fy');
+  c.market.basisPeriod = '2023-12-31';
+  c.panels.market = c.panels.market.replace('· 2024-12-31', '· 2023-12-31');
+  assert.ok(failed(market(checkPanels(c)), /Periode der verwendeten Basis/).length > 0);
+});
+
+test('Engine-Erwartung richtig, Anzeige ohne Periode: schlaegt fehl', () => {
+  const c = cap('fy');
+  c.panels.market = c.panels.market.replace('LETZTES GESCHÄFTSJAHR (FY) · 2024-12-31', 'LETZTES GESCHÄFTSJAHR (FY)');
+  assert.ok(failed(market(checkPanels(c))).length > 0);
+});

@@ -17785,6 +17785,17 @@ function resolveValuationView(mj, valuation) {
 // Eine Darstellung fuer Anzeige UND Snapshot: Zeitraum,
 // Veroeffentlichungsstand, Aktienbasis, Warnungen, Rueckfall und
 // Modellsperren. Es gibt keine zweite, abweichende Zusammenstellung.
+// V1.0.73 (D3-Vorbereitung): Periodenende der verwendeten Basis — EINE
+// Regel fuer den Ausweis der Datenbasis (Bewertung, Annahmen, Snapshot) und
+// den Markt-Vergleich. TTM: Ende des TTM-Fensters; FY: juengste Umsatzperiode.
+function _dataBasisPeriodEnd(mj, resolved) {
+  const r = resolved || resolveDataBasis(mj);
+  if (r.basis === 'ttm' && r.dataset) return (r.dataset.period && r.dataset.period.end) || null;
+  const f = (mj && mj.fundamentals) || {};
+  const revMeta = (f._v4_meta && f._v4_meta.revenue) || {};
+  return (Array.isArray(revMeta.periods) && revMeta.periods[0]) || null;
+}
+
 function buildDataBasisReport(mj, resolved) {
   const r = resolved || resolveDataBasis(mj);
   const f = (mj && mj.fundamentals) || {};
@@ -17811,7 +17822,7 @@ function buildDataBasisReport(mj, resolved) {
     rep.period = {
       type: 'TTM',
       start: ds.period ? ds.period.start : null,
-      end: ds.period ? ds.period.end : null,
+      end: _dataBasisPeriodEnd(mj, r),
       duration_days: ds.period ? ds.period.durationDays : null,
       label: ds.period_label,
       window_count: ds.window_count,
@@ -17857,7 +17868,7 @@ function buildDataBasisReport(mj, resolved) {
     rep.period = {
       type: revMeta.period_type || 'FY',
       start: null,
-      end: (periods && periods[0]) || null,
+      end: _dataBasisPeriodEnd(mj, r),
       duration_days: null,
       label: (periods && periods[0]) ? ('Letztes Geschäftsjahr bis ' + periods[0]) : 'Letztes Geschäftsjahr',
       window_count: periods ? periods.length : null,
@@ -21044,10 +21055,19 @@ function computeRelativeMultiplesFV(mj, valuation) {
   const median = usable.length > 0 ? _median(usable.map(r => r.base)) : null;
   // V1.0.67: die tatsaechlich verwendete Basis und ihre Periode werden
   // mitgegeben, damit die Anzeige sie nennen kann statt sie zu unterstellen.
+  //
+  // V1.0.73 (D3-Vorbereitung): Ohne EBITDA-Periode (z. B. JNJ: kein
+  // OperatingIncomeLoss, also kein EBITDA) fiel die Angabe bisher auf das
+  // Etikett der TTM-Sicht zurueck — auf FY-Basis gibt es das nicht, und der
+  // Markt-Vergleich nannte dann KEINE Periode, obwohl die Bewertungsansicht
+  // fuer dieselbe Basis 2025-12-28 auswies. Rueckfall ist jetzt das
+  // Periodenende derselben Basisaufloesung wie im Ausweis der Datenbasis
+  // (`_dataBasisPeriodEnd`). Eine vorhandene EBITDA-Periode hat weiter Vorrang,
+  // damit eine abweichende (veraltete) EBITDA-Periode sichtbar bleibt.
   const _ebitdaMeta = (f._v4_meta && f._v4_meta.ebitda) || null;
   const _basisPeriod = (_ebitdaMeta && Array.isArray(_ebitdaMeta.periods) && _ebitdaMeta.periods[0] != null)
     ? _ebitdaMeta.periods[0]
-    : ((_viewMj && _viewMj._data_basis_view && _viewMj._data_basis_view.period_label) || null);
+    : (_vw && _vw.ok && _vw.resolved ? _dataBasisPeriodEnd(mj, _vw.resolved) : null);
   return {
     basis: _basis,
     basisLabel: (typeof DATA_BASIS_LABELS === 'object')
@@ -24835,6 +24855,34 @@ function buildValuationFallback(mj, syn, valResult) {
       <div class="reason">${escapeHtml(reason)}</div>
     </div>`;
   }) : [];
+  // V1.0.73 (D3-Vorbereitung): Diagnosemodelle des Routers (DDM auf den
+  // Pfaden retail/standard_nonfin) rechnet die Engine auch ohne Intrinsic-
+  // Bewertung ("fuer UI-Karte sichtbar, aber nicht gewichtet", V1.0.6). Die
+  // regulaere Ansicht zeigt sie mit dem Kennzeichen „DDM diagnostisch“; diese
+  // Karte liess sie bisher ganz weg (MCD: DDM 108.90 berechnet, im
+  // Modell-Status weder Wert noch Status). Sie erscheinen jetzt hier mit Wert
+  // oder Grund — ausdruecklich ohne Einfluss auf Fair Value, Range und Buy
+  // Price. An der Gewichtung aendert sich nichts.
+  const _activeSet = router ? new Set(router.activeModels || []) : new Set();
+  const diagnosticRows = router ? (router.diagnosticModels || [])
+    .filter(key => !_activeSet.has(key))
+    .map(key => {
+      const mr = modelResults[key];
+      const ok = !!(mr && mr.applicable && typeof mr.base === 'number' && isFinite(mr.base));
+      const note = 'Diagnosemodell — nicht gewichtet, kein Fair Value; fließt nicht in Range oder Buy Price.';
+      if (ok) {
+        return `<div class="model" style="border-left:3px solid var(--info)">
+      <div class="mn"><span>${escapeHtml(key)}</span><span class="mtag" style="background:#1a232e;color:var(--info)">${key === 'ddm' ? 'DDM diagnostisch' : 'diagnostisch'}</span></div>
+      <div class="vals"><div class="vl">Base</div><div class="vv">${mr.base.toFixed(2)}</div></div>
+      <div class="reason">${escapeHtml(note)}</div>
+    </div>`;
+      }
+      const reason = (mr && mr.reason) || modelReasonMap[key] || 'Inputs fehlen';
+      return `<div class="model disabled">
+      <div class="mn"><span>${escapeHtml(key)}</span><span class="mtag off">diagnostisch · nicht berechenbar</span></div>
+      <div class="reason">${escapeHtml(reason)}</div>
+    </div>`;
+    }) : [];
   const disabledRows = router ? Object.entries(router.disabledModels || {}).map(([k, why]) =>
     `<div class="model disabled">
       <div class="mn"><span>${escapeHtml(k)}</span><span class="mtag off">sektor-inaktiv</span></div>
@@ -24928,12 +24976,13 @@ function buildValuationFallback(mj, syn, valResult) {
         <div>Relative Einordnung möglich: <strong style="color:${rel.hasAny ? 'var(--warn)' : 'var(--danger)'}">${rel.hasAny ? 'Ja (historische Multiples)' : 'Nein'}</strong></div>
       </div>
     </div>
-    ${(activeModelRows.length > 0 || disabledRows.length > 0) ? `
+    ${(activeModelRows.length > 0 || diagnosticRows.length > 0 || disabledRows.length > 0) ? `
     <div class="card">
       <div class="card-title" style="cursor:default">Modell-Status</div>
       ${router ? `<div class="sector-display" style="margin-bottom:10px"><strong>Sektor-Pfad:</strong> ${escapeHtml(router.subClassification)}</div>` : ''}
       <div class="model-grid">
         ${activeModelRows.join('')}
+        ${diagnosticRows.join('')}
         ${disabledRows.join('')}
       </div>
     </div>` : ''}

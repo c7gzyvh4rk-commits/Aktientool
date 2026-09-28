@@ -290,6 +290,20 @@ export function checkPanels(c) {
   // Modell stehen („<modell>: <grund>“). Der Modellname allein genuegt nicht,
   // und ein laengerer Name (rim_buyback) zaehlt nicht fuer rim.
   const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Rolle (D3-Vorbereitung): Ein Diagnosemodell des Routers (nicht zugleich
+  // aktiv) mit berechnetem Wert muss als DIAGNOSTISCH gekennzeichnet bei
+  // seinem Wert stehen — sonst liest es sich als gewichtetes Kernmodell. Das
+  // gilt in der regulaeren Ansicht und in der Karte ohne Intrinsic-Bewertung.
+  // Es gibt keine Ausnahme fuer ausgeblendete Diagnosemodelle: das Produkt
+  // sieht sie sichtbar vor (V1.0.6), die Wertpruefung oben bleibt bestehen.
+  const rt = c.router || {};
+  const act = new Set(rt.activeModels || []);
+  for (const k of (rt.diagnosticModels || [])) {
+    const m = (c.models || {})[k];
+    if (act.has(k) || !m || typeof m.base !== 'number' || !isFinite(m.base)) continue;
+    const re = new RegExp('(^|[^A-Z0-9_])' + esc(U(k)) + '[^]{0,60}?DIAGNOSTISCH[^]{0,400}?' + esc(m.base.toFixed(2)));
+    add('valuation: Diagnosemodell ' + k + ' als diagnostisch gekennzeichnet', re.test(U(vt)), m.base.toFixed(2));
+  }
   for (const bm of (b.blocked_models || [])) {
     const re = new RegExp('(^|[^A-Z0-9_])' + esc(U(bm.model + ': ' + bm.reason)));
     add('valuation: Sperre von ' + bm.model + ' mit dem Engine-Grund sichtbar', re.test(U(vt)), bm.reason);
