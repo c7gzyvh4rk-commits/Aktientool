@@ -759,3 +759,47 @@ gelockert, keine unternehmensspezifischen Werte im Produkt.
 * **Chat D ist abgeschlossen.** Folgeaufträge (optional, fachliche
   Entscheidung): I-1 samt EBIT-Definition für Filer ohne Operating-Income-Zeile;
   Präzisionsregel O-2; Umfangsbelege aus Anhängen (I-4/I-5) für die Brücke.
+
+### 13.12 · D3-Nachbesserung: ungültige Perioden im ROIC-Trend (V1.0.75)
+
+**Ursache.** D3-6 paarte im ROIC-Trend (`_qceRoicTrend`) nur bei gleicher
+Periodenangabe — geprüft wurde **Stringgleichheit**. Identische ungültige
+Angaben galten damit als passende Perioden. Reproduziert am Referenzstand
+`367848a`: EBIT `[130, 125, 120, 100, 100, 100, 100, 100]`, Buchwert 8 × 500,
+Schulden 8 × 600, Liquidität 8 × 100, Steuer 25 %, WACC 8 %, alle vier Reihen
+`source_type: "reported"` mit achtmal `"n/a"` als `periods` ⇒ über
+`runQualityEngine()`: ROIC − WACC `insufficient_data`, ROIC-Trend
+`available: true`, `delta_pp 1.875`, Score 7. Der Datensatz passiert den
+Import über die Oberfläche („Import OK“, Browser-Abnahme Abschnitt 10).
+
+**Korrektur (eng).** Periodenmodus gilt, sobald eine der vier Reihen ein
+`periods`-Feld führt (auch null, leer oder unbrauchbar). Ein Jahr zählt dann nur,
+wenn alle vier Angaben gültige Kalenderdaten `YYYY-MM-DD` sind — geprüft mit dem
+vorhandenen strikten `parseIsoDate` (unverändert; z. B. `2025-02-30`,
+`2025-13-31`, `2025-12-31T00:00:00Z`, `2025/12/31` ungültig) — und dasselbe
+Datum nennen. Ungültige oder fehlende Angaben ergeben keine Beobachtung; reichen
+die bestehenden Mindestbeobachtungen (je zwei in den Fenstern 0–2 und 3–5) nicht,
+bekommt die QCE-Komponente keinen Score. Unverändert: Positionsbezug nur bei
+vollständig periodenfreien Altdaten, Januar-Geschäftsjahresenden, Leasingsperre
+(D3-6), Formel, Zeitfenster, Mindestbeobachtungen, Gewicht und Scoregrenzen.
+Keine anderen ROIC-Verbraucher, Modelle oder Importvalidierung geändert.
+
+**Nachweise.**
+
+| Test | `367848a` | V1.0.75 |
+|---|---|---|
+| `d3-findings`: „n/a“-Perioden (inkl. `runQualityEngine`) | rot | grün |
+| `d3-findings`: unmögliche Kalenderdaten, zu wenige gültige jüngste Jahre, Zeitstempel/Schrägstriche | rot | grün |
+| `d3-findings`: leere Arrays, `periods: null`, leere Strings, eine Reihe ohne `periods`, kürzere Periodenreihe | rot | grün |
+| `d3-findings`: gültige Perioden inkl. Januar-Enden (1.875 pp, Score 7) — Erhalt | grün | grün |
+| `d3-findings`: periodenfreie Altdaten — Erhalt | grün | grün |
+| `d3-findings`: Leasingsperre — Erhalt | grün | grün |
+| Browser-Abnahme §10 (Import über die Oberfläche, Reiter „Qualität“ gerendert): „n/a“ und `YYYY-02-30` ⇒ „ROIC-Trend (3y vs 3y) n/a“, kein Score | 4 FAIL (192/196, Exit 1) | 196/196 |
+| Browser-Abnahme §10 Gegenprobe gültige Perioden „+1.9pp · 7/10“ | PASS | PASS |
+
+**Ausgeführt auf dem fertigen Stand** (Produktdatei SHA-256 `80921c0d…`):
+`npm test` Exit 0 (1700 Rechenprüfungen; 289/289 Node-Tests) ·
+`npm run test:browser` Exit 0 (196/196) · `npm run test:audit-tool` Exit 0
+(38/38). Kein erneuter Quellen-/Realdatenabgleich (nicht erforderlich; MCD ist
+im ROIC-Trend bereits durch die Leasingsperre gesperrt, JNJ hat kein EBIT). Die
+TTM- und Bewertungsgrenzen aus §13.4–§13.7 gelten unverändert.

@@ -12025,10 +12025,17 @@ function _qceRoicTrend(mj, qr) {
   const yearsAvail = Math.min(ebit.length, bv.length, td.length, cash.length);
   if (yearsAvail < 6) return null;
   const meta = f._v4_meta || {};
-  const perOf = (k) => (meta[k] && Array.isArray(meta[k].periods)) ? meta[k].periods : null;
-  const pers = [perOf('ebit'), perOf('book_value'), perOf('total_debt'), perOf(cashKey)];
-  const periodMode = pers.some(p => p != null);
-  const samePeriod = (i) => !periodMode || (pers.every(p => p != null && p[i] != null) && pers.every(p => p[i] === pers[0][i]));
+  // V1.0.75 (D3-Nachbesserung): Periodenmodus, sobald EINE der vier Reihen
+  // ein `periods`-Feld fuehrt (auch null, leer oder unbrauchbar). Dann zaehlt
+  // ein Jahr nur, wenn alle vier Angaben gueltige Kalenderdaten YYYY-MM-DD
+  // sind (strikt: parseIsoDate, z. B. 2025-02-30 ungueltig) und dasselbe Datum
+  // nennen. Bis V1.0.74 genuegte Stringgleichheit — achtmal „n/a“ galt als
+  // passend. Positionsbezug nur bei vollstaendig periodenfreien Altdaten.
+  const keys = ['ebit', 'book_value', 'total_debt', cashKey];
+  const periodMode = keys.some(k => meta[k] && Object.prototype.hasOwnProperty.call(meta[k], 'periods'));
+  const pers = keys.map(k => (meta[k] && Array.isArray(meta[k].periods)) ? meta[k].periods : null);
+  const samePeriod = (i) => !periodMode || (pers.every(p => p != null && parseIsoDate(p[i]) != null)
+    && pers.every(p => p[i] === pers[0][i]));
 
   const roics = [];
   for (let i = 0; i < Math.min(yearsAvail, 8); i++) {

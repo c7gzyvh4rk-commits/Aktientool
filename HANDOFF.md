@@ -1,5 +1,38 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## D3-Nachbesserung: ungültige Perioden im ROIC-Trend ausgeschlossen (V1.0.75)
+
+**Ausgangsstand.** Auditbranch `claude/audit-real-data-mcd-jnj`, Spitze `367848a`
+(= Remote), Arbeitsbaum sauber, keine `AGENTS.md`.
+
+**Ursache.** `_qceRoicTrend` (D3-6) verglich Periodenangaben nur als Strings;
+achtmal `"n/a"` (oder identische unmögliche Daten) galt als passend. Reproduziert
+über `runQualityEngine()`: ROIC − WACC `insufficient_data`, ROIC-Trend
+`available: true`, `delta_pp 1.875`, Score 7.
+
+**Korrektur.** Im Periodenmodus (eine der vier Reihen führt `periods`) zählt ein
+Jahr nur mit gültigen, gleichen Kalenderdaten aller vier Reihen (vorhandener
+strikter `parseIsoDate`, unverändert). Positionsbezug nur bei vollständig
+periodenfreien Altdaten; Leasingsperre, Formel, Fenster, Mindestbeobachtungen,
+Gewicht und Scoregrenzen unverändert.
+
+**Nachweise.** `tests/d3-findings.test.mjs` +6 (20): am Referenzstand 3
+Fehlerfalltests rot, 3 Erhaltungstests grün; danach alle grün. Browser-Abnahme
+Abschnitt 10 (+9 Prüfungen, `roicTrendMj` in `tests/browser/fixtures.mjs`):
+Import über die Oberfläche und gerenderter Reiter „Qualität“ — am Referenzstand
+192/196 (4 FAIL, Exit 1), danach 196/196.
+
+| Befehl (fertiger Stand, SHA-256 `80921c0d…`) | Ergebnis | Exit |
+|---|---|---|
+| `npm test` | 1700 Rechenprüfungen; 289/289 | 0 |
+| `npm run test:browser` | 196/196 | 0 |
+| `npm run test:audit-tool` | 38/38 | 0 |
+
+Restlücke geschlossen. TTM- und Bewertungsgrenzen aus D3 unverändert (Auditbericht
+§13.4–§13.7, Details §13.12). Nicht gemergt.
+
+---
+
 ## Folgechat D3 (abschließend): Realdaten gegen Originalberichte, Chat D abgeschlossen (V1.0.74)
 
 **Ausgangsstand.** Auditbranch `claude/audit-real-data-mcd-jnj`, Spitze

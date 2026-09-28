@@ -193,3 +193,75 @@ test('D3-6 Perioden: versetzte Schuldenreihe wird nicht per Position gepaart', (
   const legacy = trendMj(); delete legacy.fundamentals._v4_meta;
   assert.equal(plain(S._qceRoicTrend(legacy, null)).status, 'ok');
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// D3-6b · ROIC-Trend: nur gueltige, gleiche Kalenderdaten gelten als Periode
+// (Restluecke nach D3-6: Stringgleichheit liess achtmal „n/a“ als passend gelten)
+// ═════════════════════════════════════════════════════════════════════════════
+const EBIT8 = [130, 125, 120, 100, 100, 100, 100, 100];
+function periodMj(periodsFor) {   // periodsFor(key) → Wert fuer _v4_meta[key].periods (undefined = Feld weglassen)
+  const f = { ebit: EBIT8.slice(), book_value: Array(8).fill(500), total_debt: Array(8).fill(600),
+    cash_and_equivalents: Array(8).fill(100), _v4_meta: {} };
+  for (const k of ['ebit', 'book_value', 'total_debt', 'cash_and_equivalents']) {
+    const m = { source_type: 'reported' };
+    const p = periodsFor(k);
+    if (p !== undefined) m.periods = p;
+    f._v4_meta[k] = m;
+  }
+  return { meta: { ticker: 'SYN' }, market: {}, valuation: { wacc: 8, wacc_components: { tax_rate: 25 } }, fundamentals: f };
+}
+const trendComp = (mj) => plain(S.runQualityEngine(mj)).qceScore.components.find(c => c.key === 'roicTrend');
+const noScore = (mj, label) => {
+  const r = S._qceRoicTrend(mj, null);
+  assert.ok(r == null || r.status !== 'ok', label + ': ' + JSON.stringify(r));
+  const c = trendComp(mj);
+  assert.equal(c.available, false, label);
+  assert.equal(c.score, null, label);
+};
+
+test('D3-6b identische „n/a“-Perioden: kein ROIC-Trend (runQualityEngine, Gegenfall 1.875 pp / Score 7)', () => {
+  const mj = periodMj(() => Array(8).fill('n/a'));
+  assert.equal(plain(S.runQualityEngine(mj)).descriptive.roicMinusWacc.status, 'insufficient_data');
+  noScore(mj, 'n/a');
+});
+
+test('D3-6b identische unmoegliche Kalenderdaten (YYYY-02-30, 2025-13-31) gelten nicht als Periode', () => {
+  noScore(periodMj(() => YEARS.map(p => p.slice(0, 4) + '-02-30')), '02-30');
+  noScore(periodMj(() => ['2025-13-31'].concat(YEARS.slice(1).map(p => p.slice(0, 4) + '-02-30'))), '13-31');
+  // Nur die juengsten drei Jahre ungueltig ⇒ zu wenige aktuelle Beobachtungen.
+  noScore(periodMj(() => ['2025-02-30', '2024-02-30', '2023-02-30'].concat(YEARS.slice(3))), 'juengste ungueltig');
+  // Kein tolerantes Datumsformat: „2025-12-31T00:00:00Z“ bzw. „2025/12/31“.
+  noScore(periodMj(() => YEARS.map(p => p + 'T00:00:00Z')), 'ISO mit Zeit');
+  noScore(periodMj(() => YEARS.map(p => p.replace(/-/g, '/'))), 'Schraegstriche');
+});
+
+test('D3-6b leere oder fehlende Perioden bei vorhandenen Periodenmetadaten: kein Positionsbezug', () => {
+  noScore(periodMj(() => []), 'leere Arrays');
+  noScore(periodMj(() => null), 'periods: null');
+  noScore(periodMj(() => Array(8).fill('')), 'leere Strings');
+  noScore(periodMj((k) => k === 'total_debt' ? undefined : YEARS.slice()), 'eine Reihe ohne periods');
+  noScore(periodMj((k) => k === 'cash_and_equivalents' ? YEARS.slice(0, 2) : YEARS.slice()), 'kuerzere Periodenreihe');
+});
+
+test('D3-6b Erhalt: gueltige periodengleiche Daten, auch Januar-Geschaeftsjahresenden', () => {
+  const r = plain(S._qceRoicTrend(periodMj(() => YEARS.slice()), null));
+  assert.equal(r.status, 'ok');
+  assert.equal(r.delta_pp, 1.875);
+  assert.equal(trendComp(periodMj(() => YEARS.slice())).score, 7);
+  const jan = ['2025-12-28', '2024-12-29', '2023-12-31', '2023-01-01', '2022-01-02', '2021-01-03', '2019-12-29', '2018-12-30'];
+  const rj = plain(S._qceRoicTrend(periodMj(() => jan.slice()), null));
+  assert.equal(rj.status, 'ok');
+  assert.equal(rj.delta_pp, 1.875);
+});
+
+test('D3-6b Erhalt: vollstaendig periodenfreie Altdaten behalten den Positionsbezug', () => {
+  const r = plain(S._qceRoicTrend(periodMj(() => undefined), null));
+  assert.equal(r.status, 'ok');
+  assert.equal(r.delta_pp, 1.875);
+  assert.equal(trendComp(periodMj(() => undefined)).score, 7);
+});
+
+test('D3-6b Erhalt: Leasingsperre bleibt auch bei gueltigen Perioden wirksam', () => {
+  const r = plain(S._qceRoicTrend(periodMj(() => YEARS.slice()), LEASE_BLOCKED));
+  assert.notEqual(r && r.status, 'ok');
+});

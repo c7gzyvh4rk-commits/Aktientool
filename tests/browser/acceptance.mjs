@@ -660,6 +660,28 @@ async function main() {
     }
 
     // ══════════════════════════════════════════════════════════════════════
+    sec('10 · D3-Nachbesserung: ROIC-Trend nur aus gueltigen Perioden (V1.0.75)');
+    const trendState = `(() => { const c = state.quality && state.quality.qceScore && state.quality.qceScore.components.find(x => x.key === 'roicTrend');
+      return c ? { a: c.available, s: c.score, v: c.valStr } : null; })()`;
+    for (const kind of ['na', 'impossible']) {
+      const status = await importViaUi(FX.roicTrendMj(kind));
+      if (!check(`ROIC-Trend Perioden „${kind}“: Import`, /Import OK/.test(status), status)) continue;
+      const q = await tab('quality');
+      check(`ROIC-Trend Perioden „${kind}“: Qualitaet zeigt ROIC-Trend n/a, kein Score`,
+        /ROIC-Trend \(3y vs 3y\)\s*n\/a/i.test(q) && !/ROIC-Trend \(3y vs 3y\)\s*\+1\.9pp/i.test(q), q.slice(0, 5000));
+      const st = await ev(trendState);
+      check(`ROIC-Trend Perioden „${kind}“: Zustand nicht verfuegbar, Score leer`, st && st.a === false && st.s == null, JSON.stringify(st));
+    }
+    {
+      const status = await importViaUi(FX.roicTrendMj('valid'));
+      check('ROIC-Trend gueltige Perioden (Gegenprobe): Import', /Import OK/.test(status), status);
+      const q = await tab('quality');
+      check('ROIC-Trend gueltige Perioden: +1.9pp · 7/10 sichtbar', /ROIC-Trend \(3y vs 3y\)\s*\+1\.9pp · 7\/10/i.test(q), q.slice(0, 5000));
+      const st = await ev(trendState);
+      check('ROIC-Trend gueltige Perioden: Zustand Score 7', st && st.a === true && st.s === 7, JSON.stringify(st));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
     sec('8 · Abschluss');
     check('keine unbehandelte Ausnahme im gesamten Ablauf', exceptions.length === 0, exceptions.join(' | '));
     const nonFont = external.filter(u => !/^https:\/\/fonts\.(googleapis|gstatic)\.com\//.test(u));

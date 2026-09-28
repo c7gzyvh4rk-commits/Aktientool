@@ -259,3 +259,25 @@ export function leverageMj(tag, ndPeriods, ebPeriods) {
     market: { price: 20 }
   };
 }
+
+// D3-Nachbesserung (V1.0.75): ROIC-Trend nur aus gueltigen, gleichen
+// Kalenderdaten. Acht Jahre, EBIT 130/125/120/100…, Buchwert 500, Schulden
+// 600, Liquiditaet 100, Steuer 25 % ⇒ mit gueltigen Perioden +1.875 pp (Score 7).
+// kind: 'na' (achtmal „n/a“), 'impossible' (YYYY-02-30) oder 'valid'.
+const Y8 = ['2025-12-31', '2024-12-31', '2023-12-31', '2022-12-31', '2021-12-31', '2020-12-31', '2019-12-31', '2018-12-31'];
+export function roicTrendMj(kind) {
+  const P = kind === 'na' ? Array(8).fill('n/a') : kind === 'impossible' ? Y8.map(p => p.slice(0, 4) + '-02-30') : Y8.slice();
+  const per = (flow) => ({ periods: P.slice(), isFlowConcept: flow, unit: 'USD', source_type: 'reported' });
+  return {
+    schema_version: '4.0',
+    meta: META('RTR' + kind.toUpperCase().slice(0, 3), 'standard_nonfin'),
+    fundamentals: {
+      revenue: Array(8).fill(1000), ebit: [130, 125, 120, 100, 100, 100, 100, 100],
+      book_value: Array(8).fill(500), total_debt: Array(8).fill(600), cash_and_equivalents: Array(8).fill(100),
+      shares_diluted: Array(8).fill(100),
+      _v4_meta: { ebit: per(true), book_value: per(false), total_debt: per(false), cash_and_equivalents: per(false) }
+    },
+    valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false }, wacc_derived: 8 },
+    market: { price: 20 }
+  };
+}
