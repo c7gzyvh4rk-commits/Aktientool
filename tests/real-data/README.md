@@ -82,7 +82,22 @@ Zwei Skripte, die nicht zu `npm test` gehören.
    (`fixtures/check-panels-captures.json`). Abgedeckt sind:
    * leeres, fehlendes oder fremdes Marktpanel;
    * berechtigte Leerzustände nur mit ihrem Grund;
-   * der Sperrgrund beim richtigen Modell.
+   * der Sperrgrund beim richtigen Modell;
+   * Diagnosemodelle (seit D3-Vorbereitung): Jedes Modell mit berechnetem
+     Basiswert muss mit genau diesem Wert in der Bewertungsansicht stehen —
+     auch ein Diagnosemodell des Routers (`router.diagnosticModels`, z. B. DDM
+     auf dem Pfad retail). Es gibt **keine Ausnahme** für nicht angezeigte
+     Diagnosemodelle: Das Produkt sieht sie sichtbar, aber ungewichtet vor
+     (V1.0.6), in der regulären Ansicht und — seit V1.0.73 — in der Karte ohne
+     Intrinsic-Bewertung. Zusätzlich muss ein Diagnosemodell, das nicht zugleich
+     aktiv ist, **als diagnostisch gekennzeichnet** bei seinem Wert stehen
+     (Modellname, dann „diagnostisch“, dann der Wert); als „aktiv“ dargestellt,
+     fehlend oder mit anderem Wert schlägt die Prüfung fehl;
+   * Periode der verwendeten Basis im Markt-Vergleich: Erwartet wird das
+     Periodenende aus dem Ausweis der Datenbasis (`basis.period.end`), in der
+     Engine-Erwartung (`computeRelativeMultiplesFV().basisPeriod`) **und** im
+     Anzeigetext. Fehlende Periode, abweichende (veraltete) Periode oder eine
+     Periode nur in der Engine-Erwartung schlagen fehl.
 
    Die Browser-Tests (`replay-import.browser.test.mjs`) starten das Skript als eigenen Prozess gegen zwei synthetische
    Filer in einem temporären Verzeichnis: SYNTR mit Quartalen (FY: Umsatz 1000,

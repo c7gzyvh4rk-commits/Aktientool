@@ -302,3 +302,15 @@ den Rohfakten): am Stand `8fa2492` BESTEHT F-5, danach BEHOBEN.
 Offen für D3 (unverändert): Replay-Abweichungen MCD „Basiswert ddm“ und JNJ
 „market: Periode der verwendeten Basis 2025-12-28“ — Voraussetzung für den
 abschließenden Abgleich.
+
+## 11 · Nachtrag D3-Vorbereitung — Replay-Abweichungen geklärt (V1.0.73)
+
+Beide Abweichungen lagen an der **Anzeige**, nicht an der Werkzeugregel:
+
+| Abweichung | Ursache | Korrektur | Replay danach |
+|---|---|---|---|
+| MCD „valuation: Basiswert ddm“ (108.90) | DDM ist Diagnosemodell (retail, sichtbar, nicht gewichtet, V1.0.6). Ohne Intrinsic-Bewertung rendert `buildValuationFallback`; dessen Modell-Status ließ Diagnosemodelle weg | Diagnosemodelle dort mit Wert/Grund und Kennzeichen „DDM diagnostisch — nicht gewichtet, kein Fair Value“. Werkzeug prüft zusätzlich die Kennzeichnung | 49/49, Exit 0 |
+| JNJ „market: Periode der verwendeten Basis 2025-12-28“ | Periode im Markt-Vergleich nur aus EBITDA; JNJ hat kein EBIT/EBITDA ⇒ keine Periode | Rückfall auf `_dataBasisPeriodEnd` (dieselbe Regel wie der Ausweis der Datenbasis); EBITDA-Periode behält Vorrang | 49/49, Exit 0 |
+
+Gegenlauf mit der Produktdatei von `12a30ac`: MCD 43/49, JNJ 46/49 (Exit 1).
+Engine-Werte unverändert.

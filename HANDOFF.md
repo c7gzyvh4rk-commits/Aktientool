@@ -1,5 +1,93 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Folgechat D3-Vorbereitung: zwei Replay-Abweichungen geklärt (V1.0.73)
+
+**Ausgangsstand.** Auditbranch `claude/audit-real-data-mcd-jnj`, Spitze `12a30ac`
+(= Referenzstand, keine Nachfolgeänderungen auf dem Remote), Arbeitsbaum
+sauber, keine `AGENTS.md`. SEC-Quellen neu geladen (Stichtag 2026-09-24,
+0 Fakten entfernt): SHA-256 identisch (MCD `0394e814…`, JNJ `7141c0c9…`).
+Reproduziert über den produktiven Import- und Renderweg
+(`replay-import.mjs`: `secFetchAll` → `secConfirmImport`, Reiter per Mausklick):
+MCD 43/46, JNJ 46/49, je Exit 1 — dieselben drei Prüfpunkte je Schritt wie in D2.
+
+**1 · MCD „valuation: Basiswert ddm“ — Anzeige falsch.**
+Modellrolle: Router retail, `activeModels [dcf, rim]`, `diagnosticModels [ddm]`,
+`ddmMode diagnostic`. Die Engine rechnet Diagnosemodelle ausdrücklich „für
+UI-Karte sichtbar, aber nicht gewichtet“ (V1.0.6, `runValuationEngine`); die
+reguläre Ansicht zeigt sie mit Kennzeichen „DDM diagnostisch“. Bei MCD sind DCF
+(Nettoschulden nicht belegt) und RIM (BVPS ≤ 0) gesperrt, die Synthese hat
+keine Intrinsic-Bewertung — gerendert wird `buildValuationFallback`. Diese Karte
+listete im „Modell-Status“ nur `activeModels` und `disabledModels`; das
+berechnete DDM (108.90) fehlte ganz, weder mit Wert noch mit Status. Kein
+bewusstes Ausblenden (keine Regel, kein Kommentar; die Karte führt sogar einen
+DDM-Grund in ihrer Grundtabelle). **Korrektur:** Diagnosemodelle, die nicht
+zugleich aktiv sind, erscheinen dort mit Wert und Kennzeichen „DDM
+diagnostisch“ sowie „Diagnosemodell — nicht gewichtet, kein Fair Value; fließt
+nicht in Range oder Buy Price“, bzw. ohne Ergebnis mit Grund
+(„diagnostisch · nicht berechenbar“). Router, Gewichtung, Synthese, Range und
+Buy Price unverändert; „Fair Value (intrinsisch) möglich: Nein“ bleibt.
+**Werkzeug geschärft (keine Ausnahme):** Neben „Basiswert = Engine-Ergebnis“
+prüft `checkPanels` jetzt, dass ein nicht aktives Diagnosemodell als
+diagnostisch gekennzeichnet bei seinem Wert steht. Fehlend, falscher Wert oder
+als aktives Kernmodell dargestellt ⇒ Fehlschlag.
+
+**2 · JNJ „market: Periode der verwendeten Basis 2025-12-28“ — Anzeige falsch.**
+Datenbasis FY, Ende 2025-12-28 (Ausweis der Datenbasis, Bewertungs- und
+Annahmenansicht). JNJ meldet kein `OperatingIncomeLoss` ⇒ kein EBIT, kein
+EBITDA. `computeRelativeMultiplesFV` nahm die Periode nur aus
+`_v4_meta.ebitda.periods[0]` und fiel sonst auf `_data_basis_view.period_label`
+zurück, das es nur in der TTM-Sicht gibt ⇒ `basisPeriod null`, der
+Markt-Vergleich nannte „Letztes Geschäftsjahr (FY)“ ohne Periode. Die
+Werkzeugerwartung (Periode der verwendeten Basis) entspricht dem Zweck von
+V1.0.67 („Basis und ihre Periode nennen statt unterstellen“). **Korrektur:**
+neue Funktion `_dataBasisPeriodEnd(mj, resolved)` — eine Regel für den Ausweis
+der Datenbasis (`buildDataBasisReport`, TTM: Fensterende, FY: jüngste
+Umsatzperiode) und den Rückfall des Markt-Vergleichs. Eine vorhandene
+EBITDA-Periode behält Vorrang, damit eine abweichende/veraltete EBITDA-Periode
+weiter als Abweichung erkannt wird. Ohne jede Periodenangabe bleibt
+`basisPeriod null` (nichts erfunden). Werkzeugregel unverändert.
+
+**Regressionstests.**
+* `tests/d3-prep-display.test.mjs` (neu, Teil von `npm test`, 8 Tests):
+  JNJ-Fall mit echtem Renderer `renderMarket`; EBITDA-Vorrang bei abweichender
+  Periode; keine erfundene Periode; Sperre bei anderer Basis unverändert;
+  MCD-Fall (Wert + Rolle), nicht berechenbares Diagnosemodell (Grund, keine
+  Zahl), fehlendes Ergebnis, kein Diagnosemodell bzw. aktives DDM nicht doppelt.
+  Gegen die Produktdatei von `12a30ac` (getauscht, danach zurückgesetzt):
+  4 Fehlerfalltests rot, 4 Erhaltungstests grün.
+* `tests/real-data/check-panels.test.mjs` +9 (22 gesamt): zulässiger Zustand
+  (Diagnosemodell mit Wert und Kennzeichnung; aktives DDM ohne Kennzeichnung),
+  Fehlerfälle (fehlt, falscher Wert, als aktiv dargestellt, Kennzeichnung bei
+  anderem Modell; Markt ohne Periode, veraltete Periode, Periode nur in der
+  Engine-Erwartung). Mit dem Werkzeug von `12a30ac`: 5 rot (Rollenprüfung
+  fehlte), die Periodenfälle bestanden schon vorher.
+
+**Ausgeführt** (Produkt-/Werkzeugstand `05fefc6`):
+
+| Befehl | Ergebnis | Exit |
+|---|---|---|
+| `npm test` | 1700 Rechenprüfungen; 269/269 Node-Tests | 0 |
+| `npm run test:audit-tool` | 29/29 (22 checkPanels + 7 Browser) | 0 |
+| `npm run test:browser` | 187/187 | 0 |
+| `node tests/real-data/replay-import.mjs --selftest` | 52/52 | 0 |
+| `node tests/real-data/repro-findings.mjs` | 0 von 6 bestehen | 0 |
+| `replay-import.mjs MCD` (Originaldaten, sauberer Baum) | 49/49 | 0 |
+| `replay-import.mjs JNJ` (Originaldaten, sauberer Baum) | 49/49 | 0 |
+| Gegenlauf: neues Werkzeug, Produktdatei `12a30ac` — MCD | 43/49 (DDM-Wert und -Rolle, je 3 Schritte) | 1 |
+| Gegenlauf: neues Werkzeug, Produktdatei `12a30ac` — JNJ | 46/49 (Marktperiode, je 3 Schritte) | 1 |
+
+Engine-Werte unverändert (MCD DDM 108.90, JNJ DDM 78.07); geändert ist nur die
+Anzeige. Keine Prüfung entfernt oder abgeschwächt, keine Ausnahme für MCD/JNJ.
+
+**Einschränkung.** Die Rollenprüfung sucht „<modell> … diagnostisch … <wert>“ in
+einem begrenzten Textfenster; ein Kennzeichen, das zufällig in diesem Fenster
+eines anderen Blocks steht, würde nicht erkannt. Der TTM-Rückfall ohne
+EBITDA-Periode nennt jetzt das Fensterende statt des Etiketts; mit den
+vorhandenen Daten (MCD/JNJ ohne vollständiges TTM, synthetische TTM-Fälle mit
+EBITDA) tritt er nicht auf.
+
+---
+
 ## Folgechat D2-Nachbesserung: drei Restlücken geschlossen (V1.0.72)
 
 **Ausgangsstand.** Auditbranch `claude/audit-real-data-mcd-jnj`, Spitze
