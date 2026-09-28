@@ -518,3 +518,90 @@ test('F-3 bis in den TTM-Aufbau: Umsatz-TTM entsteht, andere Hindernisse bleiben
   const ds0 = S.buildTtmDatasetFromFacts(MCD, { reportingUnit: 'millions' });
   assert.ok(!(ds0.covered_fields || []).includes('revenue'));
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// F-5 · Periodengerechter leasingbereinigter ROIC
+// ═════════════════════════════════════════════════════════════════════════════
+const roicMj = (fund, sub = 'retail') => ({
+  meta: { sub_classification: sub }, market: {},
+  valuation: { wacc_derived: 8, wacc_components: { tax_rate: 25 } },
+  fundamentals: fund });
+const Y = ['2025-12-31', '2024-12-31', '2023-12-31', '2022-12-31', '2021-12-31', '2020-12-31'];
+const withPeriods = (fund, periodsByField) => {
+  fund._v4_meta = {};
+  for (const [k, p] of Object.entries(periodsByField)) fund._v4_meta[k] = { periods: p };
+  return fund;
+};
+const baseFund = () => ({
+  ebit: [200, 200, 200, 200, 200, 200], book_value: [500, 500, 500, 500, 500, 500],
+  total_debt: [600, 600, 600, 600, 600, 600], cash_and_equivalents: [100, 100, 100, 100, 100, 100] });
+// NOPAT = 150; IC = 1,000 → ROIC 15 %; mit Leasing 500 → 150/1,500 = 10 %.
+
+test('F-5 MCD real: EBIT 2025 wird nicht mit Leasing zum 2023-12-31 verknuepft', () => {
+  const { mj } = importFacts(MCD, 'MCD');
+  mj.meta.sub_classification = 'retail';
+  mj.valuation = Object.assign(mj.valuation || {}, { wacc_derived: 7, wacc_components: { tax_rate: 21 } });
+  const f = mj.fundamentals;
+  assert.equal(f._v4_meta.ebit.periods[0], '2025-12-31');
+  assert.equal(f._v4_meta.operating_lease_liabilities.periods[0], '2023-12-31');
+  const m = S.computeRoicMinusWacc(mj);
+  // Leasing ist belegt und nach Regel massgeblich (retail), fuer FY2025 aber nicht gemeldet.
+  assert.equal(m.status, 'insufficient_data');
+  assert.match(m.detail, /Operating-Leasing für 2025-12-31 nicht periodengleich gemeldet \(letzte Angabe 2023-12-31\)/);
+  assert.equal(m._leaseAdjusted, false);
+  // Jede verwendete Leasingangabe gehoert zum Geschaeftsjahr des EBIT.
+  assert.ok(m._leasePairs.length > 0);
+  for (const p of m._leasePairs) assert.equal(S._secPeriodYear(p.leasePeriod), S._secPeriodYear(p.ebitPeriod));
+});
+
+test('F-5 synthetisch: versetzte Leasingreihe wird nicht per Position gepaart', () => {
+  const fund = withPeriods(Object.assign(baseFund(), { operating_lease_liabilities: [500, 500, 500, 500] }),
+    { ebit: Y, book_value: Y, total_debt: Y, cash_and_equivalents: Y, operating_lease_liabilities: Y.slice(2) });
+  const m = S.computeRoicMinusWacc(roicMj(fund));
+  assert.equal(m.status, 'insufficient_data');
+  assert.equal(m._leaseMissingForPeriod, '2025-12-31');
+  assert.deepEqual(plain(m._leasePairs.map(p => p.leasePeriod)), Y.slice(2));
+});
+
+test('F-5 synthetisch: korrekt passende Perioden ergeben die bisherige Leasingbereinigung', () => {
+  const fund = withPeriods(Object.assign(baseFund(), { operating_lease_liabilities: [500, 500, 500, 500, 500, 500] }),
+    { ebit: Y, book_value: Y, total_debt: Y, cash_and_equivalents: Y, operating_lease_liabilities: Y });
+  const m = S.computeRoicMinusWacc(roicMj(fund));
+  assert.equal(m.status, 'ok');
+  assert.equal(m._leaseAdjusted, true);
+  assert.ok(Math.abs(m.roicLeaseAdjusted - 10) < 1e-9);
+  assert.ok(Math.abs(m.roicReported - 15) < 1e-9);
+  assert.ok(Math.abs(m.value - (10 - 8)) < 1e-9);
+  // Stichtag = Ende desselben Geschaeftsjahres (bestehende Definition, kein Vorjahresbestand).
+  assert.deepEqual(plain(m._leasePairs.map(p => [p.ebitPeriod, p.leasePeriod])), Y.map(p => [p, p]));
+});
+
+test('F-5 synthetisch: fehlendes Leasingjahr wird nicht durch 0 oder ein aelteres Jahr ersetzt', () => {
+  // Leasing fehlt nur fuer 2024; 2025 und 2020–2023 vorhanden (800 in 2025).
+  const P = ['2025-12-31', '2023-12-31', '2022-12-31', '2021-12-31', '2020-12-31'];
+  const fund = withPeriods(Object.assign(baseFund(), { operating_lease_liabilities: [800, 500, 500, 500, 500] }),
+    { ebit: Y, book_value: Y, total_debt: Y, cash_and_equivalents: Y, operating_lease_liabilities: P });
+  const m = S.computeRoicMinusWacc(roicMj(fund));
+  assert.equal(m.status, 'ok');
+  assert.equal(m._leaseAdjusted, true);
+  assert.equal(m.yearsUsed, 5);                          // 2024 nicht bereinigt → nicht im Leasing-Median
+  // Median aus 150/1,800 (2025) und 4 × 150/1,500 = 10 %.
+  assert.ok(Math.abs(m.roicLeaseAdjusted - 10) < 1e-9);
+  assert.match(m.detail, /Leasing nur für 5 von 6 Jahren periodengleich/);
+  assert.ok(!m._leasePairs.some(p => p.ebitPeriod === '2024-12-31'));
+});
+
+test('F-5 synthetisch: Leasingangaben ohne Perioden bei periodisiertem EBIT → keine Bereinigung', () => {
+  const fund = withPeriods(Object.assign(baseFund(), { operating_lease_liabilities: [500, 500, 500, 500, 500, 500] }),
+    { ebit: Y, book_value: Y, total_debt: Y, cash_and_equivalents: Y });
+  const m = S.computeRoicMinusWacc(roicMj(fund));
+  assert.equal(m.status, 'insufficient_data');
+  assert.match(m.detail, /nicht periodengleich/);
+});
+
+test('F-5 Altdaten ohne jede Periode: bisheriger Positionsbezug bleibt', () => {
+  const fund = Object.assign(baseFund(), { operating_lease_liabilities: [500, 500, 500, 500, 500, 500] });
+  const m = S.computeRoicMinusWacc(roicMj(fund));
+  assert.equal(m.status, 'ok');
+  assert.ok(Math.abs(m.roicLeaseAdjusted - 10) < 1e-9);
+});

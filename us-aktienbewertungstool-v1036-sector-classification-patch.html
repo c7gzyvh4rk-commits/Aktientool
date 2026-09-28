@@ -11355,21 +11355,70 @@ function computeRoicMinusWacc(mj) {
   }
   const horizon = Math.min(10, yearsAvail);
 
+  // V1.0.71 (D2/F-5): Verknuepfung ueber die tatsaechliche Periode. Die
+  // Definition bleibt: ROIC_i = NOPAT_i / (Eigenkapital + Finanzschulden −
+  // Liquiditaet [+ Operating-Leasing]) jeweils zum ENDE desselben
+  // Geschaeftsjahres — keine Durchschnitte, kein Vorjahresbestand.
+  // Bis V1.0.70 wurde per Arrayposition gepaart; MCD: EBIT 2025 mit Leasing
+  // zum 2023-12-31. Zudem floss fehlendes Leasing als 0 in den Leasing-Median.
+  // Jetzt gilt: Traegt EBIT Perioden, werden Bestaende mit Perioden ueber
+  // Geschaeftsjahr und Stichtag (≤ 45 Tage) zugeordnet; Leasing ohne passende
+  // Periode ergibt fuer dieses Jahr KEINE Leasingbereinigung (kein Rueckgriff
+  // auf aeltere Jahre). Nur ohne jede Periodenangabe gilt der bisherige
+  // Positionsbezug (Altdatenregel).
+  const _per = (k) => (f._v4_meta && f._v4_meta[k] && Array.isArray(f._v4_meta[k].periods)) ? f._v4_meta[k].periods : null;
+  const pE = _per('ebit');
+  const periodMode = !!pE;
+  const _matcher = (arr, periods) => (i) => {
+    if (!periodMode) return { value: arr[i] != null ? arr[i] : null, period: null, index: i };
+    if (!periods) return null;                       // Periode unbekannt
+    const pe = pE[i];
+    const y = _secPeriodYear(pe);
+    for (let j = 0; j < arr.length && j < periods.length; j++) {
+      if (arr[j] == null || periods[j] == null) continue;
+      if (_secPeriodYear(periods[j]) !== y) continue;
+      const d = _secPeriodDaysApart(pe, periods[j]);
+      if (d != null && d <= 45) return { value: arr[j], period: periods[j], index: j };
+    }
+    return { value: null, period: null, index: -1 };
+  };
+  // Bestandsgroessen ohne eigene Perioden bleiben im Positionsbezug (wie
+  // bisher); fuer das Leasing gilt das nicht (siehe oben).
+  const _stock = (arr, k) => {
+    const p = _per(k);
+    if (periodMode && !p) return (i) => ({ value: arr[i] != null ? arr[i] : null, period: null, index: i });
+    return _matcher(arr, p);
+  };
+  const mBv = _stock(bv, 'book_value'), mTd = _stock(td, 'total_debt');
+  const mCash = f.cash_and_equivalents ? _stock(cash, 'cash_and_equivalents') : _stock(cash, 'cash');
+  const pO = _per('operating_lease_liabilities');
+  const mOll = _matcher(oll, pO);
+
   const roicsReported = [];
   const roicsLease = [];
+  const rows = [];
   for (let i = 0; i < horizon; i++) {
-    if (ebit[i] == null || bv[i] == null || td[i] == null) continue;
-    const cashI = cash[i] != null ? cash[i] : 0;
-    const investedReported = bv[i] + td[i] - cashI;
+    if (ebit[i] == null) continue;
+    const b = mBv(i), t = mTd(i);
+    if (!b || !t || b.value == null || t.value == null) continue;
+    const c = mCash(i);
+    const cashI = c && c.value != null ? c.value : 0;
+    const investedReported = b.value + t.value - cashI;
     if (investedReported <= 0) continue;
     const nopat = ebit[i] * (1 - taxRate / 100);
     roicsReported.push((nopat / investedReported) * 100);
-    // Lease-adjusted: OLL additiv zum Invested Capital
-    const ollI = oll[i] != null ? oll[i] : 0;
-    const investedLease = investedReported + ollI;
-    if (investedLease > 0) {
-      roicsLease.push((nopat / investedLease) * 100);
+    const o = mOll(i);
+    const row = { index: i, period: periodMode ? pE[i] : null, investedReported, ollValue: null, ollPeriod: null };
+    if (o && o.value != null) {
+      row.ollValue = o.value; row.ollPeriod = o.period;
+      const investedLease = investedReported + o.value;
+      if (investedLease > 0) roicsLease.push((nopat / investedLease) * 100);
+    } else if (!periodMode) {
+      // Altdatenregel (ohne Perioden): wie bisher; fehlendes Leasing = keine Angabe.
+      const investedLease = investedReported;
+      if (oll.length === 0) roicsLease.push((nopat / investedLease) * 100);
     }
+    rows.push(row);
   }
   if (roicsReported.length < 5) {
     return metricInsufficient(roicsReported.length, 5, 'gültige ROIC-Werte (Invested Capital ≤ 0 oder fehlende Felder)');
@@ -11379,16 +11428,35 @@ function computeRoicMinusWacc(mj) {
   const spreadReported = medReported - wacc;
 
   // Lease-Materialitäts-Check: OLL > 20% des reported invested capital
-  // _hasLease: nur wenn echte OLL-Werte > 0 vorhanden (nicht nur 0-Fallbacks aus leerer oll-Array)
+  // V1.0.71: am juengsten Jahr MIT periodengleichem Leasing, nicht an oll[0].
   const _ollHasValues = oll.some(v => v != null && v > 0);
-  const _hasLease = _ollHasValues && roicsLease.length >= 5;
-  const _ollMaterial = (() => {
-    if (!_hasLease || !oll[0] || !bv[0] || !td[0]) return false;
-    const cashI0 = cash[0] != null ? cash[0] : 0;
-    const ic0 = bv[0] + td[0] - cashI0;
-    return ic0 > 0 && oll[0] / ic0 > 0.20;
-  })();
+  const _leaseRows = rows.filter(r => r.ollValue != null);
+  const _latestRow = rows[0] || null;
+  const _latestHasLease = !!(_latestRow && _latestRow.ollValue != null);
+  const _latestLeaseRow = _leaseRows[0] || null;
+  const _ollMaterial = !!(_latestLeaseRow && _latestLeaseRow.investedReported > 0 &&
+    _latestLeaseRow.ollValue / _latestLeaseRow.investedReported > 0.20);
+  const _hasLease = _ollHasValues && roicsLease.length >= 5 && (!periodMode || _latestHasLease);
   const _preferLeaseAdj = _hasLease && (_ollMaterial || subClass === 'retail');
+
+  // V1.0.71 (D2/F-5): Leasing ist beim Unternehmen belegt und nach der
+  // bestehenden Regel massgeblich (Einzelhandel oder wesentlich), fuer das
+  // juengste Jahr aber nicht periodengleich gemeldet → keine Bewertung aus
+  // dem unbereinigten ROIC, sondern ein benannter Grund.
+  if (periodMode && _ollHasValues && !_latestHasLease && (_ollMaterial || subClass === 'retail')) {
+    const lastOll = (pO || []).find((p, j) => p != null && oll[j] != null) || null;
+    const res = metricInsufficient(roicsLease.length, 5,
+      `Operating-Leasing für ${_latestRow ? _latestRow.period : 'das jüngste Jahr'} nicht periodengleich gemeldet`
+      + (lastOll ? ` (letzte Angabe ${lastOll})` : '') + ' — Leasingbereinigung nach Regel erforderlich'
+      + (subClass === 'retail' ? ' (retail)' : ' (wesentlich)') + ', unbereinigter ROIC nicht bewertbar');
+    res.roicReported = medReported;
+    res.roicReportedMinusWacc = spreadReported;
+    res._leaseAdjusted = false;
+    res._leaseMaterial = _ollMaterial;
+    res._leaseMissingForPeriod = _latestRow ? _latestRow.period : null;
+    res._leasePairs = _leaseRows.map(r => ({ ebitPeriod: r.period, leasePeriod: r.ollPeriod }));
+    return res;
+  }
 
   let detail;
   let resultMetric;
@@ -11396,6 +11464,7 @@ function computeRoicMinusWacc(mj) {
     const medLease = _median(roicsLease);
     const spreadLease = medLease - wacc;
     detail = `ROIC-reported (${roicsReported.length}y) = ${medReported.toFixed(1)}% · ROIC-lease-adj = ${medLease.toFixed(1)}% · WACC = ${wacc.toFixed(1)}% · Spread (lease-adj) = ${spreadLease >= 0 ? '+' : ''}${spreadLease.toFixed(1)}pp`;
+    if (roicsLease.length < roicsReported.length) detail += ` · Leasing nur für ${roicsLease.length} von ${roicsReported.length} Jahren periodengleich`;
     if (_ollMaterial) detail += ' · ⚠ Lease adjustment materially lowers ROIC';
     resultMetric = metricOk(spreadLease, detail, roicsLease.length, 5);
     // Zusätzliche Felder für UI
@@ -11407,7 +11476,8 @@ function computeRoicMinusWacc(mj) {
     resultMetric._leaseAdjusted = true;
   } else {
     detail = `ROIC-Median (${roicsReported.length}y) = ${medReported.toFixed(1)}% · WACC = ${wacc.toFixed(1)}% · Spread = ${spreadReported >= 0 ? '+' : ''}${spreadReported.toFixed(1)}pp`;
-    if (!_hasLease) detail += ' · not lease-adjusted — operating lease liabilities unavailable';
+    if (!_ollHasValues) detail += ' · not lease-adjusted — operating lease liabilities unavailable';
+    else if (periodMode && !_latestHasLease) detail += ` · nicht leasingbereinigt — Operating-Leasing für ${_latestRow ? _latestRow.period : 'das jüngste Jahr'} nicht periodengleich gemeldet`;
     resultMetric = metricOk(spreadReported, detail, roicsReported.length, 5);
     resultMetric.roicReported = medReported;
     resultMetric.roicReportedMinusWacc = spreadReported;
@@ -11419,6 +11489,7 @@ function computeRoicMinusWacc(mj) {
       resultMetric.roicLeaseAdjustedMinusWacc = medLease - wacc;
     }
   }
+  resultMetric._leasePairs = _leaseRows.map(r => ({ ebitPeriod: r.period, leasePeriod: r.ollPeriod }));
   return resultMetric;
 }
 
@@ -30234,18 +30305,34 @@ function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
     const _ollC  = f.operating_lease_liability_current;
     const _ollNC = f.operating_lease_liability_noncurrent;
     if ((!_ollDirect || !_ollDirect[0]) && _ollC && _ollNC && _ollC[0] != null && _ollNC[0] != null) {
-      const _len = Math.max(_ollC.length, _ollNC.length);
-      f.operating_lease_liabilities = Array.from({ length: _len }, (_, i) => {
-        const c = _ollC[i] != null ? _ollC[i] : 0;
-        const nc = _ollNC[i] != null ? _ollNC[i] : 0;
-        return (_ollC[i] != null || _ollNC[i] != null) ? c + nc : null;
-      });
+      // V1.0.71 (D2/F-5): Beide Teile desselben Stichtags addieren (nicht per
+      // Position); nur Stichtage mit beiden Teilen. Ohne Perioden wie bisher.
+      const _pC = f._v4_meta && f._v4_meta.operating_lease_liability_current && f._v4_meta.operating_lease_liability_current.periods;
+      const _pN = f._v4_meta && f._v4_meta.operating_lease_liability_noncurrent && f._v4_meta.operating_lease_liability_noncurrent.periods;
+      let _vals, _periods = null;
+      if (Array.isArray(_pC) && Array.isArray(_pN)) {
+        _vals = []; _periods = [];
+        for (let i = 0; i < _ollC.length && i < _pC.length; i++) {
+          const j = _pN.indexOf(_pC[i]);
+          if (_ollC[i] == null || j < 0 || _ollNC[j] == null) continue;
+          _vals.push(_ollC[i] + _ollNC[j]); _periods.push(_pC[i]);
+        }
+      } else {
+        const _len = Math.max(_ollC.length, _ollNC.length);
+        _vals = Array.from({ length: _len }, (_, i) => {
+          const c = _ollC[i] != null ? _ollC[i] : 0;
+          const nc = _ollNC[i] != null ? _ollNC[i] : 0;
+          return (_ollC[i] != null || _ollNC[i] != null) ? c + nc : null;
+        });
+      }
+      f.operating_lease_liabilities = _vals;
       if (!f._v4_meta) f._v4_meta = {};
       f._v4_meta['operating_lease_liabilities'] = {
         source_type: 'derived',
         source_reference: 'SEC EDGAR XBRL: component-based (OLLCurrent+OLLNoncurrent)',
         confidence: 'high',
-        notes: `Aus Current+Noncurrent berechnet · ${_len} Jahre`
+        notes: `Aus Current+Noncurrent berechnet · ${_vals.length} Jahre` + (_periods ? ' · je Stichtag' : ' · ohne Perioden (Positionsbezug)'),
+        periods: _periods
       };
     }
   }

@@ -30,13 +30,29 @@ const SETS = {
     'OperatingIncomeLoss', 'Revenues',
     'WeightedAverageNumberOfDilutedSharesOutstanding', 'WeightedAverageNumberOfSharesOutstandingBasic',
     'EarningsPerShareDiluted', 'EarningsPerShareBasic', 'NetIncomeLoss',
-    'OperatingLeaseLiability', 'StockholdersEquity', 'LongTermDebt'] },
+    'OperatingLeaseLiability', 'StockholdersEquity', 'LongTermDebt',
+    // Bilanz: Liquiditaet, Schulden, Leasing, Eigenkapital (F-5, Net Debt/EBITDA)
+    'CashAndCashEquivalentsAtCarryingValue', 'LongTermDebtNoncurrent', 'LongTermDebtCurrent',
+    'ShortTermBorrowings', 'CommercialPaper', 'DebtCurrent', 'LongTermDebtAndCapitalLeaseObligations',
+    'FinanceLeaseLiabilityCurrent', 'FinanceLeaseLiabilityNoncurrent',
+    'OperatingLeaseLiabilityCurrent', 'OperatingLeaseLiabilityNoncurrent',
+    'Assets', 'Liabilities', 'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest',
+    'InterestExpense'] },
   jnj: { cik: 'CIK0000200406', tags: [
     'RevenueFromContractWithCustomerExcludingAssessedTax',
     'DepreciationDepletionAndAmortization', 'DepreciationAndAmortization', 'Depreciation',
     'CommonStockDividendsPerShareCashPaid', 'CommonStockDividendsPerShareDeclared',
     'CashAndCashEquivalentsAtCarryingValue',
-    'EarningsPerShareDiluted', 'WeightedAverageNumberOfDilutedSharesOutstanding', 'NetIncomeLoss'] }
+    'EarningsPerShareDiluted', 'WeightedAverageNumberOfDilutedSharesOutstanding', 'NetIncomeLoss',
+    'OperatingLeaseLiability', 'StockholdersEquity', 'LongTermDebt',
+    // Bilanz: Liquiditaet, Schulden, Leasing, Eigenkapital (F-5, Net Debt/EBITDA)
+    'CashAndCashEquivalentsAtCarryingValue', 'LongTermDebtNoncurrent', 'LongTermDebtCurrent',
+    'ShortTermBorrowings', 'CommercialPaper', 'DebtCurrent', 'LongTermDebtAndCapitalLeaseObligations',
+    'FinanceLeaseLiabilityCurrent', 'FinanceLeaseLiabilityNoncurrent',
+    'OperatingLeaseLiabilityCurrent', 'OperatingLeaseLiabilityNoncurrent',
+    'Assets', 'Liabilities', 'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest',
+    'IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest',
+    'InterestExpense', 'InterestExpenseNonoperating', 'InvestmentIncomeInterest'] }
 };
 
 const manifestPath = join(CACHE, 'manifest.json');
