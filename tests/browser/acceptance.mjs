@@ -613,6 +613,53 @@ async function main() {
     }
 
     // ══════════════════════════════════════════════════════════════════════
+    sec('9 · D2-Nachbesserung: Leasing-ROIC und Net Debt/EBITDA (V1.0.72)');
+    for (const n of [4, 1]) {
+      const status = await importViaUi(FX.roicLeaseMj(n));
+      if (!check(`ROIC ${n} Leasingjahr(e): Import`, /Import OK/.test(status), status)) continue;
+      const q = await tab('quality');
+      check(`ROIC ${n} Leasingjahr(e): Qualitaet nennt die Datenluecke`,
+        new RegExp('ROIC − WACC[\\s\\S]*nur für ' + n + ' von 6 Jahren periodengleich gemeldet \\(mindestens 5 erforderlich\\)').test(q), q.slice(0, 4000));
+      check(`ROIC ${n} Leasingjahr(e): kein Spread +7.0pp angezeigt`, !/\+7\.0pp/.test(q), q.slice(0, 4000));
+      const st = await ev(`(() => { const d = state.quality.descriptive.roicMinusWacc; const c = computeQualityCapitalEfficiencyScore(state.quality, state.masterJson).components.find(x => x.key === 'roicSpread'); return { s: d.status, v: d.value, ca: c.available, cs: c.score }; })()`);
+      check(`ROIC ${n} Leasingjahr(e): Zustand gesperrt, kein Score`, st.s === 'insufficient_data' && st.v == null && st.ca === false && st.cs == null, JSON.stringify(st));
+    }
+    {
+      const status = await importViaUi(FX.roicLeaseMj(5));
+      check('ROIC 5 Leasingjahre (Gegenprobe): Import', /Import OK/.test(status), status);
+      const q = await tab('quality');
+      check('ROIC 5 Leasingjahre: bereinigter Spread +2.0pp sichtbar', /\+2\.0pp/.test(q) && /lease-adj/.test(q), q.slice(0, 4000));
+    }
+    for (const c of [
+      { tag: 'A', nd: ['2025-12-31'], eb: [null], why: /EBITDA fuehrt Periodenangaben, belegt aber kein lesbares Periodenende/ },
+      { tag: 'B', nd: undefined, eb: ['n/a'], why: /EBITDA fuehrt Periodenangaben/ },
+      { tag: 'C', nd: [null], eb: ['2025-12-31'], why: /Nettoschulden \(net_debt\[0\]\) fuehren Periodenangaben/ }]) {
+      const status = await importViaUi(FX.leverageMj(c.tag, c.nd, c.eb));
+      if (!check(`ND/EBITDA Fall ${c.tag}: Import`, /Import OK/.test(status), status)) continue;
+      const q = await tab('quality');
+      check(`ND/EBITDA Fall ${c.tag}: Qualitaet zeigt Sperrgrund statt 4.00x`, c.why.test(q) && !/4\.00x/.test(q), q.slice(0, 5000));
+      const o = await tab('overview');
+      check(`ND/EBITDA Fall ${c.tag}: Uebersicht „nicht verfuegbar“ mit Grund`,
+        /Nettoverschuldung zu EBITDA[\s\S]{0,120}nicht verfügbar/.test(o) && c.why.test(o), o.slice(0, 5000));
+      const mc = await ev(`(() => { const m = state.synthesis && state.synthesis.mosComponents; return m ? { r: m._mosLeverageRatio, a: m.leverageAddon, u: m._mosLeverageUnavailable } : null; })()`);
+      check(`ND/EBITDA Fall ${c.tag}: MoS ohne Verhaeltnis und ohne Zuschlag, Grund gespeichert`,
+        mc && mc.r == null && mc.a === 0 && c.why.test(mc.u || ''), JSON.stringify(mc));
+      const val = await tab('valuation');
+      check(`ND/EBITDA Fall ${c.tag}: MoS-Aufschluesselung „Leverage Add-on … nicht bewertbar … n/a“ (nicht „–“)`,
+        /Leverage Add-on \(nicht bewertbar[^\n]*\)\s*n\/a/.test(val) && !/ND\/EBITDA \d/.test(val), val.slice(0, 6000));
+    }
+    {
+      const status = await importViaUi(FX.leverageMj('G', ['2025-12-31'], ['2025-12-31']));
+      check('ND/EBITDA Gegenprobe gueltig datiert: Import', /Import OK/.test(status), status);
+      const q = await tab('quality');
+      check('ND/EBITDA Gegenprobe: 4.00x sichtbar', /4\.00x/.test(q), q.slice(0, 5000));
+      const mc = await ev(`(() => { const m = state.synthesis.mosComponents; return { r: m._mosLeverageRatio, a: m.leverageAddon }; })()`);
+      check('ND/EBITDA Gegenprobe: MoS-Zuschlag +5 pp aus 4.0x', mc.r === 4 && mc.a === 0.05, JSON.stringify(mc));
+      const val = await tab('valuation');
+      check('ND/EBITDA Gegenprobe: Aufschluesselung zeigt ND/EBITDA 4.0x', /ND\/EBITDA 4\.0x/.test(val), val.slice(0, 6000));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
     sec('8 · Abschluss');
     check('keine unbehandelte Ausnahme im gesamten Ablauf', exceptions.length === 0, exceptions.join(' | '));
     const nonFont = external.filter(u => !/^https:\/\/fonts\.(googleapis|gstatic)\.com\//.test(u));

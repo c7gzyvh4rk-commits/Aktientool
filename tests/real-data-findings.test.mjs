@@ -697,3 +697,232 @@ test('P-1 MoS-Leverage-Zuschlag nutzt dieselbe Pruefung (echter Synthesizer-Pfad
   assert.equal(p.leverageAddon, 0);
   assert.match(p._mosLeverageUnavailable, /belastbare Nettoschulden — .*Finance-Leasing offen/);
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// D2-Nachbesserung · N-1 Leasing-ROIC: zu wenige Leasingjahre ⇒ kein Rueckfall
+// ═════════════════════════════════════════════════════════════════════════════
+// Sechs Jahre 2025–2020: EBIT 200, Buchwert 500, Schulden 600, Liquiditaet 100,
+// Steuer 25 %, WACC 8 % ⇒ NOPAT 150, IC 1,000 (ROIC 15 %), mit Leasing 500:
+// IC 1,500, ROIC 10 %, Spread +2 pp.
+const leaseCase = (nLease, sub = 'retail', ollValue = 500) => {
+  const fund = withPeriods(Object.assign(baseFund(), { operating_lease_liabilities: Array(nLease).fill(ollValue) }),
+    { ebit: Y, book_value: Y, total_debt: Y, cash_and_equivalents: Y, operating_lease_liabilities: Y.slice(0, nLease) });
+  return roicMj(fund, sub);
+};
+
+test('N-1 fuenf juengste Leasingjahre: bisheriges Ergebnis 10 % / +2 pp bleibt', () => {
+  const m = S.computeRoicMinusWacc(leaseCase(5));
+  assert.equal(m.status, 'ok');
+  assert.equal(m._leaseAdjusted, true);
+  assert.ok(Math.abs(m.roicLeaseAdjusted - 10) < 1e-9);
+  assert.ok(Math.abs(m.value - 2) < 1e-9);
+});
+
+for (const n of [4, 1]) {
+  test(`N-1 nur ${n} passende(s) Leasingjahr(e) bei erforderlicher Bereinigung: keine bewertbare Ersatzkennzahl`, () => {
+    const m = S.computeRoicMinusWacc(leaseCase(n));
+    assert.equal(m.status, 'insufficient_data');         // Referenzstand: 'ok', 7 pp
+    assert.equal(m.value, null);
+    assert.match(m.detail, new RegExp(`nur für ${n} von 6 Jahren periodengleich gemeldet \\(mindestens 5 erforderlich\\)`));
+    assert.match(m.detail, /Leasingbereinigung nach Regel erforderlich \(retail\)/);
+    // Unbereinigter Wert nur nachrichtlich, getrennt von der Kennzahl.
+    assert.ok(Math.abs(m.informational.roicReported - 15) < 1e-9);
+    assert.equal(m.roicReported, undefined);
+    assert.equal(m.roicReportedMinusWacc, undefined);
+  });
+}
+
+test('N-1 wesentliches Leasing ausserhalb retail: ebenso gesperrt; unwesentliches bleibt unbereinigt bewertbar', () => {
+  const m = S.computeRoicMinusWacc(leaseCase(4, 'standard_nonfin', 500));   // 500 / 1,000 = 50 % > 20 %
+  assert.equal(m.status, 'insufficient_data');
+  assert.match(m.detail, /\(wesentlich\)/);
+  // 100 / 1,000 = 10 %: keine Bereinigungspflicht nach bestehender Regel.
+  const k = S.computeRoicMinusWacc(leaseCase(4, 'standard_nonfin', 100));
+  assert.equal(k.status, 'ok');
+  assert.equal(k._leaseAdjusted, false);
+  assert.ok(Math.abs(k.value - 7) < 1e-9);
+});
+
+test('N-1 fehlende juengste Leasingperiode bleibt gesperrt; metadatenfreie Altdaten nach bisheriger Regel', () => {
+  const fund = withPeriods(Object.assign(baseFund(), { operating_lease_liabilities: Array(5).fill(500) }),
+    { ebit: Y, book_value: Y, total_debt: Y, cash_and_equivalents: Y, operating_lease_liabilities: Y.slice(1) });
+  const m = S.computeRoicMinusWacc(roicMj(fund));
+  assert.equal(m.status, 'insufficient_data');
+  assert.equal(m._leaseMissingForPeriod, '2025-12-31');
+  // Altdaten ohne jede Periode, vier Leasingwerte: unveraendert (Referenzstand: ok, 15 %).
+  const legacy = Object.assign(baseFund(), { operating_lease_liabilities: [500, 500, 500, 500] });
+  const l = S.computeRoicMinusWacc(roicMj(legacy));
+  assert.equal(l.status, 'ok');
+  assert.ok(Math.abs(l.value - 7) < 1e-9);
+});
+
+test('N-1 Qualitaetsauswertung uebernimmt keinen Score aus der gesperrten Kennzahl', () => {
+  const mj = leaseCase(4);
+  mj.fundamentals.revenue = [1000, 1000, 1000, 1000, 1000, 1000];
+  const qr = S.runQualityEngine(mj);
+  assert.equal(qr.descriptive.roicMinusWacc.status, 'insufficient_data');
+  const qce = S.computeQualityCapitalEfficiencyScore(qr, mj);
+  const c = qce.components.find(x => x.key === 'roicSpread');
+  assert.equal(c.available, false);
+  assert.equal(c.score, null);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// D2-Nachbesserung · N-2 Net Debt/EBITDA: jede Periodenangabe fuer sich pruefen
+// ═════════════════════════════════════════════════════════════════════════════
+const ndCase = (ndPeriods, ebPeriods, extra) => {
+  const f = Object.assign({ net_debt: [900], ebitda: [250], _v4_meta: {} }, extra || {});
+  if (ndPeriods !== undefined) f._v4_meta.net_debt = { periods: ndPeriods };
+  if (ebPeriods !== undefined) f._v4_meta.ebitda = { periods: ebPeriods };
+  return S.computeNetDebtToEbitda({ meta: {}, market: {}, valuation: {}, fundamentals: f });
+};
+const BAD = [[null], ['n/a'], []];
+
+test('N-2 ungueltige Nettoschulden-Perioden gegen datierte oder metadatenfreie EBITDA-Seite', () => {
+  for (const bad of BAD) {
+    for (const other of [['2025-12-31'], undefined]) {
+      const m = ndCase(bad, other);
+      assert.equal(m.status, 'insufficient_data', `net_debt ${JSON.stringify(bad)} / ebitda ${JSON.stringify(other)}`);
+      assert.match(m.detail, /Nettoschulden \(net_debt\[0\]\) fuehren Periodenangaben/);
+    }
+  }
+});
+
+test('N-2 ungueltige EBITDA-Perioden gegen datierte oder metadatenfreie Nettoschulden-Seite', () => {
+  for (const bad of BAD) {
+    for (const other of [['2025-12-31'], undefined]) {
+      const m = ndCase(other, bad);
+      assert.equal(m.status, 'insufficient_data', `net_debt ${JSON.stringify(other)} / ebitda ${JSON.stringify(bad)}`);
+      assert.match(m.detail, /EBITDA fuehrt Periodenangaben, belegt aber kein lesbares Periodenende/);
+    }
+  }
+});
+
+test('N-2 gueltige, unvereinbare und fehlende Perioden; Altdaten beidseitig metadatenfrei', () => {
+  const ok = ndCase(['2025-12-31'], ['2025-12-31']);
+  assert.equal(ok.status, 'ok');
+  assert.ok(Math.abs(ok.value - 3.6) < 1e-12);
+  const off = ndCase(['2024-12-31'], ['2025-12-31']);
+  assert.equal(off.status, 'insufficient_data');
+  assert.match(off.detail, /nicht zum selben Geschaeftsjahr/);
+  const free = ndCase(undefined, undefined);
+  assert.equal(free.status, 'ok');
+  assert.ok(Math.abs(free.value - 3.6) < 1e-12);
+});
+
+test('N-2 massgeblich ist die tatsaechlich gewaehlte Quelle (direkt bzw. Schulden − Liquiditaet)', () => {
+  // Direktes net_debt ohne Metadaten: ein datiertes, aber UNBENUTZTES total_debt liefert keinen Stichtag.
+  const unused = ndCase(undefined, ['2025-12-31'], { total_debt: [1150], cash_and_equivalents: [250] });
+  assert.equal(unused.status, 'ok');
+  assert.match(unused.detail, /Quelle: net_debt\[0\]/);
+  // Schulden − Liquiditaet periodengleich: zulaessig.
+  const P = (p) => ({ periods: [p] });
+  const tdc = S.computeNetDebtToEbitda({ meta: {}, market: {}, valuation: {}, fundamentals: {
+    ebitda: [250], total_debt: [1150], cash_and_equivalents: [250],
+    _v4_meta: { ebitda: P('2025-12-31'), total_debt: P('2025-12-31'), cash_and_equivalents: P('2025-12-31') } } });
+  assert.equal(tdc.status, 'ok');
+  assert.ok(Math.abs(tdc.value - 3.6) < 1e-12);
+  // Schulden und Liquiditaet mit ausdruecklich leeren Perioden: keine Altdaten.
+  const empty = S.computeNetDebtToEbitda({ meta: {}, market: {}, valuation: {}, fundamentals: {
+    ebitda: [250], total_debt: [1150], cash_and_equivalents: [250],
+    _v4_meta: { ebitda: P('2025-12-31'), total_debt: P(null), cash_and_equivalents: P(null) } } });
+  assert.equal(empty.status, 'insufficient_data');
+  // Metadatenfreie manuelle Altdaten (Schulden − Liquiditaet): bestehende Ausnahme.
+  const legacy = S.computeNetDebtToEbitda({ meta: {}, market: {}, valuation: {}, fundamentals: {
+    ebitda: [250], total_debt: [1150], cash_and_equivalents: [250] } });
+  assert.equal(legacy.status, 'ok');
+});
+
+test('N-2 echter Synthesizer-Pfad: kein Leverage-Verhaeltnis und kein Zuschlag aus unbelegter Periode', () => {
+  const CFG = evalInApp('SYNTHESIS_CONFIG');
+  const mj = {
+    meta: { ticker: 'LEV', sub_classification: 'standard_nonfin' },
+    fundamentals: { revenue: [1000, 1000, 1000, 1000, 1000, 1000],
+      ebit: [300, 300, 300, 300, 300, 300], ebitda: [350, 350, 350, 350, 350, 350],
+      capex: [50, 50, 50, 50, 50, 50], cfo: [260, 260, 260, 260, 260, 260],
+      net_income: [200, 200, 200, 200, 200, 200], eps_diluted: [2, 2, 2, 2, 2, 2],
+      dps: [1, 0.95, 0.9, 0.86, 0.82, 0.78], book_value: [1500, 1450, 1400, 1350, 1300, 1250],
+      shares_diluted: [100, 100, 100, 100, 100, 100], net_debt: [1400],
+      _v4_meta: { net_debt: { periods: ['2025-12-31'] }, ebitda: { periods: [null] } } },
+    valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false }, cost_of_equity: 9,
+      wacc_derived: 10, growth_terminal: 2, growth_stage1: 5 },
+    market: { price: 20 } };
+  const v = S.runValuationEngine(mj);
+  const mc = S.runFairValueSynthesizer(mj, v, S.runQualityEngine(mj),
+    Object.assign({}, CFG, { _dqResult: S.computeDataQualityScore(mj) })).mosComponents;
+  assert.equal(mc._mosLeverageRatio, null);                 // Referenzstand: 4.0 und +5 pp
+  assert.equal(mc.leverageAddon, 0);
+  assert.match(mc._mosLeverageUnavailable, /EBITDA fuehrt Periodenangaben, belegt aber kein lesbares Periodenende \(leer/);
+  // Kein Anschein geringer Verschuldung: kein Verhaeltnis, Grund benannt.
+  assert.ok(!/ND\/EBITDA/.test(String(mc._mosLeverageUnavailable)));
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// D2-Nachbesserung · N-3 Eroeffnungsstichtag (ASC 842) ist kein Vorjahresende
+// ═════════════════════════════════════════════════════════════════════════════
+test('N-3 MCD real: Leasing zum 2019-01-01 wird nicht mit EBIT FY2018 verknuepft', () => {
+  // Unabhaengiger Quellennachweis (Rohfakten, ohne Produkt-Hilfsfunktionen):
+  const raw = (tag) => MCD['us-gaap'][tag].units.USD;
+  const k10fy19 = '0000063908-20-000022';
+  const cur18 = raw('OperatingLeaseLiabilityCurrent').find(e => e.accn === k10fy19 && e.end === '2018-12-31');
+  const non18 = raw('OperatingLeaseLiabilityNoncurrent').find(e => e.accn === k10fy19 && e.end === '2018-12-31');
+  const open19 = raw('OperatingLeaseLiability').find(e => e.accn === k10fy19 && e.end === '2019-01-01');
+  assert.equal(cur18.val, 0);                 // Jahresende FY2018: im selben 10-K 0 (vor ASC 842)
+  assert.equal(non18.val, 0);
+  assert.equal(open19.val, 12500e6);          // Einfuehrungswert zum 2019-01-01
+  const fy19 = raw('OperatingIncomeLoss').find(e => e.form === '10-K' && e.end === '2019-12-31' && e.start);
+  assert.equal(fy19.start, '2019-01-01');     // 2019-01-01 ist der BEGINN von FY2019
+
+  const { mj } = importFacts(MCD, 'MCD');
+  mj.meta.sub_classification = 'retail';
+  mj.valuation = Object.assign(mj.valuation || {}, { wacc_derived: 7, wacc_components: { tax_rate: 21 } });
+  const m = S.computeRoicMinusWacc(mj);
+  // Zulaessig sind nur Paare mit identischem Stichtag (String-Vergleich, keine Jahreshilfe).
+  assert.ok(m._leasePairs.length >= 5);
+  for (const p of m._leasePairs) assert.equal(p.leasePeriod, p.ebitPeriod);
+  assert.ok(!m._leasePairs.some(p => p.leasePeriod === '2019-01-01'));
+  assert.deepEqual(plain(m._openingBalanceExcluded.filter(x => x.field === 'operating_lease_liabilities')
+    .map(x => [x.ebitPeriod, x.stockPeriod])), [['2018-12-31', '2019-01-01']]);
+});
+
+test('N-3 synthetisch: getrennter Jahresend- und Eroeffnungsbestand — der Endbestand zaehlt', () => {
+  // Kalenderjahre 2018–2023; Leasing zum 2018-12-31 = 300 (Endbestand) und zum
+  // 2019-01-01 = 900 (Eroeffnung nach Standardwechsel), in dieser Reihenfolge gemeldet.
+  const ends = ['2023-12-31', '2022-12-31', '2021-12-31', '2020-12-31', '2019-12-31', '2018-12-31'];
+  const starts = ends.map(e => e.slice(0, 4) + '-01-01');
+  const fund = Object.assign(baseFund(), {
+    operating_lease_liabilities: [500, 500, 500, 500, 500, 900, 300] });
+  fund._v4_meta = { ebit: { periods: ends, starts }, book_value: { periods: ends }, total_debt: { periods: ends },
+    cash_and_equivalents: { periods: ends },
+    operating_lease_liabilities: { periods: ends.slice(0, 5).concat(['2019-01-01', '2018-12-31']) } };
+  const m = S.computeRoicMinusWacc(roicMj(fund));
+  const p18 = m._leasePairs.find(p => p.ebitPeriod === '2018-12-31');
+  assert.equal(p18.leasePeriod, '2018-12-31');            // Referenzstand: 2019-01-01 (900)
+  // Median-Nachweis: fuenf Jahre 150/1,500 = 10 %, FY2018 150/1,300 = 11.54 % ⇒ Median 10 %.
+  assert.ok(Math.abs(m.roicLeaseAdjusted - 10) < 1e-9);
+
+  // Echter Extraktionsweg: beide Stichtage im selben Geschaeftsjahr-Schluessel.
+  const facts = factsOf({ OperatingLeaseLiability: [
+    { end: '2018-12-31', val: 300e6, form: '10-K', filed: '2019-02-20', accn: 'K18', fy: 2018, fp: 'FY' },
+    { end: '2019-01-01', val: 900e6, form: '10-K', filed: '2020-02-20', accn: 'K19', fy: 2019, fp: 'FY' },
+    { end: '2019-12-31', val: 950e6, form: '10-K', filed: '2020-02-20', accn: 'K19', fy: 2019, fp: 'FY' }] });
+  const r = S._extractFyValues(facts, 'OperatingLeaseLiability', 10);
+  assert.deepEqual(plain(r.meta.periods), ['2019-12-31', '2018-12-31']);   // Referenzstand: 2019-01-01
+  assert.deepEqual(plain(r.values), [950, 300]);
+});
+
+test('N-3 JNJ: 52/53-Wochen-Ende 2023-01-01 ist Periodenende und bleibt gueltig', () => {
+  // EBIT synthetisch auf JNJs echten Perioden (mit Beginn), Bestand genau zu diesen Enden.
+  const da = ex(JNJ, 'da');
+  const ends = plain(da.meta.periods).slice(0, 6), starts = plain(da.meta.starts).slice(0, 6);
+  assert.equal(ends[3], '2023-01-01');
+  const fund = Object.assign(baseFund(), { operating_lease_liabilities: Array(6).fill(500) });
+  fund._v4_meta = { ebit: { periods: ends, starts }, book_value: { periods: ends }, total_debt: { periods: ends },
+    cash_and_equivalents: { periods: ends }, operating_lease_liabilities: { periods: ends } };
+  const m = S.computeRoicMinusWacc(roicMj(fund));
+  assert.equal(m.status, 'ok');
+  assert.deepEqual(plain(m._leasePairs.map(p => p.leasePeriod)), ends);
+  assert.deepEqual(plain(m._openingBalanceExcluded || []), []);
+  // Wiederhergestellte Historie bleibt (F-2).
+  assert.deepEqual(plain(ex(JNJ, 'revenue').meta.fiscalYears), [2025, 2024, 2023, 2022, 2021, 2020, 2019, 2018, 2017, 2016]);
+});

@@ -79,6 +79,13 @@ Git-Commit (mit Hinweis, falls der Arbeitsbaum lokale Aenderungen hat).
    Basiswechsel auf geladenem Ergebnis → „Neu rechnen" → Export (Snapshots
    und Master-JSON als Datei) → ungueltige Importe → Loeschen und
    Re-Import → Override rund um einen geloeschten Snapshot.
+9. D2-Nachbesserung (V1.0.72): Leasing-ROIC mit 4 bzw. 1 passenden
+   Leasingjahren (Qualitaet nennt die Datenluecke, kein Score, kein +7.0pp;
+   Gegenprobe 5 Jahre +2.0pp) sowie Net Debt/EBITDA mit ungueltiger
+   Periodenangabe auf einer Seite (Faelle a–c): Qualitaet und Uebersicht mit
+   Sperrgrund, MoS ohne Verhaeltnis und Zuschlag, Aufschluesselung
+   „Leverage Add-on (nicht bewertbar …) n/a“; Gegenprobe gueltig datiert 4.00x
+   und +5 pp. Am Stand `8fa2492` schlagen die 18 Fehlerfall-Pruefungen fehl.
 
 Ausdruecklich markierte **Zustandseingriffe** (statt Bedienung): Schritt 6b
 (Altbestand mit Angriffs-ID direkt in `localStorage`, weil der Import solche

@@ -86,14 +86,25 @@ const jnj = importFacts(JNJ);
 }
 
 // F-5 · MCD: EBIT 2025 nicht mit Leasing zum 2023-12-31 verknuepft.
+// Seit der D2-Nachbesserung unabhaengig von der Jahreszuordnung des Produkts
+// (_secPeriodYear) geprueft: Zulaessig ist ein Paar nur mit IDENTISCHEM
+// Stichtag; kein Leasingstichtag darf der Beginn einer EBIT-Geschaeftsperiode
+// sein (Eroeffnungsbestand, z. B. ASC 842 zum 2019-01-01). Die Periodenanfaenge
+// stammen direkt aus den Rohfakten des Auszugs.
 {
   mcd.meta.sub_classification = 'retail';
   mcd.valuation = Object.assign(mcd.valuation || {}, { wacc_derived: 7, wacc_components: { tax_rate: 21 } });
   const m = S.computeRoicMinusWacc(mcd);
   const pairs = m._leasePairs || [];
-  const cross = pairs.some(p => S._secPeriodYear(p.leasePeriod) !== S._secPeriodYear(p.ebitPeriod));
-  report('F-5', cross || m._leaseAdjusted === true,
-    `ROIC: ${m.status} · ${m.detail} · Leasingpaare ${pairs.map(p => p.ebitPeriod + '↔' + p.leasePeriod).join(', ') || '—'}`);
+  const ebitStarts = new Set(MCD['us-gaap'].OperatingIncomeLoss.units.USD
+    .filter(e => e.form === '10-K' && e.start && e.end && (Date.parse(e.end) - Date.parse(e.start)) / 864e5 > 330)
+    .map(e => e.start));
+  const notSameDate = pairs.filter(p => p.leasePeriod !== p.ebitPeriod);
+  const opening = pairs.filter(p => ebitStarts.has(p.leasePeriod));
+  report('F-5', notSameDate.length > 0 || opening.length > 0 || m._leaseAdjusted === true || m.status === 'ok',
+    `ROIC: ${m.status} · ${m.detail} · Leasingpaare ${pairs.map(p => p.ebitPeriod + '↔' + p.leasePeriod).join(', ') || '—'}`
+    + ` · abweichender Stichtag: ${notSameDate.length} · Eroeffnungsstichtage gepaart: ${opening.length}`
+    + ` · ausgeschlossen: ${(m._openingBalanceExcluded || []).map(x => x.ebitPeriod + '↔' + x.stockPeriod).join(', ') || '—'}`);
 }
 
 // P-1 · MCD: Net Debt/EBITDA nicht aus einem Schulden-Teilbetrag.

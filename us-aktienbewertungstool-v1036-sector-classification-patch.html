@@ -11299,6 +11299,53 @@ function computeInterestCoverage(mj) {
   return metricOk(cov, `EBIT / |Interest| = ${cov.toFixed(2)}x · ${interp}`, 1, 1);
 }
 
+// V1.0.72 (D2-Nachbesserung): Periodennachweis fuer Net Debt / EBITDA.
+// nd = Ergebnis von _resolveNetDebtForDcfBridge. Rueckgabe
+// { ok, reason, ndPeriod, ebPeriod }.
+function _netDebtEbitdaPeriodCheck(f, nd) {
+  const meta = (f && f._v4_meta) || {};
+  const claims = (k) => !!(meta[k] && Array.isArray(meta[k].periods));
+  const p0 = (k) => (claims(k) && meta[k].periods.length > 0) ? meta[k].periods[0] : null;
+  const readable = (p) => typeof p === 'string' && parseIsoDate(p) != null;
+  const shown = (p) => (p == null ? 'leer' : String(p));
+  const cashField = (Array.isArray(f.cash_and_equivalents) && f.cash_and_equivalents.length > 0)
+    ? 'cash_and_equivalents' : 'cash';
+
+  // Nettoschulden-Seite: nur die Felder der gewaehlten Quelle.
+  let ndFields, ndPeriod;
+  if (nd.source === 'net_debt[0]') {
+    ndFields = ['net_debt']; ndPeriod = p0('net_debt');
+  } else if (nd.period != null) {
+    ndFields = ['total_debt', cashField]; ndPeriod = nd.period;   // Periode der Verknuepfung
+  } else {
+    ndFields = ['total_debt', cashField]; ndPeriod = null;        // Indexpfad (Altdaten)
+  }
+  const ndCtx = ndFields.some(k => claims(k) ||
+    ((typeof _seriesHasPeriodContext === 'function') && _seriesHasPeriodContext(f, k))) || nd.period != null;
+  const ebCtx = claims('ebitda') ||
+    ((typeof _seriesHasPeriodContext === 'function') && _seriesHasPeriodContext(f, 'ebitda'));
+  const ebPeriod = p0('ebitda');
+  const ndOk = readable(ndPeriod), ebOk = readable(ebPeriod);
+  const note = ' — kein gueltiges Kalenderdatum im Format JJJJ-MM-TT';
+
+  if (ndCtx && !ndOk) {
+    return { ok: false, ndPeriod, ebPeriod, reason: 'Nettoschulden (' + nd.source + ') fuehren Periodenangaben, '
+      + 'belegen aber keinen lesbaren Stichtag (' + shown(ndPeriod) + note + ')' };
+  }
+  if (ebCtx && !ebOk) {
+    return { ok: false, ndPeriod, ebPeriod, reason: 'EBITDA fuehrt Periodenangaben, belegt aber kein lesbares '
+      + 'Periodenende (' + shown(ebPeriod) + note + ')' };
+  }
+  if (ndOk && ebOk) {
+    const d = _secPeriodDaysApart(ndPeriod, ebPeriod);
+    if (_secPeriodYear(ndPeriod) !== _secPeriodYear(ebPeriod) || d == null || d > 45) {
+      return { ok: false, ndPeriod, ebPeriod, reason: `Nettoschulden (${ndPeriod}) und EBITDA (bis ${ebPeriod}) `
+        + 'gehoeren nicht zum selben Geschaeftsjahr' };
+    }
+  }
+  return { ok: true, reason: null, ndPeriod: ndOk ? ndPeriod : null, ebPeriod: ebOk ? ebPeriod : null };
+}
+
 function computeNetDebtToEbitda(mj) {
   const f = mj.fundamentals || {};
   const ebitda = f.ebitda && f.ebitda[0];
@@ -11327,20 +11374,23 @@ function computeNetDebtToEbitda(mj) {
   }
 
   // Periode: Nettoschulden zum Ende desselben Geschaeftsjahres wie das EBITDA.
-  const meta = f._v4_meta || {};
-  const pOf = (k) => (meta[k] && Array.isArray(meta[k].periods) && meta[k].periods[0]) ? meta[k].periods[0] : null;
-  const ndPeriod = nd.period
-    || (nd.source === 'net_debt[0]' ? pOf('net_debt') : pOf('total_debt'));
-  const ebPeriod = pOf('ebitda');
-  if (ndPeriod && ebPeriod) {
-    const d = _secPeriodDaysApart(ndPeriod, ebPeriod);
-    if (_secPeriodYear(ndPeriod) !== _secPeriodYear(ebPeriod) || d == null || d > 45) {
-      const res = metricInsufficient(0, 1, `Nettoschulden (${ndPeriod}) und EBITDA (bis ${ebPeriod}) `
-        + 'gehoeren nicht zum selben Geschaeftsjahr');
-      res._netDebtUnavailable = { missing: ['Periodengleichheit'], reason: 'Periode' };
-      return res;
-    }
+  // V1.0.72 (D2-Nachbesserung): JEDE Seite wird fuer sich geprueft — dieselbe
+  // Regel wie in der EV/EBITDA-Bruecke (_resolveMultiplesEvBridge, V1.0.69/70).
+  // Bis V1.0.71 wurde nur verglichen, wenn BEIDE Seiten ein Datum hatten;
+  // `periods: [null]`, `["n/a"]` oder `[]` auf einer Seite galten dadurch wie
+  // metadatenfreie Altdaten (gemessen: net_debt 900 / EBITDA 250 = 3.60 „ok“).
+  // Fuehrt eine Seite Periodenangaben, muss sie ein gueltiges Kalenderdatum
+  // (JJJJ-MM-TT, parseIsoDate) fuer den TATSAECHLICH verwendeten Betrag
+  // liefern. Massgeblich ist die vom Resolver gewaehlte Quelle; kein Datum
+  // eines unbenutzten Feldes. Nur eine Seite ganz ohne Periodenangaben bleibt
+  // nach der bestehenden Altdatenregel zulaessig.
+  const pc = _netDebtEbitdaPeriodCheck(f, nd);
+  if (!pc.ok) {
+    const res = metricInsufficient(0, 1, pc.reason);
+    res._netDebtUnavailable = { missing: ['Periodennachweis'], reason: pc.reason };
+    return res;
   }
+  const ndPeriod = pc.ndPeriod, ebPeriod = pc.ebPeriod;
 
   const netDebt = nd.netDebtM;
   const ratio = netDebt / ebitda;
@@ -11387,7 +11437,20 @@ function computeRoicMinusWacc(mj) {
   const _per = (k) => (f._v4_meta && f._v4_meta[k] && Array.isArray(f._v4_meta[k].periods)) ? f._v4_meta[k].periods : null;
   const pE = _per('ebit');
   const periodMode = !!pE;
-  const _matcher = (arr, periods) => (i) => {
+  // V1.0.72 (D2-Nachbesserung): Eroeffnungsstichtage sind keine Jahresendbestaende.
+  // Ein Stichtag, an dem eine Geschaeftsperiode des EBIT BEGINNT (und an dem
+  // keine endet), ist der Anfangsbestand des Folgejahres — z. B. der
+  // ASC-842-Einfuehrungswert zum 2019-01-01 (MCD meldet im selben 10-K zum
+  // 2018-12-31 Leasingverbindlichkeiten von 0). Die Regel „Ende 1.–7. Januar
+  // gehoert zum Vorjahr“ (52/53-Wochen-Jahre) und die 45-Tage-Toleranz duerfen
+  // ihn nicht dem Vorjahresende zuordnen. Grundlage sind nur die gemeldeten
+  // Periodenanfaenge und -enden des EBIT; JNJs FY2022-Ende 2023-01-01 ist ein
+  // Periodenende und bleibt gueltig.
+  const sE = (f._v4_meta && f._v4_meta.ebit && Array.isArray(f._v4_meta.ebit.starts)) ? f._v4_meta.ebit.starts : [];
+  const _ebitEnds = new Set((pE || []).filter(Boolean));
+  const _openingDates = new Set(sE.filter(st => st && !_ebitEnds.has(st)));
+  const _openingSkips = [];
+  const _matcher = (arr, periods, field) => (i) => {
     if (!periodMode) return { value: arr[i] != null ? arr[i] : null, period: null, index: i };
     if (!periods) return null;                       // Periode unbekannt
     const pe = pE[i];
@@ -11396,7 +11459,13 @@ function computeRoicMinusWacc(mj) {
       if (arr[j] == null || periods[j] == null) continue;
       if (_secPeriodYear(periods[j]) !== y) continue;
       const d = _secPeriodDaysApart(pe, periods[j]);
-      if (d != null && d <= 45) return { value: arr[j], period: periods[j], index: j };
+      if (d == null || d > 45) continue;
+      if (periods[j] !== pe && _openingDates.has(periods[j])) {
+        _openingSkips.push({ field: field || null, ebitPeriod: pe, stockPeriod: periods[j],
+          reason: 'Eroeffnungsstichtag des Folgejahres (Beginn einer Geschaeftsperiode), kein Endbestand' });
+        continue;
+      }
+      return { value: arr[j], period: periods[j], index: j };
     }
     return { value: null, period: null, index: -1 };
   };
@@ -11405,12 +11474,12 @@ function computeRoicMinusWacc(mj) {
   const _stock = (arr, k) => {
     const p = _per(k);
     if (periodMode && !p) return (i) => ({ value: arr[i] != null ? arr[i] : null, period: null, index: i });
-    return _matcher(arr, p);
+    return _matcher(arr, p, k);
   };
   const mBv = _stock(bv, 'book_value'), mTd = _stock(td, 'total_debt');
   const mCash = f.cash_and_equivalents ? _stock(cash, 'cash_and_equivalents') : _stock(cash, 'cash');
   const pO = _per('operating_lease_liabilities');
-  const mOll = _matcher(oll, pO);
+  const mOll = _matcher(oll, pO, 'operating_lease_liabilities');
 
   const roicsReported = [];
   const roicsLease = [];
@@ -11457,22 +11526,39 @@ function computeRoicMinusWacc(mj) {
   const _hasLease = _ollHasValues && roicsLease.length >= 5 && (!periodMode || _latestHasLease);
   const _preferLeaseAdj = _hasLease && (_ollMaterial || subClass === 'retail');
 
-  // V1.0.71 (D2/F-5): Leasing ist beim Unternehmen belegt und nach der
-  // bestehenden Regel massgeblich (Einzelhandel oder wesentlich), fuer das
-  // juengste Jahr aber nicht periodengleich gemeldet → keine Bewertung aus
-  // dem unbereinigten ROIC, sondern ein benannter Grund.
-  if (periodMode && _ollHasValues && !_latestHasLease && (_ollMaterial || subClass === 'retail')) {
+  // V1.0.71 (D2/F-5) / V1.0.72 (D2-Nachbesserung): Zwei getrennte Fragen.
+  //   1. Ist die Leasingbereinigung nach der bestehenden Regel ERFORDERLICH?
+  //      Leasing ist belegt (_ollHasValues) und retail oder wesentlich
+  //      (> 20 % des investierten Kapitals am juengsten Jahr mit
+  //      periodengleichem Leasing).
+  //   2. Liegen dafuer GENUG periodengleiche Beobachtungen vor? Dieselbe
+  //      Mindesthistorie wie beim ROIC selbst (5 Jahre) und das juengste Jahr.
+  // Bis V1.0.71 fiel „erforderlich, aber zu wenige Leasingjahre“ (z. B. vier
+  // oder eines von sechs) stillschweigend auf den unbereinigten ROIC zurueck:
+  // gemessen Status „ok“, 15 %, Spread +7 pp statt 10 % / +2 pp — ohne Hinweis.
+  // Jetzt: erforderlich, aber nicht erfuellbar ⇒ keine bewertete Kennzahl; der
+  // unbereinigte Wert steht nur nachrichtlich in `informational`.
+  // Periodenfreie Altdaten behalten die bisherige Regel.
+  const _leaseRequired = periodMode && _ollHasValues && (_ollMaterial || subClass === 'retail');
+  if (_leaseRequired && !_preferLeaseAdj) {
     const lastOll = (pO || []).find((p, j) => p != null && oll[j] != null) || null;
+    const why = !_latestHasLease
+      ? `Operating-Leasing für ${_latestRow ? _latestRow.period : 'das jüngste Jahr'} nicht periodengleich gemeldet`
+        + (lastOll ? ` (letzte Angabe ${lastOll})` : '')
+      : `Operating-Leasing nur für ${roicsLease.length} von ${roicsReported.length} Jahren periodengleich gemeldet `
+        + `(mindestens 5 erforderlich)`;
     const res = metricInsufficient(roicsLease.length, 5,
-      `Operating-Leasing für ${_latestRow ? _latestRow.period : 'das jüngste Jahr'} nicht periodengleich gemeldet`
-      + (lastOll ? ` (letzte Angabe ${lastOll})` : '') + ' — Leasingbereinigung nach Regel erforderlich'
+      why + ' — Leasingbereinigung nach Regel erforderlich'
       + (subClass === 'retail' ? ' (retail)' : ' (wesentlich)') + ', unbereinigter ROIC nicht bewertbar');
-    res.roicReported = medReported;
-    res.roicReportedMinusWacc = spreadReported;
     res._leaseAdjusted = false;
     res._leaseMaterial = _ollMaterial;
-    res._leaseMissingForPeriod = _latestRow ? _latestRow.period : null;
+    res._leaseRequired = true;
+    res._leaseMissingForPeriod = _latestHasLease ? null : (_latestRow ? _latestRow.period : null);
     res._leasePairs = _leaseRows.map(r => ({ ebitPeriod: r.period, leasePeriod: r.ollPeriod }));
+    res._openingBalanceExcluded = _openingSkips.slice();
+    // Nachrichtlich, NICHT die Kennzahl: kein value, kein Score.
+    res.informational = { roicReported: medReported, roicReportedMinusWacc: spreadReported,
+                          note: 'unbereinigt, nur nachrichtlich — nicht bewertet' };
     return res;
   }
 
@@ -11508,6 +11594,7 @@ function computeRoicMinusWacc(mj) {
     }
   }
   resultMetric._leasePairs = _leaseRows.map(r => ({ ebitPeriod: r.period, leasePeriod: r.ollPeriod }));
+  resultMetric._openingBalanceExcluded = _openingSkips.slice();
   return resultMetric;
 }
 
@@ -24217,7 +24304,10 @@ function buildRangeBoxFull(s) {
         ${row('Base-Rate Add-on', mc2.baseRateAddon, brDetail, brLevel === 'severe' ? 'var(--danger)' : 'var(--warn)')}
         ${row('Heuristic Add-on', mc2.heuristicAddon, heuDetail, 'var(--warn)')}
         ${row('Divergence Add-on', mc2.divergenceAddon, 'Modelle divergieren >2×', 'var(--warn)')}
-        ${row('Leverage Add-on', mc2.leverageAddon, levDetail, 'var(--warn)')}
+        ${(mc2.leverageAddon > 0 || !mc2._mosLeverageUnavailable)
+          ? row('Leverage Add-on', mc2.leverageAddon, levDetail, 'var(--warn)')
+          // V1.0.72 (D2-Nachbesserung): nicht bewertbar ≠ geringe Verschuldung.
+          : `<div class="ml txt-caption" style="color:var(--warn)"><span>Leverage Add-on <span style="opacity:.7;font-size:.5rem">(nicht bewertbar — ${escapeHtml(String(mc2._mosLeverageUnavailable).replace(/^Daten unzureichend \([^)]*?fehlt: /, '').replace(/\)$/, ''))})</span></span><span>n/a</span></div>`}
         ${row('Sector/Cyclicality Add-on', mc2.sectorAddon, null, 'var(--warn)')}
         ${row('Buyback-Dependency Add-on', mc2.buybackAddon, bbDetail, 'var(--warn)')}
         <div class="ml total"><span>MoS Total (Cap 50%)</span><span>${(mc2.total*100).toFixed(0)}%</span></div>
@@ -28490,7 +28580,31 @@ function _extractFyValues(facts, tag, maxYears=10) {
   }
   const fiscalYearConflicts = [];
   const supersededValues = [];
+  // V1.0.72 (D2-Nachbesserung): Stehen unter einem Geschaeftsjahr VERSCHIEDENE
+  // Stichtage (z. B. Jahresende 2018-12-31 und ASC-842-Eroeffnung 2019-01-01),
+  // entscheidet nicht die spaetere Meldung, sondern die Filing-Metadaten: ein
+  // Stichtag, der Hauptstichtag eines 10-K ist (spaetestes Datum dieses Tags im
+  // Bericht), ist ein Geschaeftsjahresende; ein Eroeffnungs- oder
+  // Uebergangsstichtag ist es nicht. Ohne solchen Beleg bleibt die bisherige Regel.
+  const _primaryEnds = new Set();
+  {
+    const maxByAccn = new Map();
+    for (const e of allEntries) {
+      if (!e.accn || !e.end) continue;
+      const cur = maxByAccn.get(e.accn);
+      if (cur == null || e.end > cur) maxByAccn.set(e.accn, e.end);
+    }
+    for (const v of maxByAccn.values()) _primaryEnds.add(v);
+  }
   for (const [fy, grp] of Object.entries(_groups)) {
+    const ends = [...new Set(grp.map(e => e.end))];
+    if (!isFlowConcept && ends.length > 1) {
+      const prim = ends.filter(en => _primaryEnds.has(en));
+      if (prim.length === 1 && byFiscalYear[fy].end !== prim[0]) {
+        const cands = grp.filter(e => e.end === prim[0]);
+        byFiscalYear[fy] = cands.reduce((a, b) => ((b.filed || b.accn || '') > (a.filed || a.accn || '') ? b : a));
+      }
+    }
     const chosen = byFiscalYear[fy];
     const otherPeriods = [...new Set(grp.map(_periodIdOf))].filter(id => id !== _periodIdOf(chosen));
     if (otherPeriods.length > 0) {

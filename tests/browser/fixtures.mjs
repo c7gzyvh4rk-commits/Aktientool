@@ -214,3 +214,48 @@ const rec = (id, ticker) => ({ id, ticker, name: 'Angriff', timestamp: '2026-01-
   masterJson: { meta: { ticker }, fundamentals: {} }, _snapshotFormat: 2 });
 export const attackBundleJs = `function () { return { _kind: SNAPSHOT_EXPORT_KIND, _snapshotFormat: 2, snapshots: ${JSON.stringify(ATTACK_IDS.map((id, i) => rec(id, 'ATK' + i)))} }; }`;
 export const attackRecordsJs = `function () { return ${JSON.stringify([rec('ok123', 'ATK'), rec(ATTACK_IDS[0], 'ATK')])}; }`;
+
+// ── D2-Nachbesserung: Qualitaetsanzeigen und MoS (V1.0.72) ────────────────
+// Leasing-ROIC wie N-1: sechs Jahre, NOPAT 150, IC 1,000, Leasing 500 je Jahr
+// ⇒ bereinigt 10 % (+2 pp), unbereinigt 15 % (+7 pp); WACC 8 %.
+const Y6 = ['2025-12-31', '2024-12-31', '2023-12-31', '2022-12-31', '2021-12-31', '2020-12-31'];
+export function roicLeaseMj(nLease) {
+  const per = (p) => ({ periods: p, isFlowConcept: false, unit: 'USD', source_type: 'reported' });
+  return {
+    schema_version: '4.0',
+    meta: META('RLS' + nLease, 'retail'),
+    fundamentals: {
+      revenue: [1000, 1000, 1000, 1000, 1000, 1000], ebit: [200, 200, 200, 200, 200, 200],
+      book_value: [500, 500, 500, 500, 500, 500], total_debt: [600, 600, 600, 600, 600, 600],
+      cash_and_equivalents: [100, 100, 100, 100, 100, 100],
+      operating_lease_liabilities: Array(nLease).fill(500),
+      shares_diluted: [100, 100, 100, 100, 100, 100],
+      _v4_meta: { ebit: { periods: Y6, isFlowConcept: true, unit: 'USD', source_type: 'reported' }, book_value: per(Y6), total_debt: per(Y6),
+        cash_and_equivalents: per(Y6), operating_lease_liabilities: per(Y6.slice(0, nLease)) }
+    },
+    valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false }, wacc_derived: 8 },
+    market: { price: 20 }
+  };
+}
+
+// Net Debt / EBITDA wie N-2: Nettoschulden 1,400, EBITDA 350 ⇒ 4.0x (> 3 ⇒ +5 pp),
+// RIM aktiv, damit der Synthesizer auch ohne DCF-Bruecke bewertet.
+export function leverageMj(tag, ndPeriods, ebPeriods) {
+  const meta = {};
+  if (ndPeriods !== undefined) meta.net_debt = { periods: ndPeriods, source_type: 'reported', unit: 'USD' };
+  if (ebPeriods !== undefined) meta.ebitda = { periods: ebPeriods, isFlowConcept: true, unit: 'USD' };
+  return {
+    schema_version: '4.0',
+    meta: META('LEV' + tag, 'standard_nonfin'),
+    fundamentals: {
+      revenue: [1000, 1000, 1000, 1000, 1000, 1000], ebit: [300, 300, 300, 300, 300, 300],
+      ebitda: [350, 350, 350, 350, 350, 350], capex: [50, 50, 50, 50, 50, 50], cfo: [260, 260, 260, 260, 260, 260],
+      net_income: [200, 200, 200, 200, 200, 200], eps_diluted: [2, 2, 2, 2, 2, 2],
+      dps: [1, 0.95, 0.9, 0.86, 0.82, 0.78], book_value: [1500, 1450, 1400, 1350, 1300, 1250],
+      shares_diluted: [100, 100, 100, 100, 100, 100], net_debt: [1400], _v4_meta: meta
+    },
+    valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false }, cost_of_equity: 9,
+      wacc_derived: 10, growth_terminal: 2, growth_stage1: 5 },
+    market: { price: 20 }
+  };
+}
