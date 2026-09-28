@@ -605,3 +605,95 @@ test('F-5 Altdaten ohne jede Periode: bisheriger Positionsbezug bleibt', () => {
   assert.equal(m.status, 'ok');
   assert.ok(Math.abs(m.roicLeaseAdjusted - 10) < 1e-9);
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// P-1 · Net Debt / EBITDA: dieselbe Pruefung wie die DCF-Wertbruecke
+// ═════════════════════════════════════════════════════════════════════════════
+test('P-1 MCD real: kein Net Debt/EBITDA aus einem Schulden-Teilbetrag', () => {
+  const { mj } = importFacts(MCD, 'MCD');
+  const f = mj.fundamentals;
+  assert.equal(f.net_debt[0], 39973 - 774);             // abgeleitet aus total_debt − cash
+  assert.equal(f._v4_meta.total_debt.scopeComplete, false);
+  const bridge = S._resolveNetDebtForDcfBridge(f);
+  assert.equal(bridge.available, false);                   // bestehende DCF-Sperre bleibt
+  const m = S.computeNetDebtToEbitda(mj);
+  assert.equal(m.status, 'insufficient_data');
+  assert.equal(m.value, null);
+  assert.match(m.detail, /belastbare Nettoschulden — Die gemeldeten Schuldenangaben widersprechen sich/);
+  assert.match(m.detail, /Teilbetrag/);
+});
+
+test('P-1 JNJ real: Teilbetrag 21,729 wird auch mit vorhandenem EBITDA nicht zur Kennzahl', () => {
+  const { mj } = importFacts(JNJ, 'JNJ');
+  const f = mj.fundamentals;
+  assert.equal(f.net_debt[0], 41438 - 19709);
+  // Zustand nach einer spaeteren EBIT-Erschliessung (I-1) simuliert: EBITDA vorhanden.
+  f.ebitda = [40000];
+  f._v4_meta.ebitda = { periods: ['2025-12-28'] };
+  const m = S.computeNetDebtToEbitda(mj);
+  assert.equal(m.status, 'insufficient_data');
+  assert.match(m.detail, /Leasingverpflichtungen/);
+});
+
+const ndMj = (fund) => ({ meta: {}, market: {}, valuation: {}, fundamentals: fund });
+
+test('P-1 manuelle Altdaten ohne Perioden bleiben nach bestehender Regel nutzbar', () => {
+  const m = S.computeNetDebtToEbitda(ndMj({ ebitda: [250], total_debt: [800], cash_and_equivalents: [300] }));
+  assert.equal(m.status, 'ok');
+  assert.equal(m.value, 2);
+  // Ausdruecklich gesetzte Nettoschulden haben weiter Vorrang.
+  const m2 = S.computeNetDebtToEbitda(ndMj({ ebitda: [250], net_debt: [500], total_debt: [800], cash_and_equivalents: [300] }));
+  assert.equal(m2.value, 2);
+  assert.match(m2.detail, /net_debt\[0\]/);
+});
+
+test('P-1 fehlende Liquiditaet ist keine 0; Perioden von Nettoschulden und EBITDA muessen passen', () => {
+  const noCash = S.computeNetDebtToEbitda(ndMj({ ebitda: [250], total_debt: [800] }));
+  assert.equal(noCash.status, 'insufficient_data');
+  const P = (p) => ({ periods: [p] });
+  const off = S.computeNetDebtToEbitda(ndMj({ ebitda: [250], total_debt: [800], cash_and_equivalents: [300],
+    _v4_meta: { ebitda: P('2025-12-31'), total_debt: P('2024-12-31'), cash_and_equivalents: P('2024-12-31') } }));
+  assert.equal(off.status, 'insufficient_data');
+  assert.match(off.detail, /nicht zum selben Geschaeftsjahr/);
+  const same = S.computeNetDebtToEbitda(ndMj({ ebitda: [250], total_debt: [800], cash_and_equivalents: [300],
+    _v4_meta: { ebitda: P('2025-12-31'), total_debt: P('2025-12-31'), cash_and_equivalents: P('2025-12-31') } }));
+  assert.equal(same.status, 'ok');
+  assert.equal(same.value, 2);
+  assert.match(same.detail, /Stichtag 2025-12-31, EBITDA bis 2025-12-31/);
+});
+
+test('P-1 MoS-Leverage-Zuschlag nutzt dieselbe Pruefung (echter Synthesizer-Pfad)', () => {
+  const CFG = evalInApp('SYNTHESIS_CONFIG');
+  // RIM laeuft unabhaengig von der Schuldenbruecke; der Synthesizer bewertet also
+  // auch dann, wenn die DCF-Bruecke gesperrt ist.
+  const lev = (extra, meta) => {
+    const mj = {
+      meta: { ticker: 'LEV', sub_classification: 'standard_nonfin' },
+      fundamentals: Object.assign({ revenue: [1000, 1000, 1000, 1000, 1000, 1000],
+        ebit: [300, 300, 300, 300, 300, 300], ebitda: [350, 350, 350, 350, 350, 350],
+        capex: [50, 50, 50, 50, 50, 50], cfo: [260, 260, 260, 260, 260, 260],
+        net_income: [200, 200, 200, 200, 200, 200], eps_diluted: [2, 2, 2, 2, 2, 2],
+        dps: [1, 0.95, 0.9, 0.86, 0.82, 0.78], book_value: [1500, 1450, 1400, 1350, 1300, 1250],
+        shares_diluted: [100, 100, 100, 100, 100, 100] }, extra),
+      valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false }, cost_of_equity: 9,
+        wacc_derived: 10, growth_terminal: 2, growth_stage1: 5 },
+      market: { price: 20 } };
+    if (meta) mj.fundamentals._v4_meta = meta;
+    const v = S.runValuationEngine(mj);
+    return S.runFairValueSynthesizer(mj, v, S.runQualityEngine(mj),
+      Object.assign({}, CFG, { _dqResult: S.computeDataQualityScore(mj) })).mosComponents;
+  };
+  // Belastbare Nettoschulden 1,400 / EBITDA 350 = 4.0 > 3 → Zuschlag (Altdaten ohne Perioden).
+  const ok = lev({ total_debt: [1500], cash_and_equivalents: [100] });
+  assert.equal(ok.leverageAddon, 0.05);
+  assert.equal(ok._mosLeverageRatio, 4);
+  // Derselbe Betrag als abgeleiteter Teilbetrag (Umfang offen) → kein Verhaeltnis, Grund benannt.
+  const p = lev({ total_debt: [1500], cash_and_equivalents: [100], net_debt: [1400] }, {
+    total_debt: { periods: ['2025-12-31'], scopeComplete: false, scopeIndeterminateReason: 'Finance-Leasing offen' },
+    cash_and_equivalents: { periods: ['2025-12-31'] },
+    net_debt: { periods: ['2025-12-31'], source_type: 'derived', source_reference: 'total_debt - cash_and_equivalents' },
+    ebitda: { periods: ['2025-12-31'] } });
+  assert.equal(p._mosLeverageRatio, null);
+  assert.equal(p.leverageAddon, 0);
+  assert.match(p._mosLeverageUnavailable, /belastbare Nettoschulden — .*Finance-Leasing offen/);
+});

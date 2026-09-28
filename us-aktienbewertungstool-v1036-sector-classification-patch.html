@@ -11305,32 +11305,50 @@ function computeNetDebtToEbitda(mj) {
   if (ebitda == null) return metricInsufficient(0, 1, 'ebitda');
   if (ebitda <= 0) return metricNotApplicable('EBITDA ≤ 0');
 
-  // V11.9.30: Priorität: f.net_debt[0] → total_debt - cash_and_equivalents → total_debt - cash
-  let netDebt = null;
-  let netDebtSource = '';
-  if (f.net_debt && f.net_debt[0] != null) {
-    netDebt = f.net_debt[0];
-    netDebtSource = 'net_debt';
-  } else {
-    const td   = f.total_debt && f.total_debt[0];
-    const cash = (f.cash_and_equivalents && f.cash_and_equivalents[0] != null)
-               ? f.cash_and_equivalents[0]
-               : (f.cash && f.cash[0] != null ? f.cash[0] : null);
-    if (td == null) {
-      // Prüfe ob Debt-Mapping möglicherweise unvollständig
-      const hasComponents = ['debt_short_term','debt_long_term_current','debt_long_term_noncurrent','finance_lease_current','finance_lease_noncurrent']
-        .some(k => f[k] && f[k].length > 0 && f[k][0] != null);
-      const msg = hasComponents
-        ? 'total_debt (Debt-Mapping unvollständig — Komponenten vorhanden aber nicht konsolidiert)'
-        : 'total_debt';
-      return metricInsufficient(0, 1, msg);
-    }
-    netDebt = td - (cash || 0);
-    netDebtSource = cash != null ? 'total_debt - cash_and_equivalents' : 'total_debt (kein Cash-Wert)';
+  // V1.0.71 (D2, Auditpunkt P-1): Gemeint ist dieselbe Nettoschuldendefinition
+  // wie in der DCF-Wertbruecke (Finanzschulden − Liquiditaet, Vorrang
+  // net_debt[0]). Bis V1.0.70 las die Kennzahl net_debt[0] bzw.
+  // total_debt − cash OHNE deren Pruefungen: MCD zeigte 39,199 / EBITDA,
+  // obwohl die Schulden-Tags widerspruechlich sind und Finance-Leasing fehlt;
+  // bei JNJ laege der Teilbetrag 21,729 bereit. Jetzt entscheidet dieselbe
+  // Pruefung (_resolveNetDebtForDcfBridge) ueber Umfang, Herkunft und
+  // Periode; manuelle Altdaten und ausdruecklich gesetzte net_debt bleiben nach
+  // den dortigen Regeln zulaessig. Ein fehlender Liquiditaetswert ist keine 0.
+  const nd = _resolveNetDebtForDcfBridge(f);
+  if (!nd.available) {
+    // Der Brueckentext erklaert zusaetzlich die Folgen fuer den Eigenkapitalwert;
+    // hier genuegt der Befund selbst.
+    const why = nd.reason ? String(nd.reason).split(/\. Der vorliegende Wert ist ein Teilbetrag/)[0]
+      + (/Teilbetrag/.test(nd.reason) ? ' — vorhandener Wert ist ein Teilbetrag' : '')
+      : ('fehlt: ' + (nd.missing || []).join(', '));
+    const res = metricInsufficient(0, 1, 'belastbare Nettoschulden — ' + why);
+    res._netDebtUnavailable = { missing: nd.missing || [], reason: nd.reason || null };
+    return res;
   }
 
+  // Periode: Nettoschulden zum Ende desselben Geschaeftsjahres wie das EBITDA.
+  const meta = f._v4_meta || {};
+  const pOf = (k) => (meta[k] && Array.isArray(meta[k].periods) && meta[k].periods[0]) ? meta[k].periods[0] : null;
+  const ndPeriod = nd.period
+    || (nd.source === 'net_debt[0]' ? pOf('net_debt') : pOf('total_debt'));
+  const ebPeriod = pOf('ebitda');
+  if (ndPeriod && ebPeriod) {
+    const d = _secPeriodDaysApart(ndPeriod, ebPeriod);
+    if (_secPeriodYear(ndPeriod) !== _secPeriodYear(ebPeriod) || d == null || d > 45) {
+      const res = metricInsufficient(0, 1, `Nettoschulden (${ndPeriod}) und EBITDA (bis ${ebPeriod}) `
+        + 'gehoeren nicht zum selben Geschaeftsjahr');
+      res._netDebtUnavailable = { missing: ['Periodengleichheit'], reason: 'Periode' };
+      return res;
+    }
+  }
+
+  const netDebt = nd.netDebtM;
   const ratio = netDebt / ebitda;
-  return metricOk(ratio, `Net Debt / EBITDA = ${ratio.toFixed(2)} · Quelle: ${netDebtSource}`, 1, 1);
+  const out = metricOk(ratio, `Net Debt / EBITDA = ${ratio.toFixed(2)} · Quelle: ${nd.source}`
+    + (ndPeriod && ebPeriod ? ` · Stichtag ${ndPeriod}, EBITDA bis ${ebPeriod}` : ''), 1, 1);
+  out.netDebtM = netDebt;
+  out.netDebtSource = nd.source;
+  return out;
 }
 
 function computeRoicMinusWacc(mj) {
@@ -19168,13 +19186,17 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
   // Kein Add-on wenn ebitda fehlt/≤0 oder net_debt ≤ 0.
   let mosLeverageAddon = 0;
   let _mosLeverageRatio = null;
+  let _mosLeverageUnavailable = null;
   {
-    const _f = mj.fundamentals || {};
-    const _netDebt = Array.isArray(_f.net_debt) ? _f.net_debt[0] : null;
-    const _ebitda  = Array.isArray(_f.ebitda)   ? _f.ebitda[0]  : null;
-    if (_netDebt != null && _netDebt > 0 && _ebitda != null && _ebitda > 0) {
-      _mosLeverageRatio = _netDebt / _ebitda;
+    // V1.0.71 (D2, P-1): dieselbe Pruefung wie die Kennzahl Net Debt/EBITDA
+    // (Umfang, Herkunft, Periode). Nicht belastbare Nettoschulden ergeben
+    // kein Verhaeltnis; der Grund wird mitgefuehrt.
+    const _nde = computeNetDebtToEbitda(mj);
+    if (_nde.status === 'ok' && _nde.netDebtM != null && _nde.netDebtM > 0) {
+      _mosLeverageRatio = _nde.value;
       if (_mosLeverageRatio > 3) mosLeverageAddon = 0.05;
+    } else if (_nde.status !== 'ok' && _nde._netDebtUnavailable) {
+      _mosLeverageUnavailable = _nde.detail;
     }
   }
 
@@ -19726,6 +19748,7 @@ function runFairValueSynthesizer(mj, valuationResult, qualityResult, config) {
       _buybackUpliftPct: _buybackUpliftPctSyn,
       _mosBaseRateLevel,
       _mosLeverageRatio,
+      _mosLeverageUnavailable,
       total: mosTotalFinal,
       // V1.0.42: Regelabschlag und angewendeter Abschlag bleiben unterscheidbar.
       ruleTotal: _mosRuleTotal,
