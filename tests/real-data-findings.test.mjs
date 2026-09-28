@@ -169,3 +169,129 @@ test('F-2 _secPeriodYear: Anfang Januar gehoert zum Vorjahr, sonst Kalenderjahr'
   assert.equal(S._secPeriodYear('CY2024Q4I'), 2024);
   assert.equal(S._secPeriodYear(null), null);
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// F-1 · Vollstaendige D&A statt Teilposten
+// ═════════════════════════════════════════════════════════════════════════════
+// Die D&A-Extraktion des Imports: seit D2 _extractDaWithScopeCheck, davor lief
+// D&A durch die generische Kette _extractWithFallback(SEC_TAG_MAP.da). So
+// laesst sich derselbe Test gegen den Stand vor D2 ausfuehren.
+const importDa = (F) => (typeof S._extractDaWithScopeCheck === 'function')
+  ? S._extractDaWithScopeCheck(F, 10) : S._extractWithFallback(F, TAGS.da, 10);
+const median = (a) => { const s = a.slice().sort((x, y) => x - y); const n = s.length;
+  return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2; };
+
+test('F-1 MCD: Gesamt-D&A 2,199 (DepreciationAndAmortization) statt Teilposten 457', () => {
+  const da = importDa(MCD);
+  assert.equal(da.values[0], 2199);            // 10-K FY2025, Kapitalflussrechnung
+  assert.equal(da.usedTag, 'DepreciationAndAmortization');
+  assert.equal(da.meta.periods[0], '2025-12-31');
+  assert.equal(da.meta.daSelection[0].status, 'total');
+  assert.deepEqual(plain(da.meta.daScope.partialTags), ['DepreciationDepletionAndAmortization']);
+  // Beleg: derselbe Bericht, dieselbe Periode, weiter Tag kleiner als enger Tag.
+  const e = da.meta.daScope.evidence.find(x => x.accn === '0000063908-26-000035' && x.end === '2025-12-31');
+  assert.equal(e.broadValue, 457e6);
+  assert.equal(e.narrowValue, 2199e6);
+  assert.match(da.meta._tagSelectionNote, /Teilposten/);
+  // Kein Addieren, kein Maximum ueber alle Tags: Depreciation (1,600) ist enger und kleiner.
+  assert.deepEqual(plain(da.meta.daSelection[0].candidates.map(c => [c.tag, c.value])),
+    [['DepreciationDepletionAndAmortization', 457], ['DepreciationAndAmortization', 2199], ['Depreciation', 1600]]);
+});
+
+test('F-1 MCD: Weitergabe an EBITDA und gemessene D&A-Quote des DCF', () => {
+  const revenue = ex(MCD, 'revenue');
+  const ebit    = ex(MCD, 'ebit');
+  const da      = importDa(MCD);
+  const ebitda  = S._deriveEbitdaFromExtracted({ ebit, da });
+  assert.equal(ebitda.values[0], 12393 + 2199);        // 14,592
+  assert.equal(ebitda.meta.periods[0], '2025-12-31');
+  const f = { revenue: revenue.values, ebit: ebit.values, ebitda: ebitda.values,
+              _v4_meta: { revenue: revenue.meta, ebit: ebit.meta, ebitda: ebitda.meta } };
+  const info = S._resolveDaForForecast({ fundamentals: f, valuation: {} });
+  assert.equal(info.source, 'measured');
+  // Unabhaengig nachgerechnet: Median der periodengleichen Quoten D&A/Umsatz.
+  const expected = median(da.values.map((d, i) => d / revenue.values[i]));
+  assert.ok(Math.abs(info.ratio - expected) < 1e-9, `Quote ${info.ratio} vs. ${expected}`);
+  assert.ok(info.ratio > 0.07 && info.ratio < 0.09, 'rund 8 % statt 1.53 %');
+});
+
+test('F-1 MCD: Quartals-D&A (TTM-Weg) nutzt ebenfalls den Gesamtwert-Tag', () => {
+  const n = S.normalizeSecQuarters(MCD, { fields: ['depreciation_amortization', 'revenue'] });
+  const d = n.fields.depreciation_amortization;
+  assert.equal(d.usedTag, 'DepreciationAndAmortization');
+  const fy25 = d.quarters.filter(q => q.fiscalYear === 2025).map(q => q.value);
+  assert.equal(fy25.length, 4);
+  assert.equal(fy25.reduce((a, b) => a + b, 0), 2199e6);   // Summe der Quartale = Jahreswert
+  assert.ok(d.notes.some(t => /DepreciationDepletionAndAmortization ist beim Filer ein Teilposten/.test(t)));
+});
+
+test('F-1 JNJ: einziger Tag DepreciationDepletionAndAmortization bleibt Gesamtwert', () => {
+  const da = S._extractDaWithScopeCheck(JNJ, 10);
+  assert.equal(da.values[0], 7503);
+  assert.equal(da.usedTag, 'DepreciationDepletionAndAmortization');
+  assert.deepEqual(plain(da.meta.daScope.partialTags), []);
+  assert.equal(da.meta.fiscalYears[3], 2022);            // FY2022 aus F-2 bleibt erhalten
+});
+
+const DDA = 'DepreciationDepletionAndAmortization', DNA = 'DepreciationAndAmortization', DEP = 'Depreciation';
+const y = (yr, v, accn, filed, extra) => k10(`${yr}-01-01`, `${yr}-12-31`, v, filed || `${yr + 1}-02-15`, accn || `K${yr}`, yr, extra);
+
+test('F-1 synthetisch: Gesamtwert allein und ueberlappende gleiche Angaben (keine Addition)', () => {
+  const only = S._extractDaWithScopeCheck(factsOf({ [DNA]: [y(2024, 200), y(2023, 190)] }), 10);
+  assert.deepEqual(plain(only.values), [200, 190]);
+  assert.equal(only.meta.daSelection[0].status, 'total');
+  // DDA = D&A im selben Bericht: derselbe Betrag unter zwei Tags → einmal, weitester Tag.
+  const both = S._extractDaWithScopeCheck(factsOf({ [DDA]: [y(2024, 200)], [DNA]: [y(2024, 200)] }), 10);
+  assert.deepEqual(plain(both.values), [200]);
+  assert.equal(both.usedTag, DDA);
+  assert.deepEqual(plain(both.meta.daScope.partialTags), []);
+});
+
+test('F-1 synthetisch: Teilwert wird verworfen, auch in Jahren ohne engeren Tag (partial_only)', () => {
+  const r = S._extractDaWithScopeCheck(factsOf({
+    [DDA]: [y(2024, 50), y(2023, 45)],
+    [DNA]: [y(2024, 200)]
+  }), 10);
+  assert.deepEqual(plain(r.values), [200, null]);
+  assert.equal(r.meta.daSelection[1].status, 'partial_only');
+  assert.deepEqual(plain(r.meta.daUnresolved.map(u => u.fiscalYear)), [2023]);
+  // Folge: kein EBITDA aus einem Teilposten.
+  const ebit = S._extractFyValues(factsOf({ OperatingIncomeLoss: [y(2024, 1000), y(2023, 900)] }), 'OperatingIncomeLoss', 10);
+  const ebitda = S._deriveEbitdaFromExtracted({ ebit, da: r });
+  assert.deepEqual(plain(ebitda.values), [1200, null]);
+});
+
+test('F-1 synthetisch: widerspruechliche Angaben ergeben keinen Wert', () => {
+  // FY2024: DDA 50 < D&A 200 (Teilposten). FY2023: DDA 300 > D&A 180 im selben Bericht.
+  const r = S._extractDaWithScopeCheck(factsOf({
+    [DDA]: [y(2024, 50), y(2023, 300)],
+    [DNA]: [y(2024, 200), y(2023, 180)]
+  }), 10);
+  assert.deepEqual(plain(r.meta.daScope.contradictedTags), [DDA]);
+  assert.equal(r.values[0], 200);
+  assert.equal(r.values[1], null);
+  assert.equal(r.meta.daSelection[1].status, 'contradictory');
+  // Quartalsweg: widerspruechlicher Umfang → keine D&A statt geratener Tag.
+  const n = S.normalizeSecQuarters(factsOf({
+    [DDA]: [y(2024, 50), y(2023, 300)], [DNA]: [y(2024, 200), y(2023, 180)],
+    Revenues: [y(2024, 1000), y(2023, 900)] }), { fields: ['depreciation_amortization', 'revenue'] });
+  assert.equal(n.fields.depreciation_amortization.usedTag, null);
+  assert.match(n.fields.depreciation_amortization.unresolved, /widerspruechlich/);
+});
+
+test('F-1 synthetisch: unterschiedliche Perioden werden nicht verglichen', () => {
+  // D&A nur fuer ein Halbjahr (10-Q) — kein Beleg gegen den Jahreswert von DDA.
+  const r = S._extractDaWithScopeCheck(factsOf({
+    [DDA]: [y(2024, 50)],
+    [DNA]: [{ start: '2024-01-01', end: '2024-06-30', val: 120e6, form: '10-Q', filed: '2024-08-01', accn: 'Q2', fy: 2024, fp: 'Q2' }]
+  }), 10);
+  assert.deepEqual(plain(r.meta.daScope.partialTags), []);
+  assert.deepEqual(plain(r.values), [50]);
+  assert.equal(r.usedTag, DDA);
+});
+
+test('F-1 synthetisch: nur Depreciation wird verwendet, aber als Teilumfang ausgewiesen', () => {
+  const r = S._extractDaWithScopeCheck(factsOf({ [DEP]: [y(2024, 80)] }), 10);
+  assert.deepEqual(plain(r.values), [80]);
+  assert.equal(r.meta.daSelection[0].status, 'depreciation_only');
+});

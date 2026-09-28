@@ -15288,7 +15288,24 @@ function normalizeFlowField(field, facts, tags, fyEnd, asOfMs) {
     field, kind: 'flow', usedTag: null, consideredTags: tags.slice(), unit: null,
     quarters: [], cumulatives: [], gaps: [], conflicts: [], rejectedDerivations: [], notes: []
   };
-  const picked = pickTagWithCandidates(facts, tags,
+  // V1.0.71 (D2/F-1): Bei den Abschreibungen entscheidet der belegte Umfang
+  // der Tags, nicht allein ihre Reihenfolge (siehe daScopeEvidence).
+  let usableTags = tags;
+  if (field === 'depreciation_amortization') {
+    const ev = daScopeEvidence(facts, tags, asOfMs);
+    out.daScope = ev;
+    const note = daScopeNote(ev);
+    if (note) out.notes.push(note);
+    if (ev.contradictedTags.length > 0) {
+      // Widerspruechliche Verwendung: welcher Tag in welchem Quartal die
+      // Gesamtsumme traegt, ist nicht belegbar → keine Quartals-D&A.
+      out.notes.push('D&A nicht verwendet: widerspruechlicher Umfang der Tags ' + ev.contradictedTags.join(', '));
+      out.unresolved = 'widerspruechlicher Umfang der D&A-Tags';
+      return out;
+    }
+    usableTags = tags.filter(t => !ev.partialTags.includes(t));
+  }
+  const picked = pickTagWithCandidates(facts, usableTags,
     tag => collectFlowCandidates(facts, tag, fyEnd, asOfMs));
   out.notes.push(...skippedTagNotes(picked.skipped, asOfMs));
   if (!picked.tag) { out.notes.push('keine verwertbaren Angaben zu diesem Feld'); return out; }
@@ -15518,6 +15535,75 @@ function normalizeInstantField(field, facts, tags, fyEnd, asOfMs) {
 // ═════════════════════════════════════════════════════════════════════════════
 // Tag-Listen der Anwendung
 // ═════════════════════════════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════════════════════════════════
+// V1.0.71 (D2/F-1): Umfang der D&A-Tags
+// ═════════════════════════════════════════════════════════════════════════════
+// Nach der US-GAAP-Taxonomie sind die drei D&A-Tags ineinander enthalten:
+//   DepreciationDepletionAndAmortization ⊇ DepreciationAndAmortization ⊇ Depreciation.
+// Fuer dieselbe Periode im selben Bericht kann der weitere Begriff deshalb nie
+// kleiner sein als der engere. Meldet ein Filer es doch (MCD 10-K FY2025:
+// DDA 457 < D&A 2,199), belegt das, dass er den weiten Tag fuer einen
+// Teilposten verwendet (MCD: die D&A-Zeile innerhalb der Verwaltungskosten).
+// Der Tag ist dann fuer diesen Filer kein Gesamtwert und wird nicht genommen —
+// weder ein Maximum noch eine Summe ueberlappender Tags.
+// Verglichen werden nur Angaben DESSELBEN Berichts (accn) zu DERSELBEN Periode
+// (Beginn und Ende gleich): keine Rundungsunterschiede verschiedener Berichte,
+// keine Vermischung verschiedener Zeitraeume.
+// Gegenbeleg: derselbe Tag ist in einem anderen Bericht/Zeitraum GROESSER als
+// der engere Tag. Dann ist die Verwendung widerspruechlich (`contradicted`).
+const DA_SCOPE_RANK = Object.freeze({
+  DepreciationDepletionAndAmortization: 3,
+  DepreciationAndAmortization: 2,
+  Depreciation: 1
+});
+
+function daScopeEvidence(facts, tags, asOfMs = null) {
+  const ranked = (tags || []).filter(t => DA_SCOPE_RANK[t] != null);
+  const byKey = new Map();   // accn|start|end → Map(tag → [werte])
+  for (const tag of ranked) {
+    for (const f of rawFacts(facts, tag)) {
+      if (!ACCEPTED_FORMS.includes(f.form) || !f.accn || !f.start || !f.end) continue;
+      if (typeof f.val !== 'number' || !isFinite(f.val)) continue;
+      if (asOfMs != null) {
+        const filedMs = parseIsoDate(f.filed);
+        if (filedMs == null || filedMs > asOfMs) continue;
+      }
+      const k = `${f.accn}|${f.start}|${f.end}`;
+      if (!byKey.has(k)) byKey.set(k, new Map());
+      const m = byKey.get(k);
+      if (!m.has(tag)) m.set(tag, []);
+      m.get(tag).push(f.val);
+    }
+  }
+  const evidence = [], counter = [];
+  for (const [k, m] of byKey) {
+    const [accn, start, end] = k.split('|');
+    for (const [broad, bv] of m) {
+      for (const [narrow, nv] of m) {
+        if (DA_SCOPE_RANK[broad] <= DA_SCOPE_RANK[narrow]) continue;
+        const rec = { broadTag: broad, narrowTag: narrow, accn, start, end,
+                      broadValue: Math.max(...bv), narrowValue: Math.min(...nv) };
+        if (Math.max(...bv) < Math.min(...nv)) evidence.push(rec);
+        else if (Math.min(...bv) > Math.max(...nv)) counter.push({ ...rec, broadValue: Math.min(...bv), narrowValue: Math.max(...nv) });
+      }
+    }
+  }
+  const partialTags = [...new Set(evidence.map(e => e.broadTag))];
+  const contradictedTags = partialTags.filter(t => counter.some(c => c.broadTag === t));
+  const byEnd = (a, b) => b.end.localeCompare(a.end) || a.accn.localeCompare(b.accn);
+  return { partialTags, contradictedTags, evidence: evidence.sort(byEnd), counterEvidence: counter.sort(byEnd) };
+}
+
+function daScopeNote(ev) {
+  if (!ev || ev.partialTags.length === 0) return null;
+  return ev.partialTags.map(t => {
+    const e = ev.evidence.find(x => x.broadTag === t);
+    return `${t} ist beim Filer ein Teilposten, kein Gesamtwert (${e.accn}, ${e.start}…${e.end}: `
+      + `${e.broadValue} < ${e.narrowTag} ${e.narrowValue}) — nicht verwendet`
+      + (ev.contradictedTags.includes(t) ? '; in anderen Angaben groesser als der engere Tag (widerspruechlich)' : '');
+  }).join(' · ');
+}
+
 let _appTagMapCache = null;
 
 /**
@@ -28109,6 +28195,116 @@ function _extractWithFallback(facts, tags, maxYears=10, options={}) {
 }
 
 // ════════════════════════════════════════════════════════════════
+// V1.0.71 (D2/F-1) — D&A je Geschaeftsjahr nach belegtem Tag-Umfang
+// ════════════════════════════════════════════════════════════════
+// Bis V1.0.70 lief D&A durch _extractWithFallback: der erste Tag mit Werten
+// gewann fuer ALLE Jahre. Bei MCD ist das DepreciationDepletionAndAmortization
+// = 457 (Teilposten in der GuV) statt der Gesamt-D&A der
+// Kapitalflussrechnung 2,199 (DepreciationAndAmortization).
+// Jetzt je Geschaeftsjahr:
+//   1. Tags, die der Filer nachweislich fuer Teilposten nutzt
+//      (daScopeEvidence), scheiden aus.
+//   2. Von den uebrigen gilt der Tag mit dem weitesten Umfang.
+//   3. Zeigt ein ausgeschiedener, weiterer Tag im selben Bericht und derselben
+//      Periode einen GROESSEREN Wert als der gewaehlte, ist nicht belegbar,
+//      welcher Wert die Summe ist → Wert null, Status 'contradictory'.
+//   4. Gibt es nur Teilposten-Tags, bleibt der Wert null ('partial_only').
+//   5. Nur `Depreciation` (ohne Amortisation) wird wie bisher verwendet, aber
+//      als Umfang 'depreciation_only' ausgewiesen.
+// Ueberlappende Tags werden nie addiert; unterschiedliche Perioden werden nie
+// miteinander verglichen (Vergleich nur bei gleichem Beginn und Ende).
+function _extractDaWithScopeCheck(facts, maxYears=10) {
+  const tags = (SEC_TAG_MAP.da || []).slice();
+  const ev = daScopeEvidence(facts, tags, null);
+  const perTag = [];
+  for (const tag of tags) {
+    const r = _extractFyValues(facts, tag, 40);
+    if (r.values.length > 0) perTag.push({ tag, r });
+  }
+  if (perTag.length === 0) return { values: [], meta: null, usedTag: null };
+
+  // Geschaeftsjahr → { tag → { value, idx, r } }
+  const byFy = new Map();
+  for (const { tag, r } of perTag) {
+    r.meta.periods.forEach((per, i) => {
+      const fy = r.meta.fiscalYears ? r.meta.fiscalYears[i] : _secPeriodYear(per);
+      if (fy == null) return;
+      if (!byFy.has(fy)) byFy.set(fy, new Map());
+      byFy.get(fy).set(tag, { value: r.values[i], idx: i, r });
+    });
+  }
+  const counterFor = (broad, chosen, cand) => ev.counterEvidence.find(c =>
+    c.broadTag === broad && c.narrowTag === chosen &&
+    c.end === cand.r.meta.periods[cand.idx] && c.start === cand.r.meta.starts[cand.idx]);
+
+  const rows = [];
+  for (const [fy, m] of byFy) {
+    const cands = [...m.entries()].sort((a, b) => DA_SCOPE_RANK[b[0]] - DA_SCOPE_RANK[a[0]]);
+    const usable = cands.filter(([t]) => !ev.partialTags.includes(t));
+    const candidates = cands.map(([t, c]) => ({ tag: t, value: c.value,
+      period: c.r.meta.periods[c.idx], partial: ev.partialTags.includes(t) }));
+    let row;
+    if (usable.length === 0) {
+      const [t, c] = cands[0];
+      row = { fy, tag: t, cand: c, value: null, status: 'partial_only',
+              reason: 'nur Teilposten-Tags gemeldet (' + cands.map(x => x[0]).join(', ') + ') — Gesamt-D&A nicht belegt' };
+    } else {
+      const [t, c] = usable[0];
+      const contra = cands.filter(([bt]) => ev.partialTags.includes(bt) && DA_SCOPE_RANK[bt] > DA_SCOPE_RANK[t])
+        .map(([bt]) => counterFor(bt, t, c)).find(Boolean);
+      if (contra) {
+        row = { fy, tag: t, cand: c, value: null, status: 'contradictory',
+                reason: `${contra.broadTag} ${contra.broadValue} > ${t} ${contra.narrowValue} im selben Bericht (${contra.accn}), `
+                  + `obwohl ${contra.broadTag} sonst ein Teilposten ist — Gesamt-D&A nicht eindeutig` };
+      } else {
+        row = { fy, tag: t, cand: c, value: c.value,
+                status: t === 'Depreciation' ? 'depreciation_only' : 'total',
+                reason: t === 'Depreciation' ? 'nur Abschreibungen auf Sachanlagen gemeldet (ohne Amortisation)' : null };
+      }
+    }
+    row.candidates = candidates;
+    rows.push(row);
+  }
+  // Neuestes zuerst; nur der juengste lueckenlose Block (wie _extractFyValues).
+  const entryOf = (row) => {
+    const mm = row.cand.r.meta, i = row.cand.idx;
+    return { end: mm.periods[i], start: mm.starts[i], row };
+  };
+  const sortedAll = rows.sort((a, b) => b.fy - a.fy).map(entryOf);
+  const contiguous = _takeLatestContiguousFiscalYears(sortedAll).slice(0, maxYears);
+  const pick = (key) => contiguous.map(e => {
+    const mm = e.row.cand.r.meta, i = e.row.cand.idx;
+    return Array.isArray(mm[key]) ? mm[key][i] : null;
+  });
+  const sel = contiguous.map(e => e.row);
+  const unit = perTag[0].r.meta.unit;
+  const meta = {
+    concept: sel[0].tag,
+    unit,
+    periods: pick('periods'), starts: pick('starts'), forms: pick('forms'), accns: pick('accns'),
+    frames: pick('frames'), durations: pick('durations'), filed: pick('filed'),
+    fiscalYears: sel.map(r => r.fy),
+    isFlowConcept: true,
+    tags: sel.map(r => r.tag),
+    daSelection: sel.map(r => ({ fiscalYear: r.fy, tag: r.tag, value: r.value, status: r.status,
+                                 reason: r.reason, candidates: r.candidates })),
+    daScope: { partialTags: ev.partialTags, contradictedTags: ev.contradictedTags,
+               evidence: ev.evidence.slice(0, 5), counterEvidence: ev.counterEvidence.slice(0, 5) }
+  };
+  const note = daScopeNote(ev);
+  if (note) meta._tagSelectionNote = 'D&A nach belegtem Umfang: ' + note;
+  const open = sel.filter(r => r.value == null);
+  if (open.length > 0) {
+    meta.daUnresolved = open.map(r => ({ fiscalYear: r.fy, status: r.status, reason: r.reason }));
+  }
+  if (contiguous.length < sortedAll.length) {
+    meta.gapDetected = true;
+    meta.droppedPeriods = sortedAll.slice(contiguous.length).map(e => e.end);
+  }
+  return { values: sel.map(r => r.value), meta, usedTag: sel[0].tag };
+}
+
+// ════════════════════════════════════════════════════════════════
 // V1.0.37 — PERIOD-KEYED ABLEITUNGEN AUS SEC-FACTS
 // ════════════════════════════════════════════════════════════════
 // Problem: Abgeleitete Größen (EBITDA, Tangible Book Value, Net Debt, …)
@@ -29986,6 +30182,17 @@ function _renderSecDiag(report, masterJson) {
       warnings.push(`ℹ stale-ignoriert: ${mcf.field} — ${mcf.warning}`);
     }
   }
+  // V1.0.71 (D2/F-1): Auswahl der D&A nach belegtem Tag-Umfang sichtbar machen.
+  {
+    const _daM = extracted && extracted.da && extracted.da.meta;
+    if (_daM && _daM._tagSelectionNote) warnings.push('ℹ ' + _daM._tagSelectionNote);
+    if (_daM && Array.isArray(_daM.daUnresolved)) {
+      for (const u of _daM.daUnresolved) warnings.push(`⚠ D&A FY${u.fiscalYear} nicht verwendet (${u.status}): ${u.reason}`);
+    }
+    if (_daM && Array.isArray(_daM.daSelection) && _daM.daSelection[0] && _daM.daSelection[0].status === 'depreciation_only') {
+      warnings.push('ℹ D&A: nur Abschreibungen auf Sachanlagen gemeldet (Tag Depreciation, ohne Amortisation)');
+    }
+  }
   if (revYears < 5) warnings.push('⚠ Nur ' + revYears + ' Jahre Revenue — MINIMAL-Modus');
   if (sicMapping) warnings.push('ℹ SIC ' + sic + ' → ' + sicMapping.sector + '/' + sicMapping.sub + ' [vorbelegt, bitte prüfen — Regel 9]');
   if (!sicMapping) warnings.push('ℹ SIC ' + sic + ' nicht gemappt — sector/sub_classification manuell setzen');
@@ -30274,6 +30481,8 @@ async function secFetchAll() {
     for (const [field, tags] of Object.entries(SEC_TAG_MAP)) {
       if (field === 'revenue') continue; // already extracted above
       if (tags===null) { extracted[field]={values:[],meta:null,usedTag:null,derived:true}; continue; }
+      // V1.0.71 (D2/F-1): D&A je Geschaeftsjahr nach belegtem Tag-Umfang.
+      if (field === 'da') { extracted.da = _extractDaWithScopeCheck(facts, 10); continue; }
       if (_anchorYearM != null && CORE_REQUIRE_CURRENT.has(field)) {
         extracted[field] = _extractWithFallback(facts, tags, 10, {
           anchorYear: _anchorYearM, requireCurrent: true, fieldName: field
