@@ -91,16 +91,42 @@ Zwei Skripte, die nicht zu `npm test` gehören.
    Übereinstimmung der Ansichten mit der Basis, den Weg FY → TTM → FY, den
    ausgewiesenen Rückfall und die Unveränderlichkeit der FY-Daten.
 
-3. **Bestätigte Befunde reproduzieren.** Das läuft ohne Netz und ohne Browser:
+3. **Bestätigte Befunde kontrollieren.** Das läuft ohne Netz und ohne Browser:
 
    ```sh
    node tests/real-data/repro-findings.mjs
    ```
 
-   Das Skript nutzt nur die wortgetreuen SEC-Auszüge in `excerpts/` (mit
-   Quell-URL, Abrufzeit und SHA-256 der Rohdatei) und die produktiven
-   Funktionen. Je Befund meldet es `BESTEHT` oder `BEHOBEN`. Es gehört bewusst
-   nicht zu `npm test`, weil es falsches Verhalten festhält.
+   Das Skript nutzt nur die wortgetreuen Auszüge in `excerpts/` und die
+   produktiven Funktionen auf dem tatsächlichen Importweg
+   (`_extractSecFundamentals` → `_buildSecMasterJson` → `normalizeSharesInPlace`,
+   Quartale mit belegter Berichtspräzision). Je Befund meldet es `BEHOBEN` oder
+   `BESTEHT`. **Seit D2 ist `BEHOBEN` der erwartete Zustand:** Besteht ein
+   Befund wieder, endet das Skript mit Exit 1 (2 = nicht ausführbar, z. B.
+   Produktstand vor D2). Verbindlich sind die Regressionstests in
+   `tests/real-data-findings.test.mjs`; sie laufen in `npm test` mit.
+
+4. **Regressionsauszüge erzeugen** (nach Schritt 1, ohne Netz):
+
+   ```sh
+   node tests/real-data/make-excerpts.mjs
+   ```
+
+   Schreibt `excerpts/mcd-d2-regression.json` und `excerpts/jnj-d2-regression.json`
+   (alle Fakten der dort genannten Tags, unverändert, mit Quell-URL und SHA-256
+   der Rohdatei) sowie `excerpts/mcd-xbrl-precision.json` (wortgetreue
+   Ausschnitte der Original-XBRL-Instanzen: Fakt-Elemente mit `decimals` und ihre
+   Kontexte). Der Zeitstempel `retrievedAt` ändert sich bei jedem Abruf; die
+   Fakten selbst sind bei gleichem Quell-Hash identisch.
+
+**Original-XBRL (seit D2).** Company Facts enthält keine Berichtspräzision. Der
+Import lädt deshalb für Berichte, die an einem Quartalswiderspruch der jüngsten
+acht Quartale beteiligt sind, die XBRL-Instanz über den Proxy
+(`www.sec.gov/Archives/edgar/data/<cik>/<accn>/`). `fetch-sources.mjs` bestimmt
+diese Berichte mit derselben Produktfunktion (`secPrecisionRequests`) und legt
+`index.json` und Instanz unter `cache/archives/<cik>/<accn>/` ab; der Replay
+bedient sie von dort. Die Instanzen sind unveränderliche Originaldokumente; ihr
+Abrufzeitpunkt kann nach dem Datenstichtag liegen, ihr Einreichungsdatum nicht.
 
 `--selftest` belegt nur, dass die Mechanik funktioniert. Er ist **keine**
 Prüfung mit echten Daten.

@@ -129,7 +129,8 @@ Standardannahmen, kein Fair-Value-Urteil.
 ### Bestätigte Implementierungsfehler
 
 Reproduktion: `node tests/real-data/repro-findings.mjs` (nur Auszüge aus
-`tests/real-data/excerpts/`). Aktueller Stand: 5 von 5 BESTEHT.
+`tests/real-data/excerpts/`). Stand beim Audit: 5 von 5 BESTEHT.
+**Stand nach D2: alle fünf behoben, P-1 behoben (siehe §9).**
 
 | # | Prio | Befund | Aufrufweg | Kleinstes Gegenbeispiel |
 |---|---|---|---|---|
@@ -178,7 +179,7 @@ Reproduktion: `node tests/real-data/repro-findings.mjs` (nur Auszüge aus
   der EPS-Historie). Die JNJ-Historie mischt außerdem ab FY2021 restated Werte
   (ohne Kenvue) mit FY2020 in alter Abgrenzung.
 
-### Ungeklärter Prüfpunkt
+### Ungeklärter Prüfpunkt (in D2 bestätigt und behoben, siehe §9)
 
 * **P-1 · Net Debt/EBITDA:** `computeNetDebtToEbitda` liest das Feld
   `net_debt`, ohne die Umfangsprüfung des DCF-Resolvers. Bei JNJ enthält das
@@ -225,3 +226,53 @@ korrekt den gemeldeten Tags.
   Fehler. Behoben ist das seit D1; der erneute Realdatenlauf steht aus (D3).
 * Die Rohdaten sind nicht versioniert (`tests/real-data/cache/`, rund 8 MB).
   Versioniert sind nur die wortgetreuen Auszüge mit Quell-Hash.
+
+## 9 · Nachtrag D2 — Korrekturen (Stand nach Commit `b699dbe` + Doku)
+
+Die Befunde wurden am Produktcode korrigiert und durch Regressionstests
+abgesichert (`tests/real-data-findings.test.mjs`, 41 Tests, Teil von
+`npm test`). Die Tests verlangen das fachlich richtige Ergebnis und schlagen am
+Stand vor D2 (`2f1058d`) fehl. Grundlage sind wortgetreue Auszüge derselben
+Quelldateien (gleicher SHA-256 wie beim Audit, erneut abgerufen am 2026-09-28).
+Die im Audit genannten Zahlen wurden an diesen Quellen bestätigt.
+
+| # | Status | Korrektur | Wirkung MCD/JNJ (echter Import im Browser) |
+|---|---|---|---|
+| F-2 | behoben, abgesichert | Jahresschlüssel = Geschäftsjahr (`_secPeriodYear`: Ende 1.–7. Januar gehört zum Vorjahr, 52/53-Wochen-Jahr); Periodenidentität, Anschlussprüfung, `fy`-Gegenprüfung nur für Hauptperioden, ersetzte Werte nachvollziehbar | JNJ: 10 Jahre FY2016–FY2025 inkl. FY2022 (79,990, Stichtag 2023-01-01); Wachstumsheuristik jetzt 2.29 % statt 8 % (vorher EPS-CAGR über scheinbar 4 statt 5 Jahre), RIM 88.36 statt 132.87 |
+| F-1 | behoben, abgesichert | D&A je Geschäftsjahr nach belegtem Tag-Umfang (DDA ⊇ D&A ⊇ Depreciation, Vergleich nur gleicher Bericht und gleiche Periode); widersprüchlich/nur Teilposten → kein Wert mit Grund; auch Quartals-D&A | MCD: D&A 2,199, EBITDA 14,592, D&A-Quote 7.90 %, DCF nachrichtlich 242.10/Aktie (vorher 198.18) |
+| F-4 | behoben, abgesichert | Jede historische Aktienangabe gegen NI/EPS desselben Geschäftsjahres; Originalangabe früherer 10-K vor Umskalierung; ohne Beleg keine Korrektur, Reihe endet vor nicht belegbarer Angabe | MCD: Reihe einheitlich (716.4 … 750.1 … 861.2), Net Share Issuance −4.5 % (8/10) statt −100 % (10/10) |
+| F-3 | behoben, abgesichert; TTM weiter unvollständig | Toleranz = Σ ½·10^−decimals der beteiligten Angaben, `decimals` aus der Original-XBRL-Instanz; ohne belegte Präzision exakt; gleiche Regel in der TTM-Gegenprobe | MCD Q3/2025 akzeptiert (Abweichung 1 ≤ 1.5 Mio.), Umsatz-TTM 27,703 bildbar. TTM bleibt unvollständig: EBIT Q2/2026 (−1 Mio. bei belegten decimals −5 → Grenze 0.6 Mio.), CFO/CapEx Q2/2026 (−3 Mio.), Q4-Aktien, Schuldenstichtag |
+| F-5 | behoben, abgesichert | Periodengleiche Verknüpfung (Endbestände desselben Geschäftsjahres, Definition unverändert); kein Rückgriff, keine 0 | MCD: ROIC − WACC „nicht bewertbar“ (Leasing für FY2025 nicht gemeldet, letzte Angabe 2023-12-31, retail) statt 21.5 % |
+| P-1 | bestätigt, behoben | Net Debt/EBITDA und MoS-Leverage-Zuschlag nutzen `_resolveNetDebtForDcfBridge` (gleiche Definition) plus Periodenabgleich mit EBITDA | MCD: „belastbare Nettoschulden fehlen — Schuldenangaben widersprechen sich (725)“ statt 2.69/3.05; JNJ: Teilbetrag 21,729 würde auch mit EBITDA nicht verwendet |
+
+Nicht geändert (bewusst): DCF- und Multiple-Sperren, Schuldenauflösung, I-1
+bis I-5, B-1 bis B-4, M-1 bis M-3.
+
+### JNJ — fachliche Abgrenzung (Auftrag §8)
+
+* Keine automatische Ergebnisnormalisierung, keine geschätzte Bereinigung des
+  Sonderertrags 7,209 („Other (income) expense, net“).
+* **I-1 bleibt offen (eigene Entscheidung).** `InterestExpenseNonoperating` wurde
+  nicht ergänzt. Eine reine Tag-Ergänzung ergäbe EBIT 32,496 einschließlich des
+  nicht-operativen Ertrags und würde zusammen mit P-1 ein DCF-Signal nicht
+  freischalten: die Wertbrücke bliebe wegen des unbelegten
+  Finance-Leasing-Umfangs gesperrt.
+* **Schulden/Finance-Leasing offen:** „Commitments under finance leases are not
+  significant“ ist ohne passende Regel und ohne Betrag keine belegte Null.
+  Fehlende Tags sind kein Nullnachweis.
+
+### Offen für D3 (erneuter Realdatenabgleich)
+
+* Vollständiger Quellenabgleich aller Anzeigen mit dem reparierten Werkzeug.
+  In D2 lief nur eine Importkontrolle (Replay MCD/JNJ, Werte oben).
+* Replay-Abgleich meldet unverändert gegenüber dem Stand vor D2:
+  MCD „Basiswert ddm“ (diagnostisches DDM 108.90 wird im Bewertungspanel nicht
+  angezeigt, das Werkzeug erwartet es) und JNJ „Markt-Vergleich: Periode der
+  verwendeten Basis 2025-12-28“. Beides bestand schon vor D2 (Gegenlauf gegen
+  `2f1058d`); zu klären ist, ob Werkzeugregel oder Anzeige anzupassen ist.
+* MCD meldet in 10-Qs `decimals="-5"` für Werte, die Vielfache von 1 Mio. sind.
+  Nach belegter Präzision bleiben EBIT/CFO/CapEx Q2/2026 Widersprüche; eine
+  größere Toleranz wäre nicht belegt.
+* FY2018 von MCD wird mit dem ASC-842-Eröffnungswert des Operating-Leasings zum
+  2019-01-01 verknüpft (1 Tag Abstand, Übergangswert). Das ist die bisherige
+  45-Tage-Stichtagsregel; fachlich zu bestätigen.

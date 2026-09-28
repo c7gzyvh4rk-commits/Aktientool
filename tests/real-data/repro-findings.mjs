@@ -1,78 +1,109 @@
 #!/usr/bin/env node
 // ═══════════════════════════════════════════════════════════════════════════
-// Realdaten-Audit MCD/JNJ — Reproduktion der bestätigten Befunde
+// Realdaten-Audit MCD/JNJ — Kontrolle der bestaetigten Befunde (seit D2)
 // ───────────────────────────────────────────────────────────────────────────
 // Start:  node tests/real-data/repro-findings.mjs
 //
-// Nutzt nur die wortgetreuen SEC-Auszüge in tests/real-data/excerpts/ und die
-// PRODUKTIVEN Funktionen der Tool-Datei (geladen wie in tests/audit-chat12.mjs).
-// Je Befund: BESTEHT = das falsche Verhalten ist noch reproduzierbar,
-// BEHOBEN = nicht mehr. Das Skript ist bewusst NICHT Teil von `npm test`:
-// es hält falsches Verhalten fest, nicht erwartetes Verhalten.
-// Exit 0 immer (Diagnose, keine Abnahme); 2 = nicht ausführbar.
+// Nutzt nur die wortgetreuen SEC-Auszuege in tests/real-data/excerpts/ und die
+// PRODUKTIVEN Funktionen der Tool-Datei (geladen wie in tests/audit-chat12.mjs),
+// jeweils auf dem Weg, den der Import tatsaechlich geht
+// (_extractSecFundamentals → _buildSecMasterJson → normalizeSharesInPlace bzw.
+// normalizeSecQuarters mit belegter Berichtspraezision).
+//
+// Bis D1 hielt das Skript das falsche Verhalten fest (Exit immer 0). Seit D2
+// sind die Befunde behoben; der erwartete Zustand ist BEHOBEN. Tritt ein
+// Befund wieder auf (BESTEHT), endet das Skript mit Exit 1.
+// Die verbindlichen Regressionstests stehen in tests/real-data-findings.test.mjs
+// (Teil von `npm test`); dieses Skript ist die knappe Uebersicht dazu.
+// Exit 0 = alle behoben · 1 = mindestens ein Befund besteht · 2 = nicht ausfuehrbar.
 // ═══════════════════════════════════════════════════════════════════════════
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { app, evalInApp } from '../audit-chat12.mjs';
+import { app } from '../audit-chat12.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const load = (n) => JSON.parse(readFileSync(join(HERE, 'excerpts', n), 'utf8'));
-const S = app();
-const TAGS = evalInApp('SEC_TAG_MAP');
-const MCD = load('mcd-companyfacts-excerpt.json').facts;
-const JNJ = load('jnj-companyfacts-excerpt.json').facts;
+let S, MCD, JNJ, XBRL;
+try {
+  S = app();
+  MCD = load('mcd-d2-regression.json').facts;
+  JNJ = load('jnj-d2-regression.json').facts;
+  XBRL = load('mcd-xbrl-precision.json').filings;
+  for (const fn of ['_extractSecFundamentals', '_buildSecMasterJson', 'parseXbrlInstancePrecision']) {
+    if (typeof S[fn] !== 'function') throw new Error(fn + ' fehlt (Produktstand vor D2?)');
+  }
+} catch (e) {
+  console.error('NICHT AUSFUEHRBAR: ' + e.message);
+  process.exit(2);
+}
+
 const out = [];
 const report = (id, besteht, text) => { out.push([id, besteht]); console.log(`${besteht ? 'BESTEHT' : 'BEHOBEN'}  ${id}  ${text}`); };
+const importFacts = (facts) => {
+  const { extracted, derivationNotes } = S._extractSecFundamentals(facts);
+  return S._buildSecMasterJson({ ticker: 'X', cik: '0', companyName: 'X', sic: null, fiscalYearEnd: '1231',
+    exchange: 'NYSE', sicMapping: null, extracted, yahooData: null, secFacts: facts, derivationNotes });
+};
+const mcd = importFacts(MCD);
+const jnj = importFacts(JNJ);
 
-// F-1 · MCD: D&A-Tag-Auswahl nimmt die SG&A-Teilzeile statt der Gesamt-D&A.
+// F-1 · MCD: D&A-Gesamtwert (2,199) statt Teilposten DDA (457).
 {
-  const da = S._extractWithFallback(MCD, TAGS.da, 10);
-  const used = da.usedTag || (da.meta && da.meta.source_reference) || '';
-  const v0 = da.values[0];
-  report('F-1', v0 === 457, `MCD FY2025 D&A = ${v0} (${used}); 10-K Kapitalflussrechnung: 2,199 (DepreciationAndAmortization)`);
+  const f = mcd.fundamentals;
+  const e0 = f.ebitda && f.ebitda[0];
+  report('F-1', e0 !== 12393 + 2199,
+    `MCD FY2025 EBITDA = ${e0} (${f._v4_meta.ebitda && f._v4_meta.ebitda.derivation}); Soll 12,393 + 2,199 = 14,592`);
 }
 
-// F-2 · JNJ: Jahres-Schlüssel = Kalenderjahr des Periodenendes → FY2022 (Ende 2023-01-01) fällt weg.
+// F-2 · JNJ: FY2022 (Ende 2023-01-01) als eigenes Geschaeftsjahr.
 {
-  const r = S._extractFyValues(JNJ, 'RevenueFromContractWithCustomerExcludingAssessedTax', 10);
-  const per = (r.meta && r.meta.periods) || [];
-  report('F-2', !per.includes('2023-01-01'),
-    `JNJ Umsatzperioden: ${per.join(', ')} · FY2022 (2022-01-03…2023-01-01, 79,990M) ${per.includes('2023-01-01') ? 'enthalten' : 'fehlt'}`);
+  const per = (jnj.fundamentals._v4_meta.revenue || {}).periods || [];
+  const i = per.indexOf('2023-01-01');
+  report('F-2', i < 0 || jnj.fundamentals.revenue[i] !== 79990,
+    `JNJ Umsatzperioden: ${per.join(', ')} · FY2022 ${i < 0 ? 'fehlt' : '= ' + jnj.fundamentals.revenue[i]}`);
 }
 
-// F-3 · MCD: Quartalsabgleich ohne Rundungstoleranz → Q3/2025 verworfen, kein TTM.
+// F-3 · MCD Q3/2025: 1 Mio. Abweichung innerhalb der belegten Rundung (decimals=-6).
 {
-  const n = S.normalizeSecQuarters(MCD, {});
-  const q3 = ((n.fields.revenue || {}).quarters || []).find(q => q.periodKey === 'FY2025-Q3');
-  const c = q3 && q3.conflict;
-  report('F-3', !!c,
-    `MCD Q3/2025 Umsatz gemeldet ${q3 && q3.value} · aus Kumulierungen ${c ? c.derivedValue : '—'} · Differenz ${c ? c.reportedMinusDerived : 0} USD → ${c ? 'als Widerspruch verworfen' : 'akzeptiert'}`);
+  const by = {};
+  for (const [accn, f] of Object.entries(XBRL)) by[accn] = S.parseXbrlInstancePrecision(f.xml);
+  const n = S.normalizeSecQuarters(MCD, { fields: ['revenue'], precision: S.secPrecisionLookup(by) });
+  const q3 = n.fields.revenue.quarters.find(q => q.periodKey === 'FY2025-Q3');
+  const rc = q3 && q3.roundingCheck;
+  report('F-3', !q3 || !!q3.conflict,
+    `MCD Q3/2025 Umsatz ${q3 && q3.value} · ${rc ? rc.note : (q3 && q3.conflict ? 'Widerspruch: ' + JSON.stringify(q3.conflict.precisionCheck || {}) : '—')}`);
 }
 
-// F-4 · MCD: gemischt skalierte Aktienreihe (Filer-XBRL meldet ab 10-K FY2023 „716.4 shares")
-//        → Net Share Issuance 5y = −100 %.
+// F-4 · MCD: jede historische Aktienangabe geprueft; keine gemischte Skalierung.
 {
-  const sh = S._extractWithFallback(MCD, TAGS.shares_diluted, 10);
-  const mj = { meta: {}, market: {}, fundamentals: {
-    shares_diluted: sh.values.slice(), _v4_meta: { shares_diluted: sh.meta },
-    net_income: [8563, 8223, 8469, 6177, 7545.2, 4730.5], eps_diluted: [11.95, 11.39, 11.56, 8.33, 10.04, 6.31] } };
-  try { S.normalizeSharesInPlace(mj); } catch { /* Diagnose */ }
-  const series = mj.fundamentals.shares_diluted;
-  const m = S.computeNetShareIssuance(mj);
+  S.normalizeSharesInPlace(mcd);
+  const series = mcd.fundamentals.shares_diluted;
   const mixed = series.some(v => v > 1e6) && series.some(v => v < 1e4);
-  report('F-4', mixed, `MCD shares_diluted nach normalizeSharesInPlace: [${series.join(', ')}] · Net Share Issuance 5y: ${m && m.detail}`);
+  const m = S.computeNetShareIssuance(mcd);
+  report('F-4', mixed || (m.status === 'ok' && m.value < -0.5),
+    `MCD shares_diluted: [${series.join(', ')}] · Net Share Issuance 5y: ${m.detail}`);
 }
 
-// F-5 · MCD: lease-bereinigter ROIC paart Reihen über den Index, nicht über die Periode.
+// F-5 · MCD: EBIT 2025 nicht mit Leasing zum 2023-12-31 verknuepft.
 {
-  const oll = S._extractFyValues(MCD, 'OperatingLeaseLiability', 10);
-  const ebit = S._extractFyValues(MCD, 'OperatingIncomeLoss', 10);
-  const p0o = oll.meta && oll.meta.periods[0], p0e = ebit.meta && ebit.meta.periods[0];
-  const src = String(S.computeRoicMinusWacc);
-  const indexJoin = /const ollI = oll\[i\]/.test(src);
-  report('F-5', indexJoin && p0o !== p0e,
-    `EBIT[0] Periode ${p0e} ↔ operating_lease_liabilities[0] Periode ${p0o} · computeRoicMinusWacc paart per Index: ${indexJoin}`);
+  mcd.meta.sub_classification = 'retail';
+  mcd.valuation = Object.assign(mcd.valuation || {}, { wacc_derived: 7, wacc_components: { tax_rate: 21 } });
+  const m = S.computeRoicMinusWacc(mcd);
+  const pairs = m._leasePairs || [];
+  const cross = pairs.some(p => S._secPeriodYear(p.leasePeriod) !== S._secPeriodYear(p.ebitPeriod));
+  report('F-5', cross || m._leaseAdjusted === true,
+    `ROIC: ${m.status} · ${m.detail} · Leasingpaare ${pairs.map(p => p.ebitPeriod + '↔' + p.leasePeriod).join(', ') || '—'}`);
 }
 
-console.log(`\n${out.filter(x => x[1]).length} von ${out.length} Befunden bestehen.`);
+// P-1 · MCD: Net Debt/EBITDA nicht aus einem Schulden-Teilbetrag.
+{
+  const m = S.computeNetDebtToEbitda(mcd);
+  const bridge = S._resolveNetDebtForDcfBridge(mcd.fundamentals);
+  report('P-1', m.status === 'ok' && !bridge.available,
+    `Net Debt/EBITDA: ${m.status} · ${m.detail} · DCF-Bruecke verfuegbar: ${bridge.available}`);
+}
+
+const open = out.filter(x => x[1]).length;
+console.log(`\n${open} von ${out.length} Befunden bestehen.`);
+process.exit(open > 0 ? 1 : 0);

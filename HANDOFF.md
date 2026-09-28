@@ -1,5 +1,106 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Folgechat D2: Bestätigte Produktfehler korrigiert (V1.0.71)
+
+**Ausgangsstand.** Auditbranch `claude/audit-real-data-mcd-jnj`, Spitze
+`2f1058d` (D1 inkl. Nachbesserung; Referenzvorfahr `11c32fa` enthalten).
+Arbeitsbaum sauber, keine `AGENTS.md`. D1 am Code bestätigt: TTM-Felder aus
+`resolveValuationView`, Neurendern vor dem Lesen, `checkPanels` exportiert und
+getestet.
+
+**Baseline vor der Änderung** (selbst ausgeführt): `npm test` Exit 0 (1700
+Assertions, 206/206 Node-Tests), `npm run test:audit-tool` Exit 0 (20/20),
+`npm run test:browser` Exit 0 (158/158), `repro-findings.mjs` 5 von 5 BESTEHT.
+SEC-Quellen neu geladen (Stichtag 2026-09-24): SHA-256 identisch mit dem Audit
+(MCD `0394e814…`, JNJ `7141c0c9…`).
+
+**Vorgehen.** Je Befund ein Commit mit Regressionstests in
+`tests/real-data-findings.test.mjs` (neu, Teil von `npm test`). Die Tests
+verlangen das richtige Ergebnis; gegen die Produktdatei von `2f1058d` schlagen
+alle Befundtests fehl (geprüft durch Austausch der Datei, danach
+zurückgesetzt). Für P-1 zusätzlich gegen `89ad1e7` (Stand direkt davor): 5/5
+rot. Wortgetreue Auszüge: `excerpts/mcd-d2-regression.json`,
+`excerpts/jnj-d2-regression.json` (alle Fakten der benötigten Tags) und
+`excerpts/mcd-xbrl-precision.json` (Ausschnitte der Original-XBRL-Instanzen),
+erzeugt mit `tests/real-data/make-excerpts.mjs`.
+
+| Befund | Commit | Status | Kern der Korrektur |
+|---|---|---|---|
+| F-2 | `9100263` | behoben, abgesichert (9 Tests) | `_secPeriodYear`: Ende 1.–7. Januar → Vorjahres-Geschäftsjahr; alle Jahresschlüssel (Extraktion, `_joinPeriodKeyed`, Ankerjahr, `validatePeriodAlignment`, Schuldenaufbau) nutzen sie. `_extractFyValues`: Periodenidentität, `supersededValues`, `fiscalYearConflicts`, Anschlussprüfung der Perioden, `fiscalYearCheck` (fy nur der Hauptperiode je 10-K). |
+| F-1 | `46a45f0` | behoben, abgesichert (9 Tests) | `daScopeEvidence` (Quartalsblock) + `_extractDaWithScopeCheck`: Taxonomie-Umfang DDA ⊇ D&A ⊇ Depreciation, Vergleich nur gleicher Bericht/gleiche Periode; Teilposten-Tag scheidet aus; widersprüchlich oder nur Teilposten → `null` mit Grund; auch Quartals-D&A. Kein Maximum, keine Summe. |
+| F-4 | `214bcbc` | behoben, abgesichert (5 Tests) | `_checkShareHistory` je Element i ≥ 1: NI/EPS desselben Geschäftsjahres; Originalangabe früherer 10-K (`original_values`) vor Umskalierung; ohne periodengleiche Gegenprüfung keine Korrektur, Sprung ≥ Faktor 50 beendet die Reihe; Protokoll in `_v4_meta.shares_diluted.history_check`. Import-Extraktion als reine Funktion `_extractSecFundamentals` (verhaltensgleich aus `secFetchAll`). |
+| F-3 | `f9b2229` | behoben, abgesichert (7 Tests); TTM weiter unvollständig | Toleranz = Σ ½·10^−decimals der beteiligten Angaben; `decimals` aus der Original-XBRL (`parseXbrlInstancePrecision`, nur Kontexte ohne Dimensionen). Unbekannt → exakter Vergleich. Gleiche Regel in der TTM-Gegenprobe (Nettokoeffizient je Angabe). Import lädt Instanzen nur für Berichte mit Quartalswiderspruch der letzten 8 Quartale (`secPrecisionRequests`) über den Proxy. |
+| F-5 | `89ad1e7` | behoben, abgesichert (6 Tests) | `computeRoicMinusWacc`: Endbestände desselben Geschäftsjahres (Definition unverändert), Leasing nur periodengleich (kein Rückgriff, keine 0); Leasing belegt und nach Regel maßgeblich, aber für das jüngste Jahr fehlend → nicht bewertbar mit Grund. Leasing aus Current+Noncurrent je Stichtag. |
+| P-1 | `b699dbe` | bestätigt, behoben (5 Tests) | `computeNetDebtToEbitda` und MoS-Leverage-Zuschlag über `_resolveNetDebtForDcfBridge` + Periodenabgleich Nettoschulden/EBITDA. Sperren der DCF- und Multiple-Brücken unverändert. |
+
+**Wirkung im echten Import (Replay mit Originaldaten).** MCD: D&A 2,199,
+EBITDA 14,592, D&A-Quote 7.90 %, DCF nachrichtlich 242.10/Aktie (vorher 198.18),
+Aktienreihe einheitlich, Net Share Issuance −4.5 % (8/10), ROIC − WACC und Net
+Debt/EBITDA mit benanntem Grund nicht bewertet, Q3/2025 akzeptiert, Umsatz-TTM
+bildbar, TTM insgesamt weiter unvollständig. JNJ: 10 Jahre inkl. FY2022, RIM
+88.36 statt 132.87 (Wachstumsheuristik 2.29 % statt 8 %: der EPS-CAGR lief vorher
+über scheinbar 4 statt tatsächlich 5 Jahre), DDM 78.07 unverändert. Das ist eine
+**Importkontrolle**, kein vollständiger Quellenabgleich (D3).
+
+Weitere Verhaltensänderungen, bewusst:
+* Leasing-Median: fehlendes Leasing zählte bisher als 0; jetzt ohne Wert.
+* MoS-Leverage-Zuschlag: nutzt jetzt auch `total_debt − cash` nach der Regel der
+  Wertbrücke (bisher nur `net_debt[0]`); nicht belastbare Nettoschulden ergeben
+  keinen Zuschlag, der Grund steht in `_mosLeverageUnavailable`.
+* Net Debt/EBITDA ohne Liquiditätswert: nicht mehr `total_debt − 0`.
+* Lückenlosigkeit der Jahresreihe verlangt aneinander anschließende Perioden
+  (Wechsel des Geschäftsjahresendes beendet die Reihe).
+
+**JNJ — fachliche Abgrenzung (§8).** Keine Normalisierung, keine geschätzte
+Bereinigung des Sonderertrags 7,209. `InterestExpenseNonoperating` wurde
+**nicht** ergänzt (I-1 bleibt eigene Entscheidung): Die Tag-Ergänzung ergäbe EBIT
+32,496 inkl. nicht-operativem Ertrag; die Wertbrücke bliebe ohnehin gesperrt,
+weil der Finance-Leasing-Umfang unbelegt ist. „Not significant“ ist ohne Regel
+und Betrag keine belegte Null; fehlende Tags sind kein Nullnachweis.
+
+**Werkzeug.** `repro-findings.mjs` prüft jetzt den produktiven Importweg und
+erwartet `BEHOBEN` (Exit 1, sobald ein Befund wieder besteht; 2 = nicht
+ausführbar). `fetch-sources.mjs` lädt die benötigten XBRL-Instanzen
+(`cache/archives/…`), `replay-import.mjs` bedient sie. README aktualisiert.
+
+**Auf dem fertigen Stand ausgeführt** (vor dem Doku-Commit, Produktstand
+`b699dbe`):
+
+| Befehl | Ergebnis | Exit |
+|---|---|---|
+| `npm test` | 1700 Rechen-Assertions; 247/247 Node-Tests (davon 41 neu) | 0 |
+| `npm run test:audit-tool` | 20/20 | 0 |
+| `npm run test:browser` | 158/158 | 0 |
+| `node tests/real-data/replay-import.mjs --selftest` | Abgleich 52/52 | 0 |
+| `node tests/real-data/repro-findings.mjs` | 0 von 6 bestehen (F-1…F-5, P-1) | 0 |
+| `node tests/real-data/replay-import.mjs MCD` | Abgleich 43/46 | 1 |
+| `node tests/real-data/replay-import.mjs JNJ` | Abgleich 46/49 | 1 |
+
+Die Replay-Abweichungen sind **vor D2 identisch** (Gegenlauf mit der
+Produktdatei von `2f1058d`: MCD 43/46, JNJ 46/49, gleiche Prüfpunkte):
+MCD „valuation: Basiswert ddm“ (diagnostisches DDM 108.90 wird im
+Bewertungspanel nicht gezeigt) und JNJ „market: Periode der verwendeten Basis
+2025-12-28“. Nicht in D2 behandelt.
+
+**Übergabe an D3 (erneuter Realdatenabgleich).** Chat D ist nicht
+abgeschlossen.
+1. Vollständiger Quellenabgleich MCD/JNJ mit dem reparierten Werkzeug
+   (`fetch-sources.mjs` lädt jetzt auch die XBRL-Instanzen).
+2. Die beiden Replay-Abweichungen klären (Werkzeugregel oder Anzeige).
+3. MCD-TTM: EBIT/CFO/CapEx Q2/2026 bleiben nach belegter Präzision
+   (`decimals="-5"`) Widersprüche; Q4-Aktien und Schuldenstichtag fehlen (B-3,
+   B-4, I-4).
+4. MCD FY2018: Leasing-Eröffnungswert 2019-01-01 (ASC 842) wird FY2018
+   zugeordnet (45-Tage-Stichtagsregel) — fachlich bestätigen.
+5. Offen und bewusst nicht angefasst: I-1 (mit P-1 jetzt gesperrt), I-2 bis
+   I-5, `shares_basic`-Historie (ohne Verbraucher, nicht einzeln geprüft).
+
+**Branch.** Gearbeitet und gepusht auf dem bestehenden Auditbranch
+`claude/audit-real-data-mcd-jnj`, wie im Auftrag verlangt. Kein Merge, kein
+Deployment, keine Branch-Löschung.
+
+---
+
 ## Folgechat D1: Auditwerkzeug repariert (Vorbereitung für D2/D3)
 
 **Ausgangsstand.** Auditbranch `claude/audit-real-data-mcd-jnj` an der Spitze
