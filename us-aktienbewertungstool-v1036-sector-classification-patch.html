@@ -3732,6 +3732,138 @@ Ergebnis: ${passed}/${cases.length} bestanden`);
 // RIM, DDM, MarketCap) dasselbe verwenden.
 // Gibt { sharesM, adjusted, note, blocked, blockReason } zurück.
 // ────────────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════
+// V1.0.71 (D2/F-4) — Pruefung JEDER historischen Aktienangabe
+// ════════════════════════════════════════════════════════════════
+// Bis V1.0.70 wurde nur shares_diluted[0] auf seine Skalierung geprueft und der
+// dort gefundene Faktor auf die ganze Reihe uebertragen. MCD meldet ab dem
+// 10-K FY2023 „716.4 shares“ (Filer-Skalierungsfehler), aeltere Berichte
+// 750,100,000. Die Reihe blieb gemischt skaliert; „Net Share Issuance 5y“
+// ergab −100 % mit Bestnote.
+//
+// Jetzt wird jedes Element i ≥ 1 einzeln geprueft. Belastbar ist nur eine
+// PERIODENGLEICHE Gegenpruefung: Jahresueberschuss / verwaessertes EPS desselben
+// Geschaeftsjahres ergibt die implizite Aktienzahl (Mio.). Sie entscheidet nur
+// die Groessenordnung (Kandidaten liegen je Faktor 1000 auseinander); das
+// Fenster 0.75…1.33 laesst Unterschiede zwischen Zaehler des EPS und
+// Jahresueberschuss (Vorzugsdividenden, Rundung des EPS) zu.
+//   verified         — die Angabe passt wie gemeldet
+//   original_filing  — sie passt nicht, aber derselbe Zeitraum ist in einem
+//                      anderen Bericht mit passender Groessenordnung gemeldet:
+//                      diese Originalangabe wird verwendet
+//   rescaled         — nur eine um 10^3/10^6 verschobene Lesart passt; sie wird
+//                      mit Rohwert, Faktor und Begruendung verwendet
+//   unverifiable_consistent — keine Gegenpruefung moeglich; die Angabe liegt
+//                      wie gemeldet weniger als Faktor 50 vom juengeren Wert
+//                      entfernt (echte Splits, Rueckkaeufe, Emissionen): sie
+//                      bleibt unveraendert (keine Korrektur)
+//   contradicted / unverifiable — keine belegbare Lesart
+// Groessenordnung oder Spruenge allein fuehren nie zu einer Korrektur. Die
+// Reihe endet vor der ersten nicht belegbaren Angabe (kein Luecken-Null, keine
+// Scheinhistorie); Kennzahlen mit laengerem Bedarf werden damit „nicht
+// verfuegbar“ statt scheinpraezise.
+const SHARE_HISTORY_EPS_FIT = Object.freeze({ lo: 0.75, hi: 1 / 0.75 });
+// Ohne Gegenpruefung: Abstand zum juengeren Wert, ab dem eine Angabe nicht mehr
+// ungeprueft bleiben darf. Skalierungsfehler liegen bei 10^3/10^6, bekannte
+// Splits weit darunter.
+const SHARE_HISTORY_NEIGHBOR_FIT = Object.freeze({ lo: 1 / 50, hi: 50 });
+
+function _checkShareHistory(values, ctx) {
+  const c = ctx || {};
+  const vals = Array.isArray(values) ? values : [];
+  const periods = Array.isArray(c.periods) ? c.periods : null;
+  const factor = c.literalFactor != null ? c.literalFactor : 1;     // Faktor auf Mio.
+  const r6 = (x) => (x == null ? x : parseFloat(x.toPrecision(12)));   // nur Gleitkommarauschen
+  const fits = (cand, implied) => implied != null && implied > 0 && cand > 0 &&
+    cand / implied >= SHARE_HISTORY_EPS_FIT.lo && cand / implied <= SHARE_HISTORY_EPS_FIT.hi;
+
+  // Implizite Aktienzahl je Index: NI (Mio.) / EPS desselben Geschaeftsjahres.
+  const byYear = (arr, per) => {
+    const m = new Map();
+    if (!Array.isArray(arr) || !Array.isArray(per)) return m;
+    for (let i = 0; i < arr.length && i < per.length; i++) {
+      const y = _secPeriodYear(per[i]);
+      if (y != null && arr[i] != null && !m.has(y)) m.set(y, { value: arr[i], period: per[i] });
+    }
+    return m;
+  };
+  const niArr = Array.isArray(c.netIncome) ? c.netIncome : [];
+  const epsArr = Array.isArray(c.eps) ? c.eps : [];
+  let pairing = 'none';
+  let impliedAt = () => null;
+  if (periods && Array.isArray(c.netIncomePeriods) && Array.isArray(c.epsPeriods)) {
+    pairing = 'period';
+    const niY = byYear(niArr, c.netIncomePeriods), epY = byYear(epsArr, c.epsPeriods);
+    impliedAt = (i) => {
+      const y = _secPeriodYear(periods[i]);
+      const n = niY.get(y), e = epY.get(y);
+      if (!n || !e || !(Math.abs(e.value) >= 0.05) || n.value === 0 || Math.sign(n.value) !== Math.sign(e.value)) return null;
+      return { implied: n.value / e.value, ni: n.value, eps: e.value, niPeriod: n.period, epsPeriod: e.period };
+    };
+  }
+  // Ohne Periodenangaben gibt es keine Gegenpruefung: ein Positionsbezug waere
+  // kein Nachweis, dass NI, EPS und Aktien dasselbe Jahr beschreiben.
+
+  const elements = [];
+  const out = [];
+  let truncatedAt = null, reason = null;
+  for (let i = 0; i < vals.length; i++) {
+    const raw = vals[i];
+    const period = periods ? (periods[i] || null) : null;
+    if (i === 0) {             // [0] bestimmt die bestehende Pruefung (EPS, Kurs, Groesse)
+      out.push(raw);
+      elements.push({ index: 0, period, raw, valueM: raw, status: 'current', factor: 1 });
+      continue;
+    }
+    if (!(raw > 0)) { truncatedAt = i; reason = `keine gueltige Angabe (${raw})`; elements.push({ index: i, period, raw, status: 'invalid' }); break; }
+    const literal = r6(raw * factor);
+    const ev = impliedAt(i);
+    let el = null;
+    if (ev) {
+      if (fits(literal, ev.implied)) {
+        el = { status: 'verified', valueM: literal, factor };
+      } else {
+        const orig = (c.originals && period && Array.isArray(c.originals[period])) ? c.originals[period] : [];
+        const o = orig.map(x => ({ ...x, valueM: r6(x.val * (c.originalsFactor != null ? c.originalsFactor : factor)) }))
+          .filter(x => fits(x.valueM, ev.implied))
+          .sort((a, b) => String(b.filed || '').localeCompare(String(a.filed || '')))[0];
+        if (o) {
+          el = { status: 'original_filing', valueM: o.valueM, factor: null,
+                 source: { accn: o.accn || null, filed: o.filed || null, val: o.val },
+                 note: `gemeldet ${raw} (Lesart ${literal} Mio.) passt nicht zu NI/EPS ${ev.implied.toFixed(1)} Mio.; `
+                   + `Originalangabe ${o.val} (${o.accn || '?'}) verwendet` };
+        } else {
+          const cand = [1e-3, 1e-6, 1e3, 1e6].map(k => ({ k, v: r6(literal * k) })).filter(x => fits(x.v, ev.implied));
+          if (cand.length === 1) {
+            el = { status: 'rescaled', valueM: cand[0].v, factor: factor * cand[0].k,
+                   note: `gemeldet ${raw} → ${cand[0].v} Mio. (Faktor ${cand[0].k}); Beleg NI/EPS `
+                     + `${ev.ni}/${ev.eps} = ${ev.implied.toFixed(1)} Mio. desselben Geschaeftsjahres` };
+          } else {
+            el = { status: 'contradicted', valueM: null,
+                   note: `keine Lesart von ${raw} passt zu NI/EPS ${ev.implied.toFixed(1)} Mio.` };
+          }
+        }
+      }
+      el.evidence = { pairing, implied: ev.implied, ni: ev.ni, eps: ev.eps };
+    } else {
+      const prev = out[out.length - 1];
+      if (prev > 0 && literal / prev >= SHARE_HISTORY_NEIGHBOR_FIT.lo && literal / prev <= SHARE_HISTORY_NEIGHBOR_FIT.hi) {
+        el = { status: 'unverifiable_consistent', valueM: literal, factor,
+               note: 'keine periodengleiche NI/EPS-Gegenpruefung; unveraendert (weniger als Faktor 50 vom juengeren Wert)' };
+      } else {
+        el = { status: 'unverifiable', valueM: null,
+               note: `keine periodengleiche Gegenpruefung und ${literal} Mio. nicht vereinbar mit ${prev} Mio. — nicht korrigiert` };
+      }
+    }
+    elements.push({ index: i, period, raw, ...el });
+    if (el.valueM == null) { truncatedAt = i; reason = el.note; break; }
+    out.push(el.valueM);
+  }
+  const changed = out.length !== vals.length || out.some((v, i) => v !== vals[i]);
+  return { values: out, elements, truncatedAt, reason, pairing, changed,
+           adjusted: elements.filter(e => e.status === 'rescaled' || e.status === 'original_filing').length };
+}
+
 function normalizeSharesInPlace(mj) {
   const f    = mj.fundamentals || {};
   const mkt  = mj.market || {};
@@ -3814,6 +3946,40 @@ function normalizeSharesInPlace(mj) {
     mj.meta._yahoo_hints.shares_raw_stored    = raw;
     mj.meta._yahoo_hints.shares_derived_m     = sharesM;
   }
+  // V1.0.71 (D2/F-4): Jede historische Angabe einzeln pruefen (siehe
+  // _checkShareHistory). Die Reihe liegt jetzt in Mio. vor; Rohangaben anderer
+  // Berichte (original_values) sind XBRL-Stueckzahlen.
+  {
+    const cur = f.shares_diluted;
+    const sdMeta = (f._v4_meta && f._v4_meta.shares_diluted) || null;
+    const metaOf = (k) => (f._v4_meta && f._v4_meta[k] && Array.isArray(f._v4_meta[k].periods)) ? f._v4_meta[k].periods : null;
+    const hist = _checkShareHistory(cur, {
+      periods: sdMeta && Array.isArray(sdMeta.periods) ? sdMeta.periods : null,
+      literalFactor: 1,
+      netIncome: f.net_income, netIncomePeriods: metaOf('net_income'),
+      eps: f.eps_diluted, epsPeriods: metaOf('eps_diluted'),
+      originals: sdMeta && sdMeta.original_values ? sdMeta.original_values : null,
+      originalsFactor: 1e-6
+    });
+    if (hist.changed) {
+      f.shares_diluted = hist.values;
+      if (sdMeta) {
+        for (const k of ['periods', 'starts', 'forms', 'accns', 'frames', 'durations', 'filed', 'fiscalYears']) {
+          if (Array.isArray(sdMeta[k])) sdMeta[k] = sdMeta[k].slice(0, hist.values.length);
+        }
+      }
+    }
+    const summary = { pairing: hist.pairing, truncatedAt: hist.truncatedAt, reason: hist.reason,
+                      adjusted: hist.adjusted,
+                      elements: hist.elements.map(e => ({ period: e.period, raw: e.raw, valueM: e.valueM,
+                                                          status: e.status, note: e.note || null,
+                                                          source: e.source || null })) };
+    if (hist.changed || hist.truncatedAt != null || hist.adjusted > 0 || !mj.meta._yahoo_hints._shares_history) {
+      mj.meta._yahoo_hints._shares_history = summary;
+    }
+    if (sdMeta && (hist.changed || hist.truncatedAt != null || !sdMeta.history_check)) sdMeta.history_check = summary;
+  }
+
   // V11.9.25: Soft-Warnings aus auditShareFacts in meta speichern
   if (_audit && _audit.softs && _audit.softs.length > 0) {
     if (!mj.meta._yahoo_hints._sharesAuditSofts) {
@@ -11476,6 +11642,15 @@ function computeNetShareIssuance(mj) {
   const f = mj.fundamentals || {};
   const sd = f.shares_diluted || [];
   if (sd.length < 6) {
+    // V1.0.71 (D2/F-4): Endet die Reihe, weil eine aeltere Angabe nicht belegbar
+    // war, steht der Grund in der Anzeige.
+    const _hc = (f._v4_meta && f._v4_meta.shares_diluted && f._v4_meta.shares_diluted.history_check)
+      || (mj.meta && mj.meta._yahoo_hints && mj.meta._yahoo_hints._shares_history) || null;
+    if (_hc && _hc.truncatedAt != null) {
+      const _p = _hc.elements && _hc.elements[_hc.truncatedAt] && _hc.elements[_hc.truncatedAt].period;
+      return metricInsufficient(sd.length, 6, 'belegbare Aktienhistorie endet vor '
+        + (_p || ('Index ' + _hc.truncatedAt)) + ': ' + (_hc.reason || 'Angabe nicht belegbar'));
+    }
     return metricInsufficient(sd.length, 6, 'shares_diluted (mind. 6 Jahre für 5y-Vergleich)');
   }
   if (sd[0] == null || sd[5] == null || sd[5] <= 0) {
@@ -29113,6 +29288,26 @@ function _applyClassificationProvenance(mj, sic, sicMapping) {
   }
 }
 
+// V1.0.71 (D2/F-4): Rohangaben eines Aktien-Tags je Periodenende aus allen
+// 10-K-Berichten (Wert unveraendert, mit accn/filed) — die Originalangaben fuer
+// _checkShareHistory. Nur Jahresperioden (Beginn vorhanden, 330–400 Tage).
+function _shareOriginalValues(facts, tag, periods) {
+  if (!facts || !tag || !Array.isArray(periods)) return null;
+  const c = facts['us-gaap'] && facts['us-gaap'][tag];
+  const arr = c && c.units && c.units.shares;
+  if (!Array.isArray(arr)) return null;
+  const want = new Set(periods.filter(Boolean));
+  const out = {};
+  for (const e of arr) {
+    if (e.form !== '10-K' || !e.start || !e.end || !want.has(e.end)) continue;
+    const days = (new Date(e.end).getTime() - new Date(e.start).getTime()) / 86400000;
+    if (!(days >= 330 && days <= 400)) continue;
+    if (!out[e.end]) out[e.end] = [];
+    out[e.end].push({ val: e.val, accn: e.accn || null, filed: e.filed || null });
+  }
+  return out;
+}
+
 function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
     exchange, sicMapping, extracted, yahooData, secFacts, derivationNotes }) {
   const mj = createEmptyMasterJson();
@@ -29241,7 +29436,10 @@ function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
       gapFrom:        _sdMeta.gapFrom        || null,
       gapTo:          _sdMeta.gapTo          || null,
       gapYears:       _sdMeta.gapYears       || null,
-      droppedPeriods: _sdMeta.droppedPeriods || null
+      droppedPeriods: _sdMeta.droppedPeriods || null,
+      // V1.0.71 (D2/F-4): alle 10-K-Angaben desselben Tags je Periode
+      // (Originalberichte), fuer die Pruefung jeder historischen Angabe.
+      original_values: _shareOriginalValues(secFacts, extracted.shares_diluted.usedTag, _sdMeta.periods)
     };
   }
   if (extracted.shares_basic && extracted.shares_basic.values.length > 0) {
@@ -29290,6 +29488,32 @@ function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
   if (f.shares_diluted && f.shares_diluted[0] > 0) {
     const ns = _normalizeShareSeries(f.shares_diluted, _shareCtx);
     if (ns && ns.series) {
+      // V1.0.71 (D2/F-4): Nur [0] uebernimmt den Faktor der bestehenden
+      // Pruefung. Jedes aeltere Element wird gegen seine WOERTLICHE XBRL-Angabe
+      // (Einheit shares → ÷1e6) und die periodengleiche NI/EPS-Gegenpruefung
+      // geprueft; siehe _checkShareHistory.
+      const _exM = (k) => (extracted[k] && extracted[k].meta && Array.isArray(extracted[k].meta.periods))
+        ? extracted[k].meta.periods : null;
+      const _sdM = f._v4_meta['shares_diluted'] || {};
+      const _unitShares = (extracted.shares_diluted.meta && extracted.shares_diluted.meta.unit) === 'shares';
+      const _hist = _checkShareHistory(f.shares_diluted, {
+        periods: Array.isArray(_sdM.periods) ? _sdM.periods : null,
+        literalFactor: _unitShares ? 1e-6 : ns.series[0] / f.shares_diluted[0],
+        netIncome: extracted.net_income && extracted.net_income.values, netIncomePeriods: _exM('net_income'),
+        eps: extracted.eps_diluted && extracted.eps_diluted.values, epsPeriods: _exM('eps_diluted'),
+        originals: _sdM.original_values || null, originalsFactor: 1e-6
+      });
+      ns.series = [ns.series[0]].concat(_hist.values.slice(1));
+      _sdM.history_check = {
+        pairing: _hist.pairing, truncatedAt: _hist.truncatedAt, reason: _hist.reason, adjusted: _hist.adjusted,
+        elements: _hist.elements.map(e => ({ period: e.period, raw: e.raw, valueM: e.index === 0 ? ns.series[0] : e.valueM,
+                                            status: e.status, note: e.note || null, source: e.source || null }))
+      };
+      for (const k of ['periods', 'forms', 'frames', 'durations', 'filed']) {
+        if (Array.isArray(_sdM[k])) _sdM[k] = _sdM[k].slice(0, ns.series.length);
+      }
+      if (!mj.meta._yahoo_hints) mj.meta._yahoo_hints = {};
+      mj.meta._yahoo_hints._shares_history = _sdM.history_check;
       f.shares_diluted = ns.series;
       if (!mj.meta._yahoo_hints) mj.meta._yahoo_hints = {};
       mj.meta._yahoo_hints._shares_diag = ns.result;
@@ -30182,6 +30406,18 @@ function _renderSecDiag(report, masterJson) {
       warnings.push(`ℹ stale-ignoriert: ${mcf.field} — ${mcf.warning}`);
     }
   }
+  // V1.0.71 (D2/F-4): Pruefung der Aktienhistorie sichtbar machen.
+  {
+    const _hc = f._v4_meta && f._v4_meta.shares_diluted && f._v4_meta.shares_diluted.history_check;
+    if (_hc) {
+      const _adj = (_hc.elements || []).filter(e => e.status === 'rescaled' || e.status === 'original_filing');
+      for (const e of _adj) warnings.push(`ℹ shares_diluted ${e.period}: ${e.status === 'rescaled' ? 'Skalierung korrigiert' : 'Originalangabe verwendet'} — ${e.note}`);
+      if (_hc.truncatedAt != null) {
+        const _p = _hc.elements[_hc.truncatedAt] && _hc.elements[_hc.truncatedAt].period;
+        warnings.push(`⚠ shares_diluted: Historie endet vor ${_p || 'Index ' + _hc.truncatedAt} — ${_hc.reason}`);
+      }
+    }
+  }
   // V1.0.71 (D2/F-1): Auswahl der D&A nach belegtem Tag-Umfang sichtbar machen.
   {
     const _daM = extracted && extracted.da && extracted.da.meta;
@@ -30384,6 +30620,61 @@ function _renderSecDiag(report, masterJson) {
 // - Import-Button: secConfirmImport() prüft ticker-Match mit
 //   pendingMasterJson.meta.ticker gegen lastRequestedTicker.
 // ────────────────────────────────────────────────────────────────
+// V1.0.71 (D2): Extraktion aller Felder aus SEC-companyfacts — unveraendert aus
+// secFetchAll herausgeloest (reine Funktion, kein DOM, kein Netz).
+function _extractSecFundamentals(facts) {
+  const extracted = {};
+
+  // V1.0.8 (anchor-aware): Revenue zuerst extrahieren, anchorYear ableiten
+  const _revTags = SEC_TAG_MAP.revenue;
+  extracted.revenue = _extractWithFallback(facts, _revTags, 10);
+  const _revP0 = extracted.revenue && extracted.revenue.meta && Array.isArray(extracted.revenue.meta.periods)
+    ? extracted.revenue.meta.periods[0] : null;
+  const _anchorYearM = _revP0 && typeof _revP0 === 'string' ? _secPeriodYear(_revP0) || null : null;
+
+  // Core-Felder die zwingend current-year sein müssen (requireCurrent=true)
+  // V1.0.12: gross_profit hinzugefügt — stale GrossProfit (z.B. CAT 2020) darf nicht importiert werden
+  const CORE_REQUIRE_CURRENT = new Set([
+    'net_income','eps_diluted','shares_diluted','total_debt',
+    'cash_and_equivalents','total_equity','total_assets',
+    'current_assets','current_liabilities',
+    'cfo','capex','ebit','interest_expense','tax_expense',
+    'gross_profit',
+    // V1.0.37: Komponenten der EBIT-Rekonstruktion — stale darf kein EBIT erzeugen
+    'pretax_income',
+    // Period-Gate-Felder bzw. modellkritische Spezialfelder: nicht stale importieren.
+    // Beispiel AVGO: StockholdersEquity/BookValue nur bis 2019 verfügbar -> darf DCF/DDM nicht global sperren.
+    'book_value','tangible_book_value',
+    'dividends_paid','dps','dps_direct'
+  ]);
+
+  for (const [field, tags] of Object.entries(SEC_TAG_MAP)) {
+    if (field === 'revenue') continue; // already extracted above
+    if (tags===null) { extracted[field]={values:[],meta:null,usedTag:null,derived:true}; continue; }
+    // V1.0.71 (D2/F-1): D&A je Geschaeftsjahr nach belegtem Tag-Umfang.
+    if (field === 'da') { extracted.da = _extractDaWithScopeCheck(facts, 10); continue; }
+    if (_anchorYearM != null && CORE_REQUIRE_CURRENT.has(field)) {
+      extracted[field] = _extractWithFallback(facts, tags, 10, {
+        anchorYear: _anchorYearM, requireCurrent: true, fieldName: field
+      });
+    } else {
+      extracted[field] = _extractWithFallback(facts, tags, 10);
+    }
+  }
+
+  // V1.0.37: Alle abgeleiteten Serien period-keyed erzeugen (siehe _applySecDerivations)
+  const _derivationNotes = _applySecDerivations(extracted);
+
+  // Felder mit stale-ignorierten Kandidaten in _sec_fetch.missing_current_fields dokumentieren
+  const _missingCurrentFields = [];
+  for (const [field, ex] of Object.entries(extracted)) {
+    if (ex && ex.meta && ex.meta._tagSelectionWarning) {
+      _missingCurrentFields.push({ field, warning: ex.meta._tagSelectionWarning });
+    }
+  }
+  return { extracted, derivationNotes: _derivationNotes, missingCurrentFields: _missingCurrentFields };
+}
+
 async function secFetchAll() {
   // Dieselbe Pruefung wie fuer Knopf und Statusmeldung — sie gilt auch fuer
   // Wege, die den gesperrten Knopf umgehen (Enter im Tickerfeld, direkter
@@ -30453,55 +30744,10 @@ async function secFetchAll() {
     const sicMapping = _sicToSector(sic);
 
     _secStatus('Extrahiere Fundamentaldaten…','info');
-    const extracted = {};
-
-    // V1.0.8 (anchor-aware): Revenue zuerst extrahieren, anchorYear ableiten
-    const _revTags = SEC_TAG_MAP.revenue;
-    extracted.revenue = _extractWithFallback(facts, _revTags, 10);
-    const _revP0 = extracted.revenue && extracted.revenue.meta && Array.isArray(extracted.revenue.meta.periods)
-      ? extracted.revenue.meta.periods[0] : null;
-    const _anchorYearM = _revP0 && typeof _revP0 === 'string' ? _secPeriodYear(_revP0) || null : null;
-
-    // Core-Felder die zwingend current-year sein müssen (requireCurrent=true)
-    // V1.0.12: gross_profit hinzugefügt — stale GrossProfit (z.B. CAT 2020) darf nicht importiert werden
-    const CORE_REQUIRE_CURRENT = new Set([
-      'net_income','eps_diluted','shares_diluted','total_debt',
-      'cash_and_equivalents','total_equity','total_assets',
-      'current_assets','current_liabilities',
-      'cfo','capex','ebit','interest_expense','tax_expense',
-      'gross_profit',
-      // V1.0.37: Komponenten der EBIT-Rekonstruktion — stale darf kein EBIT erzeugen
-      'pretax_income',
-      // Period-Gate-Felder bzw. modellkritische Spezialfelder: nicht stale importieren.
-      // Beispiel AVGO: StockholdersEquity/BookValue nur bis 2019 verfügbar -> darf DCF/DDM nicht global sperren.
-      'book_value','tangible_book_value',
-      'dividends_paid','dps','dps_direct'
-    ]);
-
-    for (const [field, tags] of Object.entries(SEC_TAG_MAP)) {
-      if (field === 'revenue') continue; // already extracted above
-      if (tags===null) { extracted[field]={values:[],meta:null,usedTag:null,derived:true}; continue; }
-      // V1.0.71 (D2/F-1): D&A je Geschaeftsjahr nach belegtem Tag-Umfang.
-      if (field === 'da') { extracted.da = _extractDaWithScopeCheck(facts, 10); continue; }
-      if (_anchorYearM != null && CORE_REQUIRE_CURRENT.has(field)) {
-        extracted[field] = _extractWithFallback(facts, tags, 10, {
-          anchorYear: _anchorYearM, requireCurrent: true, fieldName: field
-        });
-      } else {
-        extracted[field] = _extractWithFallback(facts, tags, 10);
-      }
-    }
-
-    // V1.0.37: Alle abgeleiteten Serien period-keyed erzeugen (siehe _applySecDerivations)
-    const _derivationNotes = _applySecDerivations(extracted);
-
-    // Felder mit stale-ignorierten Kandidaten in _sec_fetch.missing_current_fields dokumentieren
-    const _missingCurrentFields = [];
-    for (const [field, ex] of Object.entries(extracted)) {
-      if (ex && ex.meta && ex.meta._tagSelectionWarning) {
-        _missingCurrentFields.push({ field, warning: ex.meta._tagSelectionWarning });
-      }
-    }
+    // V1.0.71 (D2): Extraktion als reine Funktion (_extractSecFundamentals),
+    // damit Regressionstests genau diesen Weg ohne Browser ausfuehren koennen.
+    const { extracted, derivationNotes: _derivationNotes, missingCurrentFields: _missingCurrentFields }
+      = _extractSecFundamentals(facts);
     if (!_isCurrent()) return;
 
     let yahooData = null;

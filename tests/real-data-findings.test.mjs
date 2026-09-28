@@ -295,3 +295,111 @@ test('F-1 synthetisch: nur Depreciation wird verwendet, aber als Teilumfang ausg
   assert.deepEqual(plain(r.values), [80]);
   assert.equal(r.meta.daSelection[0].status, 'depreciation_only');
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// F-4 · Gemischt skalierte Aktienhistorie
+// ═════════════════════════════════════════════════════════════════════════════
+// Produktiver Importweg ohne Browser: Extraktion + Master-JSON wie secFetchAll.
+function importFacts(facts, ticker = 'X') {
+  if (typeof S._extractSecFundamentals !== 'function') {
+    throw new Error('Importweg _extractSecFundamentals fehlt (Stand vor D2)');
+  }
+  const { extracted, derivationNotes } = S._extractSecFundamentals(facts);
+  const mj = S._buildSecMasterJson({ ticker, cik: '0', companyName: ticker, sic: null, fiscalYearEnd: '1231',
+    exchange: 'NYSE', sicMapping: null, extracted, yahooData: null, secFacts: facts, derivationNotes });
+  return { mj, extracted };
+}
+
+test('F-4 MCD: jede historische Aktienangabe geprueft, Reihe einheitlich in Mio.', () => {
+  const { mj } = importFacts(MCD, 'MCD');
+  S.normalizeSharesInPlace(mj);
+  const f = mj.fundamentals;
+  assert.deepEqual(plain(f.shares_diluted.slice(0, 6)), [716.4, 721.9, 732.3, 741.3, 751.8, 750.1]);
+  const hc = plain(f._v4_meta.shares_diluted.history_check);
+  const st = Object.fromEntries(hc.elements.map(e => [e.period, e]));
+  // FY2024/FY2023: nur als „721.9 shares“ gemeldet → Skalierung mit Beleg korrigiert.
+  assert.equal(st['2024-12-31'].status, 'rescaled');
+  assert.equal(st['2024-12-31'].raw, 721.9);
+  assert.match(st['2024-12-31'].note, /Faktor 1000000/);
+  assert.match(st['2024-12-31'].note, /8223.*11\.39/);                // NI/EPS FY2024
+  // FY2022: der urspruengliche 10-K FY2022 meldete 741,300,000 → Originalangabe.
+  assert.equal(st['2022-12-31'].status, 'original_filing');
+  assert.deepEqual(st['2022-12-31'].source, { accn: '0000063908-23-000012', filed: '2023-02-24', val: 741300000 });
+  assert.equal(st['2020-12-31'].status, 'verified');
+  assert.equal(hc.truncatedAt, null);
+  // Kennzahl: (716.4 − 750.1) / 750.1 = −4.49 % statt −100 %.
+  const m = S.computeNetShareIssuance(mj);
+  assert.equal(m.status, 'ok');
+  assert.ok(Math.abs(m.value - (716.4 - 750.1) / 750.1) < 1e-9);
+  assert.ok(S._qceScoreIssuance(m.value) < S._qceScoreIssuance(-1), 'keine Bestnote aus einer Scheinreduktion');
+});
+
+test('F-4 JNJ: bereits korrekte Reihe bleibt unveraendert (inkl. FY2022 aus F-2)', () => {
+  const J = excerpt('jnj-d2-regression.json').facts;
+  const { mj } = importFacts(J, 'JNJ');
+  S.normalizeSharesInPlace(mj);
+  const hc = plain(mj.fundamentals._v4_meta.shares_diluted.history_check);
+  assert.ok(hc.elements.slice(1).every(e => e.status === 'verified'), JSON.stringify(hc.elements.map(e => e.status)));
+  assert.equal(mj.fundamentals.shares_diluted[3], 2663.9);            // FY2022 (Ende 2023-01-01)
+  assert.equal(mj.fundamentals.shares_diluted.length, 10);
+});
+
+// Altdaten/Legacy-Weg: normalizeSharesInPlace mit Periodenangaben.
+const legacyMj = (shares, ni, eps, ends) => ({
+  meta: {}, market: {}, fundamentals: {
+    shares_diluted: shares.slice(), net_income: ni.slice(), eps_diluted: eps.slice(),
+    _v4_meta: { shares_diluted: { periods: ends.slice() }, net_income: { periods: ends.slice() },
+                eps_diluted: { periods: ends.slice() } } } });
+const ENDS = ['2025-12-31', '2024-12-31', '2023-12-31', '2022-12-31', '2021-12-31', '2020-12-31'];
+
+test('F-4 gemischte Skalierung im Altdatenweg: periodengleich belegt korrigiert', () => {
+  const mj = legacyMj([716.4, 721.9, 732.3, 741.3, 751.8, 750100000],
+    [8563, 8223, 8469, 6177, 7545.2, 4730.5], [11.95, 11.39, 11.56, 8.33, 10.04, 6.31], ENDS);
+  S.normalizeSharesInPlace(mj);
+  assert.deepEqual(plain(mj.fundamentals.shares_diluted), [716.4, 721.9, 732.3, 741.3, 751.8, 750.1]);
+  const e5 = mj.meta._yahoo_hints._shares_history.elements[5];
+  assert.equal(e5.status, 'rescaled');
+  assert.equal(e5.raw, 750100000);
+});
+
+test('F-4 echte Kapitalveraenderungen werden nicht „korrigiert“', () => {
+  // Rueckkauf −40 % und ein unbereinigter 2:1-Split in den aeltesten Jahren: jede Angabe
+  // passt zu ihrem eigenen NI/EPS → keine Skalierung, die Split-Erkennung bleibt zustaendig.
+  const shares = [600, 700, 800, 1000, 500, 500];
+  const ni = [1200, 1400, 1600, 2000, 1000, 1000];
+  const eps = [2, 2, 2, 2, 2, 2];
+  const mj = legacyMj(shares, ni, eps, ENDS);
+  S.normalizeSharesInPlace(mj);
+  assert.deepEqual(plain(mj.fundamentals.shares_diluted), shares);
+  assert.ok(mj.meta._yahoo_hints._shares_history.elements.slice(1).every(e => e.status === 'verified'));
+  const m = S.computeNetShareIssuance(mj);
+  assert.match(m.detail, /split-adjustiert/);
+});
+
+test('F-4 nicht entscheidbare Faelle: keine Korrektur, keine Scheinkennzahl', () => {
+  // FY2020 ohne NI/EPS und in anderer Groessenordnung → Reihe endet davor.
+  const mj = legacyMj([716.4, 721.9, 732.3, 741.3, 751.8, 750100000],
+    [8563, 8223, 8469, 6177, 7545.2], [11.95, 11.39, 11.56, 8.33, 10.04], ENDS);
+  mj.fundamentals._v4_meta.net_income.periods = ENDS.slice(0, 5);
+  mj.fundamentals._v4_meta.eps_diluted.periods = ENDS.slice(0, 5);
+  S.normalizeSharesInPlace(mj);
+  assert.deepEqual(plain(mj.fundamentals.shares_diluted), [716.4, 721.9, 732.3, 741.3, 751.8]);
+  assert.deepEqual(plain(mj.fundamentals._v4_meta.shares_diluted.periods), ENDS.slice(0, 5));
+  const m = S.computeNetShareIssuance(mj);
+  assert.equal(m.status, 'insufficient_data');
+  assert.match(m.detail, /belegbare Aktienhistorie endet vor 2020-12-31/);
+
+  // Widerspruch: NI/EPS vorhanden, aber keine Lesart passt (Faktor 3) → ebenso Ende.
+  const mj2 = legacyMj([700, 700, 700, 700, 700, 2100], [1400, 1400, 1400, 1400, 1400, 1400], [2, 2, 2, 2, 2, 2], ENDS);
+  S.normalizeSharesInPlace(mj2);
+  assert.equal(mj2.fundamentals.shares_diluted.length, 5);
+  assert.equal(mj2.meta._yahoo_hints._shares_history.elements[5].status, 'contradicted');
+
+  // Ohne Gegenpruefung, aber gleiche Groessenordnung wie der Nachbar: unveraendert.
+  const mj3 = legacyMj([700, 705, 710, 715, 720, 725], [1400, 1410], [2, 2], ENDS);
+  mj3.fundamentals._v4_meta.net_income.periods = ENDS.slice(0, 2);
+  mj3.fundamentals._v4_meta.eps_diluted.periods = ENDS.slice(0, 2);
+  S.normalizeSharesInPlace(mj3);
+  assert.deepEqual(plain(mj3.fundamentals.shares_diluted), [700, 705, 710, 715, 720, 725]);
+  assert.equal(mj3.meta._yahoo_hints._shares_history.elements[5].status, 'unverifiable_consistent');
+});
