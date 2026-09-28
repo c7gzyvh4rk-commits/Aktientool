@@ -314,3 +314,77 @@ Beide Abweichungen lagen an der **Anzeige**, nicht an der Werkzeugregel:
 
 Gegenlauf mit der Produktdatei von `12a30ac`: MCD 43/49, JNJ 46/49 (Exit 1).
 Engine-Werte unverändert.
+
+## 12 · D3 — erneuter Realdatenabgleich mit dem reparierten Werkzeug
+
+Stand: Produkt/Werkzeug `05fefc6` (V1.0.73), Datenstichtag 2026-09-24,
+Quellen neu geladen am 2026-09-28 (SHA-256 unverändert: MCD `0394e814…`,
+JNJ `7141c0c9…`). Kein Kurs gesetzt (Yahoo aus).
+
+### 12.1 · Importwerte gegen die Quelle
+
+`tests/real-data/reconcile-sources.mjs` (neu, unabhängig vom Produktcode):
+**MCD 76/76, JNJ 56/56** geprüfte Werte stimmen (je Feld die drei erfassten
+Jahre; vollständige Tabelle: `AUDIT-D3-RECONCILIATION.md`). Bestätigt u. a.:
+
+* Jeder gemeldete Wert ist der **jüngste** 10-K-Fakt seines Tags und seiner
+  Periode; spätere Neufassungen (z. B. MCD 2023: 25,493.7 → 25,494) sind
+  übernommen, die Akte des Tools gehört jeweils dazu.
+* MCD-EBITDA = EBIT + `DepreciationAndAmortization` (2,199 / 2,097 / 1,978),
+  nicht mehr der Teilposten `DepreciationDepletionAndAmortization` (457) — F-1
+  im echten Import bestätigt.
+* MCD-Aktien 716.4 / 721.9 / 732.3: der Filer meldet in Mio.; NI/EPS derselben
+  Periode bestätigt (716.6 / 721.9 / 732.6) — F-4 bestätigt.
+* JNJ: 52/53-Wochen-Stichtage (2025-12-28, 2024-12-29) je richtig zugeordnet
+  (F-2); Buchwert 81,544 = Aktiva − Passiva.
+* Qualitätskennzahlen unabhängig nachgerechnet: MCD Interest Coverage
+  12,393 / 1,582 = 7.83; Net Share Issuance 5y MCD 716.4 / 750.1 − 1 = −4.5 %,
+  JNJ 2,429.4 / 2,670.7 − 1 = −9.0 %.
+* Ohne Toolwert (nicht abgeglichen, bekannt): JNJ `ebit`/`ebitda` (I-1),
+  Finance-Leasing (B-2), `dividends_paid` (I-3), `total_equity` (I-2). MCD
+  Operating-Leasing endet 2023-12-31 bzw. 2022-12-31 (I-5; im ROIC seit D2
+  gesperrt).
+
+### 12.2 · Anzeigen gegen die Engine
+
+`replay-import.mjs`: **MCD 49/49, JNJ 49/49** (Exit 0) über FY → TTM → FY.
+TTM wird bei beiden angefordert, nicht verwendet, Rückfall mit Gründen
+ausgewiesen; Fundamentaldaten-Hash nach Import = am Ende; keine Ausnahme im
+Browser; einzige abgewiesene Anfrage: Google Fonts. Damit ist der Vorbehalt aus
+dem Nachtrag D1 (§1) mit der reparierten Fassung ausgeräumt.
+
+Modelle: MCD DCF gesperrt (Nettoschulden, operativer Wert 242.10/Aktie
+nachrichtlich), RIM gesperrt (BVPS ≤ 0), DDM 108.90 diagnostisch (seit V1.0.73
+sichtbar). JNJ DCF ausgeschlossen (ebit[0] fehlt), DDM 78.07, RIM 88.36,
+Synthese-Basis 81.81.
+
+### 12.3 · TTM-Gründe gegen die Quelle
+
+JNJ: EBIT (I-1), Schuldenstichtag 2026-06-28 (I-4), Aktien Q4 (B-3) — wie
+beschrieben. MCD: EBIT/CFO/CapEx Q2/2026 und zusätzlich **Net Income
+Q3/2024** (im Vorjahresfenster) scheitern an Differenzen von 1–3 Mio. bei
+deklarierten `decimals="-5"` (offener Punkt aus §9). Bei Net Income steht
+derselbe Fakt im 10-Q `0000063908-25-000059` zweimal: in der GuV mit
+`decimals="-6"`, an anderer Stelle mit `-5`; die Produktregel nimmt die
+genauere Angabe (XBRL-Regel für konsistente Duplikate). Das ist dieselbe
+offene Frage, kein neuer Rechenfehler.
+
+### 12.4 · Neue Befunde
+
+| # | Prio | Befund | Nachweis |
+|---|---|---|---|
+| **D3-1** | mittel | **Übersicht nennt einen falschen Sperrgrund.** Ohne Kurs setzt `_applyValuationResult` die Synthese auf `blocked` mit dem Grund „Kein Kurs verfügbar — …“. Die Übersicht zeigt diesen Grund nur im Kasten „Konservative Einstiegszone“; Kurzbegründung (`_ovMiniWhy`) und Kernaussage 1 (`ovKeyStatements`) sagen dagegen „Bewertung blockiert: **Hard Stop** aktiv — siehe Quality-Tab“ und „es liegt **kein belastbarer Eigenkapitalwert** vor“, obwohl dieselbe Seite „Ausschlusskriterien: keine“ zeigt und JNJ eine Synthese-Basis von 81.81 hat. Bei MCD (keine anwendbaren Modelle, `no_models_applicable`) ist „kein belastbarer Eigenkapitalwert“ zutreffend, „Hard Stop aktiv“ aber ebenfalls falsch. | Replay JNJ und MCD ohne Kurs; mit `--price 150` (nur Diagnose, keine Quelle) verschwinden beide Aussagen (JNJ: „Kurs liegt 185,9 % über der Einstiegszone“). Werte und Einordnung sind nicht betroffen, nur die Begründung. |
+| **D3-2** | niedrig | **Irreführender TTM-Grund.** MCD Net Income: „kein Quartal endet am 2024-09-30“, obwohl das Quartal gemeldet ist (2,255) und nur wegen Widerspruchs verworfen wurde (−1 Mio. bei Toleranz 0.15 Mio.). Der Grund sollte den Widerspruch nennen. | `normalizeSecQuarters` mit den Original-Instanzen: `conflict` bei FY2024-Q3. |
+| **D3-3** | niedrig (Werkzeug) | `checkPanels` prüft Übersichts-Begründungen nicht gegen `synthesis.blockReason`; D3-1 wurde deshalb nicht automatisch erkannt. | — |
+
+D3-1 bis D3-3 sind **nicht** korrigiert (Abgleichsauftrag). Weiter offen wie
+bisher: I-1 bis I-5, B-1 bis B-4, M-1 bis M-3, MCD-`decimals`-Frage.
+
+### 12.5 · Grenzen
+
+Geprüft sind je Feld drei Jahre (so viel enthält die Erfassung); ältere Jahre
+sind durch die D2-Regressionstests abgedeckt, nicht durch diesen Lauf. Die
+10-K-Dokumentwerte aus §2/§3 (Anhangangaben ohne XBRL-Tag) wurden nicht erneut
+aus den HTML-Dokumenten gelesen; die XBRL-Werte stimmen mit ihnen überein.
+Anzeigen wurden als Text geprüft, nicht visuell.
+

@@ -1,5 +1,48 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Folgechat D3: erneuter Realdatenabgleich MCD/JNJ (Abgleich, keine Korrektur)
+
+**Stand.** Produkt/Werkzeug `05fefc6` (V1.0.73, nach der D3-Vorbereitung
+unten), Datenstichtag 2026-09-24, Quellen-Hashes unverändert. Kein Kurs
+gesetzt. Ergebnis im Auditbericht §12, Tabelle in
+`AUDIT-D3-RECONCILIATION.md`.
+
+**Neu:** `tests/real-data/reconcile-sources.mjs` — Quellenabgleich der
+Replay-Erfassung gegen die Company Facts ohne Produktfunktionen (README
+Schritt 5). Gegenlauf mit verfälschter Erfassung (Wert, EBITDA-Ableitung,
+Periode, Aktienskalierung): 6 Abweichungen erkannt, Exit 1.
+
+**Ergebnisse.**
+
+| Prüfung | Ergebnis | Exit |
+|---|---|---|
+| `reconcile-sources.mjs MCD JNJ` | MCD 76/76, JNJ 56/56 | 0 |
+| `replay-import.mjs MCD` / `JNJ` | 49/49 bzw. 49/49 (FY → TTM → FY) | 0 / 0 |
+| `replay-import.mjs JNJ --price 150` (nur Diagnose D3-1) | 49/49 | 0 |
+
+F-1, F-2, F-4 im echten Import bestätigt; Qualitätskennzahlen (Interest
+Coverage 7.83, Net Share Issuance −4.5 % / −9.0 %) unabhängig nachgerechnet;
+TTM-Gründe gegen die Rohdaten geprüft; D1-Vorbehalt (TTM-Sicht, Neurendern)
+ausgeräumt.
+
+**Neue Befunde (nicht korrigiert):**
+* **D3-1 (mittel):** Übersicht ohne Kurs — Kurzbegründung „Hard Stop aktiv“
+  und Kernaussage „kein belastbarer Eigenkapitalwert“, obwohl der Grund „Kein
+  Kurs verfügbar“ ist und „Ausschlusskriterien: keine“ angezeigt wird
+  (`_ovMiniWhy`, `ovKeyStatements` ignorieren `synthesis.blockReason`). JNJ
+  und MCD (dort nur „Hard Stop“ falsch).
+* **D3-2 (niedrig):** TTM-Grund MCD Net Income „kein Quartal endet am
+  2024-09-30“, obwohl das Quartal gemeldet und wegen Widerspruchs verworfen
+  ist (gleiche `decimals`-Frage wie EBIT/CFO/CapEx Q2/2026).
+* **D3-3 (niedrig, Werkzeug):** `checkPanels` prüft Übersichts-Begründungen
+  nicht gegen `blockReason`.
+
+**Übergabe.** Chat D kann mit D3 abgeschlossen werden, sobald über D3-1 bis
+D3-3 entschieden ist (Korrekturauftrag oder bewusst offen). Weiter offen: I-1
+bis I-5, B-1 bis B-4, M-1 bis M-3, MCD-`decimals`.
+
+---
+
 ## Folgechat D3-Vorbereitung: zwei Replay-Abweichungen geklärt (V1.0.73)
 
 **Ausgangsstand.** Auditbranch `claude/audit-real-data-mcd-jnj`, Spitze `12a30ac`

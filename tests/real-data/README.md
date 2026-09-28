@@ -1,6 +1,6 @@
 # Realdaten-Audit (MCD, JNJ) — Wiederholung
 
-Zwei Skripte, die nicht zu `npm test` gehören.
+Skripte, die nicht zu `npm test` gehören.
 
 1. **Quellen laden.** Das braucht Netzzugriff auf `www.sec.gov` und `data.sec.gov`:
 
@@ -133,6 +133,26 @@ Zwei Skripte, die nicht zu `npm test` gehören.
    Ausschnitte der Original-XBRL-Instanzen: Fakt-Elemente mit `decimals` und ihre
    Kontexte). Der Zeitstempel `retrievedAt` ändert sich bei jedem Abruf; die
    Fakten selbst sind bei gleichem Quell-Hash identisch.
+
+5. **Quellenabgleich (seit D3)** — nach Schritt 1 und dem Replay, ohne Netz
+   und ohne Browser:
+
+   ```sh
+   node tests/real-data/reconcile-sources.mjs MCD JNJ [--md tabelle.md]
+   ```
+
+   Vergleicht die Erfassung `fy` aus `out/<TICKER>-report.json` mit den
+   Company-Facts-Stichtagskopien, **ohne Produktfunktionen**: gemeldete Felder
+   gegen den zuletzt eingereichten 10-K-Fakt desselben Tags und derselben
+   Periode (Strom: Jahreszeitraum; Stichtag: instant; Akte des Tools muss dazu
+   gehören), abgeleitete Felder über ihren Rechenweg (EBITDA − EBIT = ein
+   gemeldeter D&A-Fakt derselben Periode, FCF, Nettoschulden, Buchwert aus
+   Aktiva − Passiva). Aktien, die ein Filer bereits in Mio. meldet (MCD, F-4),
+   gelten nur, wenn NI/EPS derselben Periode sie auf ±1 % bestätigt. Felder
+   ohne Toolwert werden aufgelistet, nicht abgeglichen (D&A ist kein eigenes
+   Feld; es wird über EBITDA geprüft). Exit 0 = alle Werte stimmen, 1 =
+   Abweichung (`ABWEICHUNG …`), 2 = nicht ausführbar. Gegenlauf mit
+   verfälschter Erfassung (Wert, Ableitung, Periode, Skalierung) → Exit 1.
 
 **Original-XBRL (seit D2).** Company Facts enthält keine Berichtspräzision. Der
 Import lädt deshalb für Berichte, die an einem Quartalswiderspruch der jüngsten
