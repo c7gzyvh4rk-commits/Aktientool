@@ -15458,7 +15458,7 @@ function ordinalToPeriod(ord) {
   return { fiscalYear, fiscalQuarter: ord - fiscalYear * 4 };
 }
 
-function normalizeFlowField(field, facts, tags, fyEnd, asOfMs) {
+function normalizeFlowField(field, facts, tags, fyEnd, asOfMs, precision = null) {
   const out = {
     field, kind: 'flow', usedTag: null, consideredTags: tags.slice(), unit: null,
     quarters: [], cumulatives: [], gaps: [], conflicts: [], rejectedDerivations: [], notes: []
@@ -15525,7 +15525,9 @@ function normalizeFlowField(field, facts, tags, fyEnd, asOfMs) {
       periodKey: `FY${c.pos.fiscalYear}-YTD${k.split('|')[1]}`,
       start: c.start, end: c.end, durationDays: c.days, periodType: c.periodType,
       value: c.val, unit: out.unit, source: provenanceOf(c),
-      restatement: { restated: c.supersedes.length > 0, supersedes: c.supersedes }
+      restatement: { restated: c.supersedes.length > 0, supersedes: c.supersedes },
+      // V1.0.71 (D2/F-3)
+      roundingFacts: [roundingFactOf(c, 1, precision)]
     });
   }
 
@@ -15590,7 +15592,8 @@ function normalizeFlowField(field, facts, tags, fyEnd, asOfMs) {
           source: provenanceOf(rep),
           derivation: null,
           restatement: { restated: rep.supersedes.length > 0, supersedes: rep.supersedes },
-          conflict: null
+          conflict: null,
+          roundingFacts: [roundingFactOf(rep, 1, precision)]   // V1.0.71 (D2/F-3)
         };
         if (blocked) {
           out.rejectedDerivations.push(blocked);
@@ -15605,15 +15608,34 @@ function normalizeFlowField(field, facts, tags, fyEnd, asOfMs) {
             minuend: derived.minuend, subtrahend: derived.subtrahend
           });
         } else if (derived && !sameValue(derived.value, rep.val)) {
-          // Gemeldet und abgeleitet widersprechen sich bei GLEICHEM Zeitraum: der
-          // gemeldete Wert bleibt stehen (er ist nicht gerechnet), der Widerspruch
-          // wird ausgewiesen statt stillschweigend aufgeloest.
-          entry.conflict = {
-            reason: 'gemeldetes Quartal weicht von der Differenz der Kumulierungen ab',
-            derivedValue: derived.value, reportedMinusDerived: rep.val - derived.value,
-            derivedFrom: { minuend: derived.minuend, subtrahend: derived.subtrahend }
-          };
-          out.conflicts.push({ scope: 'Einzelquartal', key: `${fy}|${q}`, ...entry.conflict });
+          // V1.0.71 (D2/F-3): Erklaert die BELEGTE Berichtsrundung der drei
+          // beteiligten Angaben die Abweichung, ist sie kein Widerspruch.
+          const diff = rep.val - derived.value;
+          const rt = roundingToleranceOf([
+            { role: 'gemeldetes Quartal', value: rep.val, accn: rep.accn, tag: rep.tag, start: rep.start, end: rep.end },
+            { role: 'Minuend', value: cumThis.val, accn: cumThis.accn, tag: cumThis.tag, start: cumThis.start, end: cumThis.end },
+            { role: 'Subtrahend', value: cumPrev.val, accn: cumPrev.accn, tag: cumPrev.tag, start: cumPrev.start, end: cumPrev.end }
+          ], precision);
+          const floatEps = VALUE_EPS_REL * Math.max(Math.abs(rep.val), Math.abs(derived.value), 1);
+          if (rt.known && Math.abs(diff) <= rt.tolerance + floatEps) {
+            entry.roundingCheck = {
+              accepted: true, reportedMinusDerived: diff, tolerance: rt.tolerance, parts: rt.parts,
+              note: `Abweichung ${diff} innerhalb der belegten Rundung (Σ ½·10^−decimals = ${rt.tolerance})`
+            };
+          } else {
+            // Gemeldet und abgeleitet widersprechen sich bei GLEICHEM Zeitraum: der
+            // gemeldete Wert bleibt stehen (er ist nicht gerechnet), der Widerspruch
+            // wird ausgewiesen statt stillschweigend aufgeloest.
+            entry.conflict = {
+              reason: 'gemeldetes Quartal weicht von der Differenz der Kumulierungen ab',
+              derivedValue: derived.value, reportedMinusDerived: diff,
+              derivedFrom: { minuend: derived.minuend, subtrahend: derived.subtrahend },
+              precisionCheck: rt.known
+                ? { tolerance: rt.tolerance, parts: rt.parts, note: `Abweichung ${diff} groesser als die belegte Rundung ${rt.tolerance}` }
+                : { tolerance: null, parts: rt.parts, note: 'Berichtspraezision nicht belegt — keine Rundungstoleranz' }
+            };
+            out.conflicts.push({ scope: 'Einzelquartal', key: `${fy}|${q}`, ...entry.conflict });
+          }
         }
       } else {
         entry = {
@@ -15634,7 +15656,9 @@ function normalizeFlowField(field, facts, tags, fyEnd, asOfMs) {
             restated: (cumThis.supersedes.length + cumPrev.supersedes.length) > 0,
             supersedes: [...cumThis.supersedes, ...cumPrev.supersedes]
           },
-          conflict: null
+          conflict: null,
+          // V1.0.71 (D2/F-3): abgeleitet = Minuend − Subtrahend
+          roundingFacts: [roundingFactOf(cumThis, 1, precision), roundingFactOf(cumPrev, -1, precision)]
         };
       }
       quarters.push(entry);
@@ -15710,6 +15734,144 @@ function normalizeInstantField(field, facts, tags, fyEnd, asOfMs) {
 // ═════════════════════════════════════════════════════════════════════════════
 // Tag-Listen der Anwendung
 // ═════════════════════════════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════════════════════════════════
+// V1.0.71 (D2/F-3): Berichtspraezision und Rundungstoleranz
+// ═════════════════════════════════════════════════════════════════════════════
+// Bis V1.0.70 galt ein gemeldetes Quartal als Widerspruch, sobald es von der
+// Differenz zweier Kumulierungen um mehr als die Gleitkommatoleranz
+// (VALUE_EPS_REL) abwich. Gemeldete Werte sind aber gerundet: MCD berichtet in
+// Mio. USD (XBRL decimals="-6"), Q3/2025 7,078 gegen 19,876 − 12,799 = 7,077.
+//
+// Zulaessig ist nur, was die BELEGTE Rundung der beteiligten Angaben erklaert.
+// Jede Angabe v_i = w_i + e_i mit |e_i| ≤ ½·10^(−decimals_i). Fuer die Pruefung
+// „Quartal = Kumulierung_n − Kumulierung_(n−1)“ gilt bei wahren Werten die
+// Gleichheit, also |gemeldet − abgeleitet| ≤ Σ ½·10^(−decimals_i) ueber die
+// DREI beteiligten Angaben. Mehr Toleranz gibt es nicht; keine pauschale
+// Millionen- oder Prozentgrenze.
+// Die Praezision steht NICHT in Company Facts. Sie kommt aus der Original-
+// XBRL-Instanz des jeweiligen Berichts (Attribut `decimals` der Angabe mit
+// gleichem Tag, Zeitraum und Wert, ohne Dimensionen). Fehlt sie fuer auch nur
+// eine beteiligte Angabe, bleibt es bei der Gleitkommatoleranz („Praezision
+// unbekannt“) — es wird keine Praezision unterstellt, auch nicht aus „glatt“
+// aussehenden Werten.
+
+/**
+ * decimals je Angabe aus einer XBRL-Instanz (XML). Schluessel
+ * `Tag|Beginn|Ende|Wert`; nur Kontexte ohne Segment/Szenario (keine
+ * Dimensionen). Rueckgabe { facts: Map, contexts, parsed }.
+ */
+function parseXbrlInstancePrecision(xml) {
+  const text = String(xml || '');
+  const ctx = new Map();
+  const reCtx = /<(?:[\w-]+:)?context\b[^>]*\bid="([^"]+)"[^>]*>([\s\S]*?)<\/(?:[\w-]+:)?context>/g;
+  let m;
+  while ((m = reCtx.exec(text)) !== null) {
+    const body = m[2];
+    if (/<(?:[\w-]+:)?(segment|scenario)\b/.test(body)) continue;
+    const st = body.match(/<(?:[\w-]+:)?startDate>\s*([\d-]+)\s*</);
+    const en = body.match(/<(?:[\w-]+:)?endDate>\s*([\d-]+)\s*</);
+    const ins = body.match(/<(?:[\w-]+:)?instant>\s*([\d-]+)\s*</);
+    if (en) ctx.set(m[1], { start: st ? st[1] : null, end: en[1] });
+    else if (ins) ctx.set(m[1], { start: null, end: ins[1] });
+  }
+  const facts = new Map();
+  const reFact = /<([\w-]+):([\w-]+)\b([^>]*\bcontextRef="([^"]+)"[^>]*)>([^<]*)<\/\1:\2>/g;
+  let parsed = 0;
+  while ((m = reFact.exec(text)) !== null) {
+    const attrs = m[3];
+    const dm = attrs.match(/\bdecimals="([^"]+)"/);
+    if (!dm) continue;
+    const c = ctx.get(m[4]);
+    if (!c) continue;
+    const val = Number(String(m[5]).trim());
+    if (!isFinite(val)) continue;
+    const dec = dm[1] === 'INF' ? Infinity : Number(dm[1]);
+    if (!(dec === Infinity || Number.isInteger(dec))) continue;
+    const key = `${m[2]}|${c.start || ''}|${c.end}|${val}`;
+    // Mehrfach vorhandene Angabe: die genauere Praezision (kleinere Toleranz).
+    if (!facts.has(key) || dec > facts.get(key)) facts.set(key, dec);
+    parsed++;
+  }
+  return { facts, contexts: ctx.size, parsed };
+}
+
+/**
+ * Praezisionsabfrage fuer normalizeSecQuarters. byAccn: { accn: { facts: Map } }.
+ * Liefert decimals (Zahl oder Infinity) oder null, wenn nicht belegt.
+ */
+function secPrecisionLookup(byAccn) {
+  const idx = byAccn || {};
+  const fn = (fact) => {
+    if (!fact || !fact.accn || !fact.tag || !fact.end) return null;
+    const e = idx[fact.accn];
+    if (!e || !(e.facts instanceof Map)) return null;
+    const key = `${fact.tag}|${fact.start || ''}|${fact.end}|${Number(fact.value)}`;
+    return e.facts.has(key) ? e.facts.get(key) : null;
+  };
+  fn.accns = Object.keys(idx);
+  return fn;
+}
+
+/**
+ * Rundungsgrenze fuer eine Pruefung aus mehreren gemeldeten Angaben.
+ * parts: [{ role, value, accn, tag, start, end }]. Rueckgabe
+ * { known, tolerance, parts:[{ role, accn, decimals, halfUnit }] }.
+ */
+function roundingToleranceOf(parts, precision) {
+  const out = [];
+  let known = typeof precision === 'function';
+  let tol = 0;
+  for (const p of parts) {
+    const d = known ? precision(p) : null;
+    if (d == null) known = false;
+    const half = d == null ? null : (d === Infinity ? 0 : 0.5 * Math.pow(10, -d));
+    if (half != null) tol += half;
+    out.push({ role: p.role, accn: p.accn || null, tag: p.tag || null,
+               decimals: d == null ? null : (d === Infinity ? 'INF' : d), halfUnit: half });
+  }
+  return { known, tolerance: known ? tol : null, parts: out };
+}
+
+/**
+ * Eine gemeldete Angabe als Summand einer Rechnung: Schluessel, Vorzeichen und
+ * belegte Praezision (decimals; 'INF' = exakt; null = nicht belegt). Wird an
+ * Quartale und Kumulierungen gehaengt, damit spaetere Rechenwege (TTM) ihre
+ * Rundungsgrenze aus denselben Angaben ableiten koennen.
+ */
+function roundingFactOf(c, coef, precision) {
+  const d = typeof precision === 'function'
+    ? precision({ accn: c.accn, tag: c.tag, start: c.start, end: c.end, value: c.val }) : null;
+  return { key: `${c.accn || '?'}|${c.tag || '?'}|${c.start || ''}|${c.end}`, coef,
+           decimals: d == null ? null : (d === Infinity ? 'INF' : d) };
+}
+
+/**
+ * Rundungsgrenze einer Linearkombination gemeldeter Angaben (Nettokoeffizient
+ * je Angabe — was sich heraushebt, traegt nicht bei). divisor: Einheitenteiler
+ * der Werte (die decimals beziehen sich auf die gemeldete Einheit).
+ * Rueckgabe { known, tolerance, facts }.
+ */
+function roundingBoundOf(terms, divisor = 1) {
+  const net = new Map();
+  for (const t of terms || []) {
+    if (!t || !t.key) continue;
+    const cur = net.get(t.key) || { coef: 0, decimals: t.decimals };
+    cur.coef += t.coef;
+    if (cur.decimals == null || t.decimals == null) cur.decimals = (cur.decimals == null ? t.decimals : cur.decimals);
+    net.set(t.key, cur);
+  }
+  let known = true, tol = 0;
+  const facts = [];
+  for (const [key, v] of net) {
+    if (v.coef === 0) continue;
+    if (v.decimals == null) { known = false; facts.push({ key, coef: v.coef, decimals: null }); continue; }
+    const half = v.decimals === 'INF' ? 0 : 0.5 * Math.pow(10, -v.decimals);
+    tol += Math.abs(v.coef) * half / divisor;
+    facts.push({ key, coef: v.coef, decimals: v.decimals });
+  }
+  return { known, tolerance: known ? tol : null, facts };
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // V1.0.71 (D2/F-1): Umfang der D&A-Tags
 // ═════════════════════════════════════════════════════════════════════════════
@@ -15852,10 +16014,18 @@ function normalizeSecQuarters(facts, options = {}) {
     const tags = tagsByField[field] || [];
     if (tags.length === 0) { warnings.push(`keine Tags fuer ${field}`); continue; }
     out[field] = SEC_QUARTERLY_FIELDS[field] === 'flow'
-      ? normalizeFlowField(field, facts, tags, fyEnd, asOfMs)
+      ? normalizeFlowField(field, facts, tags, fyEnd, asOfMs,
+          typeof options.precision === 'function' ? options.precision : null)
       : normalizeInstantField(field, facts, tags, fyEnd, asOfMs);
     if (out[field].conflicts.length > 0) {
       warnings.push(`${field}: ${out[field].conflicts.length} widerspruechliche Periode(n)`);
+    }
+    if (SEC_QUARTERLY_FIELDS[field] === 'flow') {
+      const _rc = (out[field].quarters || []).filter(q => q.roundingCheck && q.roundingCheck.accepted);
+      if (_rc.length > 0) {
+        warnings.push(`${field}: ${_rc.length} Quartal(e) nur um belegte Berichtsrundung abweichend `
+          + `(${_rc.map(q => q.periodKey).join(', ')}) — kein Widerspruch`);
+      }
     }
     if (SEC_QUARTERLY_FIELDS[field] === 'flow' && out[field].gaps.length > 0) {
       warnings.push(`${field}: ${out[field].gaps.length} Luecke(n) in der Quartalsreihe`);
@@ -15874,6 +16044,46 @@ function normalizeSecQuarters(facts, options = {}) {
     fields: out,
     warnings
   };
+}
+
+/**
+ * V1.0.71 (D2/F-3): Welche Berichte muessen fuer die Rundungspruefung als
+ * Original-XBRL gelesen werden? Nur die an einem Quartalswiderspruch
+ * beteiligten Berichte, deren Quartal hoechstens `recentQuarters` Quartale
+ * (Standard 8: aktuelles und vorheriges TTM-Fenster) vor dem juengsten
+ * Quartal aller Felder endet.
+ * Rueckgabe { accns:[…], conflicts:[{ field, periodKey, accns }] }.
+ */
+function secPrecisionRequests(facts, options = {}) {
+  const n = normalizeSecQuarters(facts, Object.assign({}, options, { precision: null }));
+  const recent = options.recentQuarters != null ? options.recentQuarters : 8;
+  const accns = new Set(), conflicts = [];
+  if (!n || !n.ok) return { accns: [], conflicts };
+  // Bezugspunkt ist das juengste Quartal UEBER ALLE Felder: ein Feld, dessen
+  // Angaben vor Jahren enden, loest keine Abrufe aus.
+  let latestMs = null;
+  for (const fo of Object.values(n.fields || {})) {
+    for (const q of (fo.quarters || [])) {
+      const e = parseIsoDate(q.end);
+      if (e != null && (latestMs == null || e > latestMs)) latestMs = e;
+    }
+  }
+  const horizonMs = latestMs == null ? null : latestMs - recent * 92 * DAY_MS;
+  for (const [field, fo] of Object.entries(n.fields || {})) {
+    const qs = Array.isArray(fo.quarters)
+      ? fo.quarters.filter(q => { const e = parseIsoDate(q.end); return e != null && horizonMs != null && e > horizonMs; })
+      : [];
+    for (const q of qs) {
+      if (!q.conflict) continue;
+      const ids = [q.source && q.source.accn,
+                   q.conflict.derivedFrom && q.conflict.derivedFrom.minuend && q.conflict.derivedFrom.minuend.accn,
+                   q.conflict.derivedFrom && q.conflict.derivedFrom.subtrahend && q.conflict.derivedFrom.subtrahend.accn]
+        .filter(Boolean);
+      ids.forEach(a => accns.add(a));
+      conflicts.push({ field, periodKey: q.periodKey, accns: ids });
+    }
+  }
+  return { accns: [...accns].sort(), conflicts };
 }
 
 // ── SEC-QUARTALS-BLOCK ENDE ─────────────────────────────────────
@@ -16325,7 +16535,7 @@ function ttmWindowEndsFrom(quarters, maxWindows) {
 // Der zweite Rechenweg wird fuer das juengste Fenster mitgerechnet und
 // gegengeprueft. Widersprechen sich beide Wege, gilt das Feld als nicht
 // belastbar (kein stiller Vorrang eines Weges).
-function buildTtmFlowSeries(fieldKey, fieldData, windowEnds) {
+function buildTtmFlowSeries(fieldKey, fieldData, windowEnds, opts) {
   const out = {
     field: fieldKey, app_field: TTM_FLOW_FIELDS[fieldKey] || fieldKey,
     kind: 'flow', ok: false, values: [], ends: [], starts: [], windows: [],
@@ -16372,11 +16582,44 @@ function buildTtmFlowSeries(fieldKey, fieldData, windowEnds) {
       + out.starts[0] + '…' + out.ends[0] + ' gegen ' + bridge.start + '…' + bridge.end + ')';
     out.cross_check = { status: 'zeitraum_abweichend', alternative: bridge };
   } else if (!_ttmSameValue(bridge.value, out.values[0])) {
-    out.ok = false;
-    out.reason = 'die beiden Rechenwege widersprechen sich (' + out.values[0] + ' gegen ' + bridge.value + ')';
-    out.cross_check = { status: 'abweichend', alternative: bridge,
-      deltaAbs: out.values[0] - bridge.value,
-      deltaRel: bridge.value !== 0 ? (out.values[0] - bridge.value) / Math.abs(bridge.value) : null };
+    // V1.0.71 (D2/F-3): Grenze aus der belegten Rundung der tatsaechlich
+    // beteiligten Angaben: (Q1+Q2+Q3+Q4) − (FY + YTD − Vorjahres-YTD), je
+    // Angabe mit ihrem Nettokoeffizienten (was in beiden Wegen steckt, hebt
+    // sich heraus). Ohne belegte Praezision bleibt es beim exakten Vergleich.
+    const delta = out.values[0] - bridge.value;
+    const divisor = (opts && opts.moneyDivisor > 0) ? opts.moneyDivisor : 1;
+    const byKey = (list, key) => (list || []).find(x => x && x.periodKey === key) || null;
+    const terms = [];
+    let complete = true;
+    for (const pk of out.windows[0].quarters) {
+      const q = byKey(quarters, pk);
+      if (!q || !Array.isArray(q.roundingFacts)) { complete = false; break; }
+      q.roundingFacts.forEach(t => terms.push(t));
+    }
+    const comp = bridge.components || {};
+    for (const [part, sign] of [['fiscal_year', -1], ['ytd_current', -1], ['ytd_prior', 1]]) {
+      const c = comp[part] ? byKey(cumulatives, comp[part].periodKey) : null;
+      if (!c || !Array.isArray(c.roundingFacts)) { complete = false; break; }
+      c.roundingFacts.forEach(t => terms.push(Object.assign({}, t, { coef: t.coef * sign })));
+    }
+    const rb = complete ? roundingBoundOf(terms, divisor) : { known: false, tolerance: null, facts: [] };
+    const floatEps = 1e-9 * Math.max(Math.abs(out.values[0]), Math.abs(bridge.value), 1);
+    if (rb.known && Math.abs(delta) <= rb.tolerance + floatEps) {
+      out.cross_check = { status: 'uebereinstimmend_im_rundungsrahmen', alternative: bridge,
+        deltaAbs: delta, deltaRel: bridge.value !== 0 ? delta / Math.abs(bridge.value) : null,
+        rounding: { tolerance: rb.tolerance, facts: rb.facts } };
+      out.warnings.push(fieldKey + ': beide Rechenwege weichen um ' + delta + ' ab — innerhalb der belegten '
+        + 'Berichtsrundung (' + rb.tolerance + ').');
+    } else {
+      out.ok = false;
+      out.reason = 'die beiden Rechenwege widersprechen sich (' + out.values[0] + ' gegen ' + bridge.value + ')'
+        + (rb.known ? ' — Abweichung groesser als die belegte Rundung ' + rb.tolerance
+                    : ' — Berichtspraezision nicht belegt, keine Rundungstoleranz');
+      out.cross_check = { status: 'abweichend', alternative: bridge,
+        deltaAbs: delta,
+        deltaRel: bridge.value !== 0 ? delta / Math.abs(bridge.value) : null,
+        rounding: { known: rb.known, tolerance: rb.tolerance, facts: rb.facts } };
+    }
   } else {
     out.cross_check = { status: 'uebereinstimmend', alternative: bridge, deltaAbs: 0, deltaRel: 0 };
   }
@@ -16704,7 +16947,8 @@ function buildTtmDataset(payload, opts) {
       else out.missing.push(eintrag);
       continue;
     }
-    const series = buildTtmFlowSeries(key, fd, ends);
+    const series = buildTtmFlowSeries(key, fd, ends,
+      { moneyDivisor: payload && payload.unit_conversion ? payload.unit_conversion.money_divisor : 1 });
     out.flows[key] = series;
     Array.prototype.push.apply(out.warnings, series.warnings);
     if (series.ok) out.covered_fields.push(TTM_FLOW_FIELDS[key]);
@@ -27709,6 +27953,30 @@ function _requireUsableProxy() {
   }
 }
 
+// V1.0.71 (D2/F-3): Original-XBRL-Instanz eines Berichts laden und die
+// Praezisionsangaben (decimals) auslesen. Nur ueber den konfigurierten Proxy,
+// nur www.sec.gov/Archives. Wirft bei Fehlern; der Aufrufer behandelt die
+// Praezision dann als unbekannt.
+function _secInstanceFileName(items) {
+  const names = (items || []).map(i => i && i.name).filter(Boolean);
+  return names.find(n => /_htm\.xml$/i.test(n))
+      || names.find(n => /\.xml$/i.test(n) && !/^FilingSummary\.xml$/i.test(n)
+                       && !/_(cal|def|lab|pre)\.xml$/i.test(n))
+      || null;
+}
+async function _secFetchInstancePrecision(cik, accn) {
+  const cikNum = String(parseInt(String(cik).replace(/\D/g, ''), 10));
+  const folder = String(accn).replace(/-/g, '');
+  const base = `https://www.sec.gov/Archives/edgar/data/${cikNum}/${folder}/`;
+  const idxResp = await _secProxyFetch(base + 'index.json');
+  const idx = await idxResp.json();
+  const name = _secInstanceFileName(idx && idx.directory && idx.directory.item);
+  if (!name) throw new Error('keine XBRL-Instanz im Bericht ' + accn);
+  const xmlResp = await _secProxyFetch(base + name);
+  const parsed = parseXbrlInstancePrecision(await xmlResp.text());
+  return { facts: parsed.facts, file: base + name, parsed: parsed.parsed };
+}
+
 async function _secProxyFetch(targetUrl) {
   _requireUsableProxy();
   const proxyUrl = _secProxyUrl.replace(/\/$/, '') + '?url=' + encodeURIComponent(targetUrl);
@@ -29309,7 +29577,7 @@ function _shareOriginalValues(facts, tag, periods) {
 }
 
 function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
-    exchange, sicMapping, extracted, yahooData, secFacts, derivationNotes }) {
+    exchange, sicMapping, extracted, yahooData, secFacts, derivationNotes, precision, precisionInfo }) {
   const mj = createEmptyMasterJson();
   mj.meta.ticker = ticker;
   mj.meta.company_name = companyName;
@@ -30188,7 +30456,9 @@ function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
   if (secFacts) {
     const _ttmDs = buildTtmDatasetFromFacts(secFacts, {
       reportingUnit: mj.meta.reporting_unit || 'millions',
-      asOfDate: mj.meta.data_cutoff_date || mj.meta.as_of_date || null
+      asOfDate: mj.meta.data_cutoff_date || mj.meta.as_of_date || null,
+      // V1.0.71 (D2/F-3): belegte Berichtspraezision (sonst null = unbekannt)
+      precision: typeof precision === 'function' ? precision : null
     });
     f._ttm = _ttmDs;
     mj.meta._sec_fetch.ttm = {
@@ -30201,7 +30471,8 @@ function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
       missing: (_ttmDs.missing || []).map(m => m.app_field + ': ' + m.reason),
       missing_optional: (_ttmDs.missing_optional || []).map(m => m.app_field + ': ' + m.reason),
       reasons: (_ttmDs.reasons || []).slice(),
-      warnings: (_ttmDs.warnings || []).slice(0, 10)
+      warnings: (_ttmDs.warnings || []).slice(0, 10),
+      precision: precisionInfo || { requested: [], loaded: [], failed: [] }
     };
   }
   return mj;
@@ -30783,7 +31054,33 @@ async function secFetchAll() {
     if (!_isCurrent()) return;
 
     _secStatus('Baue Master-JSON…','info');
-    const masterJson = _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd, exchange, sicMapping, extracted, yahooData, secFacts: facts, derivationNotes: _derivationNotes });
+    // V1.0.71 (D2/F-3): Berichtspraezision nur fuer die Berichte laden, die an
+    // einem Quartalswiderspruch der juengsten acht Quartale beteiligt sind.
+    // Scheitert ein Abruf, gilt die Praezision als unbekannt (keine Toleranz).
+    let _precision = null;
+    const _precisionInfo = { requested: [], loaded: [], failed: [] };
+    try {
+      const _req = secPrecisionRequests(facts, {});
+      _precisionInfo.requested = _req.accns.slice();
+      if (_req.accns.length > 0) {
+        _secStatus(`Lade Original-XBRL (${_req.accns.length} Bericht(e)) zur Berichtspräzision…`, 'info');
+        const _byAccn = {};
+        for (const _a of _req.accns) {
+          try {
+            _byAccn[_a] = await _secFetchInstancePrecision(cik, _a);
+            _precisionInfo.loaded.push({ accn: _a, file: _byAccn[_a].file, facts: _byAccn[_a].parsed });
+          } catch (e) {
+            _precisionInfo.failed.push({ accn: _a, reason: (e && e.message) || String(e) });
+          }
+          if (!_isCurrent()) return;
+        }
+        _precision = secPrecisionLookup(_byAccn);
+      }
+    } catch (e) {
+      _precisionInfo.failed.push({ accn: null, reason: (e && e.message) || String(e) });
+    }
+    if (!_isCurrent()) return;
+    const masterJson = _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd, exchange, sicMapping, extracted, yahooData, secFacts: facts, derivationNotes: _derivationNotes, precision: _precision, precisionInfo: _precisionInfo });
 
     // Finaler Guard vor allen State-Writes
     if (!_isCurrent()) return;

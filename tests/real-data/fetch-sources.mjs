@@ -10,6 +10,8 @@
 //   https://www.sec.gov/files/company_tickers_exchange.json
 //   https://data.sec.gov/api/xbrl/companyfacts/CIK##########.json
 //   https://data.sec.gov/submissions/CIK##########.json
+//   https://www.sec.gov/Archives/edgar/data/<cik>/<accn>/index.json und die
+//     XBRL-Instanz der Berichte, deren Praezision der Import anfordert (D2/F-3)
 //
 // --cutoff JJJJ-MM-TT (Datenstichtag): companyfacts wird zusaetzlich als
 // Kopie gespeichert, die nur Fakten mit `filed` <= Stichtag enthaelt. Der
@@ -24,8 +26,10 @@ import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { app } from '../audit-chat12.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const S = app();   // produktive Funktionen (secPrecisionRequests, _secInstanceFileName)
 const a = process.argv.slice(2);
 let dir = join(HERE, 'cache'), cutoff = null;
 const tickers = [];
@@ -55,6 +59,16 @@ async function get(url, file) {
   return JSON.parse(buf.toString('utf8'));
 }
 
+async function getRaw(url, file) {
+  const r = await fetch(url, { headers: { 'User-Agent': UA } });
+  if (!r.ok) throw new Error(`HTTP ${r.status} fuer ${url}`);
+  const buf = Buffer.from(await r.arrayBuffer());
+  writeFileSync(join(dir, file), buf);
+  manifest.files[file] = { url, retrievedAt: new Date().toISOString(), bytes: buf.length,
+    sha256: createHash('sha256').update(buf).digest('hex') };
+  console.log(`  ${file} · ${buf.length} B · sha256 ${manifest.files[file].sha256.slice(0, 16)}`);
+}
+
 function applyCutoff(facts) {
   let kept = 0, dropped = 0;
   for (const ns of Object.values(facts.facts || {})) for (const concept of Object.values(ns))
@@ -82,6 +96,22 @@ for (const t of tickers) {
     factsKept: c.kept, factsDroppedAfterCutoff: c.dropped, sha256: createHash('sha256').update(out).digest('hex') };
   console.log(`  Stichtag ${cutoff || '—'}: ${c.dropped} spaeter veroeffentlichte Fakten entfernt`);
   await new Promise(r => setTimeout(r, 300)); // SEC-Fairness (< 10 Anfragen/s)
+  // D2 (F-3): Original-XBRL der Berichte, deren Praezision der Import fuer die
+  // Rundungspruefung anfordert. Welche das sind, bestimmt die PRODUKTIVE
+  // Funktion secPrecisionRequests auf den Stichtag-gefilterten Fakten.
+  const accns = S.secPrecisionRequests(facts.facts || {}, {}).accns;
+  const cikNum = String(parseInt(cik.slice(3), 10));
+  for (const accn of accns) {
+    const folder = accn.replace(/-/g, '');
+    const base = `https://www.sec.gov/Archives/edgar/data/${cikNum}/${folder}/`;
+    const rel = join('archives', cikNum, folder);
+    mkdirSync(join(dir, rel), { recursive: true });
+    const idx = await get(base + 'index.json', join(rel, 'index.json'));
+    const name = S._secInstanceFileName(idx && idx.directory && idx.directory.item);
+    if (!name) { console.error(`  ${accn}: keine XBRL-Instanz gefunden`); process.exitCode = 1; continue; }
+    await getRaw(base + name, join(rel, name));
+    await new Promise(r => setTimeout(r, 300));
+  }
 }
 writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 console.log('Manifest: ' + manifestPath);

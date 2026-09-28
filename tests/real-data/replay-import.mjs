@@ -16,6 +16,8 @@
 //   DIR/company_tickers_exchange.json   ← www.sec.gov/files/company_tickers_exchange.json
 //   DIR/CIK##########.companyfacts.json ← data.sec.gov/api/xbrl/companyfacts/CIK….json
 //   DIR/CIK##########.submissions.json  ← data.sec.gov/submissions/CIK….json
+//   DIR/archives/<cik>/<accn>/<datei>   ← www.sec.gov/Archives/edgar/data/<cik>/<accn>/<datei>
+//                                         (Original-XBRL fuer die Berichtspraezision, D2/F-3)
 //
 // Diese Dateien laedt tests/real-data/fetch-sources.mjs (braucht Netz zu
 // data.sec.gov / www.sec.gov). Jede andere Anfrage (Yahoo, Fonts) wird
@@ -359,6 +361,10 @@ function fileFor(dir, url) {
   if (m) return join(dir, m[1] + '.companyfacts.json');
   m = url.match(/\/submissions\/(CIK\d{10})\.json$/);
   if (m) return join(dir, m[1] + '.submissions.json');
+  // D2 (F-3): Original-XBRL eines Berichts (index.json und Instanz), abgelegt von
+  // fetch-sources.mjs unter archives/<cik>/<accn ohne Striche>/<datei>.
+  m = url.match(/^https:\/\/www\.sec\.gov\/Archives\/edgar\/data\/(\d+)\/(\d{18})\/([\w.-]+)$/);
+  if (m) return join(dir, 'archives', m[1], m[2], m[3]);
   return null;
 }
 
@@ -387,7 +393,7 @@ async function main() {
           const body = readFileSync(f);
           served.push({ url: target, file: f, bytes: body.length, sha256: createHash('sha256').update(body).digest('hex') });
           return void await P.send('Fetch.fulfillRequest', { requestId: e.requestId, responseCode: 200,
-            responseHeaders: [{ name: 'Content-Type', value: 'application/json' }, { name: 'Access-Control-Allow-Origin', value: '*' }],
+            responseHeaders: [{ name: 'Content-Type', value: /\.xml$/.test(f) ? 'application/xml' : 'application/json' }, { name: 'Access-Control-Allow-Origin', value: '*' }],
             body: body.toString('base64') });
         }
         served.push({ url: target, file: f, missing: true });

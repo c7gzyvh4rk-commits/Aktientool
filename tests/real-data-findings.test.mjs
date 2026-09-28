@@ -403,3 +403,118 @@ test('F-4 nicht entscheidbare Faelle: keine Korrektur, keine Scheinkennzahl', ()
   assert.deepEqual(plain(mj3.fundamentals.shares_diluted), [700, 705, 710, 715, 720, 725]);
   assert.equal(mj3.meta._yahoo_hints._shares_history.elements[5].status, 'unverifiable_consistent');
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// F-3 · Berichtsrundung statt exakter Gleichheit im Quartalsabgleich
+// ═════════════════════════════════════════════════════════════════════════════
+const XBRL = excerpt('mcd-xbrl-precision.json').filings;
+const mcdPrecision = () => {
+  const by = {};
+  for (const [accn, f] of Object.entries(XBRL)) by[accn] = S.parseXbrlInstancePrecision(f.xml);
+  return S.secPrecisionLookup(by);
+};
+const q = (n, field, key) => n.fields[field].quarters.find(x => x.periodKey === key);
+
+test('F-3 MCD Q3/2025: 1 Mio. Abweichung bei belegter Praezision decimals=-6 ist Rundung', () => {
+  const n = S.normalizeSecQuarters(MCD, { fields: ['revenue'], precision: mcdPrecision() });
+  const q3 = q(n, 'revenue', 'FY2025-Q3');
+  assert.equal(q3.conflict, null);
+  assert.equal(q3.value, 7078e6);                          // gemeldeter Wert bleibt
+  assert.equal(q3.roundingCheck.reportedMinusDerived, 1e6);  // 7,078 − (19,876 − 12,799)
+  assert.equal(q3.roundingCheck.tolerance, 1.5e6);           // 3 × ½ · 10^6
+  assert.deepEqual(plain(q3.roundingCheck.parts.map(p => [p.accn, p.decimals])),
+    [['0000063908-25-000059', -6], ['0000063908-25-000059', -6], ['0000063908-26-000073', -6]]);
+});
+
+test('F-3 MCD: ohne belegte Praezision bleibt der Widerspruch bestehen', () => {
+  const n = S.normalizeSecQuarters(MCD, { fields: ['revenue'] });
+  const q3 = q(n, 'revenue', 'FY2025-Q3');
+  assert.ok(q3.conflict);
+  assert.equal(q3.conflict.precisionCheck.tolerance, null);
+  assert.match(q3.conflict.precisionCheck.note, /nicht belegt/);
+  // Nur teilweise belegt (Subtrahend-Bericht fehlt) → ebenso keine Toleranz.
+  const by = { '0000063908-25-000059': S.parseXbrlInstancePrecision(XBRL['0000063908-25-000059'].xml) };
+  const n2 = S.normalizeSecQuarters(MCD, { fields: ['revenue'], precision: S.secPrecisionLookup(by) });
+  assert.ok(q(n2, 'revenue', 'FY2025-Q3').conflict);
+});
+
+test('F-3 MCD EBIT Q2/2026: Abweichung groesser als die belegte Rundung (decimals=-5) bleibt Widerspruch', () => {
+  const n = S.normalizeSecQuarters(MCD, { fields: ['operating_income'], precision: mcdPrecision() });
+  const q2 = q(n, 'operating_income', 'FY2026-Q2');
+  assert.ok(q2.conflict, 'erwartet: Widerspruch');
+  assert.equal(q2.conflict.reportedMinusDerived, -1e6);          // 3,338 − (6,292 − 2,953)
+  assert.equal(q2.conflict.precisionCheck.tolerance, 600000);    // ½·10^5 + ½·10^6 + ½·10^5
+});
+
+// Synthetische Grenzfaelle: Q1–Q3 als Kumulierungen, Q2 zusaetzlich direkt gemeldet.
+const qf = (start, end, val, accn, form = '10-Q') => ({ start, end, val, form, filed: '2025-11-01', accn, fy: 2025, fp: 'Q3' });
+const syntheticQuarterFacts = (reportedQ2) => factsOf({ Revenues: [
+  k10('2024-01-01', '2024-12-31', 4000, '2025-02-01', 'K24', 2024),
+  qf('2025-01-01', '2025-03-31', 1000e6, 'A1'),
+  qf('2025-01-01', '2025-06-30', 2001e6, 'A2'),
+  qf('2025-04-01', '2025-06-30', reportedQ2, 'A2')
+] });
+const precisionAll = (d) => (fact) => (fact && fact.accn ? d : null);
+
+test('F-3 synthetisch: Grenzfall genau auf der Rundungsgrenze ist zulaessig, knapp darueber nicht', () => {
+  // abgeleitet 2001 − 1000 = 1001 Mio.; Grenze bei decimals=-6: 3 × 0.5 Mio. = 1.5 Mio.
+  const ok = S.normalizeSecQuarters(syntheticQuarterFacts(1002.5e6), { fields: ['revenue'], precision: precisionAll(-6) });
+  const e1 = q(ok, 'revenue', 'FY2025-Q2');
+  assert.equal(e1.conflict, null);
+  assert.equal(e1.roundingCheck.tolerance, 1.5e6);
+  // Knapp darueber (10 USD; die Gleitkommatoleranz 1e-9 relativ betraegt hier rund 1 USD).
+  const bad = S.normalizeSecQuarters(syntheticQuarterFacts(1002.5e6 + 10), { fields: ['revenue'], precision: precisionAll(-6) });
+  assert.ok(q(bad, 'revenue', 'FY2025-Q2').conflict);
+  // Gleiche Abweichung, aber exakt gemeldete Werte (decimals INF): keine Toleranz.
+  const exact = S.normalizeSecQuarters(syntheticQuarterFacts(1002e6), { fields: ['revenue'], precision: precisionAll(Infinity) });
+  assert.ok(q(exact, 'revenue', 'FY2025-Q2').conflict);
+  // „Glatte“ Werte allein begruenden keine Toleranz.
+  const round = S.normalizeSecQuarters(syntheticQuarterFacts(1002e6), { fields: ['revenue'] });
+  assert.ok(q(round, 'revenue', 'FY2025-Q2').conflict);
+});
+
+test('F-3 synthetisch: echter Widerspruch ausserhalb der Grenze bleibt erkannt', () => {
+  const n = S.normalizeSecQuarters(syntheticQuarterFacts(1050e6), { fields: ['revenue'], precision: precisionAll(-6) });
+  const e = q(n, 'revenue', 'FY2025-Q2');
+  assert.ok(e.conflict);
+  assert.equal(e.conflict.reportedMinusDerived, 49e6);
+  assert.match(e.conflict.precisionCheck.note, /groesser als die belegte Rundung/);
+});
+
+test('F-3 Parser: decimals nur aus Kontexten ohne Dimensionen, INF und Zahlen', () => {
+  const xml = `<xbrl>
+<xbrli:context id="c1"><xbrli:entity><xbrli:identifier scheme="x">1</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2025-01-01</xbrli:startDate><xbrli:endDate>2025-03-31</xbrli:endDate></xbrli:period></xbrli:context>
+<xbrli:context id="c2"><xbrli:entity><xbrli:identifier scheme="x">1</xbrli:identifier><xbrli:segment><xbrldi:explicitMember dimension="d">m</xbrldi:explicitMember></xbrli:segment></xbrli:entity><xbrli:period><xbrli:startDate>2025-01-01</xbrli:startDate><xbrli:endDate>2025-03-31</xbrli:endDate></xbrli:period></xbrli:context>
+<us-gaap:Revenues contextRef="c1" decimals="-6" unitRef="usd">1000000000</us-gaap:Revenues>
+<us-gaap:Revenues contextRef="c2" decimals="-3" unitRef="usd">400000000</us-gaap:Revenues>
+<us-gaap:CostOfRevenue contextRef="c1" decimals="INF" unitRef="usd">5</us-gaap:CostOfRevenue>
+</xbrl>`;
+  const r = S.parseXbrlInstancePrecision(xml);
+  assert.equal(r.facts.get('Revenues|2025-01-01|2025-03-31|1000000000'), -6);
+  assert.equal(r.facts.has('Revenues|2025-01-01|2025-03-31|400000000'), false);   // Dimension
+  assert.equal(r.facts.get('CostOfRevenue|2025-01-01|2025-03-31|5'), Infinity);
+});
+
+test('F-3 bis in den TTM-Aufbau: Umsatz-TTM entsteht, andere Hindernisse bleiben benannt', () => {
+  const P = mcdPrecision();
+  const ds = S.buildTtmDatasetFromFacts(MCD, { reportingUnit: 'millions', precision: P });
+  assert.equal(ds.ok, true);
+  assert.ok(ds.covered_fields.includes('revenue'), 'Umsatz-TTM gebildet');
+  assert.equal(ds.period_label, 'TTM 2025-07-01…2026-06-30');
+  // Zweiter Rechenweg (FY2025 + H1/2026 − H1/2025 = 27,702) gegen die Quartalssumme
+  // 27,703: Grenze aus den sechs Angaben mit Nettokoeffizient ≠ 0 (der FY-Wert hebt
+  // sich heraus): 5 × 0.5 (decimals −6) + 0.05 (Q1/2026, decimals −5) = 2.55 Mio.
+  const rev = ds.flows.revenue;
+  assert.equal(rev.values[0], 27703);
+  assert.equal(rev.cross_check.status, 'uebereinstimmend_im_rundungsrahmen');
+  assert.equal(rev.cross_check.deltaAbs, 1);
+  assert.ok(Math.abs(rev.cross_check.rounding.tolerance - 2.55) < 1e-9);
+  assert.equal(rev.cross_check.rounding.facts.length, 6);
+  assert.ok(!rev.cross_check.rounding.facts.some(f => /2025-01-01\|2025-12-31$/.test(f.key)), 'FY-Wert kuerzt sich heraus');
+  // Nicht behauptet: dass TTM damit vollstaendig ist. EBIT Q2/2026 bleibt ein belegter Widerspruch.
+  assert.equal(ds.complete, false);
+  assert.ok(ds.missing.some(m => m.app_field === 'ebit'));
+  // Ohne Praezision: kein Umsatz-TTM (Q3/2025 verworfen) — wie vor D2.
+  const ds0 = S.buildTtmDatasetFromFacts(MCD, { reportingUnit: 'millions' });
+  assert.ok(!(ds0.covered_fields || []).includes('revenue'));
+});
