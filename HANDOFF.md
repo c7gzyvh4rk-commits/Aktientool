@@ -1,5 +1,58 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Merge-Vorbereitung: Auditbranch D1–D3 (V1.0.75) gegen aktuellen main geprüft
+
+**Ausgangsstände (nach `git fetch origin`, 2026-09-28).** Auditbranch
+`claude/audit-real-data-mcd-jnj` = `6cad68a105d76898e5af54f2521e48a960f7d0f8`
+(= Referenzstand, keine Nachfolgecommits); `origin/main` =
+`8b42fea6e3550ccbc4e2b723b96138886786b994` (V1.0.70, PR 1). Gemeinsamer
+Vorfahre = `8b42fea` ⇒ main ist vollständig im Auditbranch enthalten, der
+Auditbranch liegt 19 Commits voraus. Arbeitsbaum sauber (geprüft in eigenem
+Worktree), keine `AGENTS.md`. Kein PR mit dem Auditbranch als Quelle vorhanden
+(einziger PR, Nr. 1, stammt von einem anderen Branch und ist geschlossen).
+
+**Integration.** Nicht nötig: kein Merge von main, keine Konflikte, keine
+Konfliktauflösungen. Import-, Berechnungs- und Renderpfad gegenüber dem
+auditierten Stand unverändert ⇒ kein erneuter MCD/JNJ-Realdatenabgleich
+erforderlich (Quellenbasis und Datenstichtag 2026-09-24 unverändert gültig).
+Keine Produkt- oder Teständerung in diesem Schritt; nur dieser HANDOFF-Eintrag.
+
+**Geprüfter Stand:** Commit `6cad68a` (Arbeitsbaum ohne lokale Änderungen),
+Produktdatei SHA-256
+`80921c0d5595947bacf1a81a10dea790e9bb5f138ebf754fe00554b522c1824f`,
+Node v22.22.2, Chromium 141.0.7390.37 (`/opt/pw-browsers/chromium`).
+
+| Befehl | Ergebnis | Exit |
+|---|---|---|
+| `npm test` | 1700 Rechenprüfungen (1266 + 434 Fixture-Assertions); SEC-/Kernsuite 289/289 | 0 |
+| `npm run test:audit-tool` | 38/38 | 0 |
+| `npm run test:browser` | 196/196, inkl. Abschnitt 10 (ROIC-Trend: Perioden „na“ und „impossible“ ⇒ n/a, kein Score; gültige Gegenprobe ⇒ +1.9pp · 7/10, Score 7) | 0 |
+
+Browser jeweils mit frischem temporärem Profil (Abnahmeskript,
+`TMPDIR=/tmp/akt.*`, danach gelöscht). **Hinweis Umgebung:** Ein erster
+`test:audit-tool`-Lauf mit sehr langem `TMPDIR` (Scratchpad-Pfad) ergab 31/38,
+Exit 1 — die 7 Replay-Browserfälle meldeten „NICHT AUSGEFUEHRT: Chromium
+startete nicht“ (Profilpfad zu lang für Chromiums Unix-Socket). Kein
+Produktfehler; der Lauf mit kurzem `TMPDIR` ist der gewertete. Bei künftigen
+Läufen `TMPDIR` kurz halten.
+
+**Verbleibende Einschränkungen (unverändert, Auditbericht §13.4–§13.7).**
+Keine automatische TTM-Bewertung für MCD und JNJ (Q4-Aktienzahlen fehlen im
+Original, Präzisions-/Revisionskonflikte Q2/2026, fehlender Schuldenstichtag
+MCD, EBIT-Definition JNJ; Rückfall auf FY korrekt ausgewiesen). Modellsperren
+bleiben erforderlich: MCD-DCF (Nettoschuldenbrücke nicht belegbar), MCD-RIM
+(BVPS ≤ 0), JNJ-DCF/Reverse DCF/EBITDA-Kennzahlen/Interest Coverage (kein
+EBIT, Teilbetrag Schulden), ROIC/ROIC-Trend für beide nicht bewertbar.
+Historische Schuldenwerte ohne Umfangsbeleg bleiben Abdeckungslücke (MCD 34,
+JNJ 18 offen). Der Auditabschluss bedeutet **nicht**, dass alle
+Bewertungsmodelle verfügbar sind.
+
+**Empfehlung.** Merge-vorbereitet für das Paar PR-Head (dieser Commit auf
+`6cad68a`) / main `8b42fea`, sofern main bis zum Merge nicht weiterläuft.
+Nicht gemergt.
+
+---
+
 ## D3-Nachbesserung: ungültige Perioden im ROIC-Trend ausgeschlossen (V1.0.75)
 
 **Ausgangsstand.** Auditbranch `claude/audit-real-data-mcd-jnj`, Spitze `367848a`
