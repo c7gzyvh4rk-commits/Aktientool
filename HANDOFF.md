@@ -1,6 +1,80 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Folgechat D3 (abschließend): Realdaten gegen Originalberichte, Chat D abgeschlossen (V1.0.74)
+
+**Ausgangsstand.** Auditbranch `claude/audit-real-data-mcd-jnj`, Spitze
+`04d8c83` (= Remote), Arbeitsbaum sauber, keine `AGENTS.md`. Baseline selbst
+ausgeführt: `npm test` Exit 0 (1700; 269/269), `npm run test:audit-tool` 29/29,
+Selbsttest 52/52, Replay MCD/JNJ je 49/49. Datenstichtag 2026-09-24; Quellen neu
+geladen, SHA-256 unverändert. Ergebnis: Auditbericht **§13**, Belege und
+Tabellen in `AUDIT-D3-RECONCILIATION.md`.
+
+**Was der vorige D3-Lauf (§12) nicht leistete und jetzt nachgeholt ist.**
+* Originalberichte gelesen (10-K FY2016–FY2025, 10-Q bis Q2/2026, ältere
+  zitierte 10-K; `fetch-filings.mjs`, Manifest mit Akte, Einreichung, Periode,
+  Abruf, SHA-256). 137 Auditbelege mit Fundstelle (`tests/real-data/evidence/`),
+  alle im unveränderten iXBRL-Original bestätigt.
+* Ganze Historie statt drei Werten: Erfassung erweitert, `reconcile-sources.mjs`
+  neu gefasst (Company Facts **und** Original; Gesamt-D&A statt „irgendein
+  D&A-Tag“; Schulden: Rechnung und Umfang getrennt). Gegenfall EBITDA 12,850
+  wird abgelehnt (vorher „2/2 stimmen“, Exit 0).
+* TTM unabhängig aus Originalperioden (`control-calcs.mjs`: FY + YTD − Vorjahres-
+  YTD; JNJ 52/53 Wochen: TTM 2025-06-30…2026-06-28) und gegen den
+  Engine-TTM-Datensatz verglichen. JNJ: sieben TTM-Größen exakt; MCD: Umsatz 1 Mio.
+  Rundung, D&A exakt. Blocker eingegrenzt (§13.4): Q4-Aktien fehlen im Original
+  (beide), EBIT-Tag/Definition (JNJ), Präzisions-/Revisionskonflikte Q2/2026 und
+  fehlender Schuldenstichtag (MCD). **Keine automatische TTM-Bewertung** für
+  MCD und JNJ; Rückfall auf FY korrekt ausgewiesen.
+
+**Produktkorrekturen V1.0.74** (je mit Regressionstest in
+`tests/d3-findings.test.mjs`, 14 Tests; am Stand `04d8c83` 9 Fehlerfälle rot,
+5 Erhaltungstests grün):
+* **D3-1** Übersicht nennt den Sperrgrund der Synthese statt „Hard Stop aktiv“
+  bzw. pauschal „kein belastbarer Eigenkapitalwert“ (`_ovMiniWhy`,
+  `ovKeyStatements`).
+* **D3-2** TTM-Grund benennt ein gemeldetes, aber wegen Widerspruchs
+  verworfenes Quartal (`computeTtmFromQuarters`).
+* **D3-4** `shares_basic` bekommt dieselbe Einzelprüfung wie `shares_diluted`
+  (Restlücke F-4; MCD war 713.4 … 746.3, dann 744,600,000 … als „Mio.“).
+* **D3-5** Widersprüchliche Schuldenangaben: „Umfang nicht belegt“ statt
+  „ist ein Teilbetrag“ (MCD 39,973 ist laut Anhang vollständig). Sperre unverändert.
+* **D3-6** QCE-Komponente ROIC-Trend: kein Score, wenn ROIC − WACC nach der
+  Leasingregel nicht bewertbar ist; Paarung nur bei gleichem Periodenende
+  (MCD vorher 7 Punkte aus unbereinigtem ROIC).
+Werkzeug: **D3-3** `checkPanels` prüft die Übersichtsbegründung; **D3-7**
+`reconcile-sources.mjs` (s. o.). Keine Sperre gelockert, keine
+unternehmensspezifischen Werte im Produkt.
+
+**Ausgeführt** (fertiger Stand, Produktdatei SHA-256 `997ad2dc…`):
+
+| Befehl | Ergebnis | Exit |
+|---|---|---|
+| `npm test` / `npm run test` | 1700 Rechenprüfungen; 283/283 Node-Tests | 0 / 0 |
+| `npm run test:audit-tool` | 38/38 (25 checkPanels, 6 reconcile, 7 Browser) | 0 |
+| `npm run test:browser` | 187/187 | 0 |
+| `replay-import.mjs --selftest` | 58/58 | 0 |
+| `repro-findings.mjs` | 0 von 6 bestehen | 0 |
+| `replay-import.mjs MCD` / `JNJ` | 55/55 / 55/55 (FY → TTM → FY) | 0 / 0 |
+| `reconcile-sources.mjs MCD JNJ` | 0 Abweichungen (MCD 307 korrekt/2 berechtigt/34 offen; JNJ 269/6/18) | 0 |
+| `control-calcs.mjs MCD JNJ` | Belege 72/72, 65/65; Kontrollposten 48/48, 41/41; Fallprüfungen 7/7 | 0 |
+
+**Status.** F-1 … F-5 und P-1 im echten Import bestätigt (F-4 inkl. D3-4).
+**Chat D ist abgeschlossen**: kein wesentlicher ungeklärter Fehler; verbleibende
+Grenzen begründet und sichtbar (keine TTM-Bewertung; MCD-DCF ohne
+Eigenkapitalwert; JNJ-DCF bis zur Entscheidung über I-1/EBIT-Definition und
+Finance-Leasing gesperrt). Offene Beobachtungen O-1 … O-4 (§13.8), optionale
+Folgeaufträge: I-1 mit EBIT-Definition, Präzisionsregel (O-2), Umfangsbelege
+aus Anhängen für die Nettoschuldenbrücke.
+
+**Übergabe / Merge.** Nicht gemergt. Aus Auditsicht mergefähig nach Review der
+Produktänderungen V1.0.74 (kleine, testabgesicherte Korrekturen) — die
+Realdatenwerkzeuge brauchen für einen erneuten Lauf Netz (SEC) und Chromium.
+
+---
+
 ## Folgechat D3: erneuter Realdatenabgleich MCD/JNJ (Abgleich, keine Korrektur)
+
+> Ersetzt durch den abschließenden D3-Abschnitt oben.
 
 **Stand.** Produkt/Werkzeug `05fefc6` (V1.0.73, nach der D3-Vorbereitung
 unten), Datenstichtag 2026-09-24, Quellen-Hashes unverändert. Kein Kurs

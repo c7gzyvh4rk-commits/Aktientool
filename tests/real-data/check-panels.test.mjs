@@ -193,3 +193,31 @@ test('Engine-Erwartung richtig, Anzeige ohne Periode: schlaegt fehl', () => {
   c.panels.market = c.panels.market.replace('LETZTES GESCHÄFTSJAHR (FY) · 2024-12-31', 'LETZTES GESCHÄFTSJAHR (FY)');
   assert.ok(failed(market(checkPanels(c))).length > 0);
 });
+
+// ── D3-3: Uebersicht gegen den Sperrgrund der Synthese ───────────────────
+const blockedCap = (overview, hardStops = []) => {
+  const c = cap('fy');
+  c.synthesis = { position: 'blocked', status: 'ok', blockReason: 'Kein Kurs verfügbar — SEC-Import ohne Yahoo (oder Yahoo fehlgeschlagen).' };
+  c.quality = { hardStops };
+  c.panels.overview = overview;
+  return c;
+};
+const ovFailed = (res) => res.filter(x => !x.ok && x.name.startsWith('overview:'));
+
+test('D3-3 gesperrte Synthese: Uebersicht mit dem Engine-Grund besteht', () => {
+  const res = checkPanels(blockedCap('Bewertung gesperrt\nBewertung blockiert: Kein Kurs verfügbar — SEC-Import ohne Yahoo.\nKein Ausschlusskriterium aktiv.'));
+  assert.deepEqual(ovFailed(res), []);
+  assert.ok(res.some(x => x.ok && /Sperrgrund der Synthese/.test(x.name)));
+});
+
+test('D3-3 „Hard Stop aktiv“ ohne aktiven Hard Stop schlaegt fehl (Fall V1.0.73)', () => {
+  const res = checkPanels(blockedCap('Bewertung blockiert: Hard Stop aktiv — siehe Quality-Tab für Details.\nDie Bewertung ist gesperrt — es liegt kein belastbarer Eigenkapitalwert vor.'));
+  const f = ovFailed(res).map(x => x.name);
+  assert.ok(f.includes('overview: keine Hard-Stop-Begruendung ohne aktiven Hard Stop'), JSON.stringify(f));
+  assert.ok(f.includes('overview: Sperrgrund der Synthese sichtbar'), JSON.stringify(f));
+});
+
+test('D3-3 aktiver Hard Stop darf genannt werden', () => {
+  const c = blockedCap('Bewertung blockiert: Going Concern aktiv. Kein Kurs verfügbar', [{ id: 'going_concern', triggered: true, overridden: false }]);
+  assert.deepEqual(ovFailed(checkPanels(c)), []);
+});

@@ -56,12 +56,24 @@ const PROXY = 'http://sec-replay.invalid/';
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // Felder der Abgleichstabellen (Auftrag Folgechat D, Abschnitt 3).
+// D3: zusaetzlich alle weiteren Reihen, die Modelle und Kennzahlen lesen
+// (Zinsaufwand, Steuer, SBC, Bilanzsummen, Buybacks, …), damit der
+// Quellenabgleich nicht auf die Tabellenfelder beschraenkt bleibt.
 const FIELDS = ['revenue', 'ebit', 'da', 'ebitda', 'cfo', 'capex', 'fcf',
   'total_debt', 'net_debt', 'debt_short_term', 'debt_long_term_current', 'debt_long_term_noncurrent',
   'finance_lease_current', 'finance_lease_noncurrent',
   'operating_lease_liability_current', 'operating_lease_liability_noncurrent', 'operating_lease_liabilities',
   'cash_and_equivalents', 'shares_diluted', 'shares_basic', 'eps_diluted', 'dps', 'dps_direct',
-  'dividends_paid', 'net_income', 'book_value', 'total_equity'];
+  'dividends_paid', 'net_income', 'book_value', 'total_equity',
+  'long_term_debt', 'cash', 'total_assets', 'total_liabilities', 'current_assets', 'current_liabilities',
+  'interest_expense', 'tax_expense', 'sbc', 'buybacks', 'buybacks_dollar', 'retained_earnings',
+  'gross_profit', 'maintenance_capex', 'goodwill_and_intangibles', 'tangible_book_value'];
+
+// Erfassungstiefe je Reihe (D3). Frueher wurden nur die ersten drei Werte
+// erfasst; Modelle und Kennzahlen lesen aber die ganze Historie (bis zu zehn
+// Geschaeftsjahre). Erfasst wird deshalb die vollstaendige Reihe, begrenzt nur
+// als Schutz gegen unerwartet lange Reihen; eine Kuerzung wird ausgewiesen.
+const MAX_SERIES = 40;
 
 // Groessenart je Feld. Sie bestimmt, wie Wert und Periode zu lesen sind:
 // Stromgroesse = Summe ueber einen Zeitraum, Stichtag = Bilanzwert an einem
@@ -78,7 +90,13 @@ const KIND = {
   operating_lease_liabilities: 'Stichtag', cash_and_equivalents: 'Stichtag', book_value: 'Stichtag',
   total_equity: 'Stichtag',
   shares_diluted: 'Aktien: gewichteter Durchschnitt, verwaessert',
-  shares_basic: 'Aktien: gewichteter Durchschnitt, unverwaessert'
+  shares_basic: 'Aktien: gewichteter Durchschnitt, unverwaessert',
+  long_term_debt: 'Stichtag', cash: 'Stichtag', total_assets: 'Stichtag', total_liabilities: 'Stichtag',
+  current_assets: 'Stichtag', current_liabilities: 'Stichtag', retained_earnings: 'Stichtag',
+  goodwill_and_intangibles: 'Stichtag', tangible_book_value: 'Stichtag',
+  interest_expense: 'Stromgroesse', tax_expense: 'Stromgroesse', sbc: 'Stromgroesse',
+  buybacks: 'Stromgroesse', buybacks_dollar: 'Stromgroesse', gross_profit: 'Stromgroesse',
+  maintenance_capex: 'Stromgroesse'
 };
 
 // Bestandteile der in buildValuationBasisView abgeleiteten TTM-Groessen
@@ -97,6 +115,7 @@ const PANEL_OUTPUT = { overview: 'overview-content', valuation: 'valuation-outpu
 // erzeugte TTM-Sicht. Das Werkzeug rechnet NICHTS selbst nach und uebernimmt
 // fuer TTM-Werte keine Jahres-Metadaten.
 const CAPTURE_JS = `(() => {
+  const MAX_SERIES = ${MAX_SERIES};
   const FIELDS = ${JSON.stringify(FIELDS)};
   const KIND = ${JSON.stringify(KIND)};
   const DERIVED = ${JSON.stringify(DERIVED)};
@@ -144,10 +163,13 @@ const CAPTURE_JS = `(() => {
       const vals = Array.isArray(raw) ? raw : (raw === undefined ? null : raw);
       const rec = {
         concept: KIND[k] || 'unbekannt', basis: w.basis, status,
-        value: first(vals), values: Array.isArray(vals) ? vals.slice(0, 3) : vals,
+        value: first(vals), values: Array.isArray(vals) ? vals.slice(0, MAX_SERIES) : vals,
+        seriesLength: Array.isArray(vals) ? vals.length : null,
+        seriesTruncated: Array.isArray(vals) && vals.length > MAX_SERIES,
         unit: { reporting: out.reportingUnit, source: (m && m.unit) || null },
         period: { type: (m && m.period_type) || null, end: m && Array.isArray(m.periods) ? (m.periods[0] || null) : null,
-          periods: m && Array.isArray(m.periods) ? m.periods.slice(0, 3) : null },
+          periods: m && Array.isArray(m.periods) ? m.periods.slice(0, MAX_SERIES) : null,
+          starts: m && Array.isArray(m.starts) ? m.starts.slice(0, MAX_SERIES) : null },
         provenance: m ? { source_type: m.source_type || null, source_reference: m.source_reference || null,
           // FY: Tag wie ihn die Produktdatei selbst liest (_secSourceTag). TTM:
           // nur der Tag der verwendeten Quartalsdaten; einen von der
@@ -155,10 +177,14 @@ const CAPTURE_JS = `(() => {
           tag: isTtm ? (m.ttm_used_tag || (m.source_tag_inherited === true ? null : (m.source_tag || null))) : _secSourceTag(m),
           engine_inherited_fy_tag: (isTtm && m.source_tag_inherited === true) ? (m.source_tag || null) : null,
           method: m.ttm_method || null, cross_check: m.ttm_cross_check || null,
-          forms: m.forms ? m.forms.slice(0, 3) : null, filed: m.filed ? m.filed.slice(0, 3) : null,
-          accns: m.accns ? m.accns.slice(0, 3) : null,
+          forms: m.forms ? m.forms.slice(0, MAX_SERIES) : null, filed: m.filed ? m.filed.slice(0, MAX_SERIES) : null,
+          accns: m.accns ? m.accns.slice(0, MAX_SERIES) : null,
           derivation: m.notes ? String(m.notes).slice(0, 600) : null,
-          unavailablePeriods: m.unavailablePeriods || null, derivationWarnings: m.derivationWarnings || null } : null
+          unavailablePeriods: m.unavailablePeriods || null, derivationWarnings: m.derivationWarnings || null,
+          // D3: Umfangskennzeichen der Engine (Schulden), getrennt vom Zahlenwert.
+          scope: (m.scopeComplete != null || m.scopeContradiction || m.scopeIndeterminateReason)
+            ? { complete: m.scopeComplete != null ? m.scopeComplete : null, contradiction: m.scopeContradiction || null,
+                indeterminate: m.scopeIndeterminateReason || null } : null } : null
       };
       const sr = seriesFor(k);
       if (sr && covered.indexOf(k) >= 0) {
@@ -231,6 +257,46 @@ const CAPTURE_JS = `(() => {
     }
     models[k] = pick;
   }
+  // D3: tatsaechlich verwendete Modelleingaben (nur gelesen). Primitive Werte
+  // und kleine Strukturen je Modellergebnis; dazu die D&A-Quote, wie der
+  // Prognosekern sie aufloest (_resolveDaForForecast auf der Bewertungssicht).
+  const small = (x) => { try { const j = JSON.stringify(x); return j != null && j.length <= 4000; } catch (e) { return false; } };
+  out.modelInputs = {};
+  for (const [k, r] of Object.entries(v.modelResults || {})) {
+    if (!r || typeof r !== 'object') continue;
+    const o2 = {};
+    for (const [kk, vv] of Object.entries(r)) {
+      if (vv == null || typeof vv !== 'object') o2[kk] = vv;
+      else if (small(vv)) o2[kk] = vv;
+    }
+    out.modelInputs[k] = o2;
+  }
+  try { const wv = resolveValuationView(mj, state.valuation); out.modelInputs._daForecast = (wv && wv.ok && wv.mj) ? _resolveDaForForecast(wv.mj) : null; }
+  catch (e) { out.modelInputs._daForecast = { error: String((e && e.message) || e) }; }
+  // D3: Qualitaetskennzahlen, wie die Qualitaetsansicht sie zeigt (state.quality).
+  const q = state.quality || {};
+  out.quality = { hardStops: (q.hardStops || []).map(h => ({ id: h.id, triggered: h.triggered, overridden: h.overridden, reason: h.reason || h.message || null })),
+    descriptive: {}, qceScore: small(q.qceScore) ? q.qceScore : (q.qceScore ? { score: q.qceScore.score, components: q.qceScore.components } : null),
+    verdict: q.verdict || null };
+  for (const [kk, vv] of Object.entries(q.descriptive || {})) out.quality.descriptive[kk] = small(vv) ? vv : { status: vv && vv.status, value: vv && vv.value, reason: vv && vv.reason };
+  // D3: Engine-TTM-Datensatz (fundamentals._ttm) — auch wenn er unvollstaendig
+  // ist und NICHT verwendet wird. Nur gelesen; ob er verwendet wurde, steht in
+  // usedForValuation. So lassen sich die tatsaechlich gebildeten TTM-Werte
+  // gegen die Originalquartale pruefen und die Sperrgruende eingrenzen.
+  const t = (mj.fundamentals && mj.fundamentals._ttm) || null;
+  out.ttmEngineDataset = !t ? null : {
+    usedForValuation: !!(rep && rep.selected === 'ttm'),
+    ok: t.ok, complete: t.complete, reporting_unit: t.reporting_unit, period: t.period, period_label: t.period_label,
+    covered_fields: t.covered_fields, missing: t.missing, missing_optional: t.missing_optional, reasons: t.reasons, warnings: t.warnings,
+    windows: t.windows,
+    flows: Object.fromEntries(Object.entries(t.flows || {}).map(([kk, s]) => [kk, { app_field: s.app_field, ok: s.ok, used_tag: s.used_tag,
+      reason: s.reason || null, windows: (s.windows || []).map(w => ({ start: w.start, end: w.end, value: w.value, quarters: w.quarters, filed: w.filed, basisCounts: w.basisCounts })) }])),
+    instants: Object.fromEntries(Object.entries(t.instants || {}).map(([kk, s]) => [kk, { app_field: s.app_field, ok: s.ok, used_tag: s.used_tag,
+      values: s.values, dates: s.dates, filed: s.filed, reason: s.reason || null }])),
+    shares: t.shares ? { ok: t.shares.ok, method: t.shares.method, values: t.shares.values, ends: t.shares.ends, reason: t.shares.reason || null,
+      quarters_used: t.shares.quarters_used, current: t.shares.current } : null,
+    eps: t.eps ? { ok: t.eps.ok, method: t.eps.method, values: t.eps.values, ends: t.eps.ends, reason: t.eps.reason || null, cross_check: t.eps.cross_check } : null
+  };
   // Erwartung an den Markt-Vergleich aus derselben Produktfunktion, mit der
   // renderMarket rechnet: Basis, Sperre der Basis mit Grund, darstellbare Zeilen.
   try {
@@ -243,6 +309,9 @@ const CAPTURE_JS = `(() => {
   const gates = {};
   for (const [kk, vv] of Object.entries(v)) if (/gate|block|excluded|inactive|skipped|unavailable|status|warn/i.test(kk)) gates[kk] = vv;
   const rm = state.synthesis && state.synthesis.relativeMultiples;
+  // D3-3: Einordnung der Synthese (Sperre und Grund) fuer den Abgleich der Uebersicht.
+  const syn0 = state.synthesis || null;
+  out.synthesis = syn0 ? { position: syn0.position || null, status: syn0.status || null, blockReason: syn0.blockReason || null } : null;
   Object.assign(out, { router: v.router || null, reverseDcf: { status: v._reverseDcfStatus, reason: v._reverseDcfStatusReason,
       impliedGrowth: v.reverseDcfImpliedGrowth != null ? v.reverseDcfImpliedGrowth : null },
     gates, models, multiples: rm ? rm.models : null, range: state.synthesis && state.synthesis.range,
@@ -307,6 +376,19 @@ export function checkPanels(c) {
   for (const bm of (b.blocked_models || [])) {
     const re = new RegExp('(^|[^A-Z0-9_])' + esc(U(bm.model + ': ' + bm.reason)));
     add('valuation: Sperre von ' + bm.model + ' mit dem Engine-Grund sichtbar', re.test(U(vt)), bm.reason);
+  }
+  // Uebersicht (D3-3): Ist die Synthese gesperrt, muss die Begruendung zum
+  // Engine-Grund passen. „Hard Stop aktiv“ nur bei tatsaechlich aktivem Hard
+  // Stop; der Sperrgrund der Synthese (Teil vor „ — “) muss sichtbar sein.
+  const syn = c.synthesis;
+  if (syn && syn.position === 'blocked' && c.panels && typeof c.panels.overview === 'string') {
+    const ov = c.panels.overview;
+    const hs = ((c.quality && c.quality.hardStops) || []).filter(h => h.triggered && !h.overridden);
+    if (!hs.length) add('overview: keine Hard-Stop-Begruendung ohne aktiven Hard Stop', !/HARD STOP AKTIV/.test(U(ov)), snip(ov));
+    if (syn.blockReason) {
+      const head = String(syn.blockReason).split(' — ')[0].replace(/[.\s]+$/, '');
+      add('overview: Sperrgrund der Synthese sichtbar', has(ov, head), head);
+    }
   }
   // Markt-Vergleich: Die Ansicht muss vorhanden sein. Leer, fehlend oder mit
   // anderem Inhalt ist ein Fehlschlag. Erwartet wird, was die Produktfunktion

@@ -1,0 +1,1107 @@
+{
+  "ticker": "JNJ",
+  "cutoff": "2026-09-24",
+  "note": "Quellengestuetzte Kontrollwerte (Auditbeleg, kein Produktcode). 52/53-Wochen-Geschaeftsjahr (Sonntag nahe Monatsende Dezember; 10-K Anhang 1: FY2025 = 52 Wochen, FY2026 = 53 Wochen). Werte in der Einheit der Berichtstabelle.",
+  "docs": {
+    "K25": {
+      "accn": "0000200406-26-000016",
+      "form": "10-K",
+      "period": "2024-12-30…2025-12-28 (52 Wochen)",
+      "file": "jnj-20251228.htm"
+    },
+    "Q226": {
+      "accn": "0000200406-26-000153",
+      "form": "10-Q",
+      "period": "2025-12-29…2026-06-28 (26 Wochen)",
+      "file": "jnj-20260628.htm"
+    }
+  },
+  "items": [
+    {
+      "id": "fy.revenue",
+      "doc": "K25",
+      "concept": "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+      "start": "2024-12-30",
+      "end": "2025-12-28",
+      "value": 94193,
+      "where": "GuV (Consolidated statements of earnings), „Sales to customers“"
+    },
+    {
+      "id": "fy.gross",
+      "doc": "K25",
+      "concept": "us-gaap:GrossProfit",
+      "start": "2024-12-30",
+      "end": "2025-12-28",
+      "value": 63937,
+      "where": "GuV, „Gross profit“"
+    },
+    {
+      "id": "fy.pretax",
+      "doc": "K25",
+      "concept": "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+      "start": "2024-12-30",
+      "end": "2025-12-28",
+      "value": 32581,
+      "where": "GuV, „Earnings before provision for taxes on income“ (keine Operating-Income-Zeile)"
+    },
+    {
+      "id": "fy.int_exp",
+      "doc": "K25",
+      "concept": "us-gaap:InterestExpenseNonoperating",
+      "start": "2024-12-30",
+      "end": "2025-12-28",
+      "value": 971,
+      "where": "GuV, „Interest expense, net of portion capitalized“"
+    },
+    {
+      "id": "fy.int_inc",
+      "doc": "K25",
+      "concept": "us-gaap:InvestmentIncomeInterest",
+      "start": "2024-12-30",
+      "end": "2025-12-28",
+      "value": 1056,
+      "where": "GuV, „Interest income“ (1,056)"
+    },
+    {
+      "id": "fy.other",
+      "doc": "K25",
+      "concept": "us-gaap:OtherNonoperatingIncomeExpense",
+      "start": "2024-12-30",
+      "end": "2025-12-28",
+      "value": 7209,
+      "where": "GuV, „Other (income) expense, net“ (7,209) = Ertrag; Lagebericht: darin Rueckstellungsaufloesung Talk ca. 7.0 Mrd., Auris-Vergleich 0.8 Mrd. Aufwand"
+    },
+    {
+      "id": "fy.restr",
+      "doc": "K25",
+      "concept": "us-gaap:RestructuringCharges",
+      "start": "2024-12-30",
+      "end": "2025-12-28",
+      "value": 228,
+      "where": "GuV, „Restructuring“"
+    },
+    {
+      "id": "fy.tax",
+      "doc": "K25",
+      "concept": "us-gaap:IncomeTaxExpenseBenefit",
+      "start": "2024-12-30",
+      "end": "2025-12-28",
+      "value": 5777,
+      "where": "GuV, „Provision for taxes on income“"
+    },
+    {
+      "id": "fy.ni",
+      "doc": "K25",
+      "concept": "us-gaap:NetIncomeLoss",
+      "start": "2024-12-30",
+      "end": "2025-12-28",
+      "value": 26804,
+      "where": "GuV, „Net earnings“"
+    },
+    {
+      "id": "fy.eps",
+      "doc": "K25",
+      "concept": "us-gaap:EarningsPerShareDiluted",
+      "start": "2024-12-30",
+      "end": "2025-12-28",
+      "value": 11.03,
+      "where": "GuV, „Total net earnings per share - diluted“"
+    },
+    {
+      "id": "fy.sh_dil",
+      "doc": "K25",
+      "concept": "us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding",
+      "start": "2024-12-30",
+      "end": "2025-12-28",
+      "value": 2429.4,
+      "where": "GuV, „Average shares outstanding – Diluted“"
+    },
+    {
+      "id": "fy.dps",
+      "doc": "K25",
+      "concept": "us-gaap:CommonStockDividendsPerShareCashPaid",
+      "start": "2024-12-30",
+      "end": "2025-12-28",
+      "value": 5.14,
+      "where": "Eigenkapitalveraenderungsrechnung, „Cash dividends paid ($5.14 per share)“"
+    },
+    {
+      "id": "fy.da",
+      "doc": "K25",
+      "concept": "us-gaap:DepreciationDepletionAndAmortization",
+      "start": "2024-12-30",
+      "end": "2025-12-28",
+      "value": 7503,
+      "where": "KFR, „Depreciation and amortization of property and intangibles“ (einziger D&A-Posten der KFR)"
+    },
+    {
+      "id": "fy.cfo",
+      "doc": "K25",
+      "concept": "us-gaap:NetCashProvidedByUsedInOperatingActivities",
+      "start": "2024-12-30",
+      "end": "2025-12-28",
+      "value": 24530,
+      "where": "KFR, „Net cash flows from operating activities“"
+    },
+    {
+      "id": "fy.capex",
+      "doc": "K25",
+      "concept": "us-gaap:PaymentsToAcquirePropertyPlantAndEquipment",
+      "start": "2024-12-30",
+      "end": "2025-12-28",
+      "value": 4832,
+      "where": "KFR, „Additions to property, plant and equipment“"
+    },
+    {
+      "id": "fy.div",
+      "doc": "K25",
+      "concept": "us-gaap:PaymentsOfOrdinaryDividends",
+      "start": "2024-12-30",
+      "end": "2025-12-28",
+      "value": 12381,
+      "where": "KFR, „Dividends to shareholders“"
+    },
+    {
+      "id": "fy.buyback",
+      "doc": "K25",
+      "concept": "us-gaap:PaymentsForRepurchaseOfCommonStock",
+      "start": "2024-12-30",
+      "end": "2025-12-28",
+      "value": 5953,
+      "where": "KFR, „Repurchase of common stock“"
+    },
+    {
+      "id": "fy.sbc",
+      "doc": "K25",
+      "concept": "us-gaap:ShareBasedCompensation",
+      "start": "2024-12-30",
+      "end": "2025-12-28",
+      "value": 1354,
+      "where": "KFR, „Stock based compensation“"
+    },
+    {
+      "id": "bs.cash",
+      "doc": "K25",
+      "concept": "us-gaap:CashAndCashEquivalentsAtCarryingValue",
+      "instant": "2025-12-28",
+      "value": 19709,
+      "where": "Bilanz, „Cash and cash equivalents“"
+    },
+    {
+      "id": "bs.mktsec",
+      "doc": "K25",
+      "concept": "us-gaap:MarketableSecuritiesCurrent",
+      "instant": "2025-12-28",
+      "value": 393,
+      "where": "Bilanz, „Marketable securities“"
+    },
+    {
+      "id": "bs.stb",
+      "doc": "K25",
+      "concept": "us-gaap:ShortTermBorrowings",
+      "instant": "2025-12-28",
+      "value": 8495,
+      "where": "Bilanz, „Loans and notes payable“ (Anhang 7: enthaelt laufenden Anteil der langfristigen Schulden 2.0 Mrd., Commercial Paper 6.5 Mrd. und lokale Kredite)"
+    },
+    {
+      "id": "bs.ltd",
+      "doc": "K25",
+      "concept": "us-gaap:LongTermDebtNoncurrent",
+      "instant": "2025-12-28",
+      "value": 39438,
+      "where": "Bilanz, „Long-term debt“"
+    },
+    {
+      "id": "note.ltd_sub",
+      "doc": "K25",
+      "concept": "us-gaap:LongTermDebt",
+      "instant": "2025-12-28",
+      "value": 41438,
+      "where": "Anhang 7 Borrowings, „Subtotal“ (langfristige Schulden einschl. laufendem Anteil)"
+    },
+    {
+      "id": "note.ltd_cur",
+      "doc": "K25",
+      "concept": "us-gaap:LongTermDebtCurrent",
+      "instant": "2025-12-28",
+      "value": 2000,
+      "where": "Anhang 7, „Less current portion“ (in „Loans and notes payable“ enthalten)"
+    },
+    {
+      "id": "note.cp",
+      "doc": "K25",
+      "text": "The current debt balance as of December 28, 2025 includes $6.5 billion of commercial paper",
+      "value": 6.5,
+      "unit": "Mrd. USD",
+      "where": "Anhang 7, Fliesstext (kein XBRL-Tag)"
+    },
+    {
+      "id": "note.fl",
+      "doc": "K25",
+      "text": "Commitments under finance leases are not significant",
+      "value": null,
+      "where": "Anhang 1, Leasing: kein Betrag angegeben"
+    },
+    {
+      "id": "note.ol",
+      "doc": "K25",
+      "concept": "us-gaap:OperatingLeaseLiability",
+      "instant": "2025-12-28",
+      "value": 1.4,
+      "unit": "Mrd. USD",
+      "where": "Anhang, Leasing (Fliesstext, Mrd.)"
+    },
+    {
+      "id": "bs.assets",
+      "doc": "K25",
+      "concept": "us-gaap:Assets",
+      "instant": "2025-12-28",
+      "value": 199210,
+      "where": "Bilanz, „Total assets“"
+    },
+    {
+      "id": "bs.liab",
+      "doc": "K25",
+      "concept": "us-gaap:Liabilities",
+      "instant": "2025-12-28",
+      "value": 117666,
+      "where": "Bilanz, „Total liabilities“"
+    },
+    {
+      "id": "bs.equity",
+      "doc": "K25",
+      "concept": "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+      "instant": "2025-12-28",
+      "value": 81544,
+      "where": "Bilanz, „Total shareholders’ equity“"
+    },
+    {
+      "id": "bs.re_apic",
+      "doc": "K25",
+      "concept": "us-gaap:RetainedEarningsAccumulatedDeficit",
+      "instant": "2025-12-28",
+      "value": 168978,
+      "where": "Bilanz, „Retained earnings and Additional-paid-in-capital“ (eine Zeile, als RetainedEarnings getaggt)"
+    },
+    {
+      "id": "h126.revenue",
+      "doc": "Q226",
+      "concept": "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+      "start": "2025-12-29",
+      "end": "2026-06-28",
+      "value": 49372,
+      "where": "10-Q Q2/2026 GuV Fiscal Six Months 2026, „Sales to customers“"
+    },
+    {
+      "id": "h125.revenue",
+      "doc": "Q226",
+      "concept": "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+      "start": "2024-12-30",
+      "end": "2025-06-29",
+      "value": 45636,
+      "where": "10-Q Q2/2026 GuV Six Months 2025"
+    },
+    {
+      "id": "h126.pretax",
+      "doc": "Q226",
+      "concept": "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+      "start": "2025-12-29",
+      "end": "2026-06-28",
+      "value": 12737,
+      "where": "10-Q GuV 6M 2026, „Earnings before provision for taxes on income“"
+    },
+    {
+      "id": "h125.pretax",
+      "doc": "Q226",
+      "concept": "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+      "start": "2024-12-30",
+      "end": "2025-06-29",
+      "value": 20122,
+      "where": "10-Q GuV 6M 2025"
+    },
+    {
+      "id": "h126.int_exp",
+      "doc": "Q226",
+      "concept": "us-gaap:InterestExpenseNonoperating",
+      "start": "2025-12-29",
+      "end": "2026-06-28",
+      "value": 553,
+      "where": "10-Q GuV 6M 2026, „Interest expense, net of portion capitalized“"
+    },
+    {
+      "id": "h125.int_exp",
+      "doc": "Q226",
+      "concept": "us-gaap:InterestExpenseNonoperating",
+      "start": "2024-12-30",
+      "end": "2025-06-29",
+      "value": 512,
+      "where": "10-Q GuV 6M 2025"
+    },
+    {
+      "id": "h126.int_inc",
+      "doc": "Q226",
+      "concept": "us-gaap:InvestmentIncomeInterest",
+      "start": "2025-12-29",
+      "end": "2026-06-28",
+      "value": 448,
+      "where": "10-Q GuV 6M 2026, „Interest income“"
+    },
+    {
+      "id": "h125.int_inc",
+      "doc": "Q226",
+      "concept": "us-gaap:InvestmentIncomeInterest",
+      "start": "2024-12-30",
+      "end": "2025-06-29",
+      "value": 592,
+      "where": "10-Q GuV 6M 2025"
+    },
+    {
+      "id": "h126.other",
+      "doc": "Q226",
+      "concept": "us-gaap:OtherNonoperatingIncomeExpense",
+      "start": "2025-12-29",
+      "end": "2026-06-28",
+      "value": -625,
+      "where": "10-Q GuV 6M 2026, „Other (income) expense, net“ 625 (Aufwand)"
+    },
+    {
+      "id": "h125.other",
+      "doc": "Q226",
+      "concept": "us-gaap:OtherNonoperatingIncomeExpense",
+      "start": "2024-12-30",
+      "end": "2025-06-29",
+      "value": 7214,
+      "where": "10-Q GuV 6M 2025, (7,214) (Ertrag, enthaelt die Talk-Aufloesung aus Q1/2025)"
+    },
+    {
+      "id": "h126.ni",
+      "doc": "Q226",
+      "concept": "us-gaap:NetIncomeLoss",
+      "start": "2025-12-29",
+      "end": "2026-06-28",
+      "value": 10769,
+      "where": "10-Q GuV 6M 2026, „Net earnings“"
+    },
+    {
+      "id": "h125.ni",
+      "doc": "Q226",
+      "concept": "us-gaap:NetIncomeLoss",
+      "start": "2024-12-30",
+      "end": "2025-06-29",
+      "value": 16536,
+      "where": "10-Q GuV 6M 2025"
+    },
+    {
+      "id": "h126.eps",
+      "doc": "Q226",
+      "concept": "us-gaap:EarningsPerShareDiluted",
+      "start": "2025-12-29",
+      "end": "2026-06-28",
+      "value": 4.41,
+      "where": "10-Q GuV 6M 2026, diluted"
+    },
+    {
+      "id": "h125.eps",
+      "doc": "Q226",
+      "concept": "us-gaap:EarningsPerShareDiluted",
+      "start": "2024-12-30",
+      "end": "2025-06-29",
+      "value": 6.82,
+      "where": "10-Q GuV 6M 2025, diluted"
+    },
+    {
+      "id": "h126.sh_dil",
+      "doc": "Q226",
+      "concept": "us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding",
+      "start": "2025-12-29",
+      "end": "2026-06-28",
+      "value": 2443.9,
+      "where": "10-Q GuV 6M 2026, Avg. shares diluted"
+    },
+    {
+      "id": "h126.da",
+      "doc": "Q226",
+      "concept": "us-gaap:DepreciationDepletionAndAmortization",
+      "start": "2025-12-29",
+      "end": "2026-06-28",
+      "value": 3963,
+      "where": "10-Q KFR 6M 2026, „Depreciation and amortization of property and intangibles“"
+    },
+    {
+      "id": "h125.da",
+      "doc": "Q226",
+      "concept": "us-gaap:DepreciationDepletionAndAmortization",
+      "start": "2024-12-30",
+      "end": "2025-06-29",
+      "value": 3715,
+      "where": "10-Q KFR 6M 2025"
+    },
+    {
+      "id": "h126.cfo",
+      "doc": "Q226",
+      "concept": "us-gaap:NetCashProvidedByUsedInOperatingActivities",
+      "start": "2025-12-29",
+      "end": "2026-06-28",
+      "value": 11130,
+      "where": "10-Q KFR 6M 2026"
+    },
+    {
+      "id": "h125.cfo",
+      "doc": "Q226",
+      "concept": "us-gaap:NetCashProvidedByUsedInOperatingActivities",
+      "start": "2024-12-30",
+      "end": "2025-06-29",
+      "value": 8052,
+      "where": "10-Q KFR 6M 2025"
+    },
+    {
+      "id": "h126.capex",
+      "doc": "Q226",
+      "concept": "us-gaap:PaymentsToAcquirePropertyPlantAndEquipment",
+      "start": "2025-12-29",
+      "end": "2026-06-28",
+      "value": 2370,
+      "where": "10-Q KFR 6M 2026"
+    },
+    {
+      "id": "h125.capex",
+      "doc": "Q226",
+      "concept": "us-gaap:PaymentsToAcquirePropertyPlantAndEquipment",
+      "start": "2024-12-30",
+      "end": "2025-06-29",
+      "value": 1838,
+      "where": "10-Q KFR 6M 2025"
+    },
+    {
+      "id": "h126.div",
+      "doc": "Q226",
+      "concept": "us-gaap:PaymentsOfOrdinaryDividends",
+      "start": "2025-12-29",
+      "end": "2026-06-28",
+      "value": 6358,
+      "where": "10-Q KFR 6M 2026, „Dividends to shareholders“"
+    },
+    {
+      "id": "h125.div",
+      "doc": "Q226",
+      "concept": "us-gaap:PaymentsOfOrdinaryDividends",
+      "start": "2024-12-30",
+      "end": "2025-06-29",
+      "value": 6118,
+      "where": "10-Q KFR 6M 2025"
+    },
+    {
+      "id": "h126.dps",
+      "doc": "Q226",
+      "concept": "us-gaap:CommonStockDividendsPerShareCashPaid",
+      "start": "2025-12-29",
+      "end": "2026-06-28",
+      "value": 2.64,
+      "where": "10-Q Eigenkapitalrechnung 6M 2026, „Cash dividends paid ($2.64 per share)“"
+    },
+    {
+      "id": "h125.dps",
+      "doc": "Q226",
+      "concept": "us-gaap:CommonStockDividendsPerShareCashPaid",
+      "start": "2024-12-30",
+      "end": "2025-06-29",
+      "value": 2.54,
+      "where": "10-Q Eigenkapitalrechnung 6M 2025"
+    },
+    {
+      "id": "bs26.cash",
+      "doc": "Q226",
+      "concept": "us-gaap:CashAndCashEquivalentsAtCarryingValue",
+      "instant": "2026-06-28",
+      "value": 20422,
+      "where": "10-Q Bilanz, „Cash and cash equivalents“"
+    },
+    {
+      "id": "bs26.mktsec",
+      "doc": "Q226",
+      "concept": "us-gaap:MarketableSecuritiesCurrent",
+      "instant": "2026-06-28",
+      "value": 336,
+      "where": "10-Q Bilanz, „Marketable securities“"
+    },
+    {
+      "id": "bs26.stb",
+      "doc": "Q226",
+      "concept": "us-gaap:ShortTermBorrowings",
+      "instant": "2026-06-28",
+      "value": 11692,
+      "where": "10-Q Bilanz, „Loans and notes payable“ (Anhang: enthaelt 9.9 Mrd. Commercial Paper)"
+    },
+    {
+      "id": "bs26.ltd",
+      "doc": "Q226",
+      "concept": "us-gaap:LongTermDebtNoncurrent",
+      "instant": "2026-06-28",
+      "value": 37344,
+      "where": "10-Q Bilanz, „Long-term debt“ (Anhang: „Total Non-Current Debt“ 37,344)"
+    },
+    {
+      "id": "bs26.equity",
+      "doc": "Q226",
+      "concept": "us-gaap:StockholdersEquity",
+      "instant": "2026-06-28",
+      "value": 84971,
+      "where": "10-Q Bilanz, „Total shareholders’ equity“"
+    },
+    {
+      "id": "note26.netdebt",
+      "doc": "Q226",
+      "text": "for a net debt position of $28.2 billion",
+      "value": 28.2,
+      "unit": "Mrd. USD",
+      "where": "10-Q Lagebericht (Liquidity): ~49.0 Mrd. notes payable und long-term debt, Nettoschulden 28.2 Mrd. (Unternehmensangabe inkl. marktgaengiger Wertpapiere)"
+    },
+    {
+      "id": "fy1.stb",
+      "doc": "K25",
+      "concept": "us-gaap:ShortTermBorrowings",
+      "instant": "2024-12-29",
+      "value": 5983,
+      "where": "10-K FY2025 Bilanz, Vorjahresspalte „Loans and notes payable“"
+    },
+    {
+      "id": "fy1.ltd",
+      "doc": "K25",
+      "concept": "us-gaap:LongTermDebtNoncurrent",
+      "instant": "2024-12-29",
+      "value": 30651,
+      "where": "10-K FY2025 Bilanz, Vorjahresspalte „Long-term debt“"
+    },
+    {
+      "id": "fy1.cash",
+      "doc": "K25",
+      "concept": "us-gaap:CashAndCashEquivalentsAtCarryingValue",
+      "instant": "2024-12-29",
+      "value": 24105,
+      "where": "10-K FY2025 Bilanz, Vorjahresspalte"
+    }
+  ],
+  "daTotals": [
+    {
+      "period": "2025-12-28",
+      "item": "fy.da"
+    }
+  ],
+  "debtScope": [
+    {
+      "period": "2025-12-28",
+      "financialDebt": [
+        "bs.stb",
+        "bs.ltd"
+      ],
+      "financeLeases": null,
+      "cash": "bs.cash",
+      "note": "Finanzschulden = „Loans and notes payable“ 8,495 + „Long-term debt“ 39,438 = 47,933 (laufender Anteil 2,000 steckt in 8,495). Finance-Leasing: „not significant“ ohne Betrag."
+    },
+    {
+      "period": "2024-12-29",
+      "financialDebt": [
+        "fy1.stb",
+        "fy1.ltd"
+      ],
+      "financeLeases": null,
+      "cash": "fy1.cash",
+      "note": "Finanzschulden 5,983 + 30,651 = 36,634 (Anhang 7: laufender Anteil 1.7 Mrd. in 5,983). Finance-Leasing ohne Betrag."
+    }
+  ],
+  "controls": [
+    {
+      "case": "FY",
+      "id": "revenue",
+      "label": "Umsatz",
+      "formula": "fy.revenue",
+      "engine": "fy:revenue",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "GuV Sales to customers",
+      "unit": "Mio. USD",
+      "period": "2024-12-30…2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "ebit_recon",
+      "label": "EBIT rekonstruiert (Vorsteuer + Zinsaufwand − Zinsertrag)",
+      "formula": "fy.pretax + fy.int_exp - fy.int_inc",
+      "engine": "fy:ebit",
+      "expect": "fehlt",
+      "status": "berechtigte Einschraenkung",
+      "why": "Keine Operating-Income-Zeile; Zinsaufwand als InterestExpenseNonoperating getaggt (nicht in der Tag-Liste, I-1). Enthaelt den Sonderertrag „Other (income) expense“ 7,209 — Definitionsfrage, keine automatische Bereinigung",
+      "unit": "Mio. USD",
+      "period": "2024-12-30…2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "ebit_ex_other",
+      "label": "EBIT ohne „Other (income) expense“ (nur Information)",
+      "formula": "fy.pretax + fy.int_exp - fy.int_inc - fy.other",
+      "engine": "fy:ebit",
+      "expect": "fehlt",
+      "status": "berechtigte Einschraenkung",
+      "why": "Variante ohne saemtliche sonstigen Ertraege/Aufwendungen (enthaelt auch wiederkehrende Posten); erfordert fachliche Entscheidung",
+      "unit": "Mio. USD",
+      "period": "2024-12-30…2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "da",
+      "label": "D&A",
+      "formula": "fy.da",
+      "engine": "fy:none",
+      "expect": "fehlt",
+      "status": "berechtigte Einschraenkung",
+      "why": "7,503 belegt; ohne EBIT kein EBITDA, D&A-Quote nicht messbar (DCF ohnehin gesperrt)",
+      "unit": "Mio. USD",
+      "period": "2024-12-30…2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "cfo",
+      "label": "Operativer Cashflow",
+      "formula": "fy.cfo",
+      "engine": "fy:cfo",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "KFR",
+      "unit": "Mio. USD",
+      "period": "2024-12-30…2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "capex",
+      "label": "CapEx",
+      "formula": "fy.capex",
+      "engine": "fy:capex",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "KFR",
+      "unit": "Mio. USD",
+      "period": "2024-12-30…2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "fcf",
+      "label": "FCF",
+      "formula": "fy.cfo - fy.capex",
+      "engine": "fy:fcf",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "",
+      "unit": "Mio. USD",
+      "period": "2024-12-30…2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "cash",
+      "label": "Liquide Mittel",
+      "formula": "bs.cash",
+      "engine": "fy:cash_and_equivalents",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "ohne marktgaengige Wertpapiere 393 (M-2)",
+      "unit": "Mio. USD",
+      "period": "2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "debt",
+      "label": "Finanzschulden (vollstaendig, ohne Leasing)",
+      "formula": "bs.stb + bs.ltd",
+      "engine": "fy:total_debt",
+      "expect": "teilbetrag",
+      "status": "berechtigte Einschraenkung",
+      "why": "Engine 41,438 (LongTermDebt inkl. laufendem Anteil) = Teilbetrag; es fehlen CP 6.5 Mrd. und lokale Kredite (in 8,495). Engine kennzeichnet Umfang als unbestimmt ⇒ keine Bruecke",
+      "unit": "Mio. USD",
+      "period": "2025-12-28",
+      "partial": "note.ltd_sub"
+    },
+    {
+      "case": "FY",
+      "id": "net_debt",
+      "label": "Nettoschulden (ohne Finance-Leasing)",
+      "formula": "bs.stb + bs.ltd - bs.cash",
+      "engine": "fy:net_debt",
+      "expect": "teilbetrag",
+      "status": "berechtigte Einschraenkung",
+      "why": "Engine-Feld 21,729 = 41,438 − 19,709 rechnerisch richtig, fachlich Teilbetrag; Resolver lehnt ab. Vollstaendig ≥ 28,224 (Finance-Leasing ohne Betrag)",
+      "unit": "Mio. USD",
+      "period": "2025-12-28",
+      "partial": "note.ltd_sub - bs.cash"
+    },
+    {
+      "case": "FY",
+      "id": "net_debt_bridge",
+      "label": "Nettoschulden der DCF-Bruecke",
+      "formula": "",
+      "engine": "model:dcf._netDebtM",
+      "expect": "fehlt",
+      "status": "berechtigte Einschraenkung",
+      "why": "Finance-Leasing „not significant“ ohne Betrag ⇒ kein belegter Nullwert (B-2). Der DCF wird schon wegen ebit[0] nicht berechnet; unabhaengig davon lehnt der Resolver das Feld net_debt 21,729 als Teilbetrag ab (Engine-Kennzeichen „Umfang unvollstaendig“, siehe Quellenabgleich) — die Bruecke bliebe auch mit EBIT gesperrt",
+      "unit": "Mio. USD",
+      "period": "2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "equity",
+      "label": "Eigenkapital",
+      "formula": "bs.equity",
+      "engine": "fy:book_value",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "Engine: Aktiva − Passiva (Tag nur StockholdersEquityIncludingPortion…, I-2)",
+      "unit": "Mio. USD",
+      "period": "2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "shares",
+      "label": "Aktien Ø verwaessert",
+      "formula": "fy.sh_dil",
+      "engine": "fy:shares_diluted",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "GuV",
+      "unit": "Mio. Aktien",
+      "period": "2024-12-30…2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "eps",
+      "label": "EPS verwaessert",
+      "formula": "fy.eps",
+      "engine": "fy:eps_diluted",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "",
+      "unit": "USD",
+      "period": "2024-12-30…2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "dps",
+      "label": "DPS (gezahlt)",
+      "formula": "fy.dps",
+      "engine": "fy:dps",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "",
+      "unit": "USD",
+      "period": "2024-12-30…2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "div",
+      "label": "Gezahlte Dividenden",
+      "formula": "fy.div",
+      "engine": "fy:dividends_paid",
+      "expect": "fehlt",
+      "status": "berechtigte Einschraenkung",
+      "why": "als PaymentsOfOrdinaryDividends getaggt (I-3); DDM nutzt DPS, nicht die Summe",
+      "unit": "Mio. USD",
+      "period": "2024-12-30…2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "ni",
+      "label": "Jahresueberschuss",
+      "formula": "fy.ni",
+      "engine": "fy:net_income",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "enthaelt Sonderertrag (M-3); RIM rechnet damit",
+      "unit": "Mio. USD",
+      "period": "2024-12-30…2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "interest",
+      "label": "Zinsaufwand",
+      "formula": "fy.int_exp",
+      "engine": "fy:interest_expense",
+      "expect": "fehlt",
+      "status": "berechtigte Einschraenkung",
+      "why": "I-1 (Tag InterestExpenseNonoperating nicht erschlossen) ⇒ Interest Coverage nicht verfuegbar",
+      "unit": "Mio. USD",
+      "period": "2024-12-30…2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "tax",
+      "label": "Steueraufwand",
+      "formula": "fy.tax",
+      "engine": "fy:tax_expense",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "",
+      "unit": "Mio. USD",
+      "period": "2024-12-30…2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "sbc",
+      "label": "SBC",
+      "formula": "fy.sbc",
+      "engine": "fy:sbc",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "",
+      "unit": "Mio. USD",
+      "period": "2024-12-30…2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "buyback",
+      "label": "Rueckkaeufe",
+      "formula": "fy.buyback",
+      "engine": "fy:buybacks_dollar",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "",
+      "unit": "Mio. USD",
+      "period": "2024-12-30…2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "gross",
+      "label": "Bruttoergebnis",
+      "formula": "fy.gross",
+      "engine": "fy:gross_profit",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "",
+      "unit": "Mio. USD",
+      "period": "2024-12-30…2025-12-28"
+    },
+    {
+      "case": "FY",
+      "id": "nsi",
+      "label": "Net Share Issuance 5y",
+      "formula": "fy.sh_dil / R.shares_diluted.5 - 1",
+      "engine": "quality:netShareIssuance",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "2,429.4 / FY2020 (Historie geprueft) − 1",
+      "unit": "Anteil",
+      "tol": 0.0005
+    },
+    {
+      "case": "FY",
+      "id": "nd_ebitda",
+      "label": "Net Debt/EBITDA",
+      "formula": "",
+      "engine": "quality:netDebtToEbitda",
+      "expect": "fehlt",
+      "status": "berechtigte Einschraenkung",
+      "why": "kein EBITDA (I-1) und Nettoschulden nur Teilbetrag (P-1)",
+      "unit": "x"
+    },
+    {
+      "case": "TTM",
+      "id": "revenue",
+      "label": "Umsatz TTM",
+      "formula": "fy.revenue + h126.revenue - h125.revenue",
+      "engine": "ttm:flow:revenue",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "52 Wochen 2025-06-30…2026-06-28 (die 53. Woche von FY2026 liegt in Q4/2026, ausserhalb)",
+      "unit": "Mio. USD",
+      "period": "2025-06-30…2026-06-28"
+    },
+    {
+      "case": "TTM",
+      "id": "ebit_recon",
+      "label": "EBIT TTM rekonstruiert",
+      "formula": "fy.pretax + h126.pretax - h125.pretax + fy.int_exp + h126.int_exp - h125.int_exp - (fy.int_inc + h126.int_inc - h125.int_inc)",
+      "engine": "ttm:flow:operating_income",
+      "expect": "fehlt",
+      "status": "berechtigte Einschraenkung",
+      "why": "25,296; „Other (income) expense“ TTM = −7,209 + 625 + 7,214 = 630 Aufwand (Talk-Aufloesung Q1/2025 faellt aus dem Fenster). Engine: kein OperatingIncomeLoss (I-1)",
+      "unit": "Mio. USD",
+      "period": "2025-06-30…2026-06-28"
+    },
+    {
+      "case": "TTM",
+      "id": "da",
+      "label": "D&A TTM",
+      "formula": "fy.da + h126.da - h125.da",
+      "engine": "ttm:flow:depreciation_amortization",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "",
+      "unit": "Mio. USD",
+      "period": "2025-06-30…2026-06-28"
+    },
+    {
+      "case": "TTM",
+      "id": "cfo",
+      "label": "CFO TTM",
+      "formula": "fy.cfo + h126.cfo - h125.cfo",
+      "engine": "ttm:flow:cfo",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "",
+      "unit": "Mio. USD",
+      "period": "2025-06-30…2026-06-28"
+    },
+    {
+      "case": "TTM",
+      "id": "capex",
+      "label": "CapEx TTM",
+      "formula": "fy.capex + h126.capex - h125.capex",
+      "engine": "ttm:flow:capex",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "",
+      "unit": "Mio. USD",
+      "period": "2025-06-30…2026-06-28"
+    },
+    {
+      "case": "TTM",
+      "id": "fcf",
+      "label": "FCF TTM",
+      "formula": "fy.cfo + h126.cfo - h125.cfo - (fy.capex + h126.capex - h125.capex)",
+      "engine": "ttm:none",
+      "expect": "fehlt",
+      "status": "berechtigte Einschraenkung",
+      "why": "Bestandteile in der Engine vorhanden, TTM-Sicht wegen fehlender Pflichtfelder nicht gebildet",
+      "unit": "Mio. USD",
+      "period": "2025-06-30…2026-06-28"
+    },
+    {
+      "case": "TTM",
+      "id": "ni",
+      "label": "Jahresueberschuss TTM",
+      "formula": "fy.ni + h126.ni - h125.ni",
+      "engine": "ttm:flow:net_income",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "",
+      "unit": "Mio. USD",
+      "period": "2025-06-30…2026-06-28"
+    },
+    {
+      "case": "TTM",
+      "id": "div",
+      "label": "Gezahlte Dividenden TTM",
+      "formula": "fy.div + h126.div - h125.div",
+      "engine": "ttm:none",
+      "expect": "fehlt",
+      "status": "berechtigte Einschraenkung",
+      "why": "",
+      "unit": "Mio. USD",
+      "period": "2025-06-30…2026-06-28"
+    },
+    {
+      "case": "TTM",
+      "id": "dps",
+      "label": "DPS gezahlt TTM",
+      "formula": "fy.dps + h126.dps - h125.dps",
+      "engine": "ttm:none",
+      "expect": "fehlt",
+      "status": "berechtigte Einschraenkung",
+      "why": "",
+      "unit": "USD",
+      "period": "2025-06-30…2026-06-28"
+    },
+    {
+      "case": "TTM",
+      "id": "cash",
+      "label": "Liquide Mittel 28.06.2026",
+      "formula": "bs26.cash",
+      "engine": "ttm:inst:cash_and_equivalents",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "",
+      "unit": "Mio. USD",
+      "period": "2026-06-28"
+    },
+    {
+      "case": "TTM",
+      "id": "stb",
+      "label": "Loans and notes payable",
+      "formula": "bs26.stb",
+      "engine": "ttm:inst:debt_short_term",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "enthaelt 9.9 Mrd. CP und laufenden Anteil",
+      "unit": "Mio. USD",
+      "period": "2026-06-28"
+    },
+    {
+      "case": "TTM",
+      "id": "ltd",
+      "label": "Long-term debt",
+      "formula": "bs26.ltd",
+      "engine": "ttm:inst:debt_long_term_noncurrent",
+      "expect": "gleich",
+      "status": "korrekt",
+      "why": "",
+      "unit": "Mio. USD",
+      "period": "2026-06-28"
+    },
+    {
+      "case": "TTM",
+      "id": "total_debt",
+      "label": "Finanzschulden TTM (vollstaendig ohne Leasing)",
+      "formula": "bs26.stb + bs26.ltd",
+      "engine": "ttm:inst:total_debt",
+      "expect": "fehlt",
+      "status": "berechtigte Einschraenkung",
+      "why": "49,036 aus Bilanz bestimmbar (Unternehmensangabe ~49.0 Mrd.); Engine: LongTermDebt-Tag im 10-Q nicht vorhanden (I-4), Finance-Leasing ohne Betrag",
+      "unit": "Mio. USD",
+      "period": "2026-06-28"
+    },
+    {
+      "case": "TTM",
+      "id": "net_debt",
+      "label": "Nettoschulden TTM (ohne Leasing, ohne Wertpapiere)",
+      "formula": "bs26.stb + bs26.ltd - bs26.cash",
+      "engine": "ttm:none",
+      "expect": "fehlt",
+      "status": "berechtigte Einschraenkung",
+      "why": "28,614; Unternehmensangabe 28.2 Mrd. rechnet marktgaengige Wertpapiere (336) mit ein",
+      "unit": "Mio. USD",
+      "period": "2026-06-28"
+    },
+    {
+      "case": "TTM",
+      "id": "shares",
+      "label": "Aktien Ø verwaessert TTM",
+      "formula": "",
+      "engine": "ttm:shares",
+      "expect": "fehlt",
+      "status": "berechtigte Einschraenkung",
+      "why": "nicht bestimmbar: Q4/2025 nicht gemeldet (B-3)",
+      "unit": "Mio. Aktien",
+      "period": "2025-06-30…2026-06-28"
+    },
+    {
+      "case": "TTM",
+      "id": "eps",
+      "label": "EPS TTM",
+      "formula": "",
+      "engine": "ttm:eps",
+      "expect": "fehlt",
+      "status": "berechtigte Einschraenkung",
+      "why": "nicht exakt bestimmbar (11.03 + 4.41 − 6.82 = 8.62 nur Naeherung)",
+      "unit": "USD",
+      "period": "2025-06-30…2026-06-28"
+    },
+    {
+      "case": "TTM",
+      "id": "equity",
+      "label": "Eigenkapital 28.06.2026",
+      "formula": "bs26.equity",
+      "engine": "ttm:none",
+      "expect": "fehlt",
+      "status": "berechtigte Einschraenkung",
+      "why": "keine TTM-Groesse",
+      "unit": "Mio. USD",
+      "period": "2026-06-28"
+    }
+  ]
+}

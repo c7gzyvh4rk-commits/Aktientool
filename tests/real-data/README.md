@@ -16,6 +16,24 @@ Skripte, die nicht zu `npm test` gehören.
    der Cloud-Umgebung) braucht Node zusätzlich
    `NODE_USE_ENV_PROXY=1` und gegebenenfalls `NODE_EXTRA_CA_CERTS=<CA-Datei>`.
 
+   **Originalberichte (seit D3).** Für den Abgleich mit den Abschlüssen selbst:
+
+   ```sh
+   SEC_USER_AGENT="Name kontakt@example.org" \
+     node tests/real-data/fetch-filings.mjs MCD JNJ --cutoff 2026-09-24 --since 2025-07-01
+   SEC_USER_AGENT="…" node tests/real-data/fetch-filings.mjs MCD JNJ --cutoff 2026-09-24 --since 2016-01-01 --forms 10-K
+   SEC_USER_AGENT="…" node tests/real-data/fetch-filings.mjs MCD JNJ --cutoff 2026-09-24 --since 2099-01-01 \
+     --accn 0000063908-13-000010,0001193125-12-077317,0000950123-11-018128,0000200406-18-000005
+   ```
+
+   Lädt das Hauptdokument (iXBRL) jedes 10-K/10-Q mit Einreichung ≤ Stichtag
+   (spätere Filings und Berichtigungen nicht), bei Filings ohne Inline-XBRL
+   zusätzlich die XBRL-Instanz; `--accn` holt ältere, von der Engine zitierte
+   Akten (nur Instanz). Ablage unverändert unter `cache/filings/<cik>/<accn>/`,
+   Manifest `cache/filings/manifest.json` mit URL, Form, Accession Number,
+   Einreichungsdatum, Berichtsperiode, Abrufzeit und SHA-256. Bei HTTP-Fehlern
+   (z. B. 503 der SEC) Exit 2; einfach erneut starten.
+
 2. **Produktiven Import nachspielen.** Das läuft ohne Netz, nur mit lokalem Chromium:
 
    ```sh
@@ -49,6 +67,13 @@ Skripte, die nicht zu `npm test` gehören.
      * `panels`: die Texte der Ansichten Übersicht, Bewertung, Markt-Vergleich,
        Qualität und Annahmen, jeweils nach dem Neurendern in diesem Schritt;
      * `checks`: Abgleich der Ansichten mit dem Engine-Ausweis;
+   * seit D3 zusätzlich je Erfassung: die **ganze** Reihe je Feld (Werte,
+     Perioden mit Beginn, Formen, `filed`, Akten; vorher nur drei Werte) für
+     alle Modellreihen (auch Zins, Steuer, SBC, Bilanzsummen, Rückkäufe);
+     `ttmEngineDataset` (der TTM-Datensatz der Engine, auch unvollständig, mit
+     `usedForValuation`); `modelInputs` (Modelleingaben, D&A-Quote);
+     `quality` (Kennzahlen, Hard Stops, QCE); `synthesis` (Sperre und Grund);
+     Umfangskennzeichen der Schulden (`provenance.scope`);
    * `integrity`: SHA-256 der Fundamentaldaten nach dem Import und am Ende;
    * die bedienten Quellen mit SHA-256.
 
@@ -72,7 +97,8 @@ Skripte, die nicht zu `npm test` gehören.
 
    ```sh
    npm run test:audit-tool
-   # = node --test tests/real-data/replay-import.browser.test.mjs
+   # = node --test tests/real-data/check-panels.test.mjs tests/real-data/reconcile-sources.test.mjs \
+   #               tests/real-data/replay-import.browser.test.mjs
    # gegen eine andere Fassung des Skripts:
    REPLAY_SCRIPT=pfad/zu/replay-import.mjs npm run test:audit-tool
    ```
@@ -93,6 +119,9 @@ Skripte, die nicht zu `npm test` gehören.
      aktiv ist, **als diagnostisch gekennzeichnet** bei seinem Wert stehen
      (Modellname, dann „diagnostisch“, dann der Wert); als „aktiv“ dargestellt,
      fehlend oder mit anderem Wert schlägt die Prüfung fehl;
+   * Übersicht (seit D3): Ist die Synthese gesperrt, muss der Sperrgrund der
+     Engine sichtbar sein, und „Hard Stop aktiv“ darf nur bei tatsächlich
+     aktivem Hard Stop erscheinen;
    * Periode der verwendeten Basis im Markt-Vergleich: Erwartet wird das
      Periodenende aus dem Ausweis der Datenbasis (`basis.period.end`), in der
      Engine-Erwartung (`computeRelativeMultiplesFV().basisPeriod`) **und** im
@@ -134,25 +163,44 @@ Skripte, die nicht zu `npm test` gehören.
    Kontexte). Der Zeitstempel `retrievedAt` ändert sich bei jedem Abruf; die
    Fakten selbst sind bei gleichem Quell-Hash identisch.
 
-5. **Quellenabgleich (seit D3)** — nach Schritt 1 und dem Replay, ohne Netz
-   und ohne Browser:
+5. **Quellenabgleich der Historie (D3, neu gefasst)** — nach Schritt 1 (inkl.
+   Originalberichte) und dem Replay, ohne Netz und ohne Browser:
 
    ```sh
-   node tests/real-data/reconcile-sources.mjs MCD JNJ [--md tabelle.md]
+   node tests/real-data/reconcile-sources.mjs MCD JNJ [--years N] [--md tabelle.md]
    ```
 
-   Vergleicht die Erfassung `fy` aus `out/<TICKER>-report.json` mit den
-   Company-Facts-Stichtagskopien, **ohne Produktfunktionen**: gemeldete Felder
-   gegen den zuletzt eingereichten 10-K-Fakt desselben Tags und derselben
-   Periode (Strom: Jahreszeitraum; Stichtag: instant; Akte des Tools muss dazu
-   gehören), abgeleitete Felder über ihren Rechenweg (EBITDA − EBIT = ein
-   gemeldeter D&A-Fakt derselben Periode, FCF, Nettoschulden, Buchwert aus
-   Aktiva − Passiva). Aktien, die ein Filer bereits in Mio. meldet (MCD, F-4),
-   gelten nur, wenn NI/EPS derselben Periode sie auf ±1 % bestätigt. Felder
-   ohne Toolwert werden aufgelistet, nicht abgeglichen (D&A ist kein eigenes
-   Feld; es wird über EBITDA geprüft). Exit 0 = alle Werte stimmen, 1 =
-   Abweichung (`ABWEICHUNG …`), 2 = nicht ausführbar. Gegenlauf mit
-   verfälschter Erfassung (Wert, Ableitung, Periode, Skalierung) → Exit 1.
+   Prüft **jeden** erfassten Jahreswert der Erfassung `fy` (Standard: ganze
+   Reihe), ohne Produktfunktionen: gemeldete Felder gegen Company Facts
+   (jüngster 10-K-Fakt, Akte des Tools) **und** gegen den zitierten
+   Originalbericht (Fundstelle = Tabellenzeile). EBITDA − EBIT muss die
+   **Gesamt-D&A** sein (Auditbeleg `evidence/<T>.json`, sonst größter D&A-Posten
+   des Originals); ein kleinerer Teilposten ist eine ABWEICHUNG, auch wenn sein
+   Betrag zu einem gemeldeten D&A-Tag passt (Gegenfall MCD 12,850 = 12,393 + 457,
+   Test `reconcile-sources.test.mjs`). Schulden: Rechenidentität und fachlicher
+   Umfang getrennt; ein rechnerisch richtiger Teilbetrag gilt nur als
+   „berechtigte Einschränkung“, wenn die Engine ihn als unvollständig
+   kennzeichnet. Status je Zeile: korrekt · berechtigte Einschränkung · offen ·
+   ABWEICHUNG. Exit 0 = keine Abweichung, 1 = Abweichung, 2 = nicht ausführbar.
+   Optionen für Tests: `--data`, `--reports`, `--evidence`.
+
+6. **Kontrollrechnungen FY und TTM (D3)** — unabhängig vom Produkt:
+
+   ```sh
+   node tests/real-data/control-calcs.mjs MCD JNJ [--md tabelle.md]
+   ```
+
+   Auditbelege `evidence/<TICKER>.json`: je Posten Akte, Konzept, Periode,
+   angezeigter Wert und Fundstelle; `evidence.mjs` prüft jeden Posten gegen das
+   Originaldokument (`ixbrl.mjs` liest iXBRL bzw. Instanz). Daraus entstehen die
+   Kontrollwerte: FY direkt, TTM als FY + YTD − Vorjahres-YTD (anderer Weg als die
+   Quartalssumme der Engine), Stichtage nicht summiert, gewichtete Aktien/EPS ohne
+   gemeldetes Quartal „nicht bestimmbar“. Vergleich mit den erfassten
+   Engine-Werten (FY-Erfassung, Engine-TTM-Datensatz, Modelleingaben,
+   Kennzahlen) gegen die im Beleg festgehaltene Erwartung und den Auditstatus;
+   fehlende Engine-Werte mit Zielwert **und** Engine-Grund. Dazu Fallprüfungen
+   (TTM angefordert, FY verwendet, Rückfall ausgewiesen, Fundamentaldaten
+   unverändert). Die Kontrollwerte sind Auditbelege, kein Produktcode.
 
 **Original-XBRL (seit D2).** Company Facts enthält keine Berichtspräzision. Der
 Import lädt deshalb für Berichte, die an einem Quartalswiderspruch der jüngsten

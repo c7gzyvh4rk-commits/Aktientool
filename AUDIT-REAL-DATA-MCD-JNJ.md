@@ -1,5 +1,8 @@
 # Realdaten-Audit MCD / JNJ — Folgechat D
 
+> **Aktueller Stand: §13 (D3 abschließend, V1.0.74).** Die Abschnitte 1–12
+> dokumentieren den Verlauf (Audit D, D1, D2, D3-Vorbereitung).
+
 Geprüft wurde, wie das Tool echte SEC-Daten von McDonald's (MCD) und
 Johnson & Johnson (JNJ) importiert und verarbeitet. Es ist keine
 Anlageempfehlung. Kurse und Bewertungsannahmen stehen getrennt in Abschnitt 5.
@@ -317,6 +320,8 @@ Engine-Werte unverändert.
 
 ## 12 · D3 — erneuter Realdatenabgleich mit dem reparierten Werkzeug
 
+> **Ersetzt durch §13** (abschließender D3-Lauf gegen die Originalberichte).
+
 Stand: Produkt/Werkzeug `05fefc6` (V1.0.73), Datenstichtag 2026-09-24,
 Quellen neu geladen am 2026-09-28 (SHA-256 unverändert: MCD `0394e814…`,
 JNJ `7141c0c9…`). Kein Kurs gesetzt (Yahoo aus).
@@ -388,3 +393,369 @@ sind durch die D2-Regressionstests abgedeckt, nicht durch diesen Lauf. Die
 aus den HTML-Dokumenten gelesen; die XBRL-Werte stimmen mit ihnen überein.
 Anzeigen wurden als Text geprüft, nicht visuell.
 
+## 13 · D3 abschließend — Realdaten erneut gegen Originalberichte geprüft (V1.0.74)
+
+> §12 (vorheriger D3-Lauf) ist hierdurch **ersetzt**: Er prüfte nur die ersten
+> drei Werte je Feld gegen Company Facts, nicht gegen die Originalberichte, und
+> nicht TTM. Sein grüner `reconcile-sources`-Lauf war kein TTM-Nachweis und hätte
+> den EBITDA-Teilpostenfall (12,850) akzeptiert (§13.2).
+
+### 13.0 · Ausgangsstand und Voraussetzungen
+
+| | |
+|---|---|
+| Branch | `claude/audit-real-data-mcd-jnj`, Ausgangscommit `04d8c83` (= Remote-Spitze, Arbeitsbaum sauber, keine `AGENTS.md`) |
+| Baseline (selbst ausgeführt, `04d8c83`) | `npm test` Exit 0 (1700 Rechenprüfungen, 269/269 Node-Tests) · `npm run test:audit-tool` Exit 0 (29/29) · `replay-import.mjs --selftest` 52/52 · Replay MCD 49/49, JNJ 49/49 (Exit 0) |
+| D1 (Code gelesen, Tests) | Die Erfassung liest die Bewertungssicht der Engine (`resolveValuationView`), TTM-Felder nur aus der TTM-Sicht, Jahres-Tags nicht als TTM-Tag; jede Ansicht wird per Mausklick geöffnet und erst nach nachgewiesenem Neurendern gelesen (Markierung im Ausgabebereich). Bestätigt durch `replay-import.browser.test.mjs` (FY → TTM → FY, synthetischer TTM-Filer) und die Realläufe. **Lücke in D1 gefunden und behoben:** Werte, Perioden und Akten wurden nur für die ersten drei Jahre erfasst (§13.2). |
+| D2 (Code, Tests, Reallauf) | F-1 … F-5 und P-1 im echten Import nachgeprüft (§13.9). **Restlücke gefunden:** F-4 galt nur für `shares_diluted`, nicht für `shares_basic` (D3-4, behoben). |
+| Offene fachliche Fragen | I-1 … I-5, B-1 … B-4, M-1 … M-3 (§6) bleiben dokumentiert; §13.7 grenzt die JNJ-Fragen neu ab. |
+
+### 13.1 · Quellen, Stichtag, Berichtsgrenzen
+
+* **Quellen.** Company Facts und Submissions über `fetch-sources.mjs` (SHA-256
+  unverändert: MCD `0394e814d75510be…`, JNJ `7141c0c988fa1d30…`), dazu **neu**
+  die Originalberichte über `fetch-filings.mjs`: alle 10-K seit 2016 sowie die
+  10-Q Q2/2025 … Q2/2026 beider Unternehmen (iXBRL-Hauptdokument, bei älteren
+  Filings die XBRL-Instanz) und vier ältere, von der Engine zitierte 10-K
+  (2011–2018). Manifest je Datei: URL, Form, Accession Number,
+  Einreichungsdatum, Berichtsperiode, Abrufzeit, SHA-256 (Tabelle:
+  `AUDIT-D3-RECONCILIATION.md` §1). Originale liegen unverändert in
+  `tests/real-data/cache/filings/` (nicht versioniert), Ableitungen
+  (Stichtagskopie, Belege, Tabellen) getrennt davon.
+* **Stichtag 2026-09-24.** Letzte Filings vor dem Stichtag: MCD 10-Q Q2/2026
+  (`0000063908-26-000073`, eingereicht 2026-08-07), JNJ 10-Q Q2/2026
+  (`0000200406-26-000153`, 2026-07-23); danach bis zum Abruf (2026-09-28) keine
+  10-K/10-Q. `fetch-sources.mjs` filtert Company Facts nach `filed` ≤ Stichtag
+  (hier 0 Fakten entfernt); Gegenprobe mit Stichtag 2026-06-30: 369 spätere
+  Fakten entfernt, jüngstes `filed` 2026-05-07, das 10-Q vom 2026-08-07 und
+  seine Instanz nicht geladen. Die Submissions-Datei wird nicht gefiltert; das
+  Produkt liest daraus nur SIC, Geschäftsjahresende und Börse (statisch).
+  `fetch-filings.mjs` lädt nur Filings mit Einreichung ≤ Stichtag. Die
+  Originaldokumente sind je Accession unveränderlich; ihr Abrufzeitpunkt liegt
+  nach dem Stichtag, ihr Einreichungsdatum nicht.
+* **Berichtsgrenzen.** MCD: Kalenderjahr, FY2025 = 2025-01-01…2025-12-31, TTM
+  = 2025-07-01…2026-06-30 (365 Tage). JNJ (10-K Anhang 1: Geschäftsjahr endet
+  am Sonntag nahe Ende Dezember, 52 Wochen, alle fünf bis sechs Jahre 53):
+  FY2025 = 2024-12-30…2025-12-28 (52 Wochen), 6M 2026 = 2025-12-29…2026-06-28,
+  6M 2025 = 2024-12-30…2025-06-29, TTM = **2025-06-30…2026-06-28 (364 Tage)**.
+  FY2026 hat 53 Wochen; die Zusatzwoche liegt in Q4/2026, außerhalb des Fensters.
+  Das bisher genannte Fenster „Q3/2025 bis Q2/2026“ ist damit bestätigt.
+
+### 13.2 · Werkzeug: Anpassungen und Absicherung
+
+| Werkzeug | Änderung | Nachweis |
+|---|---|---|
+| `replay-import.mjs` | Erfassung der **ganzen** Reihe (Werte, Perioden inkl. Beginn, Formen, `filed`, Akten; bisher je drei) und weiterer Modellreihen (Zins, Steuer, SBC, Bilanzsummen, Rückkäufe …); Engine-TTM-Datensatz `fundamentals._ttm` auch wenn unvollständig und **nicht verwendet** (`usedForValuation`); Modelleingaben (`modelInputs`, D&A-Quote), Qualitätskennzahlen, Umfangskennzeichen der Schulden, Sperre der Synthese; neue Prüfung „Übersicht nennt den Sperrgrund, kein ‚Hard Stop aktiv‘ ohne aktiven Hard Stop“ (D3-3). Kein eigener Rechenweg. | `check-panels.test.mjs` +3 (25), Selbsttest 58/58 |
+| `reconcile-sources.mjs` | Neu gefasst: jeder erfasste Jahreswert gegen Company Facts **und** gegen den zitierten Originalbericht (Fundstelle = Tabellenzeile); EBITDA − EBIT muss die **Gesamt-D&A** sein (Auditbeleg, sonst größter D&A-Posten des Originals); ein Teilposten ist ABWEICHUNG, auch wenn sein Betrag „zu einem D&A-Tag passt“; Schulden: Rechenidentität und fachlicher Umfang getrennt. | `reconcile-sources.test.mjs` (6): Gegenfall 12,850 = 12,393 + 457 → ABWEICHUNG, Exit 1; 14,592 → besteht. Die frühere Fassung meldet für denselben Fall „2/2 Werte stimmen“, Exit 0 (reproduziert) |
+| `fetch-filings.mjs`, `ixbrl.mjs`, `evidence.mjs` | Originalberichte laden; iXBRL/Instanz lesen (Konzept, Kontext, angezeigter Wert, `decimals`, Zeile); Auditbelege gegen das Original prüfen | 137 Belege (MCD 72, JNJ 65), alle im Original bestätigt |
+| `control-calcs.mjs` + `evidence/<T>.json` | Unabhängige Kontrollrechnung FY und TTM (TTM = FY + YTD − Vorjahres-YTD aus den Originalen; anderer Weg als die Quartalssumme der Engine), Vergleich mit den erfassten Engine-Werten, Zielwert und Engine-Grund getrennt; Fallprüfungen (TTM angefordert, FY verwendet, Rückfall ausgewiesen). Kontrollwerte stehen nur in den Auditbelegen, nicht im Produkt. | Gegenprobe mit verfälschter Erfassung (EBITDA 12,850, TTM-Umsatz, TTM als verwendet): 5 Abweichungen, Exit 1 |
+
+### 13.3 · Vier Prüffälle
+
+Kontrollwerte aus den Originalberichten (Belege mit Fundstelle:
+`AUDIT-D3-RECONCILIATION.md` §2, Kürzel `fy.*` = 10-K FY2025, `h126/h125.*` =
+10-Q Q2/2026 Sechsmonatsspalten, `bs26.*` = 10-Q-Bilanz, `q*` = Quartalsspalten,
+`note.*` = Anhang). „Engine“ = tatsächlich erfasster Wert: FY aus der Erfassung
+`fy`; TTM aus dem Engine-TTM-Datensatz (gebildet, aber **nicht verwendet**).
+Status: korrekt · berechtigte Einschränkung · bestätigter Fehler · ungeklärt.
+
+**Angeforderte und verwendete Basis:** In beiden TTM-Fällen angefordert TTM,
+verwendet **FY** (Rückfall mit Gründen in Bewertungs- und Annahmenansicht; die
+TTM-Ansicht weist die Felder als Jahreswerte aus, nicht als TTM). Es gibt für
+MCD und JNJ **keine automatische TTM-Bewertung**.
+
+#### MCD FY
+
+| Posten | Einheit · Periode | Kontrollwert (Original) | Rechenweg | Engine | Abw. | Status | Erklaerung / Engine-Grund |
+|---|---|---|---|---|---|---|---|
+| Umsatz | Mio. USD · 2025-01-01…2025-12-31 | 26,885 | fy.revenue | 26,885 | 0 | korrekt | GuV-Gesamtumsatz |
+| EBIT (Operating income) | Mio. USD · 2025-01-01…2025-12-31 | 12,393 | fy.ebit | 12,393 | 0 | korrekt | GuV-Zeile Operating income |
+| D&A (gesamt) | Mio. USD · 2025-01-01…2025-12-31 | 2,199 | fy.da_total | 2,199 | 0 | korrekt | KFR-Gesamtbetrag; GuV-SG&A-Zeile 457 ist nur Teilposten (F-1 behoben) |
+| EBITDA | Mio. USD · 2025-01-01…2025-12-31 | 14,592 | fy.ebit + fy.da_total | 14,592 | 0 | korrekt | EBIT + Gesamt-D&A; Teilpostenrechnung 12,850 waere falsch |
+| Operativer Cashflow | Mio. USD · 2025-01-01…2025-12-31 | 10,551 | fy.cfo | 10,551 | 0 | korrekt | KFR |
+| Investitionen (CapEx) | Mio. USD · 2025-01-01…2025-12-31 | 3,365 | fy.capex | 3,365 | 0 | korrekt | KFR Capital expenditures |
+| FCF = CFO − CapEx | Mio. USD · 2025-01-01…2025-12-31 | 7,186 | fy.cfo - fy.capex | 7,186 | 0 | korrekt | Definition des Tools |
+| Liquide Mittel | Mio. USD · 2025-12-31 | 774 | bs.cash | 774 | 0 | korrekt | Bilanz |
+| Finanzschulden (vollstaendig) | Mio. USD · 2025-12-31 | 39,973 | note.debt_total | 39,973 | 0 | korrekt | Anhang: 39,973 enthaelt CP 798 und laufende Faelligkeiten 725 (umklassifiziert); Wert stimmt, Engine kennzeichnet Umfang dennoch als unvereinbar (Tags widersprechen sich) ⇒ Bruecke gesperrt |
+| Ausgewiesene Teil-Tags CP + laufend (in 39,973 enthalten) | Mio. USD · 2025-12-31 | 1,523 | note.cp + note.ltd_cur | 1,523 | 0 | korrekt | Teilbetraege erfasst; nicht zusaetzlich zu addieren |
+| Finance-Leasing | Mio. USD · 2025-12-31 | 2,352 | note.fl_cur + note.fl_noncur | 2,352 | 0 | korrekt | Anhang Leasing |
+| Operating-Leasing | Mio. USD · 2025-12-31 | 12,488 | note.ol_cur + note.ol_noncur | 12,170.3 (andere Periode) | — | berechtigte Einschraenkung | Seit 10-K FY2024 nur mit Dimension getaggt (I-5); Engine hat nur 12,170.3 zum 2023-12-31 und verknuepft ihn NICHT mit 2025 (ROIC-Leasing gesperrt, F-5/N-1) — Periode 2023-12-31 statt 2025-12-31 |
+| Nettoschulden ohne Leasing (Rechenidentitaet) | Mio. USD · 2025-12-31 | 39,199 | note.debt_total - bs.cash | 39,199 | 0 | korrekt | Rechnung stimmt; das ist NICHT die vollstaendige Nettoverschuldung der DCF-Bruecke (siehe naechste Zeile) |
+| Nettoschulden inkl. Finance-Leasing (Brueckendefinition) | Mio. USD · 2025-12-31 | 41,551 | note.debt_total + note.fl_cur + note.fl_noncur - bs.cash | fehlt | — | berechtigte Einschraenkung | Aus dem Anhang bestimmbar (41,551), aus den Tags nicht (LongTermDebt = LongTermDebtNoncurrent trotz LongTermDebtCurrent 725). DCF-Bruecke gesperrt, kein Eigenkapitalwert; operativer Wert nur nachrichtlich (I-4) — Engine: Nettoschulden nicht ermittelbar (fehlend: total_debt (Umfang unvollstaendig)) — ohne sie ist kein Eigenkapitalwert je Aktie bestimmbar; der operative Unternehmenswert 242.10/Aktie wird nur nachrichtlich ausgewiesen. Fehlende Daten gelten NICHT als 0. |
+| Eigenkapital | Mio. USD · 2025-12-31 | -1,791 | bs.equity | -1,791 | 0 | korrekt | Bilanz (negativ) ⇒ RIM gesperrt (B-1) |
+| Aktien Ø verwaessert (FY) | Mio. Aktien · 2025-01-01…2025-12-31 | 716.4 | fy.sh_dil | 716.4 | 0 | korrekt | GuV; Periode FY2025, gewichteter Durchschnitt |
+| EPS verwaessert | USD · 2025-01-01…2025-12-31 | 11.95 | fy.eps | 11.95 | 0 | korrekt | GuV |
+| DPS (erklaert) | USD · 2025-01-01…2025-12-31 | 7.17 | fy.dps | 7.17 | 0 | korrekt | GuV „Dividends declared per common share“ |
+| Gezahlte Dividenden | Mio. USD · 2025-01-01…2025-12-31 | 5,115 | fy.div | 5,115 | 0 | korrekt | KFR |
+| Jahresueberschuss | Mio. USD · 2025-01-01…2025-12-31 | 8,563 | fy.ni | 8,563 | 0 | korrekt | GuV |
+| Zinsaufwand | Mio. USD · 2025-01-01…2025-12-31 | 1,582 | fy.interest | 1,582 | 0 | korrekt | GuV |
+| Steueraufwand | Mio. USD · 2025-01-01…2025-12-31 | 2,334 | fy.tax | 2,334 | 0 | korrekt | GuV |
+| Aktienbasierte Verguetung | Mio. USD · 2025-01-01…2025-12-31 | 165 | fy.sbc | 165 | 0 | korrekt | KFR |
+| Aktienrueckkaeufe | Mio. USD · 2025-01-01…2025-12-31 | 2,056 | fy.buyback | 2,056 | 0 | korrekt | KFR |
+| Interest Coverage | x | 7.8338 | fy.ebit / fy.interest | 7.8338 | 0 | korrekt | EBIT / Zinsaufwand |
+| Net Share Issuance 5y | Anteil | -0.0449 | fy.sh_dil / R.shares_diluted.5 - 1 | -0.0449 | 0 | korrekt | 716.4 / 750.1 (FY2020, Historie im Quellenabgleich geprueft) − 1; keine Bestnote aus Skalierungsfehler (F-4) |
+| D&A-Quote DCF (Median 10 J.) | Anteil | 0.079 | MEDIAN_DA_RATIO | 0.079 | 0 | korrekt | Median der verifizierten Jahreswerte (EBITDA − EBIT)/Umsatz 2016–2025 |
+| Net Debt/EBITDA | x | nicht bestimmbar | — | fehlt | — | berechtigte Einschraenkung | Nettoschulden der Bruecke nicht belegbar (s. o.) ⇒ Kennzahl gesperrt statt 2.69 aus Teilbetrag (P-1) — Engine: insufficient_data — Daten unzureichend (0 von 1 Jahren, fehlt: belastbare Nettoschulden — Die gemeldeten Schuldenangaben widersprechen sich: die gemeldeten Schuldenangaben sind rechnerisch unvereinbar (Abweichung 725.0M) — Umfang des vorhan |
+| DCF operativer Wert je Aktie (nachrichtlich) | USD | nicht bestimmbar | — | 242.1 | — | berechtigte Einschraenkung | Operativer Unternehmenswert ohne Schuldenabzug, nicht mit Kurs vergleichbar; kein freigegebener Eigenkapitalwert |
+
+
+#### MCD TTM
+
+Angefordert TTM, verwendet: **fy** (Rueckfall). Engine-Gruende: unvollstaendig: ebit (Fenster bis 2026-06-30 nicht bildbar: kein verwertbares Quartal mit Ende 2026-06-30 — FY2026-Q2 (Ende 2026-06-30) ist gemeldet, aber verworfen: Quartal steht im Widerspruch zur Differenz der Kumulierungen — als TTM-Bestandteil nicht belastbar); net_income (Fenster bis 2025-06-30 nicht bildbar: Quartalsreihe bricht vor FY2024-Q4 ab — kein verwertbares Quartal mit Ende 2024-09-30 — FY2024-Q3 (Ende 2024-09-30) ist gemeldet, aber verworfen: Quartal steht im Widerspruch zur Differenz der Kumulierungen — als TTM-Bestandteil nicht belastbar); cfo (Fenster bis 2026-06-30 nicht bildbar: kein verwertbares Quartal mit Ende 2026-06-30 — FY2026-Q2 (Ende 2026-06-30) ist gemeldet, aber verworfen: Quartal steht im Widerspruch zur Differenz der Kumulierungen — als TTM-Bestandteil nicht belastbar); capex (Fenster bis 2026-06-30 nicht bildbar: kein verwertbares Quartal mit Ende 2026-06-30 — FY2026-Q2 (Ende 2026-06-30) ist gemeldet, aber verworfen: Quartal steht im Widerspruch zur Differenz der Kumulierungen — als TTM-Bestandteil nicht belastbar); total_debt (Bilanzstichtag zum 2026-06-30 fehlt: juengster Bilanzstichtag 2025-12-31 liegt 181 Tage vor dem Fensterende 2026-06-30 — kein passender Stichtag); long_term_debt (Bilanzstichtag zum 2026-06-30 fehlt: juengster Bilanzstichtag 2025-12-31 liegt 181 Tage vor dem Fensterende 2026-06-30 — kein passender Stichtag); shares_diluted (gewichtete Aktienzahl fuer das Quartal 2025-10-01…2025-12-31 fehlt); eps_diluted (TTM-Ergebnis oder gewichtete TTM-Aktienzahl fehlt)
+
+| Posten | Einheit · Periode | Kontrollwert (Original) | Rechenweg | Engine | Abw. | Status | Erklaerung / Engine-Grund |
+|---|---|---|---|---|---|---|---|
+| Umsatz TTM | Mio. USD · 2025-07-01…2026-06-30 | 27,702 | fy.revenue + h126.revenue - h125.revenue | 27,703 | 1 | korrekt | FY2025 + 6M 2026 − 6M 2025 = 27,702; Engine summiert Quartale mit gemeldetem Q3/2025 7,078 (Differenz 9M − 6M = 7,077): 1 Mio. Rundung innerhalb der Darstellungsgenauigkeit |
+| EBIT TTM | Mio. USD · 2025-07-01…2026-06-30 | 12,805 | fy.ebit + h126.ebit - h125.ebit | fehlt | — | berechtigte Einschraenkung | Engine verwirft Q2/2026: gemeldet 3,338 vs. 6,292 − 2,953 = 3,339; iXBRL deklariert decimals −5 (GuV) bei Darstellung in Mio. ⇒ Toleranz 0.6 Mio. < 1 Mio. Kein falscher Wert, Rueckfall ausgewiesen — Engine: Fenster bis 2026-06-30 nicht bildbar: kein verwertbares Quartal mit Ende 2026-06-30 — FY2026-Q2 (Ende 2026-06-30) ist gemeldet, aber verworfen: Quartal steht im Widerspruch zur Differenz der Kumulierungen — als TTM-Bestandteil nicht belastbar |
+| D&A TTM | Mio. USD · 2025-07-01…2026-06-30 | 2,266 | fy.da_total + h126.da - h125.da | 2,266 | 0 | korrekt | Gesamt-D&A (DepreciationAndAmortization) |
+| EBITDA TTM | Mio. USD · 2025-07-01…2026-06-30 | 15,071 | fy.ebit + h126.ebit - h125.ebit + fy.da_total + h126.da - h125.da | fehlt | — | berechtigte Einschraenkung | folgt aus EBIT TTM — keine TTM-Groesse der Engine (TTM-Sicht nicht gebildet: unvollstaendig) |
+| CFO TTM | Mio. USD · 2025-07-01…2026-06-30 | 11,347 | fy.cfo + h126.cfo - h125.cfo | fehlt | — | berechtigte Einschraenkung | Q2/2026 direkt 2,807, aus 6M − Q1: 5,222 − 2,412 = 2,810 (3 Mio.; ueber jeder Rundungsgrenze): Q1 im 6M-Wert offenbar angepasst. Quartalssumme 11,344 vs. FY+YTD 11,347; Engine bildet keinen Wert — Engine: Fenster bis 2026-06-30 nicht bildbar: kein verwertbares Quartal mit Ende 2026-06-30 — FY2026-Q2 (Ende 2026-06-30) ist gemeldet, aber verworfen: Quartal steht im Widerspruch zur Differenz der Kumulierungen — als TTM-Bestandteil nicht belastbar |
+| CapEx TTM | Mio. USD · 2025-07-01…2026-06-30 | 3,586 | fy.capex + h126.capex - h125.capex | fehlt | — | berechtigte Einschraenkung | Q2/2026 direkt 831 vs. 1,516 − 682 = 834 (3 Mio.) — Engine: Fenster bis 2026-06-30 nicht bildbar: kein verwertbares Quartal mit Ende 2026-06-30 — FY2026-Q2 (Ende 2026-06-30) ist gemeldet, aber verworfen: Quartal steht im Widerspruch zur Differenz der Kumulierungen — als TTM-Bestandteil nicht belastbar |
+| FCF TTM | Mio. USD · 2025-07-01…2026-06-30 | 7,761 | fy.cfo + h126.cfo - h125.cfo - (fy.capex + h126.capex - h125.capex) | fehlt | — | berechtigte Einschraenkung | folgt aus CFO/CapEx — keine TTM-Groesse der Engine (TTM-Sicht nicht gebildet: unvollstaendig) |
+| Jahresueberschuss TTM | Mio. USD · 2025-07-01…2026-06-30 | 8,787 | fy.ni + h126.ni - h125.ni | fehlt | — | berechtigte Einschraenkung | Vorjahresfenster (Q3/2024: 2,255 gemeldet vs. Differenz 1 Mio. bei decimals −5) scheitert; Grund im Tool irrefuehrend formuliert („kein Quartal endet“, D3-2) — Engine: Fenster bis 2025-06-30 nicht bildbar: Quartalsreihe bricht vor FY2024-Q4 ab — kein verwertbares Quartal mit Ende 2024-09-30 — FY2024-Q3 (Ende 2024-09-30) ist gemeldet, aber verworfen: Quartal steht im Widerspruch zur Differenz der Kumulierungen — als TTM-Bestandteil nicht belastbar |
+| Gezahlte Dividenden TTM | Mio. USD · 2025-07-01…2026-06-30 | 5,225 | fy.div + h126.div - h125.div | fehlt | — | berechtigte Einschraenkung | keine TTM-Groesse der Engine — keine TTM-Groesse der Engine (TTM-Sicht nicht gebildet: unvollstaendig) |
+| DPS erklaert TTM | USD · 2025-07-01…2026-06-30 | 7.35 | fy.dps + h126.dps - h125.dps | fehlt | — | berechtigte Einschraenkung | je Aktie erklaerte Betraege sind zeitlich additiv; keine TTM-Groesse der Engine — keine TTM-Groesse der Engine (TTM-Sicht nicht gebildet: unvollstaendig) |
+| Liquide Mittel 30.06.2026 | Mio. USD · 2026-06-30 | 822 | bs26.cash | 822 | 0 | korrekt | 10-Q Bilanz |
+| Finanzschulden 30.06.2026 | Mio. USD · 2026-06-30 | 39,863 | bs26.ltd | 39,863 | 0 | korrekt | einzige Schuldenzeile; im 10-Q kein LongTermDebt-Tag ⇒ total_debt der Engine fehlt, Umfang (CP-Umklassifizierung) im 10-Q nicht beschrieben |
+| total_debt TTM (Engine-Feld) | Mio. USD · 2026-06-30 | 39,863 | bs26.ltd | fehlt | — | berechtigte Einschraenkung | Importluecke: Tag LongTermDebt nur im 10-K; Stichtag 2026-06-30 fehlt (B-4) — Engine: Bilanzstichtag zum 2026-06-30 fehlt: juengster Bilanzstichtag 2025-12-31 liegt 181 Tage vor dem Fensterende 2026-06-30 — kein passender Stichtag |
+| Finance-Leasing 30.06.2026 | Mio. USD · 2026-06-30 | nicht bestimmbar | — | fehlt | — | berechtigte Einschraenkung | nicht bestimmbar: 10-Q zeigt nur Leasing gesamt (690 + 14,039), getaggt als OperatingLeaseLiability* — Engine: Bilanzstichtag zum 2026-06-30 fehlt: juengster Bilanzstichtag 2025-12-31 liegt 181 Tage vor dem Fensterende 2026-06-30 — kein passender Stichtag |
+| Aktien Ø verwaessert TTM | Mio. Aktien · 2025-07-01…2026-06-30 | nicht bestimmbar | — | fehlt | — | berechtigte Einschraenkung | nicht bestimmbar: Q4/2025 nicht gemeldet; FY- und YTD-Durchschnitte sind nicht subtrahierbar — Engine: gewichtete Aktienzahl fuer das Quartal 2025-10-01…2025-12-31 fehlt |
+| EPS TTM | USD · 2025-07-01…2026-06-30 | nicht bestimmbar | — | fehlt | — | berechtigte Einschraenkung | nicht exakt bestimmbar (11.95 + 6.10 − 5.74 = 12.31 ist nur Naeherung) — Engine: TTM-Ergebnis oder gewichtete TTM-Aktienzahl fehlt |
+| Eigenkapital 30.06.2026 | Mio. USD · 2026-06-30 | -1,023 | bs26.equity | fehlt | — | berechtigte Einschraenkung | keine TTM-Groesse der Engine; RIM ohnehin gesperrt — keine TTM-Groesse der Engine (TTM-Sicht nicht gebildet: unvollstaendig) |
+| Umlaufvermoegen 30.06.2026 | Mio. USD · 2026-06-30 | 4,345 | bs26.ca | 4,345 | 0 | korrekt | 10-Q Bilanz |
+| Kurzfristige Verbindlichkeiten 30.06.2026 | Mio. USD · 2026-06-30 | 4,018 | bs26.cl | 4,018 | 0 | korrekt | 10-Q Bilanz |
+
+
+#### JNJ FY
+
+| Posten | Einheit · Periode | Kontrollwert (Original) | Rechenweg | Engine | Abw. | Status | Erklaerung / Engine-Grund |
+|---|---|---|---|---|---|---|---|
+| Umsatz | Mio. USD · 2024-12-30…2025-12-28 | 94,193 | fy.revenue | 94,193 | 0 | korrekt | GuV Sales to customers |
+| EBIT rekonstruiert (Vorsteuer + Zinsaufwand − Zinsertrag) | Mio. USD · 2024-12-30…2025-12-28 | 32,496 | fy.pretax + fy.int_exp - fy.int_inc | fehlt | — | berechtigte Einschraenkung | Keine Operating-Income-Zeile; Zinsaufwand als InterestExpenseNonoperating getaggt (nicht in der Tag-Liste, I-1). Enthaelt den Sonderertrag „Other (income) expense“ 7,209 — Definitionsfrage, keine automatische Bereinigung — Engine: ebit leer (kein Wert importiert) |
+| EBIT ohne „Other (income) expense“ (nur Information) | Mio. USD · 2024-12-30…2025-12-28 | 25,287 | fy.pretax + fy.int_exp - fy.int_inc - fy.other | fehlt | — | berechtigte Einschraenkung | Variante ohne saemtliche sonstigen Ertraege/Aufwendungen (enthaelt auch wiederkehrende Posten); erfordert fachliche Entscheidung — Engine: ebit leer (kein Wert importiert) |
+| D&A | Mio. USD · 2024-12-30…2025-12-28 | 7,503 | fy.da | fehlt | — | berechtigte Einschraenkung | 7,503 belegt; ohne EBIT kein EBITDA, D&A-Quote nicht messbar (DCF ohnehin gesperrt) — kein Engine-Feld |
+| Operativer Cashflow | Mio. USD · 2024-12-30…2025-12-28 | 24,530 | fy.cfo | 24,530 | 0 | korrekt | KFR |
+| CapEx | Mio. USD · 2024-12-30…2025-12-28 | 4,832 | fy.capex | 4,832 | 0 | korrekt | KFR |
+| FCF | Mio. USD · 2024-12-30…2025-12-28 | 19,698 | fy.cfo - fy.capex | 19,698 | 0 | korrekt |  |
+| Liquide Mittel | Mio. USD · 2025-12-28 | 19,709 | bs.cash | 19,709 | 0 | korrekt | ohne marktgaengige Wertpapiere 393 (M-2) |
+| Finanzschulden (vollstaendig, ohne Leasing) | Mio. USD · 2025-12-28 | 47,933 | bs.stb + bs.ltd | 41,438 | -6,495 | berechtigte Einschraenkung | Engine 41,438 (LongTermDebt inkl. laufendem Anteil) = Teilbetrag; es fehlen CP 6.5 Mrd. und lokale Kredite (in 8,495). Engine kennzeichnet Umfang als unbestimmt ⇒ keine Bruecke |
+| Nettoschulden (ohne Finance-Leasing) | Mio. USD · 2025-12-28 | 28,224 | bs.stb + bs.ltd - bs.cash | 21,729 | -6,495 | berechtigte Einschraenkung | Engine-Feld 21,729 = 41,438 − 19,709 rechnerisch richtig, fachlich Teilbetrag; Resolver lehnt ab. Vollstaendig ≥ 28,224 (Finance-Leasing ohne Betrag) |
+| Nettoschulden der DCF-Bruecke | Mio. USD · 2025-12-28 | nicht bestimmbar | — | fehlt | — | berechtigte Einschraenkung | Finance-Leasing „not significant“ ohne Betrag ⇒ kein belegter Nullwert (B-2). Der DCF wird schon wegen ebit[0] nicht berechnet; unabhaengig davon lehnt der Resolver das Feld net_debt 21,729 als Teilbetrag ab (Engine-Kennzeichen „Umfang unvollstaendig“, siehe Quellenabgleich) — die Bruecke bliebe auch mit EBIT gesperrt — Engine: DCF ausgeschlossen — abweichende Cashflow-Definition: dieser Pfad rechnet mit FCF = CFO − CapEx (nachfinanziert, enthält gezahlte Zinsen) und ist damit nicht definitionskonsistent zum gemeinsamen Bewertungskern (FCFF = EBIT × (1 − t) + D&A − CapEx − ΔWC(operativ), mit WACC diskontiert, Gordon-Terminalwert, abzüglich Nettoschulden (Stichtag) je Aktie). Der Kern ist hier nicht anwendbar, weil ein Umsatzpfad fehlt (fehlend: ebit[0]). Ein DCF auf abweichender Cashflow-Definition geht deshalb weder in die Bewertung noch in die Synthese ein — er würde dort mit dem FCFF-Wert vermischt. |
+| Eigenkapital | Mio. USD · 2025-12-28 | 81,544 | bs.equity | 81,544 | 0 | korrekt | Engine: Aktiva − Passiva (Tag nur StockholdersEquityIncludingPortion…, I-2) |
+| Aktien Ø verwaessert | Mio. Aktien · 2024-12-30…2025-12-28 | 2,429.4 | fy.sh_dil | 2,429.4 | 0 | korrekt | GuV |
+| EPS verwaessert | USD · 2024-12-30…2025-12-28 | 11.03 | fy.eps | 11.03 | 0 | korrekt |  |
+| DPS (gezahlt) | USD · 2024-12-30…2025-12-28 | 5.14 | fy.dps | 5.14 | 0 | korrekt |  |
+| Gezahlte Dividenden | Mio. USD · 2024-12-30…2025-12-28 | 12,381 | fy.div | fehlt | — | berechtigte Einschraenkung | als PaymentsOfOrdinaryDividends getaggt (I-3); DDM nutzt DPS, nicht die Summe — Engine: dividends_paid leer (kein Wert importiert) |
+| Jahresueberschuss | Mio. USD · 2024-12-30…2025-12-28 | 26,804 | fy.ni | 26,804 | 0 | korrekt | enthaelt Sonderertrag (M-3); RIM rechnet damit |
+| Zinsaufwand | Mio. USD · 2024-12-30…2025-12-28 | 971 | fy.int_exp | fehlt | — | berechtigte Einschraenkung | I-1 (Tag InterestExpenseNonoperating nicht erschlossen) ⇒ Interest Coverage nicht verfuegbar — Engine: interest_expense leer (kein Wert importiert) |
+| Steueraufwand | Mio. USD · 2024-12-30…2025-12-28 | 5,777 | fy.tax | 5,777 | 0 | korrekt |  |
+| SBC | Mio. USD · 2024-12-30…2025-12-28 | 1,354 | fy.sbc | 1,354 | 0 | korrekt |  |
+| Rueckkaeufe | Mio. USD · 2024-12-30…2025-12-28 | 5,953 | fy.buyback | 5,953 | 0 | korrekt |  |
+| Bruttoergebnis | Mio. USD · 2024-12-30…2025-12-28 | 63,937 | fy.gross | 63,937 | 0 | korrekt |  |
+| Net Share Issuance 5y | Anteil | -0.0904 | fy.sh_dil / R.shares_diluted.5 - 1 | -0.0904 | -0 | korrekt | 2,429.4 / FY2020 (Historie geprueft) − 1 |
+| Net Debt/EBITDA | x | nicht bestimmbar | — | fehlt | — | berechtigte Einschraenkung | kein EBITDA (I-1) und Nettoschulden nur Teilbetrag (P-1) — Engine: insufficient_data — Daten unzureichend (0 von 1 Jahren, fehlt: ebitda) |
+
+
+#### JNJ TTM
+
+Angefordert TTM, verwendet: **fy** (Rueckfall). Engine-Gruende: unvollstaendig: ebit (Fenster bis 2026-06-28 nicht bildbar: kein verwertbares Quartal mit Ende 2026-06-28); total_debt (Bilanzstichtag zum 2026-06-28 fehlt: juengster Bilanzstichtag 2025-12-28 liegt 182 Tage vor dem Fensterende 2026-06-28 — kein passender Stichtag); long_term_debt (Bilanzstichtag zum 2026-06-28 fehlt: juengster Bilanzstichtag 2025-12-28 liegt 182 Tage vor dem Fensterende 2026-06-28 — kein passender Stichtag); shares_diluted (gewichtete Aktienzahl fuer das Quartal 2025-09-29…2025-12-28 fehlt); eps_diluted (TTM-Ergebnis oder gewichtete TTM-Aktienzahl fehlt)
+
+| Posten | Einheit · Periode | Kontrollwert (Original) | Rechenweg | Engine | Abw. | Status | Erklaerung / Engine-Grund |
+|---|---|---|---|---|---|---|---|
+| Umsatz TTM | Mio. USD · 2025-06-30…2026-06-28 | 97,929 | fy.revenue + h126.revenue - h125.revenue | 97,929 | 0 | korrekt | 52 Wochen 2025-06-30…2026-06-28 (die 53. Woche von FY2026 liegt in Q4/2026, ausserhalb) |
+| EBIT TTM rekonstruiert | Mio. USD · 2025-06-30…2026-06-28 | 25,296 | fy.pretax + h126.pretax - h125.pretax + fy.int_exp + h126.int_exp - h125.int_exp - (fy.int_inc + h126.int_inc - h125.int_inc) | fehlt | — | berechtigte Einschraenkung | 25,296; „Other (income) expense“ TTM = −7,209 + 625 + 7,214 = 630 Aufwand (Talk-Aufloesung Q1/2025 faellt aus dem Fenster). Engine: kein OperatingIncomeLoss (I-1) — Engine: Fenster bis 2026-06-28 nicht bildbar: kein verwertbares Quartal mit Ende 2026-06-28 |
+| D&A TTM | Mio. USD · 2025-06-30…2026-06-28 | 7,751 | fy.da + h126.da - h125.da | 7,751 | 0 | korrekt |  |
+| CFO TTM | Mio. USD · 2025-06-30…2026-06-28 | 27,608 | fy.cfo + h126.cfo - h125.cfo | 27,608 | 0 | korrekt |  |
+| CapEx TTM | Mio. USD · 2025-06-30…2026-06-28 | 5,364 | fy.capex + h126.capex - h125.capex | 5,364 | 0 | korrekt |  |
+| FCF TTM | Mio. USD · 2025-06-30…2026-06-28 | 22,244 | fy.cfo + h126.cfo - h125.cfo - (fy.capex + h126.capex - h125.capex) | fehlt | — | berechtigte Einschraenkung | Bestandteile in der Engine vorhanden, TTM-Sicht wegen fehlender Pflichtfelder nicht gebildet — keine TTM-Groesse der Engine (TTM-Sicht nicht gebildet: unvollstaendig) |
+| Jahresueberschuss TTM | Mio. USD · 2025-06-30…2026-06-28 | 21,037 | fy.ni + h126.ni - h125.ni | 21,037 | 0 | korrekt |  |
+| Gezahlte Dividenden TTM | Mio. USD · 2025-06-30…2026-06-28 | 12,621 | fy.div + h126.div - h125.div | fehlt | — | berechtigte Einschraenkung |  — keine TTM-Groesse der Engine (TTM-Sicht nicht gebildet: unvollstaendig) |
+| DPS gezahlt TTM | USD · 2025-06-30…2026-06-28 | 5.24 | fy.dps + h126.dps - h125.dps | fehlt | — | berechtigte Einschraenkung |  — keine TTM-Groesse der Engine (TTM-Sicht nicht gebildet: unvollstaendig) |
+| Liquide Mittel 28.06.2026 | Mio. USD · 2026-06-28 | 20,422 | bs26.cash | 20,422 | 0 | korrekt |  |
+| Loans and notes payable | Mio. USD · 2026-06-28 | 11,692 | bs26.stb | 11,692 | 0 | korrekt | enthaelt 9.9 Mrd. CP und laufenden Anteil |
+| Long-term debt | Mio. USD · 2026-06-28 | 37,344 | bs26.ltd | 37,344 | 0 | korrekt |  |
+| Finanzschulden TTM (vollstaendig ohne Leasing) | Mio. USD · 2026-06-28 | 49,036 | bs26.stb + bs26.ltd | fehlt | — | berechtigte Einschraenkung | 49,036 aus Bilanz bestimmbar (Unternehmensangabe ~49.0 Mrd.); Engine: LongTermDebt-Tag im 10-Q nicht vorhanden (I-4), Finance-Leasing ohne Betrag — Engine: Bilanzstichtag zum 2026-06-28 fehlt: juengster Bilanzstichtag 2025-12-28 liegt 182 Tage vor dem Fensterende 2026-06-28 — kein passender Stichtag |
+| Nettoschulden TTM (ohne Leasing, ohne Wertpapiere) | Mio. USD · 2026-06-28 | 28,614 | bs26.stb + bs26.ltd - bs26.cash | fehlt | — | berechtigte Einschraenkung | 28,614; Unternehmensangabe 28.2 Mrd. rechnet marktgaengige Wertpapiere (336) mit ein — keine TTM-Groesse der Engine (TTM-Sicht nicht gebildet: unvollstaendig) |
+| Aktien Ø verwaessert TTM | Mio. Aktien · 2025-06-30…2026-06-28 | nicht bestimmbar | — | fehlt | — | berechtigte Einschraenkung | nicht bestimmbar: Q4/2025 nicht gemeldet (B-3) — Engine: gewichtete Aktienzahl fuer das Quartal 2025-09-29…2025-12-28 fehlt |
+| EPS TTM | USD · 2025-06-30…2026-06-28 | nicht bestimmbar | — | fehlt | — | berechtigte Einschraenkung | nicht exakt bestimmbar (11.03 + 4.41 − 6.82 = 8.62 nur Naeherung) — Engine: TTM-Ergebnis oder gewichtete TTM-Aktienzahl fehlt |
+| Eigenkapital 28.06.2026 | Mio. USD · 2026-06-28 | 84,971 | bs26.equity | fehlt | — | berechtigte Einschraenkung | keine TTM-Groesse — keine TTM-Groesse der Engine (TTM-Sicht nicht gebildet: unvollstaendig) |
+
+
+### 13.4 · TTM: unabhängige Kontrollrechnung und Eingrenzung der Blocker
+
+Rechenweg der Kontrolle: TTM-Strom = FY2025 (10-K) + 6M 2026 − 6M 2025 (beide
+aus dem 10-Q Q2/2026, derselbe Bericht, dieselbe Abgrenzung); Stichtagswerte =
+Bilanz 10-Q zum Fensterende (nicht summiert); DPS (erklärt bzw. gezahlt) ist je
+Aktie zeitlich additiv; gewichtete Aktienzahlen und EPS werden **nicht**
+aus Differenzen von Durchschnitten gebildet. Die Engine summiert dagegen vier
+Quartale (gemeldet bzw. aus Kumulierungen abgeleitet). Wo beide Wege einen Wert
+liefern, stimmen sie überein (MCD-Umsatz: 1 Mio. Rundung, siehe Tabelle).
+
+**MCD — Zielwerte bestimmbar, Engine bildet sie nicht:**
+
+| Größe | Ursache in der Engine | Art |
+|---|---|---|
+| EBIT | Q2/2026 gemeldet 3,338 vs. 6M − Q1 = 6,292 − 2,953 = 3,339. Die iXBRL-GuV deklariert `decimals=-5`, dieselben Werte stehen in der Segmenttabelle mit `-6`; die Engine nimmt die genauere Angabe (XBRL-Regel für konsistente Duplikate) ⇒ Toleranz 0.6 Mio. < 1 Mio. | Importgrenze (Methodenfrage Präzision, D2 bewusst konservativ) |
+| Jahresüberschuss | Vorjahresfenster: Q3/2024 gemeldet 2,255 vs. 9M − 6M = 6,207 − 3,951 = 2,256 (gleiche Präzisionsfrage) | Importgrenze; Grund seit V1.0.74 korrekt benannt (D3-2) |
+| CFO, CapEx | Q2/2026 direkt gemeldet 2,807 / 831, aus 6M − Q1 2,810 / 834: **3 Mio.**, jenseits jeder Rundung; der Q1-Anteil im 6M-Wert weicht vom Q1-Bericht ab | Originaldaten widersprüchlich (Quartal nicht belastbar) |
+| `total_debt` 30.06.2026 | Im 10-Q nur `LongTermDebtNoncurrent` 39,863 (erfasst), kein `LongTermDebt`; Umklassifizierung von CP im 10-Q nicht beschrieben | Importlücke + Umfang aus 10-Q nicht belegbar (B-4) |
+| Finance-Leasing 30.06.2026 | 10-Q zeigt nur Leasing gesamt (690 + 14,039), getaggt als `OperatingLeaseLiability*` | Originaldaten fehlen |
+| Aktien Ø verwässert, EPS | Q4/2025 wird nicht gemeldet | Originaldaten fehlen (nicht bestimmbar) |
+
+**JNJ — Engine bildet Umsatz, Jahresüberschuss, CFO, CapEx, D&A, Liquidität
+und Schuldenzeilen exakt wie die Kontrolle** (97,929 · 21,037 · 27,608 ·
+5,364 · 7,751 · 20,422 · 11,692 · 37,344). Blocker:
+
+| Größe | Ursache | Art |
+|---|---|---|
+| EBIT | keine Operating-Income-Zeile; rekonstruiert 25,296 (Vorsteuer 25,196 + Zinsaufwand 1,012 − Zinsertrag 912), braucht `InterestExpenseNonoperating` und eine Definitionsentscheidung (§13.7) | Importlücke I-1 + fachliche Entscheidung |
+| `total_debt` 28.06.2026 | 49,036 = 11,692 + 37,344 aus der Bilanz bestimmbar; im 10-Q kein `LongTermDebt`-Tag; Finance-Leasing ohne Betrag | Importlücke I-4 + B-2 |
+| Aktien Ø verwässert, EPS | Q4/2025 wird nicht gemeldet | Originaldaten fehlen (B-3) |
+
+**Ergebnis TTM:** Der Rückfall auf FY ist in beiden Fällen korrekt ausgewiesen
+(angefordert TTM, verwendet FY, Gründe sichtbar), es wird kein TTM-Wert als
+FY-Wert und kein FY-Wert als TTM-Wert ausgegeben, und kein Modell rechnet mit
+gemischten Perioden. Selbst mit einer gelockerten Präzisionsregel bliebe TTM
+wegen der Q4-Aktienzahl und des Schuldenstichtags unvollständig. **Eine
+automatische TTM-Bewertung ist für MCD und JNJ nicht verfügbar**; das ist eine
+begründete Einschränkung, kein offener Fehler.
+
+### 13.5 · Historie: Quellenabgleich aller verwendeten Jahreswerte
+
+`reconcile-sources.mjs` prüft jeden erfassten Wert (MCD 343, JNJ 293, bis zu
+zehn Geschäftsjahre) gegen Company Facts und das zitierte Original:
+
+| | korrekt | berechtigte Einschränkung | offen | Abweichung |
+|---|---|---|---|---|
+| MCD | 307 | 2 (Nettoschulden 2025/2024: Rechnung ✓, Teilbetrag ohne Finance-Leasing, Engine kennzeichnet unvollständig) | 34 | 0 |
+| JNJ | 269 | 6 (`total_debt`/`long_term_debt`/`net_debt` 2025/2024: Teilbeträge, gekennzeichnet) | 18 | 0 |
+
+„Offen“ sind ausschließlich historische Schuldenwerte (`total_debt`,
+`long_term_debt`, `net_debt`) ohne Umfangsbeleg im Anhang — MCD 2016–2023 (24),
+JNJ FY2020–FY2023 sowie FY2009/FY2010 aus einer nicht lückenlosen
+Stichtagsreihe (18) — und bei MCD zehn Einträge ohne Toolwert (Tangible Book
+Value, wegen negativen Eigenkapitals leer). Rechnung (bei gemeldeten Werten
+auch das Original) stimmt überall; offen ist nur der fachliche Umfang. Keine davon speist ein
+freigegebenes Ergebnis: Kapitalkosten nutzen `total_debt[0..1]` (belegt), ROIC
+und ROIC-Trend sind für MCD gesperrt und für JNJ mangels EBIT nicht berechnet.
+Diese Werte sind als **Abdeckungslücke** ausgewiesen, nicht als geprüft.
+
+Beobachtung: Stichtagsreihen werden bewusst nicht auf lückenlose Jahre gekürzt
+(JNJ `total_debt`: 2025 … 2020, dann 2010/2009; MCD `debt_long_term_current`
+mit Sprüngen). Kein Verbraucher liest diese Reihen positionsweise über [1]
+hinaus; ROIC paart seit D2 periodengleich, der ROIC-Trend seit D3-6 ebenso.
+
+### 13.6 · Modelle: rechnet oder gesperrt (Engine = frisch gerenderte Oberfläche, 55/55 je Unternehmen)
+
+| | MCD (retail) | JNJ (standard_nonfin) |
+|---|---|---|
+| DCF | **gesperrt**: Nettoschulden der Brücke nicht belegbar (Tags widersprüchlich; laut Anhang wären es 41,551). Operativer Wert 242.10/Aktie nur nachrichtlich, kein Eigenkapitalwert. Eingaben geprüft: D&A-Quote 7.90 % = Median der zehn verifizierten Jahre | **ausgeschlossen**: `ebit[0]` fehlt (I-1); unabhängig davon wäre die Brücke gesperrt (Teilbetrag, Finance-Leasing ohne Betrag) |
+| RIM | gesperrt: BVPS ≤ 0 (Eigenkapital −1,791), berechtigt (B-1) | 88.36; Buchwert 81,544 ✓, Aktien 2,429.4 ✓; Jahresüberschuss enthält den Sonderertrag (M-3) |
+| DDM | 108.90 **diagnostisch** (nicht gewichtet); DPS 7.17 ✓, CAGR 5 J. 7.30 % (auf 5 % gekappt), DPS-Historie geprüft | 78.07 (Anker); DPS 5.14 ✓, CAGR 5.25 % (gekappt 5 %) |
+| Synthese | keine Intrinsic-Bewertung (`no_models_applicable`); Übersicht nennt jetzt diesen Grund | Basis 81.81 (DDM/RIM, keine Nettoschulden nötig); Einordnung gesperrt: kein Kurs |
+| Markt-Vergleich | keine eigenen Multiples im Master-JSON ⇒ keine EV-Kennzahl, keine Umgehung der Brücke | ebenso |
+| Reverse DCF | nicht berechnet (kein Kurs) | nicht berechnet (Kern-Inputs fehlen) |
+| Net Debt/EBITDA | gesperrt (P-1), Grund benannt | gesperrt (kein EBITDA, Teilbetrag) |
+| Interest Coverage | 7.83 = 12,393 / 1,582 ✓ | nicht verfügbar (I-1) |
+| Net Share Issuance 5y | −4.5 % (716.4 / 750.1), Score 8 ✓ | −9.0 %, Score 10 ✓ |
+| ROIC − WACC / ROIC-Trend | beide nicht bewertbar (Leasing 2025 fehlt, retail); QCE 8.55 ohne ROIC-Anteile | nicht berechnet (EBIT fehlt) |
+
+Operativer Unternehmenswert und Eigenkapitalwert sind getrennt: Der MCD-DCF
+liefert nur den operativen Wert (nachrichtlich, ausdrücklich nicht mit dem Kurs
+vergleichbar); kein anderer Pfad (Markt-Vergleich, Net Debt/EBITDA,
+MoS-Zuschlag, Reverse DCF) rechnet mit einer unbelegten Nettoschuldenbrücke.
+
+### 13.7 · JNJ: getrennte Fragen und berechtigte Grenzen
+
+1. **Zinsaufwand-Tag (I-1).** Belegt: 971 als `InterestExpenseNonoperating`
+   (GuV „Interest expense, net of portion capitalized“), Zinsertrag 1,056 als
+   `InvestmentIncomeInterest`. Nicht erschlossen ⇒ kein EBIT, kein Interest
+   Coverage. Eine reine Tag-Ergänzung ist technisch klein.
+2. **Definition eines rekonstruierten EBIT.** Vorsteuer + Zinsaufwand −
+   Zinsertrag = 32,496 (FY2025) bzw. 25,296 (TTM). Darin steckt „Other (income)
+   expense, net“: FY2025 **Ertrag 7,209** (Lagebericht: Auflösung der
+   Talk-Rückstellung rund 7.0 Mrd., Auris-Vergleich 0.8 Mrd. Aufwand), TTM
+   dagegen **Aufwand 630** (die Auflösung aus Q1/2025 fällt aus dem Fenster).
+   Ohne diesen Posten: 25,287 (FY2025) — dann fehlen aber auch wiederkehrende
+   Posten (Lizenzerträge, Pensionskomponenten). Welche Definition gilt, ist eine
+   **Modellentscheidung**, keine Datenfrage.
+3. **Sondererträge.** Keine automatische Bereinigung (unverändert). Betroffen
+   sind RIM (ROE-Spread 22.9 % mit dem Sonderertrag) und die EPS-Historie (M-3).
+4. **Schulden/Finance-Leasing.** Finanzschulden 47,933 (FY) bzw. 49,036 (TTM)
+   sind aus der Bilanz belegt; die Engine hat nur den Teilbetrag 41,438 und
+   kennzeichnet ihn korrekt. Finance-Leasing „not significant“ ohne Betrag ist
+   kein belegter Nullwert (B-2) — die Brücke bliebe auch mit EBIT gesperrt.
+
+**Bis zu einer Entscheidung nicht belastbar freigebbar:** JNJ-DCF, Reverse DCF,
+EBITDA-basierte Kennzahlen, Interest Coverage. Freigegeben und korrekt belegt
+sind DDM und RIM (mit der offengelegten Vereinfachung M-3).
+
+### 13.8 · Neue Befunde und Korrekturen (V1.0.74)
+
+| # | Prio | Befund (am Stand `04d8c83`) | Korrektur | Regressionstest |
+|---|---|---|---|---|
+| D3-1 | mittel | Übersicht ohne Kurs: „Bewertung blockiert: **Hard Stop** aktiv“ und „kein belastbarer Eigenkapitalwert“, obwohl kein Hard Stop aktiv ist (JNJ: Grund „Kein Kurs verfügbar“; MCD: keine anwendbaren Modelle) | `_ovMiniWhy`/`ovKeyStatements` nennen den Sperrgrund der Synthese; „Hard Stop“ nur bei aktivem Hard Stop | `d3-findings.test.mjs` (3), `check-panels` (3); Reallauf zeigt jetzt „Kein Kurs verfügbar …“ bzw. „Keine Bewertungsmodelle aktiv …“ |
+| D3-2 | niedrig | TTM-Grund „kein Quartal endet am …“, obwohl das Quartal gemeldet und wegen Widerspruchs verworfen ist | Grund nennt das verworfene Quartal und den Widerspruch | `d3-findings` (3) |
+| D3-3 | niedrig (Werkzeug) | `checkPanels` prüfte die Übersichtsbegründung nicht | neue Prüfung (s. §13.2) | `check-panels` (3) |
+| D3-4 | mittel | **F-4 unvollständig:** `shares_basic` bei MCD gemischt skaliert (713.4 … 746.3, dann 744,600,000 … 854,400,000 in derselben Mio.-Reihe); der Fallback „keine verwässerten Aktien ⇒ unverwässerte“ hätte F-4 wieder erzeugt | dieselbe Einzelprüfung je Periode wie `shares_diluted` (`_checkShareHistory`, NI/EPS nur für die Größenordnung, Originalangaben, sonst Reihe beenden) | `d3-findings` (3); Reallauf: 713.4 … 854.4 |
+| D3-5 | niedrig | Bei **widersprüchlichen** Schuldenangaben behauptete der Grund „Der vorliegende Wert ist ein Teilbetrag“ (MCD: 39,973 ist laut Anhang vollständig) | Wortlaut: Umfang nicht belegt, Teilbetrag nicht ausgeschlossen; Sperre unverändert; JNJ (nachweislich Teilbetrag) unverändert | `d3-findings` (2) |
+| D3-6 | mittel | QCE-Komponente ROIC-Trend: unbereinigter ROIC, positionsweise gepaart, 7 Punkte für MCD — obwohl ROIC − WACC nach der N-1-Regel „nicht bewertbar“ ist | gleiche Regel wie ROIC − WACC (Leasing erforderlich, aber nicht erfüllbar ⇒ kein Score); Paarung nur bei gleichem Periodenende (Altdaten unverändert) | `d3-findings` (3); Reallauf: MCD ROIC-Trend n/a, QCE 8.55 |
+| D3-7 | hoch (Werkzeug) | `reconcile-sources.mjs` akzeptierte EBITDA 12,850 = EBIT + Teilposten 457 („2/2 stimmen“, Exit 0) und prüfte nur drei Jahre | Neufassung (§13.2) | `reconcile-sources.test.mjs` (6) |
+
+Gegenlauf mit der Produktdatei von `04d8c83`: 9 Fehlerfalltests scheitern am
+falschen Ergebnis, 5 Erhaltungstests bestehen vorher und nachher. Keine Sperre
+gelockert, keine unternehmensspezifischen Werte im Produkt.
+
+**Offene Beobachtungen (kein Fehler im geprüften Ergebnis, Folgeauftrag möglich):**
+
+* **O-1** Wachstumsprofil (Annahmen-Hinweis): „ROIC akt./ROIC-Trend (2J)“ als
+  vereinfachter, unbereinigter ROIC mit fehlenden Schulden = 0 — nur Anzeige,
+  kein Score, keine Modellwirkung.
+* **O-2** Präzisionsregel bei MCD (`decimals=-5` in der GuV, `-6` für dieselben
+  Werte an anderer Stelle): konservativ, per XBRL-Duplikatregel begründet;
+  entscheidet nicht über die TTM-Verfügbarkeit (§13.4).
+* **O-3** MCD-10-Q taggt die gesamten Leasingverbindlichkeiten (inkl. Finance)
+  als `OperatingLeaseLiability*`; das Produkt nutzt diese 10-Q-Werte nicht (FY nur
+  aus 10-K) — bei einer künftigen Nutzung wäre Doppelzählung möglich.
+* **O-4** JNJ taggt „Retained earnings and Additional-paid-in-capital“ als
+  `RetainedEarningsAccumulatedDeficit` (168,978); betrifft nur diagnostische
+  Kennzahlen (Altman).
+
+### 13.9 · Status der fünf Produktbefunde und Net Debt/EBITDA
+
+| # | Status im echten Import (V1.0.74) |
+|---|---|
+| F-1 | **behoben, bestätigt**: EBITDA = EBIT + Gesamt-D&A in allen zehn MCD-Jahren (2025–2023 per Anhangbeleg, 2022–2016 größter D&A-Posten des Originals); D&A-Quote 7.90 % aus verifizierter Historie |
+| F-2 | **behoben, bestätigt**: JNJ zehn Geschäftsjahre FY2016–FY2025 inkl. FY2022 (Ende 2023-01-01), jeder Wert gegen das Original geprüft |
+| F-3 | **behoben, bestätigt** (Rundung nach belegter Präzision: MCD Q3/2025-Umsatz akzeptiert, TTM-Umsatz 27,703 ≙ Kontrolle 27,702); TTM bleibt aus anderen, belegten Gründen unvollständig (§13.4) |
+| F-4 | **behoben** für `shares_diluted` (bestätigt: 716.4 … 861.2, NSI −4.5 %, Score 8); **Restlücke `shares_basic` in D3 behoben** (D3-4) |
+| F-5 | **behoben, bestätigt**: MCD ROIC − WACC nicht bewertbar (Leasing 2025 nicht periodengleich); Trend seit D3-6 ebenso |
+| P-1 | **behoben, bestätigt**: Net Debt/EBITDA MCD und JNJ gesperrt mit Grund; Wortlaut MCD seit D3-5 zutreffend |
+
+### 13.10 · Ausgeführte Prüfungen (fertiger Stand, Produktdatei SHA-256 `997ad2dc…`)
+
+| Befehl | Ergebnis | Exit |
+|---|---|---|
+| `npm test` | 1700 Rechenprüfungen; 283/283 Node-Tests | 0 |
+| `npm run test` | identisch (1700; 283/283) | 0 |
+| `npm run test:audit-tool` (D1-Werkzeugtests + Abgleich) | 38/38 (25 checkPanels, 6 reconcile, 7 Browser) | 0 |
+| `npm run test:browser` | 187/187 | 0 |
+| `replay-import.mjs --selftest` | 58/58 | 0 |
+| `repro-findings.mjs` | 0 von 6 bestehen | 0 |
+| `replay-import.mjs MCD` / `JNJ` (FY → TTM → FY, Originaldaten) | 55/55 bzw. 55/55; Fundamentaldaten unverändert; einzige abgewiesene Anfrage Google Fonts | 0 / 0 |
+| `reconcile-sources.mjs MCD JNJ` | 0 Abweichungen (MCD 307/2/34, JNJ 269/6/18) | 0 |
+| `control-calcs.mjs MCD JNJ` | Belege 72/72 und 65/65 im Original; Kontrollposten 48/48 und 41/41; Fallprüfungen 7/7 je Unternehmen | 0 |
+
+### 13.11 · Abschluss Chat D
+
+* D1 und D2 sind verifiziert; je eine Restlücke (Erfassungstiefe, `shares_basic`)
+  wurde gefunden und behoben.
+* MCD FY, MCD TTM, JNJ FY und JNJ TTM sind gegen die Originalberichte untersucht;
+  jede wesentliche Abweichung ist erklärt und sicher behandelt.
+* Es verbleibt **kein wesentlicher ungeklärter Fehler**. Verbleibende Grenzen
+  sind begründet und sichtbar: keine automatische TTM-Bewertung (MCD, JNJ);
+  MCD-DCF ohne Eigenkapitalwert (Brücke aus Tags nicht belegbar); JNJ-DCF bis zur
+  Entscheidung über I-1/EBIT-Definition/Finance-Leasing gesperrt.
+* **Chat D ist abgeschlossen.** Folgeaufträge (optional, fachliche
+  Entscheidung): I-1 samt EBIT-Definition für Filer ohne Operating-Income-Zeile;
+  Präzisionsregel O-2; Umfangsbelege aus Anhängen (I-4/I-5) für die Brücke.
