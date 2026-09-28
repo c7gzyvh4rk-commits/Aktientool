@@ -11365,8 +11365,10 @@ function computeNetDebtToEbitda(mj) {
   if (!nd.available) {
     // Der Brueckentext erklaert zusaetzlich die Folgen fuer den Eigenkapitalwert;
     // hier genuegt der Befund selbst.
-    const why = nd.reason ? String(nd.reason).split(/\. Der vorliegende Wert ist ein Teilbetrag/)[0]
-      + (/Teilbetrag/.test(nd.reason) ? ' — vorhandener Wert ist ein Teilbetrag' : '')
+    const why = nd.reason ? String(nd.reason).split(/\. Der (?:vorliegende Wert ist ein Teilbetrag|Umfang des vorliegenden Werts)/)[0]
+      + (/Umfang des vorliegenden Werts ist damit nicht belegt/.test(nd.reason)
+          ? ' — Umfang des vorhandenen Werts nicht belegt (Teilbetrag nicht ausgeschlossen)'
+          : (/Teilbetrag/.test(nd.reason) ? ' — vorhandener Wert ist ein Teilbetrag' : ''))
       : ('fehlt: ' + (nd.missing || []).join(', '));
     const res = metricInsufficient(0, 1, 'belastbare Nettoschulden — ' + why);
     res._netDebtUnavailable = { missing: nd.missing || [], reason: nd.reason || null };
@@ -11998,20 +12000,40 @@ function _qceScoreMarginStab(stdevPp) {
 
 // ROIC-Trend: median(jüngere 3y) vs median(ältere 3y) auf ROIC-Reihe.
 // Liefert { status, delta_pp } oder null wenn zu wenig Daten.
-function _qceRoicTrend(mj) {
+// V1.0.74 (D3-6): Zwei Regeln des ROIC − WACC gelten auch fuer den Trend.
+//   1. Ist die Leasingbereinigung nach der Regel von computeRoicMinusWacc
+//      ERFORDERLICH, aber nicht erfuellbar (res._leaseRequired, Status nicht
+//      ok), ist der unbereinigte ROIC „nicht bewertbar“ — dann erzeugt auch
+//      sein Trend keinen Score. Bis V1.0.73 vergab der Trend bei MCD (retail,
+//      Leasing 2025 nicht gemeldet) 7 Punkte aus genau diesem ROIC.
+//   2. Mit Periodenangaben werden EBIT, Buchwert, Schulden und Liquiditaet nur
+//      bei GLEICHEM Periodenende gepaart (vgl. F-5); sonst bleibt das Jahr leer.
+//      Metadatenfreie Altdaten behalten den Positionsbezug.
+function _qceRoicTrend(mj, qr) {
   const f = mj.fundamentals || {};
+  const rw = qr && qr.descriptive && qr.descriptive.roicMinusWacc;
+  if (rw && rw._leaseRequired === true && rw.status !== 'ok') {
+    return { status: 'insufficient_data', reason: 'Leasingbereinigung erforderlich, aber nicht erfuellbar (wie ROIC − WACC) — unbereinigter ROIC-Trend nicht bewertbar' };
+  }
   const ebit = f.ebit || [];
   const bv   = f.book_value || [];
   const td   = f.total_debt || [];
-  const cash = f.cash_and_equivalents || f.cash || [];
+  const cashKey = Array.isArray(f.cash_and_equivalents) && f.cash_and_equivalents.length ? 'cash_and_equivalents' : 'cash';
+  const cash = f[cashKey] || [];
   const taxRate = (mj.valuation && mj.valuation.wacc_components && mj.valuation.wacc_components.tax_rate);
   if (taxRate == null) return null;
   const yearsAvail = Math.min(ebit.length, bv.length, td.length, cash.length);
   if (yearsAvail < 6) return null;
+  const meta = f._v4_meta || {};
+  const perOf = (k) => (meta[k] && Array.isArray(meta[k].periods)) ? meta[k].periods : null;
+  const pers = [perOf('ebit'), perOf('book_value'), perOf('total_debt'), perOf(cashKey)];
+  const periodMode = pers.some(p => p != null);
+  const samePeriod = (i) => !periodMode || (pers.every(p => p != null && p[i] != null) && pers.every(p => p[i] === pers[0][i]));
 
   const roics = [];
   for (let i = 0; i < Math.min(yearsAvail, 8); i++) {
     if (ebit[i] == null || bv[i] == null || td[i] == null) { roics.push(null); continue; }
+    if (!samePeriod(i)) { roics.push(null); continue; }
     const cashI = cash[i] != null ? cash[i] : 0;
     const invested = bv[i] + td[i] - cashI;
     if (invested <= 0) { roics.push(null); continue; }
@@ -12196,7 +12218,7 @@ function computeQualityCapitalEfficiencyScore(qr, mj) {
   }
   // 8. ROIC-Trend
   {
-    const r = _qceRoicTrend(mj);
+    const r = _qceRoicTrend(mj, qr);
     if (r && r.status === 'ok') {
       const s = _qceScoreRoicTrend(r.delta_pp);
       comps.push({ key: 'roicTrend', label: 'ROIC-Trend (3y vs 3y)', weight: 1.0,
@@ -13261,8 +13283,15 @@ function _resolveNetDebtForDcfBridge(f) {
       ? ('Die gemeldeten Schuldenangaben widersprechen sich: ' + tdMeta.scopeContradiction)
       : ('Die gemeldeten Schuldenangaben bestimmen die Gesamtverschuldung nicht: ' +
          (tdMeta.scopeIndeterminateReason || tdMeta.notes || 'Umfang unvollstaendig'));
+    // V1.0.74 (D3): Bei WIDERSPRUECHLICHEN Angaben ist der Umfang unbelegt,
+    // nicht nachweislich ein Teilbetrag (MCD: 39,973 ist laut Anhang die
+    // vollstaendige Finanzschuld; nur die Tags widersprechen sich). Die Sperre
+    // bleibt unveraendert, nur die Aussage ueber den Wert wird nicht behauptet.
+    const _scopeNote = tdMeta.scopeContradiction
+      ? '. Der Umfang des vorliegenden Werts ist damit nicht belegt (ein Teilbetrag ist nicht ausgeschlossen)'
+      : '. Der vorliegende Wert ist ein Teilbetrag';
     return _unavailable(['total_debt (Umfang unvollstaendig)'],
-      _why + '. Der vorliegende Wert ist ein Teilbetrag; ein daraus gebildeter ' +
+      _why + _scopeNote + '; ein daraus gebildeter ' +
       'Eigenkapitalwert waere scheingenau. Der operative Unternehmenswert bleibt ' +
       'getrennt verfuegbar. Eigenstaendig belegte oder ausdruecklich manuell gesetzte ' +
       'Nettoschulden bleiben nach den bestehenden Vorrangregeln zulaessig.');
@@ -16513,7 +16542,9 @@ function ttmUsableQuarters(quarters) {
       continue;
     }
     if (q.conflict) {
-      rejected.push({ periodKey: key, reason: 'Quartal steht im Widerspruch zur Differenz der Kumulierungen '
+      // V1.0.74 (D3-2): Ende mitfuehren, damit ein spaeterer Abbruchgrund das
+      // verworfene Quartal benennen kann (statt „kein Quartal endet am …“).
+      rejected.push({ periodKey: key, end: q.end || null, reason: 'Quartal steht im Widerspruch zur Differenz der Kumulierungen '
         + '— als TTM-Bestandteil nicht belastbar' });
       continue;
     }
@@ -16541,12 +16572,18 @@ function computeTtmFromQuarters(quarters, opts) {
   if (usable.length === 0) {
     return Object.assign({ ok: false, reason: 'keine verwertbaren Quartale vorhanden' }, base);
   }
+  // V1.0.74 (D3-2): Ist ein Quartal mit dem gesuchten Ende gemeldet, aber
+  // verworfen worden, nennt der Grund es samt Verwerfungsgrund.
+  const _rejectedAt = (end) => {
+    const r = rejected.find(x => x.end && x.end === end);
+    return r ? ' — ' + r.periodKey + ' (Ende ' + end + ') ist gemeldet, aber verworfen: ' + r.reason : '';
+  };
   let anchor = null;
   if (o.anchorEnd) {
     for (let i = 0; i < usable.length; i++) if (usable[i].end === o.anchorEnd) { anchor = usable[i]; break; }
     if (!anchor) {
       return Object.assign({ ok: false,
-        reason: 'kein verwertbares Quartal mit Ende ' + o.anchorEnd }, base);
+        reason: 'kein verwertbares Quartal mit Ende ' + o.anchorEnd + _rejectedAt(o.anchorEnd) }, base);
     }
   } else {
     anchor = usable[0];
@@ -16563,9 +16600,11 @@ function computeTtmFromQuarters(quarters, opts) {
       if (_ttmNextDay(usable[i].end) === need.start) { prev = usable[i]; break; }
     }
     if (!prev) {
+      const _missEnd = _ttmIso(_ttmParseIso(need.start) - TTM_DAY_MS);
+      const _rj = _rejectedAt(_missEnd);
       return Object.assign({ ok: false,
-        reason: 'Quartalsreihe bricht vor ' + need.periodKey + ' ab — kein Quartal endet am '
-          + _ttmIso(_ttmParseIso(need.start) - TTM_DAY_MS),
+        reason: 'Quartalsreihe bricht vor ' + need.periodKey + ' ab — '
+          + (_rj ? 'kein verwertbares Quartal mit Ende ' + _missEnd + _rj : 'kein Quartal endet am ' + _missEnd),
         have: chain.map(c => c.periodKey), missingBefore: need.periodKey }, base);
     }
     if (prev.ordinal != null && need.ordinal != null && prev.ordinal !== need.ordinal - 1) {
@@ -22684,8 +22723,16 @@ function _ovMiniWhy(q, s, mj) {
     if (s.status === 'no_valuation_inputs' && !activeHs.length) {
       return `Valuation-Inputs unvollständig — ${s.valuationError ? s.valuationError.substring(0, 100) : 'Details im Valuation-Tab'}.`;
     }
-    const hsName = activeHs.length > 0 ? activeHs[0].name : 'Hard Stop';
-    return `Bewertung blockiert: ${hsName} aktiv — siehe Quality-Tab für Details.`;
+    // V1.0.74 (D3-1): „Hard Stop“ nur nennen, wenn tatsaechlich einer aktiv
+    // ist. Sonst gilt der Sperrgrund der Synthese (z. B. „Kein Kurs verfügbar“
+    // oder „keine Bewertungsmodelle aktiv“) — bis V1.0.73 stand hier „Hard Stop
+    // aktiv“, obwohl die Uebersicht zugleich „Kein Ausschlusskriterium aktiv“ zeigte.
+    if (activeHs.length > 0) {
+      return `Bewertung blockiert: ${activeHs[0].name} aktiv — siehe Quality-Tab für Details.`;
+    }
+    return s.blockReason
+      ? `Bewertung blockiert: ${String(s.blockReason).replace(/[.\s]+$/, '')}.`
+      : 'Bewertung blockiert — Grund im Valuation-Tab.';
   }
   if (s._noIntrinsicValuation || s.status === 'no_models_applicable')
     return 'Zu wenig Daten für eine rechnerische Bewertung — Markt-Vergleich im gleichnamigen Tab prüfen.';
@@ -22992,8 +23039,13 @@ function ovKeyStatements(mj, q, s, dq) {
       'Die Bewertung ist gesperrt: ' + activeHs.map(h => h.name).join(', ') + '.',
       [['Ausschlusskriterien aktiv', String(activeHs.length)]]);
   } else if (s && s.position === 'blocked') {
+    // V1.0.74 (D3-1): der tatsaechliche Sperrgrund statt der pauschalen
+    // Aussage „kein belastbarer Eigenkapitalwert“ (bei JNJ ohne Kurs falsch:
+    // die Modelle liefern einen Wert, gesperrt ist nur die Einordnung).
     add('danger',
-      'Die Bewertung ist gesperrt — es liegt kein belastbarer Eigenkapitalwert vor.',
+      s.blockReason
+        ? 'Die Bewertung ist gesperrt: ' + String(s.blockReason).replace(/[.\s]+$/, '') + '.'
+        : 'Die Bewertung ist gesperrt — es liegt kein belastbarer Eigenkapitalwert vor.',
       [['Einordnung der Synthese', 'gesperrt'],
        ['Status der Bewertung', String(s.status || 'blocked')]]);
   }
@@ -29981,7 +30033,9 @@ function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
         forms:     _sbMeta.forms     || null,
         frames:    _sbMeta.frames    || null,
         durations: _sbMeta.durations || null,
-        filed:     _sbMeta.filed     || null
+        filed:     _sbMeta.filed     || null,
+        // V1.0.74 (D3): Originalangaben je Periode, wie bei shares_diluted (F-4).
+        original_values: _shareOriginalValues(secFacts, extracted.shares_basic.usedTag, _sbMeta.periods)
       };
     }
   }
@@ -30051,9 +30105,44 @@ function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
   }
 
   // Schritt 2: shares_basic normalisieren (falls vorhanden)
+  // V1.0.74 (D3): Bis V1.0.73 uebernahm die ganze Reihe den Faktor von [0]
+  // (_normalizeShareSeries) — die F-4-Korrektur galt nur fuer shares_diluted.
+  // Echter Import MCD: 713.4 … 746.3 (Mio.), danach 744,600,000 … 854,400,000
+  // (Stueck) in derselben „Mio.“-Reihe. Der Fallback „shares_diluted fehlt ⇒
+  // shares_basic“ haette die gemischte Reihe in die Historien-Kennzahlen
+  // getragen. Jetzt gilt dieselbe Einzelpruefung je Periode wie bei
+  // shares_diluted (_checkShareHistory). Gegenprobe ist NI / verwaessertes EPS
+  // desselben Geschaeftsjahres: sie entscheidet nur die Groessenordnung
+  // (Fenster 0.75…1.33; unverwaesserte und verwaesserte Aktienzahl liegen weit
+  // innerhalb davon). Ohne Beleg keine Korrektur; die Reihe endet vor der
+  // ersten nicht belegbaren Angabe.
   if (f.shares_basic && f.shares_basic[0] > 0) {
     const ns = _normalizeShareSeries(f.shares_basic, { ..._shareCtx, label: 'shares_basic (SEC XBRL raw)' });
-    if (ns && ns.series) f.shares_basic = ns.series;
+    if (ns && ns.series) {
+      const _sbM = f._v4_meta['shares_basic'] || {};
+      const _exMb = (k) => (extracted[k] && extracted[k].meta && Array.isArray(extracted[k].meta.periods))
+        ? extracted[k].meta.periods : null;
+      const _unitSharesB = !!(extracted.shares_basic && extracted.shares_basic.meta
+        && extracted.shares_basic.meta.unit === 'shares');
+      const _histB = _checkShareHistory(f.shares_basic, {
+        periods: Array.isArray(_sbM.periods) ? _sbM.periods : null,
+        literalFactor: _unitSharesB ? 1e-6 : ns.series[0] / f.shares_basic[0],
+        netIncome: extracted.net_income && extracted.net_income.values, netIncomePeriods: _exMb('net_income'),
+        eps: extracted.eps_diluted && extracted.eps_diluted.values, epsPeriods: _exMb('eps_diluted'),
+        originals: _sbM.original_values || null, originalsFactor: 1e-6
+      });
+      ns.series = [ns.series[0]].concat(_histB.values.slice(1));
+      _sbM.history_check = {
+        pairing: _histB.pairing, truncatedAt: _histB.truncatedAt, reason: _histB.reason, adjusted: _histB.adjusted,
+        reference: 'NI / verwaessertes EPS desselben Geschaeftsjahres (nur Groessenordnung)',
+        elements: _histB.elements.map(e => ({ period: e.period, raw: e.raw, valueM: e.index === 0 ? ns.series[0] : e.valueM,
+                                             status: e.status, note: e.note || null, source: e.source || null }))
+      };
+      for (const k of ['periods', 'forms', 'frames', 'durations', 'filed']) {
+        if (Array.isArray(_sbM[k])) _sbM[k] = _sbM[k].slice(0, ns.series.length);
+      }
+      f.shares_basic = ns.series;
+    }
     else f.shares_basic = [];
   }
 
