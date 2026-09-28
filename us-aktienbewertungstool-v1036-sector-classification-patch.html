@@ -8265,7 +8265,7 @@ function _applyDebtComponentRebuild(mj, anchorYearHint) {
     const _revMeta2 = f._v4_meta && f._v4_meta.revenue;
     const _revP0_2  = _revMeta2 && Array.isArray(_revMeta2.periods) ? _revMeta2.periods[0] : null;
     const _fromRev  = _revP0_2 && typeof _revP0_2 === 'string'
-      ? (parseInt(_revP0_2.match(/^(\d{4})/)?.[1], 10) || null) : null;
+      ? (_secPeriodYear(_revP0_2) || null) : null;
     if (_fromRev != null) mj.meta._sec_fetch.anchor_year = _fromRev;
   } else {
     mj.meta._sec_fetch.anchor_year = _tdAnchorYear;
@@ -8276,8 +8276,8 @@ function _applyDebtComponentRebuild(mj, anchorYearHint) {
 
   const _metaYear = (metaObj) => {
     if (!metaObj || !Array.isArray(metaObj.periods) || !metaObj.periods[0]) return null;
-    const m = String(metaObj.periods[0]).match(/^(\d{4})/);
-    return m ? parseInt(m[1], 10) : null;
+    if (!/^\d{4}/.test(String(metaObj.periods[0]))) return null;
+    return _secPeriodYear(metaObj.periods[0]);   // V1.0.71 (D2/F-2)
   };
 
   // period-keyed component series builder (Alias-Dedup-Logik)
@@ -8321,7 +8321,7 @@ function _applyDebtComponentRebuild(mj, anchorYearHint) {
         const val = arr[i], period = periods[i];
         if (val == null || period == null || !isFinite(val)) continue;
         if (i === 0 && anchorYear != null) {
-          const yr = parseInt(String(period).slice(0, 4), 10);
+          const yr = _secPeriodYear(period);
           if (yr !== anchorYear) {
             warnings.push(field + ': periods[0]=' + period + ' nicht anchorYear=' + anchorYear + ' — ignoriert');
             droppedFields.push(field + ':stale(' + yr + ')');
@@ -8391,7 +8391,7 @@ function _applyDebtComponentRebuild(mj, anchorYearHint) {
       cells0: [], open0: [], contradiction0: null, evidence0: []
     };
     if (anchorYear != null && periodsOut.length > 0) {
-      const firstYr = parseInt(String(periodsOut[0]).slice(0, 4), 10);
+      const firstYr = _secPeriodYear(periodsOut[0]);
       if (firstYr !== anchorYear) {
         warnings.push('period-keyed result: periods[0]=' + periodsOut[0] +
           ' nicht anchorYear=' + anchorYear + ' — Ergebnis verworfen');
@@ -14607,10 +14607,10 @@ function validatePeriodAlignment(mj) {
   ];
 
   // Jahr aus ISO-Period-String extrahieren ("2024-12-31" → "2024", "CY2024Q4I" → "2024")
+  // V1.0.71 (D2/F-2): Geschaeftsjahr ueber _secPeriodYear (52/53-Wochen-Jahre).
   const _yearOf = s => {
     if (!s || typeof s !== 'string') return null;
-    const m = s.match(/(\d{4})/);
-    return m ? parseInt(m[1], 10) : null;  // Number, nicht String (T-TXRH-ANCHOR1)
+    return _secPeriodYear(s);  // Number, nicht String (T-TXRH-ANCHOR1)
   };
 
   const populated = []; // { field, year, period }
@@ -27840,19 +27840,44 @@ function _extractFyValues(facts, tag, maxYears=10) {
     entries = allEntries;
   }
 
-  // V11.9.7: Dedupliziere pro Fiskaljahr (abgeleitet aus end-Datum: Jahr)
-  // statt nur pro end-Datum. Das verhindert dass eine 10-K mit YTD-Frame
-  // aus einem anderen Quartal als Duplikat durchrutscht.
-  // Pro Fiskaljahr (= Kalenderjahr von end-Datum): neuestes filed gewinnt.
+  // V1.0.71 (D2/F-2): Schluessel ist das GESCHAEFTSJAHR (_secPeriodYear), nicht
+  // mehr das Kalenderjahr des Enddatums. Innerhalb eines Geschaeftsjahres gilt:
+  //   · dieselbe Periode (gleiches Ende, bei Zeitraumwerten gleicher Beginn),
+  //     mehrfach gemeldet (Vergleichswerte spaeterer 10-Ks, Berichtigungen):
+  //     die zuletzt veroeffentlichte Angabe gewinnt (bisherige Regel), die
+  //     ersetzten Werte bleiben in meta.supersededValues nachvollziehbar;
+  //   · VERSCHIEDENE Perioden unter demselben Schluessel sind ein Befund, kein
+  //     Duplikat: gewaehlt wird weiter die neueste Angabe, der Konflikt steht
+  //     sichtbar in meta.fiscalYearConflicts (kein stilles Verwerfen).
+  const _periodIdOf = e => (e.start || '') + '…' + e.end;
   const byFiscalYear = {};
+  const _groups = {};
   for (const e of entries) {
-    const fyKey = e.end ? e.end.substring(0, 4) : e.end; // YYYY aus YYYY-MM-DD
-    if (!byFiscalYear[fyKey]) {
-      byFiscalYear[fyKey] = e;
+    const fy = e.end ? _secPeriodYear(e.end) : null;
+    if (fy == null) continue;
+    if (!_groups[fy]) _groups[fy] = [];
+    _groups[fy].push(e);
+    if (!byFiscalYear[fy]) {
+      byFiscalYear[fy] = e;
     } else {
-      const existFiled = byFiscalYear[fyKey].filed || byFiscalYear[fyKey].accn || '';
+      const existFiled = byFiscalYear[fy].filed || byFiscalYear[fy].accn || '';
       const newFiled   = e.filed || e.accn || '';
-      if (newFiled > existFiled) byFiscalYear[fyKey] = e;
+      if (newFiled > existFiled) byFiscalYear[fy] = e;
+    }
+  }
+  const fiscalYearConflicts = [];
+  const supersededValues = [];
+  for (const [fy, grp] of Object.entries(_groups)) {
+    const chosen = byFiscalYear[fy];
+    const otherPeriods = [...new Set(grp.map(_periodIdOf))].filter(id => id !== _periodIdOf(chosen));
+    if (otherPeriods.length > 0) {
+      fiscalYearConflicts.push({ fiscalYear: Number(fy), chosen: _periodIdOf(chosen), others: otherPeriods });
+    }
+    for (const e of grp) {
+      if (e === chosen || _periodIdOf(e) !== _periodIdOf(chosen) || e.val === chosen.val) continue;
+      supersededValues.push({ fiscalYear: Number(fy), period: e.end, value: e.val,
+                              accn: e.accn || null, filed: e.filed || null,
+                              supersededBy: chosen.accn || null });
     }
   }
 
@@ -27868,8 +27893,8 @@ function _extractFyValues(facts, tag, maxYears=10) {
   if (sortedContiguous.length < sortedAll.length) {
     const _lastKept    = sortedContiguous[sortedContiguous.length - 1];
     const _firstDrop   = sortedAll[sortedContiguous.length];
-    const _yrKept      = _lastKept  ? parseInt(_lastKept.end.substring(0, 4), 10) : null;
-    const _yrDrop      = _firstDrop ? parseInt(_firstDrop.end.substring(0, 4), 10) : null;
+    const _yrKept      = _lastKept  ? _secPeriodYear(_lastKept.end)  : null;
+    const _yrDrop      = _firstDrop ? _secPeriodYear(_firstDrop.end) : null;
     gapExtra = {
       gapDetected:    true,
       gapFrom:        _lastKept  ? _lastKept.end  : null,
@@ -27878,6 +27903,9 @@ function _extractFyValues(facts, tag, maxYears=10) {
       droppedPeriods: sortedAll.slice(sortedContiguous.length).map(e => e.end)
     };
   }
+
+  // Gegenpruefung der Jahreszuordnung mit den Filing-Metadaten.
+  const fiscalYearCheck = _secFiscalYearCheck(allEntries, sorted);
 
   const values = sorted.map(e => {
     if (unitKey==='USD') return e.val / 1e6;
@@ -27905,24 +27933,72 @@ function _extractFyValues(facts, tag, maxYears=10) {
       }),
       isFlowConcept,
       filed: sorted.map(e => e.filed || null),
+      // V1.0.71 (D2/F-2): Geschaeftsjahr je Wert (gleiche Regel wie _secPeriodYear).
+      fiscalYears: sorted.map(e => _secPeriodYear(e.end)),
+      fiscalYearCheck,
+      ...(fiscalYearConflicts.length > 0 ? { fiscalYearConflicts } : {}),
+      ...(supersededValues.length > 0 ? { supersededValues } : {}),
       ...gapExtra
     }
   };
 }
 
+// V1.0.71 (D2/F-2): Gegenpruefung der Geschaeftsjahreszuordnung.
+// `fy` (DocumentFiscalYearFocus) benennt das Geschaeftsjahr des BERICHTS, nicht
+// jeder darin enthaltenen Vergleichsperiode. Belastbar ist es deshalb nur fuer
+// die Hauptperiode eines 10-K (das spaeteste Periodenende dieses Berichts).
+// Fuer diese Hauptperioden muss der Abstand fy − Schluessel ueber alle Berichte
+// gleich sein (Filer benennen ihr Geschaeftsjahr einheitlich, z. B. Einzelhaendler
+// mit Ende Anfang Februar nach dem Vorjahr). Wechselt der Abstand, passt der
+// Schluessel nicht zur Benennung des Filers — das wird ausgewiesen.
+// Rueckgabe: { status: 'consistent'|'inconsistent'|'unavailable', offset, checked, deviations }
+function _secFiscalYearCheck(allEntries, usedEntries) {
+  const primaryEndByAccn = new Map();
+  for (const e of (allEntries || [])) {
+    if (!e || !e.accn || !e.end || e.fp !== 'FY' || e.fy == null) continue;
+    const cur = primaryEndByAccn.get(e.accn);
+    if (cur == null || e.end > cur.end) primaryEndByAccn.set(e.accn, { end: e.end, fy: Number(e.fy) });
+  }
+  const usedEnds = new Set((usedEntries || []).map(e => e && e.end));
+  const pairs = [];
+  for (const [accn, p] of primaryEndByAccn) {
+    if (!usedEnds.has(p.end) || !isFinite(p.fy)) continue;
+    pairs.push({ accn, end: p.end, fy: p.fy, key: _secPeriodYear(p.end) });
+  }
+  if (pairs.length === 0) return { status: 'unavailable', offset: null, checked: 0, deviations: [] };
+  const counts = new Map();
+  for (const q of pairs) counts.set(q.fy - q.key, (counts.get(q.fy - q.key) || 0) + 1);
+  const offset = [...counts.entries()].sort((a, b) => b[1] - a[1] || Math.abs(a[0]) - Math.abs(b[0]))[0][0];
+  const deviations = pairs.filter(q => q.fy - q.key !== offset)
+    .map(q => ({ accn: q.accn, end: q.end, fy: q.fy, fiscalYear: q.key }));
+  return { status: deviations.length === 0 ? 'consistent' : 'inconsistent',
+           offset, checked: pairs.length, deviations };
+}
+
 // V11.9.15: Gibt den neuesten zusammenhängenden Jahresblock zurück.
 // sortedAll ist absteigend nach end (neuestes zuerst), pro FY dedupliziert.
 // Bricht bei der ersten Lücke > 1 Jahr ab.
+// V1.0.71 (D2/F-2): Jahre ueber das Geschaeftsjahr (_secPeriodYear). Tragen
+// beide Perioden einen Beginn, muessen sie zusaetzlich tatsaechlich aneinander
+// anschliessen (Beginn der neueren ≈ Tag nach dem Ende der aelteren). Ein
+// Wechsel des Geschaeftsjahresendes (Rumpfjahr dazwischen) ist so keine
+// scheinbar lueckenlose Reihe mehr.
 function _takeLatestContiguousFiscalYears(sortedAll) {
   if (!Array.isArray(sortedAll) || sortedAll.length === 0) return [];
-  const yearOf = e => (e && e.end) ? parseInt(e.end.substring(0, 4), 10) : null;
+  const SEC_FY_ADJACENCY_TOL_DAYS = 7;
+  const yearOf = e => (e && e.end) ? _secPeriodYear(e.end) : null;
   const out = [sortedAll[0]];
   for (let i = 1; i < sortedAll.length; i++) {
-    const prevY = yearOf(out[out.length - 1]);
-    const currY = yearOf(sortedAll[i]);
+    const newer = out[out.length - 1], older = sortedAll[i];
+    const prevY = yearOf(newer);
+    const currY = yearOf(older);
     if (prevY == null || currY == null) break;
     if (prevY - currY !== 1) break;
-    out.push(sortedAll[i]);
+    if (newer.start && older.end) {
+      const gap = (new Date(newer.start).getTime() - new Date(older.end).getTime()) / 86400000;
+      if (!isFinite(gap) || Math.abs(gap - 1) > SEC_FY_ADJACENCY_TOL_DAYS) break;
+    }
+    out.push(older);
   }
   return out;
 }
@@ -27946,8 +28022,8 @@ function _extractWithFallback(facts, tags, maxYears=10, options={}) {
   const _yearOfCand = (cand) => {
     const p0 = cand.r.meta && Array.isArray(cand.r.meta.periods) ? cand.r.meta.periods[0] : null;
     if (!p0 || typeof p0 !== 'string') return null;
-    const m = p0.match(/^(\d{4})/);
-    return m ? parseInt(m[1], 10) : null;
+    if (!/^\d{4}/.test(p0)) return null;
+    return _secPeriodYear(p0);   // V1.0.71 (D2/F-2): Geschaeftsjahr, nicht Kalenderjahr
   };
 
   const anchorYear    = (options && options.anchorYear    != null) ? options.anchorYear    : null;
@@ -28047,11 +28123,31 @@ function _extractWithFallback(facts, tags, maxYears=10, options={}) {
 // Herkunft (usedTag/derivation) bleiben in der Ergebnis-Meta erhalten.
 // ────────────────────────────────────────────────────────────────
 
-// Fiskaljahr aus einer Periode ("2024-12-28" → 2024). Gleiche Konvention wie
-// _extractFyValues (Dedup pro Kalenderjahr des end-Datums).
+// Geschaeftsjahr eines Periodenendes ("2024-12-28" → 2024). Dieselbe Regel
+// benutzt _extractFyValues als Jahresschluessel; alle Verbraucher, die Reihen
+// ueber das Geschaeftsjahr verknuepfen, muessen diese Funktion verwenden.
+//
+// V1.0.71 (D2/F-2): Bis V1.0.70 galt das Kalenderjahr des Enddatums. Ein
+// 52/53-Wochen-Geschaeftsjahr mit nominellem Ende 31. Dezember endet aber am
+// festen Wochentag nahe dem Monatsende und damit bis zu sechs Tage NACH dem
+// 31.12. (JNJ FY2022: 2022-01-03…2023-01-01). Mit dem Kalenderjahr teilten
+// sich FY2022 (Ende 2023-01-01) und FY2023 (Ende 2023-12-31) den Schluessel
+// 2023; ein Geschaeftsjahr ging still verloren. Ein Ende vom 1. bis 7. Januar
+// gehoert deshalb zum Geschaeftsjahr, das nominell am 31.12. des Vorjahres
+// endet. Das entspricht der Benennung durch die Filer selbst (JNJ: fy 2022 fuer
+// das Ende 2023-01-01) und der SEC-Rahmenzuordnung (frame CY2022).
+// Gegenpruefung je Reihe: _secFiscalYearCheck (DocumentFiscalYearFocus der
+// jeweiligen Hauptperiode). Andere Stichtage bleiben beim Kalenderjahr.
 function _secPeriodYear(period) {
   if (period == null) return null;
-  const m = String(period).match(/(\d{4})/);
+  const s = String(period);
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) {
+    const y = parseInt(iso[1], 10), mo = parseInt(iso[2], 10), d = parseInt(iso[3], 10);
+    const SEC_FY_EARLY_JANUARY_LAST_DAY = 7;
+    return (mo === 1 && d >= 1 && d <= SEC_FY_EARLY_JANUARY_LAST_DAY) ? y - 1 : y;
+  }
+  const m = s.match(/(\d{4})/);
   return m ? parseInt(m[1], 10) : null;
 }
 
@@ -29127,7 +29223,7 @@ function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
                      Array.isArray(extracted.revenue.meta.periods)
                      ? extracted.revenue.meta.periods[0] : null;
     const _b2AnchorYear = (_revP0b2 && typeof _revP0b2 === 'string')
-      ? (parseInt(_revP0b2.match(/^(\d{4})/)?.[1], 10) || new Date().getFullYear())
+      ? (_secPeriodYear(_revP0b2) || new Date().getFullYear())
       : new Date().getFullYear();
 
     const _preferredForms = ['10-K', '10-Q'];
@@ -29160,7 +29256,7 @@ function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
         const best = candidates[0];
         // Staleness-Prüfung: Endperiode darf nicht älter als 3 Jahre vor anchorYear sein
         if (best.end) {
-          const endYear = parseInt(best.end.substring(0, 4), 10);
+          const endYear = _secPeriodYear(best.end);
           if (!isNaN(endYear) && _b2AnchorYear - endYear > 3) {
             _b2Diag.push(`skip ${ns}:${concept} — stale (end=${best.end}, anchorYear=${_b2AnchorYear})`);
             continue;
@@ -29430,7 +29526,7 @@ function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
     const _revMeta2 = extracted && extracted.revenue && extracted.revenue.meta;
     const _revP0_2  = _revMeta2 && Array.isArray(_revMeta2.periods) ? _revMeta2.periods[0] : null;
     const _tdAnchorYear = _revP0_2 && typeof _revP0_2 === 'string'
-      ? (parseInt(_revP0_2.match(/^(\d{4})/)?.[1], 10) || null)
+      ? (_secPeriodYear(_revP0_2) || null)
       : null;
     // Anchor in _sec_fetch schreiben BEVOR _applyDebtComponentRebuild aufgerufen wird
     if (!mj.meta._sec_fetch) mj.meta._sec_fetch = {};
@@ -30157,7 +30253,7 @@ async function secFetchAll() {
     extracted.revenue = _extractWithFallback(facts, _revTags, 10);
     const _revP0 = extracted.revenue && extracted.revenue.meta && Array.isArray(extracted.revenue.meta.periods)
       ? extracted.revenue.meta.periods[0] : null;
-    const _anchorYearM = _revP0 && typeof _revP0 === 'string' ? parseInt(_revP0.match(/^(\d{4})/)?.[1], 10) || null : null;
+    const _anchorYearM = _revP0 && typeof _revP0 === 'string' ? _secPeriodYear(_revP0) || null : null;
 
     // Core-Felder die zwingend current-year sein müssen (requireCurrent=true)
     // V1.0.12: gross_profit hinzugefügt — stale GrossProfit (z.B. CAT 2020) darf nicht importiert werden

@@ -14,6 +14,7 @@ import { loadFunctions } from './extract-functions.mjs';
 const A = loadFunctions([
   'SEC_TAG_MAP',
   '_takeLatestContiguousFiscalYears',
+  '_secFiscalYearCheck',
   '_extractFyValues',
   '_extractWithFallback',
   '_secPeriodYear',
