@@ -1,0 +1,289 @@
+{
+ "_note": "Erfassungen fy und ttmView aus einem echten Lauf von replay-import.mjs --selftest (synthetischer Filer SYNTR, ohne Kurs), auf die von checkPanels() gelesenen Felder gekuerzt. Erzeugt in D1-Nachbesserung; Produktstand 48b22ef.",
+ "fy": {
+  "step": "fy",
+  "requested_by_replay": null,
+  "basis": {
+   "requested": "fy",
+   "selected": "fy",
+   "label": "Letztes Geschäftsjahr (FY)",
+   "ttm_available": true,
+   "ttm_used": false,
+   "fallback": {
+    "active": false,
+    "reasons": []
+   },
+   "period": {
+    "type": "FY",
+    "start": null,
+    "end": "2024-12-31",
+    "duration_days": null,
+    "label": "Letztes Geschäftsjahr bis 2024-12-31",
+    "window_count": 3,
+    "quarters": []
+   },
+   "publication": {
+    "latest_filed": null,
+    "as_of_date": "2026-09-24",
+    "forms": null,
+    "source_primary": "SEC_EDGAR"
+   },
+   "blocked_models": [],
+   "covered_fields": [
+    "revenue",
+    "ebit",
+    "net_income",
+    "cfo",
+    "capex",
+    "da",
+    "total_debt",
+    "long_term_debt",
+    "cash_and_equivalents",
+    "current_assets",
+    "current_liabilities",
+    "debt_short_term",
+    "debt_long_term_current",
+    "debt_long_term_noncurrent",
+    "finance_lease_current",
+    "finance_lease_noncurrent",
+    "shares_diluted",
+    "eps_diluted"
+   ],
+   "missing_fields": [],
+   "warnings": [
+    "Verwässerungs-Vereinfachung: Eine projizierte ZUNAHME der Aktienzahl wirkt im Hauptwert NUR in den Detailjahren 1–10; der Terminalwert wird dann mit der Aktienzahl des Jahres 10 gerechnet und ist ab dem Terminalzeitpunkt konstant. Eine dauerhaft fortgesetzte Verwässerung wird NICHT fortgeschrieben — bei anhaltend verwässernden Geschäftsmodellen ist der Wert je Aktie dadurch tendenziell zu hoch. Bei Aktienrückgang oder konstanter Aktienzahl rechnet der konservative Hauptwert durchgehend mit der HEUTIGEN Aktienzahl; die Projektion wirkt dort nur in der Buyback-Diagnose."
+   ]
+  },
+  "engineView": {
+   "ok": true,
+   "basis": "fy",
+   "mismatch": false,
+   "reason": null
+  },
+  "basisLabels": {
+   "fy": "Letztes Geschäftsjahr (FY)",
+   "ttm": "TTM (letzte vier Quartale)"
+  },
+  "models": {
+   "dcf": {
+    "reason": null,
+    "base": 16.925975636198185,
+    "warnings": [
+     "Bewertungskern dcf-core/1.1 — identisch für Haupt-DCF, Reverse DCF und Sensitivitätsmatrix. Definition: FCFF = EBIT × (1 − t) + D&A − CapEx − ΔWC(operativ), mit WACC diskontiert, Gordon-Terminalwert, abzüglich Nettoschulden (Stichtag) je Aktie",
+     "Wertbrücke (Base): operativer Unternehmenswert 2093M (20.93/Aktie) − Nettoschulden 400M [Schulden 500M − anrechenbare Liquidität 100M, Quelle: net_debt[0]] = Eigenkapitalwert 1693M (16.93/Aktie) bei 100.0M Aktien",
+     "Operatives Working Capital: historischer Median -20.00% des Umsatzes über 3 lückenlose Jahre — gemessen aus Bilanzdaten. Definition: (Umlaufvermögen − Zahlungsmittel) − (kurzfristige Verbindlichkeiten − kurzfristige Finanzschulden). ΔWC Jahr 1 = 0.0M, Terminaljahr = -6.0M (mit tg fortgeschrieben) · negative Quote: Wachstum setzt Working Capital frei",
+     "Kurzfristige Finanzschulden im Working Capital: total_debt + long_term_debt (LongTermDebtNoncurrent) + debt_short_term (ShortTermBorrowings) + debt_long_term_current (LongTermDebtCurrent) + debt_long_term_noncurrent (LongTermDebtNoncurrent) + finance_lease_current (FinanceLeaseLiabilityCurrent) + finance_lease_noncurrent (FinanceLeaseLiabilityNoncurrent) · periodengetreu zugeordnet",
+     "⚠ Working-Capital-Vereinfachung: Der Anfangsbestand wird bereits mit der Prognosequote angesetzt (OWC₀ = Quote × Umsatz₀). Eine Anpassung vom tatsächlichen Ist-Bestand auf die Zielquote wird NICHT modelliert; ein daraus resultierender einmaliger Mittelzu- oder -abfluss fehlt im Cashflow.",
+     "Aktienbasis Wertbrücke: shares_diluted[0] = 100.0M (Ø verwässerte Aktien der Periode) — Ersatzbasis für die aktuelle ausstehende Aktienzahl zum Stichtag; kann bei unterjährigen Buybacks/Emissionen abweichen.",
+     "SBC vs. Verwässerung getrennt: SBC-Aufwand ist im EBIT (und damit im FCFF) bereits enthalten und wird nicht erneut abgezogen; die Verwässerung wirkt ausschließlich über die Aktienprojektion im Nenner. Kein zusätzlicher pauschaler SBC-Abschlag — die SBC-adjustierte Owner-FCF-Rechnung ist reine Diagnose.",
+     "Shares-Projektion: 100.0M (Jahr 0) → 100.0M (Jahr 10) bei +0.00%/y · neutral (≈konstante Aktienanzahl) — NICHT im Hauptwert: der konservative Wert rechnet durchgehend mit der heutigen Aktienzahl"
+    ],
+    "_equityValueUnavailable": false,
+    "_equityValueUnavailableReason": null,
+    "_netDebtM": 400,
+    "_netDebtPerShare": 4,
+    "_netDebtAvailable": true,
+    "_netDebtSource": "net_debt[0]",
+    "_netDebtMissingFields": [],
+    "_equityValueAbsBase": 1692.5975636198186,
+    "_equityValuePerShareBase": 16.925975636198185,
+    "_sharesUsedM": 100,
+    "_sharesBasis": "shares_diluted[0]",
+    "_sharesBasisIsSubstitute": true,
+    "_sharesBasisNote": "Ø verwässerte Aktien der Periode — Ersatzbasis für die aktuelle ausstehende Aktienzahl zum Stichtag",
+    "_discountRateBasis": "wacc",
+    "_netDebtBridgeApplied": true,
+    "_owcOpeningStockBasis": "forecast_ratio_times_revenue0",
+    "_coreMarginBasis": "scenario",
+    "_coreSharesGrowthPa": 0,
+    "_terminalShareCountBasis": "shares_year_0_constant",
+    "_sharesChangeAppliedInMainValue": false,
+    "_sharesChangeTreatment": "Aktienrückgang/konstante Aktienzahl: der konservative Hauptwert rechnet durchgehend mit der heutigen Aktienzahl; die Projektion wirkt nur in der Buyback-Diagnose",
+    "_sharesGrowthPaProjected": 0,
+    "_terminalSharesGrowthPa": 0
+   },
+   "rim": {
+    "base": 1.1814147940376536,
+    "warnings": []
+   }
+  },
+  "reverseDcf": {
+   "status": "inputs_missing",
+   "reason": "Fehlende Eingaben: market.price > 0",
+   "impliedGrowth": null
+  },
+  "market": {
+   "basis": "fy",
+   "basisLabel": "Letztes Geschäftsjahr (FY)",
+   "basisPeriod": "2024-12-31",
+   "basisBlocked": false,
+   "basisReason": null,
+   "rows": []
+  },
+  "panels": {
+   "valuation": "🗓️ DATENBASIS DER BEWERTUNG\nLETZTES GESCHÄFTSJAHR (FY)\nAlle Bewertungsmodelle rechnen auf dieser Periodenart. Ein Wechsel mischt keine Perioden: auf TTM-Basis bleiben Felder ohne TTM-Deckung leer, die betroffenen Modelle werden gesperrt. Die Jahresreihen bleiben für die Qualitätsdiagnostik unverändert erhalten.\nZEITRAUM (LETZTES GESCHÄFTSJAHR)\n2024-12-31\nVERÖFFENTLICHUNGSSTAND\nunvollständig bekannt\nDATENSTICHTAG\n2026-09-24\nQuelle: SEC_EDGAR\nAKTIENBASIS (GEWICHTETER JAHRESDURCHSCHNITT)\n100,0\nGemeldeter Durchschnitt des letzten Geschäftsjahres.\nAKTUELLE AKTIENZAHL (STICHTAG)\n–\nStand 2026-09-24 — getrennt vom Durchschnitt geführt\nABSCHREIBUNGEN (D&AMP;A) / UMSATZ\n5,00 %\ngemessener Median 5.00% des Umsatzes über 3 Periode(n) — periodengleich zugeordnet\n⚠ Verwässerungs-Vereinfachung: Eine projizierte ZUNAHME der Aktienzahl wirkt im Hauptwert NUR in den Detailjahren 1–10; der Terminalwert wird dann mit der Aktienzahl des Jahres 10 gerechnet und ist ab dem Terminalzeitpunkt konstant. Eine dauerhaft fortgesetzte Verwässerung wird NICHT fortgeschrieben — bei anhaltend verwässernden Geschäftsmodellen ist der Wert je Aktie dadurch tendenziell zu hoch. Bei Aktienrückgang oder konstanter Aktienzahl rechnet der konservative Hauptwert durchgehend mit der HEUTIGEN Aktienzahl; die Projektion wirkt dort nur in der Buyback-Diagnose.\nSEKTOR-PFAD: semiconductor_compounder\nAktive Modelle: dcf, rim\nDeaktiviert: epv_floor: diagnostischer Floor — nicht in Kerngewichtung · ddm: Semiconductor Compounder: DDM nicht primär — DCF/RIM dominiert · p_tbv_gordon: nur Financials · excess_return: nur Financials\nDIVIDEND-DIAGNOSTIK: DPS positive years: 0 · DPS source: reported — imported_v3 · Classification source: sic_auto · Yield: n/a · Materiality: non-material (no_dps) · DDM mode: inactive\nFAIR VALUE RANGE\nHEURISTISCHE SYNTHESE\n2 CORE-MODELLE AKTIV\nVALUATION CONFIDENCE\nniedrig (45%)\n≠ Business Quality · ≠ Data Coverage\n⚠ Abzüge: Modell-Divergenz >5x — nur Range · WACC-Komponenten heuristisch\nModellgewichte: DCF 89% · DDM 0% · RIM 11%\nDDM Anchor: inaktiv\nRIM Cap: inaktiv\nUnsicherheit: 97% (weit) · Modell-Konvergenz: low\nBASE FAIR VALUE\n15.18\nHeuristisch gewichteter Mittelwert aktiver Modelle (DCF 89% · DDM 0% · RIM 11%) — regelbasierte Zusammenführung, keine Konsensschätzung. Rechenweg unten.\nENTSCHEIDUNGSRANGE (GEWICHTETES P25–P75 + BULL)\n6 Szenarien · 2 Modelle\nSTRESS (P10)\n3.05\nP25\n9.33\nBASE\n15.18\nP75\n22.89\nBULL\n26.01\nP25/P75 als Kernrange · Bull Case als separates Upside-Szenario dargestellt.\n▸ Detailwerte (Conservative / Base / Optimistic — Legacy)\nBasis-MoS (caution_data=25%)\n25%\nData Quality Add-on\n–\nBase-Rate Add-on\n–\nHeuristic Add-on (WACC vollst. heuristisch)\n+10%\nDivergence Add-on\n–\nLeverage Add-on\n–\nSector/Cyclicality Add-on\n–\nBuyback-Dependency Add-on\n–\nMoS Total (Cap 50%)\n32%\n↳ Cap aktiv (additiv wäre 35%)\nModel-Agreement (Diagnose, kein Add-on)\nlow\n▸ Rechenweg der heuristischen Synthese (Gewichte · Ausschlüsse · Kappungen · Abschlag)\n⚡ Model-Divergence: 14.3x 🔴 range only (>5×) · [dcf=17, rim=1]\nSYNTHESE-GEWICHTE (EPV-ROLLE: DIAGNOSTIC)\ndcf\n89% · 16,93\nrim\n11% · 1,18\nMODELLE — EINZELN MIT SZENARIEN, SICHTBAREN INPUTS UND EIGNUNG\nABWEICHUNGEN ERKLÄRT, NICHT GEGLÄTTET\nDCF\nWACC HEURISTISCH\ncons\n9.72\nbase\n16.93\nopt\n26.01\nSichtbare Inputs (Base): g1 0.00% · WACC 9.00% · g∞ 3.00% · Op-Marge 20.00%\nRolle: in der Synthese gewichtet mit 88.9%\nBase +11.5% ggü. Synthese-Base 15.18\nEignung: Barwert freier Firmen-Cashflows — reagiert am stärksten auf WACC und Terminalwachstum.\n⚠ WACC-Komponenten fehlen: beta, cost_of_debt_pretax, tax_rate, debt_weight, equity_weight — Bewertung nur Orientierung, kein echtes WACC-Kalkül\n⚠ WACC heuristic / cost_of_debt missing — MoS-Addon +5pp\n· Bewertungskern dcf-core/1.1 — identisch für Haupt-DCF, Reverse DCF und Sensitivitätsmatrix. Definition: FCFF = EBIT × (1 − t) + D&A − CapEx − ΔWC(operativ), mit WACC diskontiert, Gordon-Terminalwert, abzüglich Nettoschulden (Stichtag) je Aktie\n· Wertbrücke (Base): operativer Unternehmenswert 2093M (20.93/Aktie) − Nettoschulden 400M [Schulden 500M − anrechenbare Liquidität 100M, Quelle: net_debt[0]] = Eigenkapitalwert 1693M (16.93/Aktie) bei 100.0M Aktien\n· Operatives Working Capital: historischer Median -20.00% des Umsatzes über 3 lückenlose Jahre — gemessen aus Bilanzdaten. Definition: (Umlaufvermögen − Zahlungsmittel) − (kurzfristige Verbindlichkeiten − kurzfristige Finanzschulden). ΔWC Jahr 1 = 0.0M, Terminaljahr = -6.0M (mit tg fortgeschrieben) · negative Quote: Wachstum setzt Working Capital frei\n· Kurzfristige Finanzschulden im Working Capital: total_debt + long_term_debt (LongTermDebtNoncurrent) + debt_short_term (ShortTermBorrowings) + debt_long_term_current (LongTermDebtCurrent) + debt_long_term_noncurrent (LongTermDebtNoncurrent) + finance_lease_current (FinanceLeaseLiabilityCurrent) + finance_lease_noncurrent (FinanceLeaseLiabilityNoncurrent) · periodengetreu zugeordnet\n· ⚠ Working-Capital-Vereinfachung: Der Anfangsbestand wird bereits mit der Prognosequote angesetzt (OWC₀ = Quote × Umsatz₀). Eine Anpassung vom tatsächlichen Ist-Bestand auf die Zielquote wird NICHT modelliert; ein daraus resultierender einmaliger Mittelzu- oder -abfluss fehlt im Cashflow.\n· Aktienbasis Wertbrücke: shares_diluted[0] = 100.0M (Ø verwässerte Aktien der Periode) — Ersatzbasis für die aktuelle ausstehende Aktienzahl zum Stichtag; kann bei unterjährigen Buybacks/Emissionen abweichen.\n· SBC vs. Verwässerung getrennt: SBC-Aufwand ist im EBIT (und damit im FCFF) bereits enthalten und wird nicht erneut abgezogen; die Verwässerung wirkt ausschließlich über die Aktienprojektion im Nenner. Kein zusätzlicher pauschaler SBC-Abschlag — die SBC-adjustierte Owner-FCF-Rechnung ist reine Diagnose.\n· Shares-Projektion: 100.0M (Jahr 0) → 100.0M (Jahr 10) bei +0.00%/y · neutral (≈konstante Aktienanzahl) — NICHT im Hauptwert: der konservative Wert rechnet durchgehend mit der heutigen Aktienzahl\nRIM\nWACC HEURISTISCH\ncons\n0.66\nbase\n1.18\nopt\n2.74\nSichtbare Inputs (Base): g1 0.00% · CoE 10.00% · g∞ 3.00% · Op-Marge 20.00%\nRolle: in der Synthese gewichtet mit 11.1%\nBase -92.2% ggü. Synthese-Base 15.18 — wesentliche Abweichung\nEignung: Residualgewinn auf Buchwertbasis — abhängig von Buchwertqualität und Eigenkapitalkosten, empfindlich gegenüber dauerhaft hohen Spreads.\n⚠ WACC-Komponenten fehlen: beta, cost_of_debt_pretax, tax_rate, debt_weight, equity_weight — Bewertung nur Orientierung, kein echtes WACC-Kalkül\n⚠ WACC heuristic / cost_of_debt missing — MoS-Addon +5pp\nEPV_FLOOR\nDEAKTIVIERT\ndiagnostischer Floor — nicht in Kerngewichtung\nDDM\nDEAKTIVIERT\nSemiconductor Compounder: DDM nicht primär — DCF/RIM dominiert\nP_TBV_GORDON\nDEAKTIVIERT\nnur Financials\nEXCESS_RETURN\nDEAKTIVIERT\nnur Financials\nFIRM-SPEZIFISCHE VOLATILITÄT\nσ Revenue Growth: 3.00pp (2 YoY-Werte) · σ Op-Marge: 1.50pp (3 Jahre)\nWACC / G1 SENSITIVITÄTSMATRIX\nDCF BASE-SZENARIO\nWACC / G1 SENSITIVITÄTSMATRIX — FAIR VALUE (DCF)\n* = Basiswert (identisch mit dem Haupt-DCF, Bewertungskern dcf-core/1.1) · Spalten: Stage-1-Wachstum · Zeilen: WACC · Eigenkapitalwert nach Abzug Nettoschulden 400M (4.00/Aktie, Quelle: net_debt[0]) · Cashflow: FCFF inkl. ΔWC bei -20.00% WC/Umsatz (historischer Median) · variiert werden ausschließlich WACC und Stage-1-Wachstum; Terminalwachstum 3.00%, Betriebsmarge 20.00%, Steuer-, CapEx-, D&A- und WC-Quote, Fade, Aktienprojektion und Nettoschulden bleiben in jeder Zelle unverändert\nWACC \\ g1\t-3.0%\t-1.5%\t+0.0%*\t+1.5%\t+3.0%\n7.0%\t19.8\t23.1\t26.9\t31.2\t36.1\n8.0%\t15.3\t18.0\t20.9\t24.3\t28.1\n9.0%*\t12.3\t14.5\t16.9\t19.7\t22.7\n10.0%\t10.2\t12.0\t14.1\t16.4\t18.9\n11.0%\t8.6\t10.1\t11.9\t13.9\t16.1\nMONTE-CARLO-SIMULATION (EINGEKLAPPT)\nSIMULATION UNTER ANGENOMMENEN VERTEILUNGEN · NUR DIAGNOSTIK\nDIAGNOSE: FAKTOR-OVERLAY\nNUR DIAGNOSTIK\nFAKTOR-OVERLAY · KEIN EINFLUSS AUF FAIR VALUE ODER EINSTIEGSZONE\nMOMENTUM\nN/A\n52w-High/Low fehlt\nRELATIVE VALUE\nN/A\nFair Value nicht berechnet\nRELATIVE QUALITY\nNEGATIV\nPiotroski 4/8 — schwach\nREVERSE DCF / MARKET-IMPLIED GROWTH\nNUR DIAGNOSE\nREVERSE DCF / MARKET-IMPLIED GROWTH · EINGABEN FEHLEN\nFehlende Eingaben: market.price > 0\nAKTUELLER KURS\n–\nAKTIEN DILUTED (MIO.)\n100\nNETTO-SCHULDEN (MIO.)\n400 · Quelle: net_debt[0]\nBETRIEBSMARGE (WIRKSAM)\nSzenariomarge des Haupt-DCF\nWACC VERWENDET\n9.00%\nTERMINAL GROWTH VERWENDET\n3.00%\nGETRENNTE DIAGNOSE AUF REPORTED-FCF-BASIS (CFO − CAPEX)\nFCF₀ (MIO., BERICHTET)\n150\nREPORTED-FCF-BASIS\n– (Kurs fehlt — bitte im Assumptions-Tab eintragen)\nSBC-ADJ. OWNER-FCF-BASIS\n– (Kurs fehlt — bitte im Assumptions-Tab eintragen)\nreverseDcfReported/reverseDcfOwner lösen das Wachstum des REPORTED FCF (CFO − CapEx) und dienen ausschließlich dem SBC-Vergleich beider Größen. Sie sind nicht definitionskonsistent zum Haupt-DCF (kein ΔWC, keine Nettoschuldenbrücke, kein Fade) und dürfen nicht als dessen implizites Wachstum gelesen werden — dafür ist coreReverseDcf zuständig.\nDiagnose · kein Einfluss auf Synthese, Fair Value oder Einstiegszone\nBASE-RATE-LITE: DCF-ANNAHMEN VS. UNTERNEHMENSHISTORIE\nNUR DIAGNOSE\nnicht berechenbar\nGesamtbewertung der DCF-Annahmen vs. Unternehmenshistorie\nUnzureichende Revenue-Zeitreihe (3 gültige Punkte, mind. 4 benötigt).\n• konservativ\n• plausibel\n• ambitioniert\n• sehr ambitioniert\n• nicht berechenbar\n⚠ Base-Rate-Lite nutzt nur die eigene Unternehmenshistorie, keine survivorship-bias-freie Peer-Datenbank.\nDiagnose · kein Einfluss auf Fair Value, Buy Price, Moß oder Verdict\nSBC-DIAGNOSE (STOCK-BASED COMPENSATION)\nOWNER FCF DCF (DIAGNOSE)",
+   "assumptions": "🏷️ SEKTOR-KLASSIFIKATION\nSIC EXAKT\nSteuert Modell-Routing (DCF/RIM/DDM-Gewichtung) und die Sektor-Korridore für Wachstum/CoE/WACC-Heuristiken (nur solange diese Werte nicht anderweitig — manuell oder aus Komponenten — gesetzt sind). Ein exakter SIC-Treffer ist keine inhaltliche Bestätigung, nur ein Tabellen-Match — bei Zweifeln prüfen und übersteuern.\nSEKTOR (SEC SIC, INFORMATIV)\nTechnology\n✎ GESCHÄFTSMODELL-KLASSIFIKATION\nstandard_nonfin\nfinancial\ncyclical\nbuyback_compounder\nasset_light\ndividend_aristocrat\nhigh_growth\nretail\nsemiconductor_compounder\n🗓️ DATENBASIS DER BEWERTUNG\nLETZTES GESCHÄFTSJAHR (FY)\nAlle Bewertungsmodelle rechnen auf dieser Periodenart. Ein Wechsel mischt keine Perioden: auf TTM-Basis bleiben Felder ohne TTM-Deckung leer, die betroffenen Modelle werden gesperrt. Die Jahresreihen bleiben für die Qualitätsdiagnostik unverändert erhalten.\n✎ DATENBASIS DER BEWERTUNG\nLetztes Geschäftsjahr (FY)\nTTM (letzte vier Quartale)\nZEITRAUM (LETZTES GESCHÄFTSJAHR)\n2024-12-31\nVERÖFFENTLICHUNGSSTAND\nunvollständig bekannt\nDATENSTICHTAG\n2026-09-24\nQuelle: SEC_EDGAR\nAKTIENBASIS (GEWICHTETER JAHRESDURCHSCHNITT)\n100,0\nGemeldeter Durchschnitt des letzten Geschäftsjahres.\nAKTUELLE AKTIENZAHL (STICHTAG)\n–\nStand 2026-09-24 — getrennt vom Durchschnitt geführt\nABSCHREIBUNGEN (D&AMP;A) / UMSATZ\n5,00 %\ngemessener Median 5.00% des Umsatzes über 3 Periode(n) — periodengleich zugeordnet\n⚠ Verwässerungs-Vereinfachung: Eine projizierte ZUNAHME der Aktienzahl wirkt im Hauptwert NUR in den Detailjahren 1–10; der Terminalwert wird dann mit der Aktienzahl des Jahres 10 gerechnet und ist ab dem Terminalzeitpunkt konstant. Eine dauerhaft fortgesetzte Verwässerung wird NICHT fortgeschrieben — bei anhaltend verwässernden Geschäftsmodellen ist der Wert je Aktie dadurch tendenziell zu hoch. Bei Aktienrückgang oder konstanter Aktienzahl rechnet der konservative Hauptwert durchgehend mit der HEUTIGEN Aktienzahl; die Projektion wirkt dort nur in der Buyback-Diagnose.\n📊 MARKET DATA & WACC INPUTS\nQuellen und Confidence je Feld. Manuelle Overrides haben Vorrang vor Yahoo/abgeleiteten Werten. Setze Overrides in den Feldern unten (WACC-Komponenten / Kurs) oder im Block Market Overrides.\nFeld\nWert\nConf.\nQuelle\nKurs (USD)\n–\nFEHLT\nYahoo Finance\nMarket Cap\n–\nFEHLT\n–\nBeta\n–\nFEHLT\n–\nRisk-free Rate\n0.04 %\nMEDIUM\nimportiert\nERP\n0.06 %\nMEDIUM\nimportiert (Damodaran / Standard)\nWACC\n9.00 %\nHEURISTISCH\nheuristic\nCost of Equity\n10.00 %\nHEURISTISCH\nheuristic\n⚠ Kurs fehlt — MoS-Berechnung blockiert\n⚠ Market Cap fehlt — Debt-Weight-Berechnung eingeschränkt\n⚠ Beta nicht verfügbar — WACC confidence reduziert. Bitte manuell setzen.\n⚠ Beta unavailable — WACC confidence reduced. Heuristische CoE/WACC-Fallbacks aktiv (falls vorhanden), als heuristisch markiert.\nMarket Overrides persistent: JSON-Export enthält market.manual_overrides / valuation.wacc_components.manual_overrides.\nBEWERTUNGS-ASSUMPTIONS\n✎ editierbare Felder · automatische Neuberechnung beim Verlassen des Feldes (Tab/Klick)\n▲ WERTTREIBEND hohe FV-Sensitivität   MANUAL manuell gesetzt   HEURISTISCH konservativ abgeleitet   DERIVED aus Komponenten   IMPORTED aus JSON   FEHLT nicht setzbar\n▲ KERNWERTTREIBER\n✎ STAGE-1 WACHSTUM (%) ▲ WERTTREIBEND HEURISTISCH\nSENSITIV: ±1% WACHSTUM BEWEGT FAIR VALUE TYPISCH 8–15%\n✎ TERMINAL GROWTH (%) ▲ WERTTREIBEND HEURISTISCH\nTERMINAL VALUE = OFT 60–80% DES DCF-GESAMTWERTS\n✎ WACC DERIVED (%) ▲ WERTTREIBEND HEURISTISCH\nDISKONTSATZ: ±0.5% WACC → ERHEBLICHE FV-BEWEGUNG\n✎ COST OF EQUITY (%) ▲ WERTTREIBEND HEURISTISCH\nPRIMÄRER DISKONTSATZ FÜR RIM / DDM / EQUITY-DCF\n✎ ZIEL-MARGE TARGET_OP_MARGIN (%) ▲ WERTTREIBEND IMPORTEDDERIVED\nNORMALISIERTE EBIT-MARGE FÜR DCF — HAUPTHEBEL AUF FCFF-BASIS\n✎ MIDCYCLE-MARGE (%) ▲ WERTTREIBEND IMPORTED\nNUR CYCLICALS: BASIS FÜR DCF_MIDCYCLE; FEHLT → MODELL BLOCKIERT\n✎ OPERATIVES WORKING CAPITAL / UMSATZ (%) ▲ WERTTREIBEND IMPORTED\nLEER = HISTORISCHER MEDIAN -20.00% AUS 3 LÜCKENLOSEN JAHREN\n✎ ABSCHREIBUNGEN (D&A) / UMSATZ (%) ▲ WERTTREIBEND IMPORTED\nAKTIV: GEMESSENER MEDIAN 5.00% DES UMSATZES ÜBER 3 PERIODE(N) — PERIODENGLEICH ZUGEORDNET — LEERES FELD IST KEINE NULL: OHNE MESSBARE ODER GESETZTE QUOTE BLEIBEN DCF, MATRIX UND SIMULATION GESPERRT.\n◎ ERGÄNZEND\n✎ SICHERHEITSABSCHLAG MANUELL (%)\nGEWÄHLTE GRÖSSE, KEIN MODELLERGEBNIS: WIRKT NUR AUF EINSTIEGSPREIS UND TIEFEN PRÜFPREIS, NIE AUF DEN MODELLWERT. LEER = REGELABSCHLAG AUS DEM REGELWERK.\n✎ AKTUELLER KURS FEHLT\nNUR FÜR MOS-BERECHNUNG UND UPSIDE-ANZEIGE\n✎ FADE ENABLED / AB JAHR\nBEEINFLUSST STAGE-2-ÜBERGANG, NICHT DEN TERMINAL VALUE DIREKT\nNEU BERECHNEN\nBERECHNET\n🔮 HEURISTISCHE ABLEITUNGEN — KONSERVATIV, NICHT AUS JSON\ncost_of_equity_derived = 10% SECTOR_DEFAULT_NO_BETA\nSektor-CoE Fallback 10% (kein Beta/Yahoo verfuegbar) - manuell pruefen\nwacc_derived = 9% SECTOR_DEFAULT_NO_BETA\nSektor-WACC Fallback 9% (kein Beta/Yahoo verfuegbar) - manuell pruefen\ndebt_materiality = undefined% \nnetDebt=400M > 0, aber kein market_cap für Debt-Weight\nwacc_cod_missing = undefined% \n\ngrowth_stage1 = 0% HIST_TREND_SMOOTHED\nMedian aus 1 Trends (0.0%) × 0.75, Cap 15% · ⚠ Sektor-Korridor vorläufig (noch nicht separat kalibriert)\ngrowth_terminal = 3% SECTOR_CORRIDOR\nSektor-Korridor [2.5%–3.5%], Mittelwert 3% · ⚠ Sektor-Korridor vorläufig (noch nicht separat kalibriert)\nHeuristik überschreiben: Wert manuell eingeben → \"Neu berechnen\". Nach manuellem Setzen entfällt der Downgrade.\nDATEN-PROVENANCE — FUNDAMENTALDATEN\n🌐 GLOBALE RISK-FREE RATE — MANUELL GEPFLEGT\nWACC-KOMPONENTEN — WERDEN AUTOMATISCH ZU COE/WACC ABGELEITET\n🎛 MARKET OVERRIDES (PRICE · BETA · MARKET CAP · RF · ERP)",
+   "market": "MARKT-VERGLEICH\nKEIN FAIR VALUE\nLETZTES GESCHÄFTSJAHR (FY) · 2024-12-31\nDiese Werte sind kein Fair Value. Sie zeigen nur, wo das Unternehmen läge, wenn es zu seinen historischen Multiples zurückkehrte. Historische Multiples können strukturell falsch sein (Re-Rating, Sektor-Shift). Kein Wert in dieser Sektion fließt in die Fair-Value-Range oder den Buy Price.\nKeine eigenen Multiples-Mediane im Master-JSON unter market.own_multiples_median eingetragen."
+  }
+ },
+ "ttm": {
+  "step": "ttm",
+  "requested_by_replay": "ttm",
+  "basis": {
+   "requested": "ttm",
+   "selected": "ttm",
+   "label": "TTM (letzte vier Quartale)",
+   "ttm_available": true,
+   "ttm_used": true,
+   "fallback": {
+    "active": false,
+    "reasons": []
+   },
+   "period": {
+    "type": "TTM",
+    "start": "2024-10-01",
+    "end": "2025-09-30",
+    "duration_days": 365,
+    "label": "TTM 2024-10-01…2025-09-30",
+    "window_count": 3,
+    "quarters": [
+     "FY2024-Q4",
+     "FY2025-Q1",
+     "FY2025-Q2",
+     "FY2025-Q3"
+    ]
+   },
+   "publication": {
+    "latest_filed": "2025-11-01",
+    "latest_filed_complete": true,
+    "as_of_date": "2026-09-24",
+    "forms": [
+     "10-K",
+     "10-K − 10-Q",
+     "10-Q",
+     "10-Q − 10-Q"
+    ],
+    "source_primary": "SEC_EDGAR",
+    "current_shares_filed": "2025-11-01",
+    "current_shares_note": "nur nachrichtlich — nicht Bestandteil des Bewertungsdatenstands"
+   },
+   "blocked_models": [
+    {
+     "model": "rim",
+     "reason": "Datenbasis TTM: book_value liegt nicht als TTM-Groesse vor. Das Modell wird gesperrt, statt TTM- und Jahreswerte zu vermischen. Mit der Datenbasis \"Letztes Geschäftsjahr\" ist es wieder verfuegbar."
+    },
+    {
+     "model": "rim_buyback",
+     "reason": "Datenbasis TTM: book_value liegt nicht als TTM-Groesse vor. Das Modell wird gesperrt, statt TTM- und Jahreswerte zu vermischen. Mit der Datenbasis \"Letztes Geschäftsjahr\" ist es wieder verfuegbar."
+    },
+    {
+     "model": "ddm",
+     "reason": "Datenbasis TTM: dps liegt nicht als TTM-Groesse vor. Das Modell wird gesperrt, statt TTM- und Jahreswerte zu vermischen. Mit der Datenbasis \"Letztes Geschäftsjahr\" ist es wieder verfuegbar."
+    },
+    {
+     "model": "p_tbv_gordon",
+     "reason": "Datenbasis TTM: tangible_book_value liegt nicht als TTM-Groesse vor. Das Modell wird gesperrt, statt TTM- und Jahreswerte zu vermischen. Mit der Datenbasis \"Letztes Geschäftsjahr\" ist es wieder verfuegbar."
+    },
+    {
+     "model": "excess_return",
+     "reason": "Datenbasis TTM: book_value liegt nicht als TTM-Groesse vor. Das Modell wird gesperrt, statt TTM- und Jahreswerte zu vermischen. Mit der Datenbasis \"Letztes Geschäftsjahr\" ist es wieder verfuegbar."
+    }
+   ],
+   "covered_fields": [
+    "revenue",
+    "ebit",
+    "net_income",
+    "cfo",
+    "capex",
+    "da",
+    "total_debt",
+    "long_term_debt",
+    "cash_and_equivalents",
+    "current_assets",
+    "current_liabilities",
+    "debt_short_term",
+    "debt_long_term_current",
+    "debt_long_term_noncurrent",
+    "finance_lease_current",
+    "finance_lease_noncurrent",
+    "shares_diluted",
+    "eps_diluted"
+   ],
+   "missing_fields": [],
+   "warnings": [
+    "Verwässerungs-Vereinfachung: Eine projizierte ZUNAHME der Aktienzahl wirkt im Hauptwert NUR in den Detailjahren 1–10; der Terminalwert wird dann mit der Aktienzahl des Jahres 10 gerechnet und ist ab dem Terminalzeitpunkt konstant. Eine dauerhaft fortgesetzte Verwässerung wird NICHT fortgeschrieben — bei anhaltend verwässernden Geschäftsmodellen ist der Wert je Aktie dadurch tendenziell zu hoch. Bei Aktienrückgang oder konstanter Aktienzahl rechnet der konservative Hauptwert durchgehend mit der HEUTIGEN Aktienzahl; die Projektion wirkt dort nur in der Buyback-Diagnose."
+   ]
+  },
+  "engineView": {
+   "ok": true,
+   "basis": "ttm",
+   "mismatch": false,
+   "reason": null
+  },
+  "basisLabels": {
+   "fy": "Letztes Geschäftsjahr (FY)",
+   "ttm": "TTM (letzte vier Quartale)"
+  },
+  "models": {
+   "dcf": {
+    "reason": null,
+    "base": 24.773216499772506,
+    "warnings": [
+     "Bewertungskern dcf-core/1.1 — identisch für Haupt-DCF, Reverse DCF und Sensitivitätsmatrix. Definition: FCFF = EBIT × (1 − t) + D&A − CapEx − ΔWC(operativ), mit WACC diskontiert, Gordon-Terminalwert, abzüglich Nettoschulden (Stichtag) je Aktie",
+     "Wertbrücke (Base): operativer Unternehmenswert 2877M (28.77/Aktie) − Nettoschulden 400M [Schulden 500M − anrechenbare Liquidität 100M, Quelle: net_debt[0]] = Eigenkapitalwert 2477M (24.77/Aktie) bei 100.0M Aktien",
+     "Operatives Working Capital: historischer Median -20.00% des Umsatzes über 3 lückenlose Jahre — gemessen aus Bilanzdaten. Definition: (Umlaufvermögen − Zahlungsmittel) − (kurzfristige Verbindlichkeiten − kurzfristige Finanzschulden). ΔWC Jahr 1 = 0.0M, Terminaljahr = -8.3M (mit tg fortgeschrieben) · negative Quote: Wachstum setzt Working Capital frei",
+     "Kurzfristige Finanzschulden im Working Capital: total_debt (DebtAndCapitalLeaseObligations) + long_term_debt (LongTermDebtNoncurrent) + debt_short_term (ShortTermBorrowings) + debt_long_term_current (LongTermDebtCurrent) + debt_long_term_noncurrent (LongTermDebtNoncurrent) + finance_lease_current (FinanceLeaseLiabilityCurrent) + finance_lease_noncurrent (FinanceLeaseLiabilityNoncurrent) · periodengetreu zugeordnet",
+     "⚠ Working-Capital-Vereinfachung: Der Anfangsbestand wird bereits mit der Prognosequote angesetzt (OWC₀ = Quote × Umsatz₀). Eine Anpassung vom tatsächlichen Ist-Bestand auf die Zielquote wird NICHT modelliert; ein daraus resultierender einmaliger Mittelzu- oder -abfluss fehlt im Cashflow.",
+     "Aktienbasis Wertbrücke: shares_diluted[0] = 100.0M (Ø verwässerte Aktien der Periode) — Ersatzbasis für die aktuelle ausstehende Aktienzahl zum Stichtag; kann bei unterjährigen Buybacks/Emissionen abweichen.",
+     "SBC vs. Verwässerung getrennt: SBC-Aufwand ist im EBIT (und damit im FCFF) bereits enthalten und wird nicht erneut abgezogen; die Verwässerung wirkt ausschließlich über die Aktienprojektion im Nenner. Kein zusätzlicher pauschaler SBC-Abschlag — die SBC-adjustierte Owner-FCF-Rechnung ist reine Diagnose.",
+     "Shares-Projektion: 100.0M (Jahr 0) → 100.0M (Jahr 10) bei +0.00%/y · neutral (≈konstante Aktienanzahl) — NICHT im Hauptwert: der konservative Wert rechnet durchgehend mit der heutigen Aktienzahl"
+    ],
+    "_equityValueUnavailable": false,
+    "_equityValueUnavailableReason": null,
+    "_netDebtM": 400,
+    "_netDebtPerShare": 4,
+    "_netDebtAvailable": true,
+    "_netDebtSource": "net_debt[0]",
+    "_netDebtMissingFields": [],
+    "_equityValueAbsBase": 2477.3216499772507,
+    "_equityValuePerShareBase": 24.773216499772506,
+    "_sharesUsedM": 100,
+    "_sharesBasis": "shares_diluted[0]",
+    "_sharesBasisIsSubstitute": true,
+    "_sharesBasisNote": "Ø verwässerte Aktien der Periode — Ersatzbasis für die aktuelle ausstehende Aktienzahl zum Stichtag",
+    "_discountRateBasis": "wacc",
+    "_netDebtBridgeApplied": true,
+    "_owcOpeningStockBasis": "forecast_ratio_times_revenue0",
+    "_coreMarginBasis": "scenario",
+    "_coreSharesGrowthPa": 0,
+    "_terminalShareCountBasis": "shares_year_0_constant",
+    "_sharesChangeAppliedInMainValue": false,
+    "_sharesChangeTreatment": "Aktienrückgang/konstante Aktienzahl: der konservative Hauptwert rechnet durchgehend mit der heutigen Aktienzahl; die Projektion wirkt nur in der Buyback-Diagnose",
+    "_sharesGrowthPaProjected": 0,
+    "_terminalSharesGrowthPa": 0
+   },
+   "rim": {
+    "reason": "Datenbasis TTM: book_value liegt nicht als TTM-Groesse vor. Das Modell wird gesperrt, statt TTM- und Jahreswerte zu vermischen. Mit der Datenbasis \"Letztes Geschäftsjahr\" ist es wieder verfuegbar.",
+    "_blockedByDataBasis": true
+   }
+  },
+  "reverseDcf": {
+   "status": "inputs_missing",
+   "reason": "Fehlende Eingaben: market.price > 0",
+   "impliedGrowth": null
+  },
+  "market": {
+   "basis": "ttm",
+   "basisLabel": "TTM (letzte vier Quartale)",
+   "basisPeriod": "2025-09-30",
+   "basisBlocked": false,
+   "basisReason": null,
+   "rows": []
+  },
+  "panels": {
+   "valuation": "🗓️ DATENBASIS DER BEWERTUNG\nTTM (LETZTE VIER QUARTALE)\nAlle Bewertungsmodelle rechnen auf dieser Periodenart. Ein Wechsel mischt keine Perioden: auf TTM-Basis bleiben Felder ohne TTM-Deckung leer, die betroffenen Modelle werden gesperrt. Die Jahresreihen bleiben für die Qualitätsdiagnostik unverändert erhalten.\nZEITRAUM (TTM)\n2024-10-01 – 2025-09-30\n365 Tage · 3 überschneidungsfreie Fenster\nVERWENDETE QUARTALE\nFY2024-Q4 · FY2025-Q1 · FY2025-Q2 · FY2025-Q3\nVERÖFFENTLICHUNGSSTAND\n2025-11-01\nFormulare: 10-K, 10-K − 10-Q, 10-Q, 10-Q − 10-Q · einschließlich der verwendeten Aktienangaben\nDATENSTICHTAG\n2026-09-24\nQuelle: SEC_EDGAR\nAKTIENBASIS (GEWICHTETER TTM-DURCHSCHNITT)\n100,0\nGewichteter Mittelwert der vier Quartalsdurchschnitte — keine Summe.\nAKTUELLE AKTIENZAHL (STICHTAG)\n100,0\nStand 2025-09-30 — getrennt vom Durchschnitt geführt · veröffentlicht 2025-11-01 (nur nachrichtlich, nicht Teil des Bewertungsdatenstands)\nEPS (TTM)\n2,06\nTTM-Ergebnis / gewichtete TTM-Aktienzahl — nicht die Summe der Quartals-EPS.\nABSCHREIBUNGEN (D&AMP;A) / UMSATZ\n5,00 %\ngemessener Median 5.00% des Umsatzes über 3 Periode(n) (TTM) — periodengleich zugeordnet\n🔒 Auf dieser Datenbasis gesperrte Modelle:\nrim: Datenbasis TTM: book_value liegt nicht als TTM-Groesse vor. Das Modell wird gesperrt, statt TTM- und Jahreswerte zu vermischen. Mit der Datenbasis \"Letztes Geschäftsjahr\" ist es wieder verfuegbar.\nrim_buyback: Datenbasis TTM: book_value liegt nicht als TTM-Groesse vor. Das Modell wird gesperrt, statt TTM- und Jahreswerte zu vermischen. Mit der Datenbasis \"Letztes Geschäftsjahr\" ist es wieder verfuegbar.\nddm: Datenbasis TTM: dps liegt nicht als TTM-Groesse vor. Das Modell wird gesperrt, statt TTM- und Jahreswerte zu vermischen. Mit der Datenbasis \"Letztes Geschäftsjahr\" ist es wieder verfuegbar.\np_tbv_gordon: Datenbasis TTM: tangible_book_value liegt nicht als TTM-Groesse vor. Das Modell wird gesperrt, statt TTM- und Jahreswerte zu vermischen. Mit der Datenbasis \"Letztes Geschäftsjahr\" ist es wieder verfuegbar.\nexcess_return: Datenbasis TTM: book_value liegt nicht als TTM-Groesse vor. Das Modell wird gesperrt, statt TTM- und Jahreswerte zu vermischen. Mit der Datenbasis \"Letztes Geschäftsjahr\" ist es wieder verfuegbar.\n⚠ Verwässerungs-Vereinfachung: Eine projizierte ZUNAHME der Aktienzahl wirkt im Hauptwert NUR in den Detailjahren 1–10; der Terminalwert wird dann mit der Aktienzahl des Jahres 10 gerechnet und ist ab dem Terminalzeitpunkt konstant. Eine dauerhaft fortgesetzte Verwässerung wird NICHT fortgeschrieben — bei anhaltend verwässernden Geschäftsmodellen ist der Wert je Aktie dadurch tendenziell zu hoch. Bei Aktienrückgang oder konstanter Aktienzahl rechnet der konservative Hauptwert durchgehend mit der HEUTIGEN Aktienzahl; die Projektion wirkt dort nur in der Buyback-Diagnose.\nSEKTOR-PFAD: semiconductor_compounder\nAktive Modelle: dcf, rim\nDeaktiviert: epv_floor: diagnostischer Floor — nicht in Kerngewichtung · ddm: Semiconductor Compounder: DDM nicht primär — DCF/RIM dominiert · p_tbv_gordon: nur Financials · excess_return: nur Financials\nDIVIDEND-DIAGNOSTIK: DPS positive years: 0 · DPS source: reported — imported_v3 · Classification source: sic_auto · Yield: n/a · Materiality: non-material (no_dps) · DDM mode: inactive\nMODELLE — EINZELN MIT SZENARIEN, SICHTBAREN INPUTS UND EIGNUNG\nABWEICHUNGEN ERKLÄRT, NICHT GEGLÄTTET\nDCF\nWACC HEURISTISCH\ncons\n0.40\nbase\n24.77\nopt\n165.66\nSichtbare Inputs (Base): g1 0.00% · WACC 9.00% · g∞ 3.00% · Op-Marge 20.00%\nRolle: nicht gewichtet\nEignung: Barwert freier Firmen-Cashflows — reagiert am stärksten auf WACC und Terminalwachstum.\n⚠ WACC-Komponenten fehlen: beta, cost_of_debt_pretax, tax_rate, debt_weight, equity_weight — Bewertung nur Orientierung, kein echtes WACC-Kalkül\n⚠ WACC heuristic / cost_of_debt missing — MoS-Addon +5pp\n· Bewertungskern dcf-core/1.1 — identisch für Haupt-DCF, Reverse DCF und Sensitivitätsmatrix. Definition: FCFF = EBIT × (1 − t) + D&A − CapEx − ΔWC(operativ), mit WACC diskontiert, Gordon-Terminalwert, abzüglich Nettoschulden (Stichtag) je Aktie\n· Wertbrücke (Base): operativer Unternehmenswert 2877M (28.77/Aktie) − Nettoschulden 400M [Schulden 500M − anrechenbare Liquidität 100M, Quelle: net_debt[0]] = Eigenkapitalwert 2477M (24.77/Aktie) bei 100.0M Aktien\n· Operatives Working Capital: historischer Median -20.00% des Umsatzes über 3 lückenlose Jahre — gemessen aus Bilanzdaten. Definition: (Umlaufvermögen − Zahlungsmittel) − (kurzfristige Verbindlichkeiten − kurzfristige Finanzschulden). ΔWC Jahr 1 = 0.0M, Terminaljahr = -8.3M (mit tg fortgeschrieben) · negative Quote: Wachstum setzt Working Capital frei\n· Kurzfristige Finanzschulden im Working Capital: total_debt (DebtAndCapitalLeaseObligations) + long_term_debt (LongTermDebtNoncurrent) + debt_short_term (ShortTermBorrowings) + debt_long_term_current (LongTermDebtCurrent) + debt_long_term_noncurrent (LongTermDebtNoncurrent) + finance_lease_current (FinanceLeaseLiabilityCurrent) + finance_lease_noncurrent (FinanceLeaseLiabilityNoncurrent) · periodengetreu zugeordnet\n· ⚠ Working-Capital-Vereinfachung: Der Anfangsbestand wird bereits mit der Prognosequote angesetzt (OWC₀ = Quote × Umsatz₀). Eine Anpassung vom tatsächlichen Ist-Bestand auf die Zielquote wird NICHT modelliert; ein daraus resultierender einmaliger Mittelzu- oder -abfluss fehlt im Cashflow.\n· Aktienbasis Wertbrücke: shares_diluted[0] = 100.0M (Ø verwässerte Aktien der Periode) — Ersatzbasis für die aktuelle ausstehende Aktienzahl zum Stichtag; kann bei unterjährigen Buybacks/Emissionen abweichen.\n· SBC vs. Verwässerung getrennt: SBC-Aufwand ist im EBIT (und damit im FCFF) bereits enthalten und wird nicht erneut abgezogen; die Verwässerung wirkt ausschließlich über die Aktienprojektion im Nenner. Kein zusätzlicher pauschaler SBC-Abschlag — die SBC-adjustierte Owner-FCF-Rechnung ist reine Diagnose.\n· Shares-Projektion: 100.0M (Jahr 0) → 100.0M (Jahr 10) bei +0.00%/y · neutral (≈konstante Aktienanzahl) — NICHT im Hauptwert: der konservative Wert rechnet durchgehend mit der heutigen Aktienzahl\nRIM\nN/A\nDatenbasis TTM: book_value liegt nicht als TTM-Groesse vor. Das Modell wird gesperrt, statt TTM- und Jahreswerte zu vermischen. Mit der Datenbasis \"Letztes Geschäftsjahr\" ist es wieder verfuegbar.\nEPV_FLOOR\nDEAKTIVIERT\ndiagnostischer Floor — nicht in Kerngewichtung\nDDM\nDEAKTIVIERT\nSemiconductor Compounder: DDM nicht primär — DCF/RIM dominiert\nP_TBV_GORDON\nDEAKTIVIERT\nnur Financials\nEXCESS_RETURN\nDEAKTIVIERT\nnur Financials\nFIRM-SPEZIFISCHE VOLATILITÄT\nσ Revenue Growth: 26.52pp (2 YoY-Werte) · σ Op-Marge: 1.50pp (3 Jahre)\nWACC / G1 SENSITIVITÄTSMATRIX\nDCF BASE-SZENARIO\nWACC / G1 SENSITIVITÄTSMATRIX — FAIR VALUE (DCF)\n* = Basiswert (identisch mit dem Haupt-DCF, Bewertungskern dcf-core/1.1) · Spalten: Stage-1-Wachstum · Zeilen: WACC · Eigenkapitalwert nach Abzug Nettoschulden 400M (4.00/Aktie, Quelle: net_debt[0]) · Cashflow: FCFF inkl. ΔWC bei -20.00% WC/Umsatz (historischer Median) · variiert werden ausschließlich WACC und Stage-1-Wachstum; Terminalwachstum 3.00%, Betriebsmarge 20.00%, Steuer-, CapEx-, D&A- und WC-Quote, Fade, Aktienprojektion und Nettoschulden bleiben in jeder Zelle unverändert\nWACC \\ g1\t-3.0%\t-1.5%\t+0.0%*\t+1.5%\t+3.0%\n7.0%\t28.7\t33.3\t38.5\t44.5\t51.2\n8.0%\t22.6\t26.2\t30.3\t34.9\t40.1\n9.0%*\t18.5\t21.4\t24.8\t28.5\t32.8\n10.0%\t15.5\t18.0\t20.8\t24.0\t27.5\n11.0%\t13.3\t15.5\t17.9\t20.6\t23.6\nMONTE-CARLO-SIMULATION (EINGEKLAPPT)\nSIMULATION UNTER ANGENOMMENEN VERTEILUNGEN · NUR DIAGNOSTIK\nDIAGNOSE: FAKTOR-OVERLAY\nNUR DIAGNOSTIK\nFAKTOR-OVERLAY · KEIN EINFLUSS AUF FAIR VALUE ODER EINSTIEGSZONE\nMOMENTUM\nN/A\n52w-High/Low fehlt\nRELATIVE VALUE\nN/A\nFair Value nicht berechnet\nRELATIVE QUALITY\nNEGATIV\nPiotroski 4/8 — schwach\nREVERSE DCF / MARKET-IMPLIED GROWTH\nNUR DIAGNOSE\nREVERSE DCF / MARKET-IMPLIED GROWTH · EINGABEN FEHLEN\nFehlende Eingaben: market.price > 0\nAKTUELLER KURS\n–\nAKTIEN DILUTED (MIO.)\n100\nNETTO-SCHULDEN (MIO.)\n400 · Quelle: net_debt[0]\nBETRIEBSMARGE (WIRKSAM)\nSzenariomarge des Haupt-DCF\nWACC VERWENDET\n9.00%\nTERMINAL GROWTH VERWENDET\n3.00%\nGETRENNTE DIAGNOSE AUF REPORTED-FCF-BASIS (CFO − CAPEX)\nFCF₀ (MIO., BERICHTET)\n206\nREPORTED-FCF-BASIS\n– (Kurs fehlt — bitte im Assumptions-Tab eintragen)\nSBC-ADJ. OWNER-FCF-BASIS\n– (Kurs fehlt — bitte im Assumptions-Tab eintragen)\nreverseDcfReported/reverseDcfOwner lösen das Wachstum des REPORTED FCF (CFO − CapEx) und dienen ausschließlich dem SBC-Vergleich beider Größen. Sie sind nicht definitionskonsistent zum Haupt-DCF (kein ΔWC, keine Nettoschuldenbrücke, kein Fade) und dürfen nicht als dessen implizites Wachstum gelesen werden — dafür ist coreReverseDcf zuständig.\nDiagnose · kein Einfluss auf Synthese, Fair Value oder Einstiegszone\nBASE-RATE-LITE: DCF-ANNAHMEN VS. UNTERNEHMENSHISTORIE\nNUR DIAGNOSE\nnicht berechenbar\nGesamtbewertung der DCF-Annahmen vs. Unternehmenshistorie\nUnzureichende Revenue-Zeitreihe (3 gültige Punkte, mind. 4 benötigt).\n• konservativ\n• plausibel\n• ambitioniert\n• sehr ambitioniert\n• nicht berechenbar\n⚠ Base-Rate-Lite nutzt nur die eigene Unternehmenshistorie, keine survivorship-bias-freie Peer-Datenbank.\nDiagnose · kein Einfluss auf Fair Value, Buy Price, Moß oder Verdict\nSBC-DIAGNOSE (STOCK-BASED COMPENSATION)\nOWNER FCF DCF (DIAGNOSE)",
+   "assumptions": "🏷️ SEKTOR-KLASSIFIKATION\nSIC EXAKT\nSteuert Modell-Routing (DCF/RIM/DDM-Gewichtung) und die Sektor-Korridore für Wachstum/CoE/WACC-Heuristiken (nur solange diese Werte nicht anderweitig — manuell oder aus Komponenten — gesetzt sind). Ein exakter SIC-Treffer ist keine inhaltliche Bestätigung, nur ein Tabellen-Match — bei Zweifeln prüfen und übersteuern.\nSEKTOR (SEC SIC, INFORMATIV)\nTechnology\n✎ GESCHÄFTSMODELL-KLASSIFIKATION\nstandard_nonfin\nfinancial\ncyclical\nbuyback_compounder\nasset_light\ndividend_aristocrat\nhigh_growth\nretail\nsemiconductor_compounder\n🗓️ DATENBASIS DER BEWERTUNG\nTTM (LETZTE VIER QUARTALE)\nAlle Bewertungsmodelle rechnen auf dieser Periodenart. Ein Wechsel mischt keine Perioden: auf TTM-Basis bleiben Felder ohne TTM-Deckung leer, die betroffenen Modelle werden gesperrt. Die Jahresreihen bleiben für die Qualitätsdiagnostik unverändert erhalten.\n✎ DATENBASIS DER BEWERTUNG\nLetztes Geschäftsjahr (FY)\nTTM (letzte vier Quartale)\nZEITRAUM (TTM)\n2024-10-01 – 2025-09-30\n365 Tage · 3 überschneidungsfreie Fenster\nVERWENDETE QUARTALE\nFY2024-Q4 · FY2025-Q1 · FY2025-Q2 · FY2025-Q3\nVERÖFFENTLICHUNGSSTAND\n2025-11-01\nFormulare: 10-K, 10-K − 10-Q, 10-Q, 10-Q − 10-Q · einschließlich der verwendeten Aktienangaben\nDATENSTICHTAG\n2026-09-24\nQuelle: SEC_EDGAR\nAKTIENBASIS (GEWICHTETER TTM-DURCHSCHNITT)\n100,0\nGewichteter Mittelwert der vier Quartalsdurchschnitte — keine Summe.\nAKTUELLE AKTIENZAHL (STICHTAG)\n100,0\nStand 2025-09-30 — getrennt vom Durchschnitt geführt · veröffentlicht 2025-11-01 (nur nachrichtlich, nicht Teil des Bewertungsdatenstands)\nEPS (TTM)\n2,06\nTTM-Ergebnis / gewichtete TTM-Aktienzahl — nicht die Summe der Quartals-EPS.\nABSCHREIBUNGEN (D&AMP;A) / UMSATZ\n5,00 %\ngemessener Median 5.00% des Umsatzes über 3 Periode(n) (TTM) — periodengleich zugeordnet\n🔒 Auf dieser Datenbasis gesperrte Modelle:\nrim: Datenbasis TTM: book_value liegt nicht als TTM-Groesse vor. Das Modell wird gesperrt, statt TTM- und Jahreswerte zu vermischen. Mit der Datenbasis \"Letztes Geschäftsjahr\" ist es wieder verfuegbar.\nrim_buyback: Datenbasis TTM: book_value liegt nicht als TTM-Groesse vor. Das Modell wird gesperrt, statt TTM- und Jahreswerte zu vermischen. Mit der Datenbasis \"Letztes Geschäftsjahr\" ist es wieder verfuegbar.\nddm: Datenbasis TTM: dps liegt nicht als TTM-Groesse vor. Das Modell wird gesperrt, statt TTM- und Jahreswerte zu vermischen. Mit der Datenbasis \"Letztes Geschäftsjahr\" ist es wieder verfuegbar.\np_tbv_gordon: Datenbasis TTM: tangible_book_value liegt nicht als TTM-Groesse vor. Das Modell wird gesperrt, statt TTM- und Jahreswerte zu vermischen. Mit der Datenbasis \"Letztes Geschäftsjahr\" ist es wieder verfuegbar.\nexcess_return: Datenbasis TTM: book_value liegt nicht als TTM-Groesse vor. Das Modell wird gesperrt, statt TTM- und Jahreswerte zu vermischen. Mit der Datenbasis \"Letztes Geschäftsjahr\" ist es wieder verfuegbar.\n⚠ Verwässerungs-Vereinfachung: Eine projizierte ZUNAHME der Aktienzahl wirkt im Hauptwert NUR in den Detailjahren 1–10; der Terminalwert wird dann mit der Aktienzahl des Jahres 10 gerechnet und ist ab dem Terminalzeitpunkt konstant. Eine dauerhaft fortgesetzte Verwässerung wird NICHT fortgeschrieben — bei anhaltend verwässernden Geschäftsmodellen ist der Wert je Aktie dadurch tendenziell zu hoch. Bei Aktienrückgang oder konstanter Aktienzahl rechnet der konservative Hauptwert durchgehend mit der HEUTIGEN Aktienzahl; die Projektion wirkt dort nur in der Buyback-Diagnose.\n📊 MARKET DATA & WACC INPUTS\nQuellen und Confidence je Feld. Manuelle Overrides haben Vorrang vor Yahoo/abgeleiteten Werten. Setze Overrides in den Feldern unten (WACC-Komponenten / Kurs) oder im Block Market Overrides.\nFeld\nWert\nConf.\nQuelle\nKurs (USD)\n–\nFEHLT\nYahoo Finance\nMarket Cap\n–\nFEHLT\n–\nBeta\n–\nFEHLT\n–\nRisk-free Rate\n0.04 %\nMEDIUM\nimportiert\nERP\n0.06 %\nMEDIUM\nimportiert (Damodaran / Standard)\nWACC\n9.00 %\nHEURISTISCH\nheuristic\nCost of Equity\n10.00 %\nHEURISTISCH\nheuristic\n⚠ Kurs fehlt — MoS-Berechnung blockiert\n⚠ Market Cap fehlt — Debt-Weight-Berechnung eingeschränkt\n⚠ Beta nicht verfügbar — WACC confidence reduziert. Bitte manuell setzen.\n⚠ Beta unavailable — WACC confidence reduced. Heuristische CoE/WACC-Fallbacks aktiv (falls vorhanden), als heuristisch markiert.\nMarket Overrides persistent: JSON-Export enthält market.manual_overrides / valuation.wacc_components.manual_overrides.\nBEWERTUNGS-ASSUMPTIONS\n✎ editierbare Felder · automatische Neuberechnung beim Verlassen des Feldes (Tab/Klick)\n▲ WERTTREIBEND hohe FV-Sensitivität   MANUAL manuell gesetzt   HEURISTISCH konservativ abgeleitet   DERIVED aus Komponenten   IMPORTED aus JSON   FEHLT nicht setzbar\n▲ KERNWERTTREIBER\n✎ STAGE-1 WACHSTUM (%) ▲ WERTTREIBEND HEURISTISCH\nSENSITIV: ±1% WACHSTUM BEWEGT FAIR VALUE TYPISCH 8–15%\n✎ TERMINAL GROWTH (%) ▲ WERTTREIBEND HEURISTISCH\nTERMINAL VALUE = OFT 60–80% DES DCF-GESAMTWERTS\n✎ WACC DERIVED (%) ▲ WERTTREIBEND HEURISTISCH\nDISKONTSATZ: ±0.5% WACC → ERHEBLICHE FV-BEWEGUNG\n✎ COST OF EQUITY (%) ▲ WERTTREIBEND HEURISTISCH\nPRIMÄRER DISKONTSATZ FÜR RIM / DDM / EQUITY-DCF\n✎ ZIEL-MARGE TARGET_OP_MARGIN (%) ▲ WERTTREIBEND IMPORTEDDERIVED\nNORMALISIERTE EBIT-MARGE FÜR DCF — HAUPTHEBEL AUF FCFF-BASIS\n✎ MIDCYCLE-MARGE (%) ▲ WERTTREIBEND IMPORTED\nNUR CYCLICALS: BASIS FÜR DCF_MIDCYCLE; FEHLT → MODELL BLOCKIERT\n✎ OPERATIVES WORKING CAPITAL / UMSATZ (%) ▲ WERTTREIBEND IMPORTED\nLEER = HISTORISCHER MEDIAN -20.00% AUS 3 LÜCKENLOSEN JAHREN\n✎ ABSCHREIBUNGEN (D&A) / UMSATZ (%) ▲ WERTTREIBEND IMPORTED\nAKTIV: GEMESSENER MEDIAN 5.00% DES UMSATZES ÜBER 3 PERIODE(N) — PERIODENGLEICH ZUGEORDNET — LEERES FELD IST KEINE NULL: OHNE MESSBARE ODER GESETZTE QUOTE BLEIBEN DCF, MATRIX UND SIMULATION GESPERRT.\n◎ ERGÄNZEND\n✎ SICHERHEITSABSCHLAG MANUELL (%)\nGEWÄHLTE GRÖSSE, KEIN MODELLERGEBNIS: WIRKT NUR AUF EINSTIEGSPREIS UND TIEFEN PRÜFPREIS, NIE AUF DEN MODELLWERT. LEER = REGELABSCHLAG AUS DEM REGELWERK.\n✎ AKTUELLER KURS FEHLT\nNUR FÜR MOS-BERECHNUNG UND UPSIDE-ANZEIGE\n✎ FADE ENABLED / AB JAHR\nBEEINFLUSST STAGE-2-ÜBERGANG, NICHT DEN TERMINAL VALUE DIREKT\nNEU BERECHNEN\nBERECHNET\n🔮 HEURISTISCHE ABLEITUNGEN — KONSERVATIV, NICHT AUS JSON\ncost_of_equity_derived = 10% SECTOR_DEFAULT_NO_BETA\nSektor-CoE Fallback 10% (kein Beta/Yahoo verfuegbar) - manuell pruefen\nwacc_derived = 9% SECTOR_DEFAULT_NO_BETA\nSektor-WACC Fallback 9% (kein Beta/Yahoo verfuegbar) - manuell pruefen\ndebt_materiality = undefined% \nnetDebt=400M > 0, aber kein market_cap für Debt-Weight\nwacc_cod_missing = undefined% \n\ngrowth_stage1 = 0% HIST_TREND_SMOOTHED\nMedian aus 1 Trends (0.0%) × 0.75, Cap 15% · ⚠ Sektor-Korridor vorläufig (noch nicht separat kalibriert)\ngrowth_terminal = 3% SECTOR_CORRIDOR\nSektor-Korridor [2.5%–3.5%], Mittelwert 3% · ⚠ Sektor-Korridor vorläufig (noch nicht separat kalibriert)\nHeuristik überschreiben: Wert manuell eingeben → \"Neu berechnen\". Nach manuellem Setzen entfällt der Downgrade.\nDATEN-PROVENANCE — FUNDAMENTALDATEN\n🌐 GLOBALE RISK-FREE RATE — MANUELL GEPFLEGT\nWACC-KOMPONENTEN — WERDEN AUTOMATISCH ZU COE/WACC ABGELEITET\n🎛 MARKET OVERRIDES (PRICE · BETA · MARKET CAP · RF · ERP)",
+   "market": "MARKT-VERGLEICH\nKEIN FAIR VALUE\nTTM (LETZTE VIER QUARTALE) · 2025-09-30\nDiese Werte sind kein Fair Value. Sie zeigen nur, wo das Unternehmen läge, wenn es zu seinen historischen Multiples zurückkehrte. Historische Multiples können strukturell falsch sein (Re-Rating, Sektor-Shift). Kein Wert in dieser Sektion fließt in die Fair-Value-Range oder den Buy Price.\nKeine eigenen Multiples-Mediane im Master-JSON unter market.own_multiples_median eingetragen."
+  }
+ }
+}

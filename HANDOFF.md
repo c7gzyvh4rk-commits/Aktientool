@@ -1,5 +1,801 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Review-Nachbesserung PR #2: ROIC-Liquidität und Nettoschulden im Growth-Modul (V1.0.76)
+
+**Ausgangsstände (nach `git fetch origin`, 2026-09-30).** PR-Head
+`7236c738de148926479c029662554a262ee798c7`, main
+`8b42fea6e3550ccbc4e2b723b96138886786b994` = Merge-Basis. Beide sind unverändert
+gegenüber dem Review
+(https://github.com/c7gzyvh4rk-commits/Aktientool/pull/2#issuecomment-5904559512).
+Gearbeitet wurde in einem eigenen Worktree; es gibt keine `AGENTS.md`.
+
+**Korrekturen (Details, Messwerte und Tabellen: Auditbericht §13.13).**
+* **R-1 ROIC − WACC:** Fehlende periodengleiche Liquidität ist jetzt eine
+  fehlende Eingabe und keine 0 mehr. Vorher führte das im Grenzfall zu
+  −2.18 pp ⇒ `value_destroyer` ⇒ `caution_quality` ⇒ Basis-MoS 25 %; jetzt ist
+  die Kennzahl nicht bewertbar ⇒ `investable_high`, Basis-MoS 15 %. Eine
+  belegte 0 bleibt gültig; Altdaten-, Leasing- und Periodenregeln sind
+  unverändert.
+* **R-2 Growth-Modul (vorbestehend, vom Auftraggeber als Mergeblocker
+  eingestuft):** Die Nettoschulden laufen jetzt über
+  `_resolveNetDebtForDcfBridge`. Nicht belegt ⇒ kein Szenario-Fair-Value, keine
+  IRR, kein `GROWTH_BUY`, Grund sichtbar. Vorher entstand „GROWTH BUY“ mit
+  Nettoschulden 0 sogar bei belegter Brücke von 4,000. Die Synthese bleibt
+  nachweislich unverändert.
+* Die Aussage in AUDIT §13.6 zum Reverse DCF ist berichtigt. **Offen:** Das
+  Reverse-DCF-Diagnosepaar auf Reported-/Owner-FCF-Basis liest weiterhin
+  `net_debt[0]` bzw. 0. Es ist nicht gewichtet und auf main identisch.
+
+**Geprüfter Stand:** Commit `7b22114` (ohne lokale Änderungen), Produktdatei
+SHA-256 `7d60f54be1657fabe1c454161684df27deffe050aacc55e0352d85f00c036de4`,
+Node v22.22.2, Chromium 141.0.7390.37, `TMPDIR=/tmp/cb`.
+
+| Befehl | Ergebnis | Exit |
+|---|---|---|
+| `npm test` | 1700 Rechenprüfungen; SEC-/Kernsuite 301/301 (+8 ROIC, +4 Growth) | 0 |
+| `npm run test:audit-tool` | 38/38 | 0 |
+| `npm run test:browser` | 196/196 | 0 |
+
+Die neuen Fehlerfalltests scheitern auf `7236c73` (ROIC 4 von 8, Growth 3 von 4);
+die Erhaltungstests bestehen vorher und nachher. Kein erneuter
+SEC-Realdatenabgleich: Die Realauszüge MCD/JNJ ergeben für ROIC − WACC
+unverändert „nicht bewertbar“. Das Growth-Modul ist für beide jetzt mit Grund
+gesperrt (Brücke nicht belegt). Die Grenzen aus §13.4–§13.7 gelten weiter.
+Nicht gemergt, Draft unverändert.
+
+---
+
+## Merge-Vorbereitung: Auditbranch D1–D3 (V1.0.75) gegen aktuellen main geprüft
+
+**Ausgangsstände (nach `git fetch origin`, 2026-09-28).** Auditbranch
+`claude/audit-real-data-mcd-jnj` = `6cad68a105d76898e5af54f2521e48a960f7d0f8`
+(= Referenzstand, keine Nachfolgecommits); `origin/main` =
+`8b42fea6e3550ccbc4e2b723b96138886786b994` (V1.0.70, PR 1). Gemeinsamer
+Vorfahre = `8b42fea` ⇒ main ist vollständig im Auditbranch enthalten, der
+Auditbranch liegt 19 Commits voraus. Arbeitsbaum sauber (geprüft in eigenem
+Worktree), keine `AGENTS.md`. Kein PR mit dem Auditbranch als Quelle vorhanden
+(einziger PR, Nr. 1, stammt von einem anderen Branch und ist geschlossen).
+
+**Integration.** Nicht nötig: kein Merge von main, keine Konflikte, keine
+Konfliktauflösungen. Import-, Berechnungs- und Renderpfad gegenüber dem
+auditierten Stand unverändert ⇒ kein erneuter MCD/JNJ-Realdatenabgleich
+erforderlich (Quellenbasis und Datenstichtag 2026-09-24 unverändert gültig).
+Keine Produkt- oder Teständerung in diesem Schritt; nur dieser HANDOFF-Eintrag.
+
+**Geprüfter Stand:** Commit `6cad68a` (Arbeitsbaum ohne lokale Änderungen),
+Produktdatei SHA-256
+`80921c0d5595947bacf1a81a10dea790e9bb5f138ebf754fe00554b522c1824f`,
+Node v22.22.2, Chromium 141.0.7390.37 (`/opt/pw-browsers/chromium`).
+
+| Befehl | Ergebnis | Exit |
+|---|---|---|
+| `npm test` | 1700 Rechenprüfungen (1266 + 434 Fixture-Assertions); SEC-/Kernsuite 289/289 | 0 |
+| `npm run test:audit-tool` | 38/38 | 0 |
+| `npm run test:browser` | 196/196, inkl. Abschnitt 10 (ROIC-Trend: Perioden „na“ und „impossible“ ⇒ n/a, kein Score; gültige Gegenprobe ⇒ +1.9pp · 7/10, Score 7) | 0 |
+
+Browser jeweils mit frischem temporärem Profil (Abnahmeskript,
+`TMPDIR=/tmp/akt.*`, danach gelöscht). **Hinweis Umgebung:** Ein erster
+`test:audit-tool`-Lauf mit sehr langem `TMPDIR` (Scratchpad-Pfad) ergab 31/38,
+Exit 1 — die 7 Replay-Browserfälle meldeten „NICHT AUSGEFUEHRT: Chromium
+startete nicht“ (Profilpfad zu lang für Chromiums Unix-Socket). Kein
+Produktfehler; der Lauf mit kurzem `TMPDIR` ist der gewertete. Bei künftigen
+Läufen `TMPDIR` kurz halten.
+
+**Verbleibende Einschränkungen (unverändert, Auditbericht §13.4–§13.7).**
+Keine automatische TTM-Bewertung für MCD und JNJ (Q4-Aktienzahlen fehlen im
+Original, Präzisions-/Revisionskonflikte Q2/2026, fehlender Schuldenstichtag
+MCD, EBIT-Definition JNJ; Rückfall auf FY korrekt ausgewiesen). Modellsperren
+bleiben erforderlich: MCD-DCF (Nettoschuldenbrücke nicht belegbar), MCD-RIM
+(BVPS ≤ 0), JNJ-DCF/Reverse DCF/EBITDA-Kennzahlen/Interest Coverage (kein
+EBIT, Teilbetrag Schulden), ROIC/ROIC-Trend für beide nicht bewertbar.
+Historische Schuldenwerte ohne Umfangsbeleg bleiben Abdeckungslücke (MCD 34,
+JNJ 18 offen). Der Auditabschluss bedeutet **nicht**, dass alle
+Bewertungsmodelle verfügbar sind.
+
+**Empfehlung.** Merge-vorbereitet für das Paar PR-Head (dieser Commit auf
+`6cad68a`) / main `8b42fea`, sofern main bis zum Merge nicht weiterläuft.
+Nicht gemergt.
+
+---
+
+## D3-Nachbesserung: ungültige Perioden im ROIC-Trend ausgeschlossen (V1.0.75)
+
+**Ausgangsstand.** Auditbranch `claude/audit-real-data-mcd-jnj`, Spitze `367848a`
+(= Remote), Arbeitsbaum sauber, keine `AGENTS.md`.
+
+**Ursache.** `_qceRoicTrend` (D3-6) verglich Periodenangaben nur als Strings;
+achtmal `"n/a"` (oder identische unmögliche Daten) galt als passend. Reproduziert
+über `runQualityEngine()`: ROIC − WACC `insufficient_data`, ROIC-Trend
+`available: true`, `delta_pp 1.875`, Score 7.
+
+**Korrektur.** Im Periodenmodus (eine der vier Reihen führt `periods`) zählt ein
+Jahr nur mit gültigen, gleichen Kalenderdaten aller vier Reihen (vorhandener
+strikter `parseIsoDate`, unverändert). Positionsbezug nur bei vollständig
+periodenfreien Altdaten; Leasingsperre, Formel, Fenster, Mindestbeobachtungen,
+Gewicht und Scoregrenzen unverändert.
+
+**Nachweise.** `tests/d3-findings.test.mjs` +6 (20): am Referenzstand 3
+Fehlerfalltests rot, 3 Erhaltungstests grün; danach alle grün. Browser-Abnahme
+Abschnitt 10 (+9 Prüfungen, `roicTrendMj` in `tests/browser/fixtures.mjs`):
+Import über die Oberfläche und gerenderter Reiter „Qualität“ — am Referenzstand
+192/196 (4 FAIL, Exit 1), danach 196/196.
+
+| Befehl (fertiger Stand, SHA-256 `80921c0d…`) | Ergebnis | Exit |
+|---|---|---|
+| `npm test` | 1700 Rechenprüfungen; 289/289 | 0 |
+| `npm run test:browser` | 196/196 | 0 |
+| `npm run test:audit-tool` | 38/38 | 0 |
+
+Restlücke geschlossen. TTM- und Bewertungsgrenzen aus D3 unverändert (Auditbericht
+§13.4–§13.7, Details §13.12). Nicht gemergt.
+
+---
+
+## Folgechat D3 (abschließend): Realdaten gegen Originalberichte, Chat D abgeschlossen (V1.0.74)
+
+**Ausgangsstand.** Auditbranch `claude/audit-real-data-mcd-jnj`, Spitze
+`04d8c83` (= Remote), Arbeitsbaum sauber, keine `AGENTS.md`. Baseline selbst
+ausgeführt: `npm test` Exit 0 (1700; 269/269), `npm run test:audit-tool` 29/29,
+Selbsttest 52/52, Replay MCD/JNJ je 49/49. Datenstichtag 2026-09-24; Quellen neu
+geladen, SHA-256 unverändert. Ergebnis: Auditbericht **§13**, Belege und
+Tabellen in `AUDIT-D3-RECONCILIATION.md`.
+
+**Was der vorige D3-Lauf (§12) nicht leistete und jetzt nachgeholt ist.**
+* Originalberichte gelesen (10-K FY2016–FY2025, 10-Q bis Q2/2026, ältere
+  zitierte 10-K; `fetch-filings.mjs`, Manifest mit Akte, Einreichung, Periode,
+  Abruf, SHA-256). 137 Auditbelege mit Fundstelle (`tests/real-data/evidence/`),
+  alle im unveränderten iXBRL-Original bestätigt.
+* Ganze Historie statt drei Werten: Erfassung erweitert, `reconcile-sources.mjs`
+  neu gefasst (Company Facts **und** Original; Gesamt-D&A statt „irgendein
+  D&A-Tag“; Schulden: Rechnung und Umfang getrennt). Gegenfall EBITDA 12,850
+  wird abgelehnt (vorher „2/2 stimmen“, Exit 0).
+* TTM unabhängig aus Originalperioden (`control-calcs.mjs`: FY + YTD − Vorjahres-
+  YTD; JNJ 52/53 Wochen: TTM 2025-06-30…2026-06-28) und gegen den
+  Engine-TTM-Datensatz verglichen. JNJ: sieben TTM-Größen exakt; MCD: Umsatz 1 Mio.
+  Rundung, D&A exakt. Blocker eingegrenzt (§13.4): Q4-Aktien fehlen im Original
+  (beide), EBIT-Tag/Definition (JNJ), Präzisions-/Revisionskonflikte Q2/2026 und
+  fehlender Schuldenstichtag (MCD). **Keine automatische TTM-Bewertung** für
+  MCD und JNJ; Rückfall auf FY korrekt ausgewiesen.
+
+**Produktkorrekturen V1.0.74** (je mit Regressionstest in
+`tests/d3-findings.test.mjs`, 14 Tests; am Stand `04d8c83` 9 Fehlerfälle rot,
+5 Erhaltungstests grün):
+* **D3-1** Übersicht nennt den Sperrgrund der Synthese statt „Hard Stop aktiv“
+  bzw. pauschal „kein belastbarer Eigenkapitalwert“ (`_ovMiniWhy`,
+  `ovKeyStatements`).
+* **D3-2** TTM-Grund benennt ein gemeldetes, aber wegen Widerspruchs
+  verworfenes Quartal (`computeTtmFromQuarters`).
+* **D3-4** `shares_basic` bekommt dieselbe Einzelprüfung wie `shares_diluted`
+  (Restlücke F-4; MCD war 713.4 … 746.3, dann 744,600,000 … als „Mio.“).
+* **D3-5** Widersprüchliche Schuldenangaben: „Umfang nicht belegt“ statt
+  „ist ein Teilbetrag“ (MCD 39,973 ist laut Anhang vollständig). Sperre unverändert.
+* **D3-6** QCE-Komponente ROIC-Trend: kein Score, wenn ROIC − WACC nach der
+  Leasingregel nicht bewertbar ist; Paarung nur bei gleichem Periodenende
+  (MCD vorher 7 Punkte aus unbereinigtem ROIC).
+Werkzeug: **D3-3** `checkPanels` prüft die Übersichtsbegründung; **D3-7**
+`reconcile-sources.mjs` (s. o.). Keine Sperre gelockert, keine
+unternehmensspezifischen Werte im Produkt.
+
+**Ausgeführt** (fertiger Stand, Produktdatei SHA-256 `997ad2dc…`):
+
+| Befehl | Ergebnis | Exit |
+|---|---|---|
+| `npm test` / `npm run test` | 1700 Rechenprüfungen; 283/283 Node-Tests | 0 / 0 |
+| `npm run test:audit-tool` | 38/38 (25 checkPanels, 6 reconcile, 7 Browser) | 0 |
+| `npm run test:browser` | 187/187 | 0 |
+| `replay-import.mjs --selftest` | 58/58 | 0 |
+| `repro-findings.mjs` | 0 von 6 bestehen | 0 |
+| `replay-import.mjs MCD` / `JNJ` | 55/55 / 55/55 (FY → TTM → FY) | 0 / 0 |
+| `reconcile-sources.mjs MCD JNJ` | 0 Abweichungen (MCD 307 korrekt/2 berechtigt/34 offen; JNJ 269/6/18) | 0 |
+| `control-calcs.mjs MCD JNJ` | Belege 72/72, 65/65; Kontrollposten 48/48, 41/41; Fallprüfungen 7/7 | 0 |
+
+**Status.** F-1 … F-5 und P-1 im echten Import bestätigt (F-4 inkl. D3-4).
+**Chat D ist abgeschlossen**: kein wesentlicher ungeklärter Fehler; verbleibende
+Grenzen begründet und sichtbar (keine TTM-Bewertung; MCD-DCF ohne
+Eigenkapitalwert; JNJ-DCF bis zur Entscheidung über I-1/EBIT-Definition und
+Finance-Leasing gesperrt). Offene Beobachtungen O-1 … O-4 (§13.8), optionale
+Folgeaufträge: I-1 mit EBIT-Definition, Präzisionsregel (O-2), Umfangsbelege
+aus Anhängen für die Nettoschuldenbrücke.
+
+**Übergabe / Merge.** Nicht gemergt. Aus Auditsicht mergefähig nach Review der
+Produktänderungen V1.0.74 (kleine, testabgesicherte Korrekturen) — die
+Realdatenwerkzeuge brauchen für einen erneuten Lauf Netz (SEC) und Chromium.
+
+---
+
+## Folgechat D3: erneuter Realdatenabgleich MCD/JNJ (Abgleich, keine Korrektur)
+
+> Ersetzt durch den abschließenden D3-Abschnitt oben.
+
+**Stand.** Produkt/Werkzeug `05fefc6` (V1.0.73, nach der D3-Vorbereitung
+unten), Datenstichtag 2026-09-24, Quellen-Hashes unverändert. Kein Kurs
+gesetzt. Ergebnis im Auditbericht §12, Tabelle in
+`AUDIT-D3-RECONCILIATION.md`.
+
+**Neu:** `tests/real-data/reconcile-sources.mjs` — Quellenabgleich der
+Replay-Erfassung gegen die Company Facts ohne Produktfunktionen (README
+Schritt 5). Gegenlauf mit verfälschter Erfassung (Wert, EBITDA-Ableitung,
+Periode, Aktienskalierung): 6 Abweichungen erkannt, Exit 1.
+
+**Ergebnisse.**
+
+| Prüfung | Ergebnis | Exit |
+|---|---|---|
+| `reconcile-sources.mjs MCD JNJ` | MCD 76/76, JNJ 56/56 | 0 |
+| `replay-import.mjs MCD` / `JNJ` | 49/49 bzw. 49/49 (FY → TTM → FY) | 0 / 0 |
+| `replay-import.mjs JNJ --price 150` (nur Diagnose D3-1) | 49/49 | 0 |
+
+F-1, F-2, F-4 im echten Import bestätigt; Qualitätskennzahlen (Interest
+Coverage 7.83, Net Share Issuance −4.5 % / −9.0 %) unabhängig nachgerechnet;
+TTM-Gründe gegen die Rohdaten geprüft; D1-Vorbehalt (TTM-Sicht, Neurendern)
+ausgeräumt.
+
+**Neue Befunde (nicht korrigiert):**
+* **D3-1 (mittel):** Übersicht ohne Kurs — Kurzbegründung „Hard Stop aktiv“
+  und Kernaussage „kein belastbarer Eigenkapitalwert“, obwohl der Grund „Kein
+  Kurs verfügbar“ ist und „Ausschlusskriterien: keine“ angezeigt wird
+  (`_ovMiniWhy`, `ovKeyStatements` ignorieren `synthesis.blockReason`). JNJ
+  und MCD (dort nur „Hard Stop“ falsch).
+* **D3-2 (niedrig):** TTM-Grund MCD Net Income „kein Quartal endet am
+  2024-09-30“, obwohl das Quartal gemeldet und wegen Widerspruchs verworfen
+  ist (gleiche `decimals`-Frage wie EBIT/CFO/CapEx Q2/2026).
+* **D3-3 (niedrig, Werkzeug):** `checkPanels` prüft Übersichts-Begründungen
+  nicht gegen `blockReason`.
+
+**Übergabe.** Chat D kann mit D3 abgeschlossen werden, sobald über D3-1 bis
+D3-3 entschieden ist (Korrekturauftrag oder bewusst offen). Weiter offen: I-1
+bis I-5, B-1 bis B-4, M-1 bis M-3, MCD-`decimals`.
+
+---
+
+## Folgechat D3-Vorbereitung: zwei Replay-Abweichungen geklärt (V1.0.73)
+
+**Ausgangsstand.** Auditbranch `claude/audit-real-data-mcd-jnj`, Spitze `12a30ac`
+(= Referenzstand, keine Nachfolgeänderungen auf dem Remote), Arbeitsbaum
+sauber, keine `AGENTS.md`. SEC-Quellen neu geladen (Stichtag 2026-09-24,
+0 Fakten entfernt): SHA-256 identisch (MCD `0394e814…`, JNJ `7141c0c9…`).
+Reproduziert über den produktiven Import- und Renderweg
+(`replay-import.mjs`: `secFetchAll` → `secConfirmImport`, Reiter per Mausklick):
+MCD 43/46, JNJ 46/49, je Exit 1 — dieselben drei Prüfpunkte je Schritt wie in D2.
+
+**1 · MCD „valuation: Basiswert ddm“ — Anzeige falsch.**
+Modellrolle: Router retail, `activeModels [dcf, rim]`, `diagnosticModels [ddm]`,
+`ddmMode diagnostic`. Die Engine rechnet Diagnosemodelle ausdrücklich „für
+UI-Karte sichtbar, aber nicht gewichtet“ (V1.0.6, `runValuationEngine`); die
+reguläre Ansicht zeigt sie mit Kennzeichen „DDM diagnostisch“. Bei MCD sind DCF
+(Nettoschulden nicht belegt) und RIM (BVPS ≤ 0) gesperrt, die Synthese hat
+keine Intrinsic-Bewertung — gerendert wird `buildValuationFallback`. Diese Karte
+listete im „Modell-Status“ nur `activeModels` und `disabledModels`; das
+berechnete DDM (108.90) fehlte ganz, weder mit Wert noch mit Status. Kein
+bewusstes Ausblenden (keine Regel, kein Kommentar; die Karte führt sogar einen
+DDM-Grund in ihrer Grundtabelle). **Korrektur:** Diagnosemodelle, die nicht
+zugleich aktiv sind, erscheinen dort mit Wert und Kennzeichen „DDM
+diagnostisch“ sowie „Diagnosemodell — nicht gewichtet, kein Fair Value; fließt
+nicht in Range oder Buy Price“, bzw. ohne Ergebnis mit Grund
+(„diagnostisch · nicht berechenbar“). Router, Gewichtung, Synthese, Range und
+Buy Price unverändert; „Fair Value (intrinsisch) möglich: Nein“ bleibt.
+**Werkzeug geschärft (keine Ausnahme):** Neben „Basiswert = Engine-Ergebnis“
+prüft `checkPanels` jetzt, dass ein nicht aktives Diagnosemodell als
+diagnostisch gekennzeichnet bei seinem Wert steht. Fehlend, falscher Wert oder
+als aktives Kernmodell dargestellt ⇒ Fehlschlag.
+
+**2 · JNJ „market: Periode der verwendeten Basis 2025-12-28“ — Anzeige falsch.**
+Datenbasis FY, Ende 2025-12-28 (Ausweis der Datenbasis, Bewertungs- und
+Annahmenansicht). JNJ meldet kein `OperatingIncomeLoss` ⇒ kein EBIT, kein
+EBITDA. `computeRelativeMultiplesFV` nahm die Periode nur aus
+`_v4_meta.ebitda.periods[0]` und fiel sonst auf `_data_basis_view.period_label`
+zurück, das es nur in der TTM-Sicht gibt ⇒ `basisPeriod null`, der
+Markt-Vergleich nannte „Letztes Geschäftsjahr (FY)“ ohne Periode. Die
+Werkzeugerwartung (Periode der verwendeten Basis) entspricht dem Zweck von
+V1.0.67 („Basis und ihre Periode nennen statt unterstellen“). **Korrektur:**
+neue Funktion `_dataBasisPeriodEnd(mj, resolved)` — eine Regel für den Ausweis
+der Datenbasis (`buildDataBasisReport`, TTM: Fensterende, FY: jüngste
+Umsatzperiode) und den Rückfall des Markt-Vergleichs. Eine vorhandene
+EBITDA-Periode behält Vorrang, damit eine abweichende/veraltete EBITDA-Periode
+weiter als Abweichung erkannt wird. Ohne jede Periodenangabe bleibt
+`basisPeriod null` (nichts erfunden). Werkzeugregel unverändert.
+
+**Regressionstests.**
+* `tests/d3-prep-display.test.mjs` (neu, Teil von `npm test`, 8 Tests):
+  JNJ-Fall mit echtem Renderer `renderMarket`; EBITDA-Vorrang bei abweichender
+  Periode; keine erfundene Periode; Sperre bei anderer Basis unverändert;
+  MCD-Fall (Wert + Rolle), nicht berechenbares Diagnosemodell (Grund, keine
+  Zahl), fehlendes Ergebnis, kein Diagnosemodell bzw. aktives DDM nicht doppelt.
+  Gegen die Produktdatei von `12a30ac` (getauscht, danach zurückgesetzt):
+  4 Fehlerfalltests rot, 4 Erhaltungstests grün.
+* `tests/real-data/check-panels.test.mjs` +9 (22 gesamt): zulässiger Zustand
+  (Diagnosemodell mit Wert und Kennzeichnung; aktives DDM ohne Kennzeichnung),
+  Fehlerfälle (fehlt, falscher Wert, als aktiv dargestellt, Kennzeichnung bei
+  anderem Modell; Markt ohne Periode, veraltete Periode, Periode nur in der
+  Engine-Erwartung). Mit dem Werkzeug von `12a30ac`: 5 rot (Rollenprüfung
+  fehlte), die Periodenfälle bestanden schon vorher.
+
+**Ausgeführt** (Produkt-/Werkzeugstand `05fefc6`):
+
+| Befehl | Ergebnis | Exit |
+|---|---|---|
+| `npm test` | 1700 Rechenprüfungen; 269/269 Node-Tests | 0 |
+| `npm run test:audit-tool` | 29/29 (22 checkPanels + 7 Browser) | 0 |
+| `npm run test:browser` | 187/187 | 0 |
+| `node tests/real-data/replay-import.mjs --selftest` | 52/52 | 0 |
+| `node tests/real-data/repro-findings.mjs` | 0 von 6 bestehen | 0 |
+| `replay-import.mjs MCD` (Originaldaten, sauberer Baum) | 49/49 | 0 |
+| `replay-import.mjs JNJ` (Originaldaten, sauberer Baum) | 49/49 | 0 |
+| Gegenlauf: neues Werkzeug, Produktdatei `12a30ac` — MCD | 43/49 (DDM-Wert und -Rolle, je 3 Schritte) | 1 |
+| Gegenlauf: neues Werkzeug, Produktdatei `12a30ac` — JNJ | 46/49 (Marktperiode, je 3 Schritte) | 1 |
+
+Engine-Werte unverändert (MCD DDM 108.90, JNJ DDM 78.07); geändert ist nur die
+Anzeige. Keine Prüfung entfernt oder abgeschwächt, keine Ausnahme für MCD/JNJ.
+
+**Einschränkung.** Die Rollenprüfung sucht „<modell> … diagnostisch … <wert>“ in
+einem begrenzten Textfenster; ein Kennzeichen, das zufällig in diesem Fenster
+eines anderen Blocks steht, würde nicht erkannt. Der TTM-Rückfall ohne
+EBITDA-Periode nennt jetzt das Fensterende statt des Etiketts; mit den
+vorhandenen Daten (MCD/JNJ ohne vollständiges TTM, synthetische TTM-Fälle mit
+EBITDA) tritt er nicht auf.
+
+---
+
+## Folgechat D2-Nachbesserung: drei Restlücken geschlossen (V1.0.72)
+
+**Ausgangsstand.** Auditbranch `claude/audit-real-data-mcd-jnj`, Spitze
+`8fa2492` (= geprüfter Referenzcommit, keine Nachfolgeänderungen auf dem
+Remote), Arbeitsbaum sauber, keine `AGENTS.md`. Baseline selbst ausgeführt:
+`npm test` Exit 0 (1700 Rechenprüfungen, 247/247 Node-Tests),
+`check-panels.test.mjs` 13/13, `repro-findings.mjs` 0 von 6 (Exit 0).
+
+**N-1 · Leasing-ROIC ohne günstigeren Rückfall** (`computeRoicMinusWacc`).
+Reproduziert: retail, sechs Jahre, EBIT 200, Buchwert 500, Schulden 600,
+Liquidität 100, Steuer 25 %, WACC 8 %, Leasing 500. Fünf Leasingjahre: 10 %,
++2 pp (korrekt). Vier oder ein Leasingjahr: „ok“, 15 %, **+7 pp**, kein Hinweis.
+Ursache: gesperrt wurde nur bei fehlendem jüngstem Leasingjahr. Korrektur:
+Erforderlichkeit (Leasing belegt und retail oder > 20 % am jüngsten
+periodengleichen Jahr — bestehende Regel) wird getrennt von der Mindesthistorie
+(5 periodengleiche Jahre einschließlich des jüngsten) geprüft. Erforderlich,
+aber nicht erfüllt ⇒ `insufficient_data` mit Grund („nur für 4 von 6 Jahren
+periodengleich gemeldet (mindestens 5 erforderlich)“); der unbereinigte Wert
+steht nur in `informational`, nicht in `value`/`roicReported`, und erzeugt keinen
+Score. Unwesentliches Leasing außerhalb retail und periodenfreie Altdaten bleiben
+nach der bisherigen Regel.
+
+**N-2 · Net Debt/EBITDA: jede Periodenangabe für sich**
+(`computeNetDebtToEbitda`, neu `_netDebtEbitdaPeriodCheck`, MoS-Zuschlag).
+Reproduziert: `net_debt [900]`, `ebitda [250]` mit a) EBITDA `[null]`,
+b) EBITDA `["n/a"]`, c) Nettoschulden `[null]` ⇒ jeweils „ok“ 3.60. Ursache:
+Verglichen wurde nur, wenn beide Seiten ein Datum hatten. Korrektur nach der
+Regel der EV/EBITDA-Brücke (V1.0.69/70): Führt eine Seite Periodenangaben,
+braucht sie ein gültiges Kalenderdatum (`parseIsoDate`) für den tatsächlich
+verwendeten Betrag; die Nettoschulden-Seite richtet sich nach der vom Resolver
+gewählten Quelle (`net_debt[0]` ⇒ nur `net_debt`; verknüpft ⇒ Periode der
+Verknüpfung; Indexpfad ⇒ Schulden/Liquidität). Nur vollständig metadatenfreie
+Seiten bleiben Altdaten. Resolver, 45-Tage-Toleranz und Multiple-Sperren
+unverändert. Anzeige: Die MoS-Aufschlüsselung zeigt bei gesperrter Kennzahl
+„Leverage Add-on (nicht bewertbar — …) n/a“ statt „–“, damit der Ausfall nicht
+als geringe Verschuldung erscheint (keine neue MoS-Methodik).
+
+**N-3 · ASC-842-Eröffnungswert ausgeschlossen.** Quelle geprüft (Company Facts,
+Stichtag 2026-09-24): Im 10-K FY2019 `0000063908-20-000022` meldet MCD zum
+2018-12-31 `OperatingLeaseLiabilityCurrent` und `…Noncurrent` = **0**, zum
+2019-01-01 `OperatingLeaseLiability` = 12,500; FY2019 läuft 2019-01-01 bis
+2019-12-31. Der Wert ist der Anfangsbestand FY2019 nach Einführung von ASC 842,
+kein Endbestand FY2018 — Gleichwertigkeit widerlegt. Korrektur ohne
+MCD-Sonderfall und ohne Januar-Pauschale: Ein Stichtag, an dem eine
+EBIT-Geschäftsperiode **beginnt** und keine endet, wird im ROIC nicht verknüpft
+(`_openingBalanceExcluded` nennt ihn). In `_extractFyValues` gewinnt bei zwei
+Stichtagen unter einem Geschäftsjahr der Hauptstichtag eines 10-K (spätestes
+Datum des Tags im Bericht) statt der neueren Meldung. JNJ FY2022 (Ende
+2023-01-01 = Periodenende), die JNJ-Historie und Kalenderjahre bleiben. Die
+45-Tage-Toleranz ist unverändert.
+
+**Nachweise.** `tests/real-data-findings.test.mjs` +14 Tests (N-1 6, N-2 5,
+N-3 3). Gegen die Produktdatei von `8fa2492` (Datei getauscht, danach
+zurückgesetzt): alle 10 Fehlerfall-Tests scheitern am **falschen Ergebnis**
+(`actual: 'ok'`, Verhältnis `4`, Paar `'2019-01-01'`); die 4 Erhaltungstests
+(fünf Leasingjahre, fehlende jüngste Periode/Altdaten, gültige/unvereinbare/
+metadatenfreie Perioden, JNJ 2023-01-01) bestehen vorher und nachher. Der
+MoS-Test nutzt Fall a, weil `["n/a"]` am alten Stand zufällig schon über den
+Jahresvergleich gesperrt war. `repro-findings.mjs` prüft die Leasingpaare jetzt
+unabhängig von `_secPeriodYear`: identischer Stichtag und kein
+EBIT-Periodenbeginn (aus den Rohfakten) — am Stand `8fa2492` „1 von 6 bestehen“
+(F-5, Paar 2018-12-31↔2019-01-01), danach 0 von 6.
+Browser-Abnahme Abschnitt 9 (29 Prüfungen, Import über die Oberfläche,
+Rendern von Qualität, Übersicht, Bewertung; frisches Profil, synthetische
+Daten): am Stand `8fa2492` 187 Prüfungen, 18 fehlgeschlagen — genau die
+Fehlerfälle —, danach 187/187.
+
+**Auf dem fertigen Stand ausgeführt:**
+
+| Befehl | Ergebnis | Exit |
+|---|---|---|
+| `npm test` | 1700 Rechenprüfungen; 261/261 Node-Tests | 0 |
+| `npm run test:audit-tool` | 20/20 (13 checkPanels + 7 Browser) | 0 |
+| `npm run test:browser` | 187/187 | 0 |
+| `node tests/real-data/replay-import.mjs --selftest` | 52/52 | 0 |
+| `node tests/real-data/repro-findings.mjs` | 0 von 6 bestehen | 0 |
+| `replay-import.mjs MCD` / `JNJ` (Importkontrolle, Originaldaten) | 43/46 bzw. 46/49 | 1 |
+
+Die Replay-Abweichungen sind dieselben wie vor D2 und gehören nicht zu diesem
+Auftrag: MCD „valuation: Basiswert ddm“ (diagnostisches DDM 108.90 nicht im
+Bewertungspanel) und JNJ „market: Periode der verwendeten Basis 2025-12-28“.
+Keine Prüfung wurde abgeschwächt.
+
+**Einschränkungen.** Die Eröffnungsregel braucht Periodenanfänge des EBIT
+(`_v4_meta.ebit.starts`, vom SEC-Import geliefert); ohne sie gilt die bisherige
+Stichtagsregel. In `_extractFyValues` hilft die Hauptstichtag-Regel nur, wenn
+ein 10-K den Jahresendstichtag für denselben Tag meldet; sonst bleibt die
+bisherige Auswahl (für MCD greift dann der ROIC-Ausschluss). Die Regel ist nur
+im ROIC angewendet; Net Debt/EBITDA vergleicht weiterhin Geschäftsjahr und
+45 Tage.
+
+**Übergabe an D3.** Chat D bleibt offen. Voraussetzungen für den abschließenden
+Abgleich: (1) MCD-DDM im Bewertungspanel, (2) JNJ-Periodenanzeige im
+Markt-Vergleich — jeweils klären, ob Werkzeugregel oder Anzeige anzupassen ist.
+Weiter offen wie in D2 beschrieben: MCD-TTM (belegte `decimals=-5`, Q4-Aktien,
+Schuldenstichtag), I-1 bis I-5.
+
+---
+
+## Folgechat D2: Bestätigte Produktfehler korrigiert (V1.0.71)
+
+**Ausgangsstand.** Auditbranch `claude/audit-real-data-mcd-jnj`, Spitze
+`2f1058d` (D1 inkl. Nachbesserung; Referenzvorfahr `11c32fa` enthalten).
+Arbeitsbaum sauber, keine `AGENTS.md`. D1 am Code bestätigt: TTM-Felder aus
+`resolveValuationView`, Neurendern vor dem Lesen, `checkPanels` exportiert und
+getestet.
+
+**Baseline vor der Änderung** (selbst ausgeführt): `npm test` Exit 0 (1700
+Assertions, 206/206 Node-Tests), `npm run test:audit-tool` Exit 0 (20/20),
+`npm run test:browser` Exit 0 (158/158), `repro-findings.mjs` 5 von 5 BESTEHT.
+SEC-Quellen neu geladen (Stichtag 2026-09-24): SHA-256 identisch mit dem Audit
+(MCD `0394e814…`, JNJ `7141c0c9…`).
+
+**Vorgehen.** Je Befund ein Commit mit Regressionstests in
+`tests/real-data-findings.test.mjs` (neu, Teil von `npm test`). Die Tests
+verlangen das richtige Ergebnis; gegen die Produktdatei von `2f1058d` schlagen
+alle Befundtests fehl (geprüft durch Austausch der Datei, danach
+zurückgesetzt). Für P-1 zusätzlich gegen `89ad1e7` (Stand direkt davor): 5/5
+rot. Wortgetreue Auszüge: `excerpts/mcd-d2-regression.json`,
+`excerpts/jnj-d2-regression.json` (alle Fakten der benötigten Tags) und
+`excerpts/mcd-xbrl-precision.json` (Ausschnitte der Original-XBRL-Instanzen),
+erzeugt mit `tests/real-data/make-excerpts.mjs`.
+
+| Befund | Commit | Status | Kern der Korrektur |
+|---|---|---|---|
+| F-2 | `9100263` | behoben, abgesichert (9 Tests) | `_secPeriodYear`: Ende 1.–7. Januar → Vorjahres-Geschäftsjahr; alle Jahresschlüssel (Extraktion, `_joinPeriodKeyed`, Ankerjahr, `validatePeriodAlignment`, Schuldenaufbau) nutzen sie. `_extractFyValues`: Periodenidentität, `supersededValues`, `fiscalYearConflicts`, Anschlussprüfung der Perioden, `fiscalYearCheck` (fy nur der Hauptperiode je 10-K). |
+| F-1 | `46a45f0` | behoben, abgesichert (9 Tests) | `daScopeEvidence` (Quartalsblock) + `_extractDaWithScopeCheck`: Taxonomie-Umfang DDA ⊇ D&A ⊇ Depreciation, Vergleich nur gleicher Bericht/gleiche Periode; Teilposten-Tag scheidet aus; widersprüchlich oder nur Teilposten → `null` mit Grund; auch Quartals-D&A. Kein Maximum, keine Summe. |
+| F-4 | `214bcbc` | behoben, abgesichert (5 Tests) | `_checkShareHistory` je Element i ≥ 1: NI/EPS desselben Geschäftsjahres; Originalangabe früherer 10-K (`original_values`) vor Umskalierung; ohne periodengleiche Gegenprüfung keine Korrektur, Sprung ≥ Faktor 50 beendet die Reihe; Protokoll in `_v4_meta.shares_diluted.history_check`. Import-Extraktion als reine Funktion `_extractSecFundamentals` (verhaltensgleich aus `secFetchAll`). |
+| F-3 | `f9b2229` | behoben, abgesichert (7 Tests); TTM weiter unvollständig | Toleranz = Σ ½·10^−decimals der beteiligten Angaben; `decimals` aus der Original-XBRL (`parseXbrlInstancePrecision`, nur Kontexte ohne Dimensionen). Unbekannt → exakter Vergleich. Gleiche Regel in der TTM-Gegenprobe (Nettokoeffizient je Angabe). Import lädt Instanzen nur für Berichte mit Quartalswiderspruch der letzten 8 Quartale (`secPrecisionRequests`) über den Proxy. |
+| F-5 | `89ad1e7` | behoben, abgesichert (6 Tests) | `computeRoicMinusWacc`: Endbestände desselben Geschäftsjahres (Definition unverändert), Leasing nur periodengleich (kein Rückgriff, keine 0); Leasing belegt und nach Regel maßgeblich, aber für das jüngste Jahr fehlend → nicht bewertbar mit Grund. Leasing aus Current+Noncurrent je Stichtag. |
+| P-1 | `b699dbe` | bestätigt, behoben (5 Tests) | `computeNetDebtToEbitda` und MoS-Leverage-Zuschlag über `_resolveNetDebtForDcfBridge` + Periodenabgleich Nettoschulden/EBITDA. Sperren der DCF- und Multiple-Brücken unverändert. |
+
+**Wirkung im echten Import (Replay mit Originaldaten).** MCD: D&A 2,199,
+EBITDA 14,592, D&A-Quote 7.90 %, DCF nachrichtlich 242.10/Aktie (vorher 198.18),
+Aktienreihe einheitlich, Net Share Issuance −4.5 % (8/10), ROIC − WACC und Net
+Debt/EBITDA mit benanntem Grund nicht bewertet, Q3/2025 akzeptiert, Umsatz-TTM
+bildbar, TTM insgesamt weiter unvollständig. JNJ: 10 Jahre inkl. FY2022, RIM
+88.36 statt 132.87 (Wachstumsheuristik 2.29 % statt 8 %: der EPS-CAGR lief vorher
+über scheinbar 4 statt tatsächlich 5 Jahre), DDM 78.07 unverändert. Das ist eine
+**Importkontrolle**, kein vollständiger Quellenabgleich (D3).
+
+Weitere Verhaltensänderungen, bewusst:
+* Leasing-Median: fehlendes Leasing zählte bisher als 0; jetzt ohne Wert.
+* MoS-Leverage-Zuschlag: nutzt jetzt auch `total_debt − cash` nach der Regel der
+  Wertbrücke (bisher nur `net_debt[0]`); nicht belastbare Nettoschulden ergeben
+  keinen Zuschlag, der Grund steht in `_mosLeverageUnavailable`.
+* Net Debt/EBITDA ohne Liquiditätswert: nicht mehr `total_debt − 0`.
+* Lückenlosigkeit der Jahresreihe verlangt aneinander anschließende Perioden
+  (Wechsel des Geschäftsjahresendes beendet die Reihe).
+
+**JNJ — fachliche Abgrenzung (§8).** Keine Normalisierung, keine geschätzte
+Bereinigung des Sonderertrags 7,209. `InterestExpenseNonoperating` wurde
+**nicht** ergänzt (I-1 bleibt eigene Entscheidung): Die Tag-Ergänzung ergäbe EBIT
+32,496 inkl. nicht-operativem Ertrag; die Wertbrücke bliebe ohnehin gesperrt,
+weil der Finance-Leasing-Umfang unbelegt ist. „Not significant“ ist ohne Regel
+und Betrag keine belegte Null; fehlende Tags sind kein Nullnachweis.
+
+**Werkzeug.** `repro-findings.mjs` prüft jetzt den produktiven Importweg und
+erwartet `BEHOBEN` (Exit 1, sobald ein Befund wieder besteht; 2 = nicht
+ausführbar). `fetch-sources.mjs` lädt die benötigten XBRL-Instanzen
+(`cache/archives/…`), `replay-import.mjs` bedient sie. README aktualisiert.
+
+**Auf dem fertigen Stand ausgeführt** (vor dem Doku-Commit, Produktstand
+`b699dbe`):
+
+| Befehl | Ergebnis | Exit |
+|---|---|---|
+| `npm test` | 1700 Rechen-Assertions; 247/247 Node-Tests (davon 41 neu) | 0 |
+| `npm run test:audit-tool` | 20/20 | 0 |
+| `npm run test:browser` | 158/158 | 0 |
+| `node tests/real-data/replay-import.mjs --selftest` | Abgleich 52/52 | 0 |
+| `node tests/real-data/repro-findings.mjs` | 0 von 6 bestehen (F-1…F-5, P-1) | 0 |
+| `node tests/real-data/replay-import.mjs MCD` | Abgleich 43/46 | 1 |
+| `node tests/real-data/replay-import.mjs JNJ` | Abgleich 46/49 | 1 |
+
+Die Replay-Abweichungen sind **vor D2 identisch** (Gegenlauf mit der
+Produktdatei von `2f1058d`: MCD 43/46, JNJ 46/49, gleiche Prüfpunkte):
+MCD „valuation: Basiswert ddm“ (diagnostisches DDM 108.90 wird im
+Bewertungspanel nicht gezeigt) und JNJ „market: Periode der verwendeten Basis
+2025-12-28“. Nicht in D2 behandelt.
+
+**Übergabe an D3 (erneuter Realdatenabgleich).** Chat D ist nicht
+abgeschlossen.
+1. Vollständiger Quellenabgleich MCD/JNJ mit dem reparierten Werkzeug
+   (`fetch-sources.mjs` lädt jetzt auch die XBRL-Instanzen).
+2. Die beiden Replay-Abweichungen klären (Werkzeugregel oder Anzeige).
+3. MCD-TTM: EBIT/CFO/CapEx Q2/2026 bleiben nach belegter Präzision
+   (`decimals="-5"`) Widersprüche; Q4-Aktien und Schuldenstichtag fehlen (B-3,
+   B-4, I-4).
+4. MCD FY2018: Leasing-Eröffnungswert 2019-01-01 (ASC 842) wird FY2018
+   zugeordnet (45-Tage-Stichtagsregel) — fachlich bestätigen.
+5. Offen und bewusst nicht angefasst: I-1 (mit P-1 jetzt gesperrt), I-2 bis
+   I-5, `shares_basic`-Historie (ohne Verbraucher, nicht einzeln geprüft).
+
+**Branch.** Gearbeitet und gepusht auf dem bestehenden Auditbranch
+`claude/audit-real-data-mcd-jnj`, wie im Auftrag verlangt. Kein Merge, kein
+Deployment, keine Branch-Löschung.
+
+---
+
+## Folgechat D1: Auditwerkzeug repariert (Vorbereitung für D2/D3)
+
+**Ausgangsstand.** Auditbranch `claude/audit-real-data-mcd-jnj` an der Spitze
+`11c32fa` (= bekannter Referenzvorfahr, keine Nachfolgeänderungen auf dem
+Remote). Der Arbeitsbaum war sauber. Keine `AGENTS.md`. Die Produktdatei ist
+**unverändert**. Geändert wurden nur das Werkzeug, seine Tests und die Dokumentation.
+
+**Baseline vor der Änderung** (selbst ausgeführt): `npm test` Exit 0 (1700
+Rechen-Assertions, davon 434 Fixture-Assertions; 206/206 Node-Tests),
+`npm run test:browser` Exit 0 (158/158).
+
+**Befund 1: falsche TTM-Felder.** `replay-import.mjs` las für FY und TTM aus
+`state.masterJson.fundamentals`. Die Engine rechnet bei TTM aber auf einer
+eigenen Sicht (`buildValuationBasisView`). Reproduziert mit dem synthetischen
+Filer (`--selftest --price 25`): `basis.selected = ttm`, Periode bis
+2025-09-30, aber `ttmView.fields.revenue` = 1000 und `ebitda` = 250, jeweils
+mit FY-Perioden 2024-12-31.
+**Korrektur:** Die Felder werden aus `resolveValuationView(state.masterJson,
+state.valuation)` gelesen. Das ist dieselbe Paarung `resolveDataBasis` +
+`buildValuationBasisView` wie in `runValuationEngine` und `renderMarket`. Das
+Werkzeug rechnet nichts selbst.
+Je Feld werden erfasst:
+* Wert und Einheit (Berichtseinheit, Quelleinheit, Reiheneinheit);
+* Periode; bei TTM die Komponentenperioden, also Quartale mit Beginn und Ende,
+  der Bilanzstichtag, die Aktienquartale oder die Bestandteile von
+  EBITDA/FCF/Nettoschulden;
+* Herkunft, Tag, `filed`, Ableitung und Größenart;
+* fehlende Metadaten ausdrücklich in `metadataMissing`.
+
+Für TTM-Werte werden keine Jahres-Metadaten übernommen. Einen von der Engine
+nur geerbten Jahres-Tag weist das Werkzeug getrennt aus
+(`engine_inherited_fy_tag`). Felder außerhalb der TTM-Sicht erscheinen ohne
+Metadaten.
+Die Aktienbegriffe stehen getrennt in `shareConcepts`: gewichteter Durchschnitt
+gegenüber der aktuellen Aktienzahl am Stichtag.
+Ist TTM nicht verfügbar, wird TTM trotzdem über die Oberfläche angefordert. Der
+Bericht zeigt dann den tatsächlichen Rückfall: `requested ttm`, `selected fy`,
+`ttm_used false`, `fallback.reasons`.
+
+**Befund 2: veraltete Paneltexte.** Nach dem Basiswechsel rendert das Produkt
+nur die aktive Ansicht neu (`_handleDataBasisChange`). Das Skript las die
+übrigen Panels trotzdem. Reproduziert: In der TTM-Erfassung zeigten
+Bewertungs- und Marktansicht weiterhin „Letztes Geschäftsjahr (FY) ·
+2024-12-31“.
+**Korrektur:**
+* Die Basis wird über die Auswahl im Reiter „Annahmen“ umgestellt.
+  Abgeschlossen ist der Wechsel erst, wenn `data_basis` und
+  `dataBasis.requested` den neuen Wert tragen und ein neues
+  `state.valuation`-Objekt vorliegt.
+* Jede Ansicht wird per echtem Mausklick auf ihren Reiter geöffnet
+  (`switchTab` → `render…`). Gelesen wird erst, wenn eine vor dem Klick gesetzte
+  unsichtbare Markierung durch das Neurendern verschwunden ist. Das Skript
+  wartet dabei nicht auf feste Zeiten.
+* Die Texte werden je Schritt gespeichert (`fy`, `ttmView`, `fyReturn`) und
+  mit dem Engine-Ausweis abgeglichen (`checks`). Verglichen werden die Basis
+  und der Zeitraum in den Ansichten „Bewertung“ und „Annahmen“, die
+  DCF/RIM-Basiswerte, sichtbare Modellsperren sowie Basisangabe, Periode und
+  Reverse-DCF-Wert im Markt-Vergleich.
+* Eine Abweichung ergibt Exit 1.
+* Die SHA-256 der Fundamentaldaten wird nach dem Import und am Ende verglichen.
+
+**Neu:**
+* `tests/real-data/replay-import.browser.test.mjs` mit 7 Tests;
+* npm-Skript `test:audit-tool`.
+
+Die Tests starten das echte Skript als Prozess gegen zwei synthetische Filer in
+einem Temp-Verzeichnis. Das Browserprofil ist frisch, es gibt keine externen
+Abrufe.
+* SYNTR hat Quartalsdaten: FY 1000/250 bis 2024-12-31, TTM 1375/343,75 bis
+  2025-09-30.
+* SYNTN hat nur 10-K-Angaben und damit kein TTM.
+
+Die Tests gehören nicht zu `npm test`, weil sie Chromium brauchen.
+
+**Nachweis, dass die Tests die Fehler erkennen.** Die Tests liefen mit
+`REPLAY_SCRIPT=…` gegen:
+* die Fassung von `11c32fa`: Exit 1, 6 von 7 Tests rot. Die Meldungen lauten
+  u. a. „Umsatz TTM: 1000“ und „TTM-Marktansicht nennt TTM: Markt-Vergleich …
+  Letztes Geschäftsjahr (FY) · 2024-12-31“;
+* eine Mutante mit Feldern wieder aus `state.masterJson`: Exit 1, nur der
+  TTM-Erfassungstest rot („Umsatz TTM: 1000“);
+* eine Mutante, die ohne Neurendern liest: Exit 1, der Ansichtentest rot. Auch
+  der Selbstabgleich des Skripts meldet `ABWEICHUNG` für die TTM-Bewertungs-
+  und Marktansicht.
+
+Die Kopien lagen nur vorübergehend im Arbeitsbaum und sind nicht committet.
+
+**Nach der Reparatur ausgeführt:**
+
+| Befehl | Ergebnis | Exit |
+|---|---|---|
+| `npm run test:audit-tool` | 7/7 | 0 |
+| `npm test` | 1700 Assertions (434 Fixture), 206/206 Node-Tests | 0 |
+| `npm run test:browser` | 158/158 | 0 |
+| `node tests/real-data/replay-import.mjs --selftest` | Abgleich 40/40 | 0 |
+| `node tests/real-data/repro-findings.mjs` | 5 von 5 Befunden bestehen (unverändert) | 0 |
+
+**Einschränkungen:**
+* **Kein erneuter Realdatenabgleich.** Die SEC-Rohdaten (`cache/`) sind nicht
+  versioniert und in dieser Sitzung nicht vorhanden. Nach Aktenlage hat das
+  Tool für MCD und JNJ kein TTM gebildet. Dann lief der fehlerhafte TTM-Zweig
+  nicht, und die Ansichten stammten aus dem Rendern nach dem Import. Die
+  Befunde F-1 bis F-5 sind davon also voraussichtlich nicht betroffen.
+  Bestätigt ist das erst mit D3.
+* Die Einheit einer TTM-Größe ist die Berichtseinheit der TTM-Datenbasis. Eine
+  Quelleinheit je Feld hat die TTM-Sicht nicht. Das Werkzeug weist das als
+  fehlend aus und ergänzt nichts.
+* Abgeleitete TTM-Größen (EBITDA, FCF, Nettoschulden) tragen selbst weder Tag
+  noch `filed`. Beides steht nur bei ihren Bestandteilen
+  (`components.derivedFrom`).
+* FY-`eps_diluted` hat im synthetischen Fall keine Periodenmetadaten. Das wird
+  als fehlend ausgewiesen.
+* Der Abgleich prüft Textinhalte, keine visuelle Darstellung. Die Übersicht wird
+  erfasst, aber nicht auf die Basis geprüft. Sie nennt keine Datenbasis.
+* Die Einordnung der Übersicht wechselt im synthetischen Fall zwischen FY und
+  TTM („Prüfzone“ bzw. „gesperrt“). Das wurde nicht untersucht, weil es nicht
+  zum Auftrag gehört.
+
+**Übergabe an D2 (Produktkorrekturen):** siehe den folgenden Abschnitt
+„Nachbesserung am Anzeigenabgleich“. Er ersetzt die frühere Forderung nach
+vollständigen Testläufen vor und nach jeder Korrektur.
+
+### D1-Nachbesserung: zwei Prüflücken in `checkPanels()`
+
+**Ausgangsstand:** Branch-Spitze `48b22ef` (= Referenzvorfahr, keine
+Nachfolgeänderungen). Keine `AGENTS.md`. Die Produktdatei ist unverändert.
+
+**Lücke 1: fehlendes Marktpanel.** Die Marktprüfungen liefen nur, wenn der Text
+„Markt-Vergleich“ enthielt. Ein leeres, fehlendes oder fremdes Panel wurde
+übersprungen und bestand.
+**Korrektur:**
+* Die Erfassung nimmt jetzt die Erwartung aus derselben Produktfunktion wie
+  `renderMarket` auf: `computeRelativeMultiplesFV` → `c.market`. Sie enthält
+  Basis, Periode, die Sperre der Basis mit Grund und die darstellbaren Zeilen.
+* `checkPanels` verlangt:
+  * dass die Ansicht erfasst und nicht leer ist;
+  * dass die Engine-Erwartung vorliegt;
+  * dass die Ansicht „Markt-Vergleich … kein Fair Value“ gerendert ist. Der
+    Initialzustand „Noch kein Markt-Vergleich“ und jeder andere Inhalt schlagen
+    fehl.
+* Produktive Leerzustände bestehen nur mit ihrem konkreten Grund:
+  * Bei gesperrter Datenbasis muss der Sperrgrund der Engine sichtbar sein.
+  * „Keine eigenen Multiples-Mediane“ ist nur zulässig, wenn die Engine keine
+    darstellbare Zeile hat. Sonst muss jede Zeile mit ihrem Engine-Wert oder
+    mit „nicht ableitbar“ erscheinen.
+* Jeder Fehlschlag gilt als Abweichung und führt zu Exit 1.
+
+**Lücke 2: Sperrgrund der Modelle.** Bisher genügte „rim:“ irgendwo im
+Bewertungspanel.
+**Korrektur:** Verlangt wird „<modell>: <Grund der aktuellen Engine-Sperre>“.
+Leerraum und Großschreibung werden dabei nicht unterschieden. Davor darf kein
+weiteres Zeichen des Modellnamens stehen, sodass „rim_buyback: …“ nicht für
+„rim“ zählt. Ein fehlender, fremder oder vertauschter Grund schlägt fehl.
+
+**Neu:**
+* `checkPanels` ist exportiert. `main()` startet nur beim Aufruf als Programm;
+  das Verhalten des Programms ist unverändert.
+* `tests/real-data/check-panels.test.mjs` mit 13 Tests. Sie importieren die
+  echte Prüffunktion und brauchen keinen Browser.
+* `tests/real-data/fixtures/check-panels-captures.json`: echte FY- und
+  TTM-Erfassung aus `replay-import.mjs --selftest`, gekürzt, rund 48 KB.
+* `npm run test:audit-tool` führt jetzt beide Testdateien aus.
+
+**Nachweis.** Die neuen Tests liefen gegen `checkPanels` mit Export, aber noch
+ohne Reparatur: Exit 1, 11 von 13 rot. Unerkannt blieben:
+* leeres Marktpanel;
+* fehlendes Marktpanel;
+* Fehlertext statt Markt-Vergleich;
+* fehlende Engine-Erwartung;
+* unbegründeter Leerzustand;
+* falscher Zeilenwert;
+* fehlender, falscher oder vertauschter Sperrgrund.
+
+Die beiden grünen Tests prüfen Fälle, die schon vorher korrekt behandelt
+wurden: Leerraum und Großschreibung sowie Grund nur unter `rim_buyback`. Nach
+der Reparatur: 13/13, Exit 0.
+
+**Auf dem fertigen Stand je einmal ausgeführt:**
+
+| Befehl | Ergebnis | Exit |
+|---|---|---|
+| `npm run test:audit-tool` | 20/20 (13 `checkPanels` + 7 Browser) | 0 |
+| `npm run test:browser` | 158/158 | 0 |
+| `npm test` | 1700 Assertions (434 Fixture), 206/206 Node-Tests | 0 |
+
+Offen ist kein Test. Ein erneuter Realdatenabgleich findet weiterhin erst in D3
+statt.
+
+**Übergabe an D2 (Produktkorrekturen).** Die Reihenfolge bleibt wie im Bericht
+§7: F-2, F-1, F-4, F-3, F-5, danach I-1 mit P-1. Nichts davon ist vorgezogen.
+
+Testvorgehen (**berichtigt**):
+* **Je Korrektur** laufen gezielte Regressionen:
+  * der betroffene Befund in `node tests/real-data/repro-findings.mjs`, vorher
+    `BESTEHT` und nachher `BEHOBEN`;
+  * ein neuer Test, der den Fehler vor der Korrektur erkennt;
+  * die direkt betroffenen Tests, z. B. `npm run test:sec` oder `test:core`.
+* **Zum Abschluss** von D2 laufen einmal die vollständigen Suiten: `npm test`,
+  `npm run test:browser` und `npm run test:audit-tool`.
+
+Nach F-3 kann bei MCD erstmals TTM entstehen. Dann greift der reparierte
+TTM-Zweig des Werkzeugs. D3 wiederholt den Realdatenlauf. Chat D bleibt bis D3
+offen.
+
+---
+
+## Folgechat D: Realdaten-Audit MCD / JNJ (Stichtag 2026-09-24)
+
+**Ausgangsstand.** `main` = `8b42fea` (V1.0.70). Auditbranch
+`claude/audit-real-data-mcd-jnj`. Die Produktdatei ist **unverändert**. Keine
+`AGENTS.md`. Der erste Lauf war am Netz gescheitert; nach Freigabe von
+`data.sec.gov` und `www.sec.gov` wurde das Audit vollständig durchgeführt.
+
+**Geprüft.** MCD 10-K FY2025 (`0000063908-26-000035`) und JNJ 10-K FY2025
+(`0000200406-26-000016`), jeweils über den produktiven Importweg
+(`secFetchAll` → `secConfirmImport`, im Browser mit gespeicherten SEC-Dateien)
+und abgeglichen gegen GuV, Bilanz, Kapitalflussrechnung und Anhang. Details:
+`AUDIT-REAL-DATA-MCD-JNJ.md`.
+
+**Korrekt übernommen:**
+* MCD und JNJ: Umsatz, CFO, CapEx, FCF, Liquidität, EPS, DPS, Ø verwässerte
+  Aktien [0], Eigenkapital bzw. Buchwert;
+* MCD: Operating Income, Finance-Leasing;
+* JNJ: D&A.
+
+**Bestätigte Fehler** (Reproduktion: `node tests/real-data/repro-findings.mjs`,
+5 von 5 bestehen):
+* **F-1:** MCD-D&A aus falschem Tag (457 statt 2,199), dadurch EBITDA −12 %.
+* **F-2:** Der Jahresschlüssel nach Kalenderjahr verliert bei 52/53-Wochen-Jahren
+  ein Geschäftsjahr (JNJ FY2022) und kürzt die Historie.
+* **F-3:** Quartalsabgleich ohne Rundungstoleranz, dadurch kein MCD-TTM.
+* **F-4:** Gemischt skalierte MCD-Aktienreihe, dadurch „Net Share Issuance
+  −100 %“.
+* **F-5:** Lease-bereinigter ROIC paart per Index statt per Periode.
+
+**Berechtigte Sperren:**
+* MCD DCF-Brücke: Die Schulden-Tags widersprechen sich. Die richtige
+  Aufteilung steht nur im Anhang.
+* MCD RIM: negatives Eigenkapital.
+* JNJ: Finance-Leasing ohne Betrag.
+
+Der JNJ-DCF fehlt, weil der Zinsaufwand als `InterestExpenseNonoperating`
+getaggt ist und diesen Tag der Import nicht kennt (I-1). Die Behebung braucht
+eine fachliche Entscheidung, siehe Bericht §4.
+
+**Neu:**
+* `tests/real-data/fetch-sources.mjs`, `replay-import.mjs`, `repro-findings.mjs`;
+* `tests/real-data/excerpts/` (wortgetreue Auszüge, zusammen rund 64 KB);
+* README.
+
+Tests: `npm test` mit 1700 Assertions (434) und 206 Tests, Exit 0.
+`npm run test:browser` 158/158.
+
+**Nächster Schritt.** Korrekturaufträge in der Reihenfolge von Bericht §7:
+F-2, F-1, F-4, F-3, F-5, danach I-1 mit P-1. Bei jedem Auftrag vorher und
+nachher `repro-findings.mjs` ausführen.
+
+---
+
+
 ## Folgechat C: Freigabe nach `main` (V1.0.70)
 
 **Freigegebene Version: V1.0.70** (Entwicklungszaehlung dieses HANDOFF).
