@@ -10081,20 +10081,69 @@ function computeBaseRateLite(mj, qr, vr) {
   var opMgn4 = (ebit[4] != null && rev[4] != null && rev[4] > 0) ? (ebit[4] / rev[4]) * 100 : null;
   var marginTrend = (opMgn0 != null && opMgn1 != null) ? opMgn0 - opMgn1 : null;
 
-  // ROIC (vereinfacht): NOPAT / (BV + TD - Cash)
+  // ROIC (vereinfacht): NOPAT / (Eigenkapital + Finanzschulden − Liquiditaet)
+  // V1.0.77 (O-1): Bewusst eine ANDERE Kennzahl als der bewertete ROIC − WACC
+  // (dort Median ueber 5–10 Jahre, ggf. leasingbereinigt): hier ein
+  // EINZELJAHR, unbereinigt, nur zur Anzeige im historischen Profil — kein
+  // Score, kein Qualitaetsurteil, keine Bewertung. Bis V1.0.76 wurde je
+  // Arrayposition gepaart, fehlende Schulden/Liquiditaet galten als 0, ein
+  // fehlender Steuersatz als 25 %, und eine greifende Leasingsperre wurde
+  // ignoriert. Jetzt gelten die Regeln von ROIC − WACC, soweit sie zu dieser
+  // Definition passen:
+  //   · Bestaende zum Ende DESSELBEN Geschaeftsjahres wie das EBIT
+  //     (_roicStockMatchers: Geschaeftsjahr + ≤ 45 Tage, keine
+  //     Eroeffnungsstichtage; Positionsbezug nur bei periodenfreien Altdaten);
+  //   · Eigenkapital, Finanzschulden UND Liquiditaet muessen belegt sein —
+  //     eine fehlende Angabe ist keine 0 (eine belegte 0 bleibt gueltig);
+  //   · Steuersatz aus wacc_components.tax_rate, kein Pauschalwert;
+  //   · Leasingbereinigung erforderlich, aber nicht erfuellbar (wie ROIC − WACC
+  //     und ROIC-Trend) ⇒ kein unbereinigter Wert.
+  // Der 2-Jahres-Trend verlangt, dass das Vergleichsjahr zwei Geschaeftsjahre
+  // vor dem aktuellen liegt. Sonst: null mit Grund („nicht bewertbar“).
   var taxRate = (val.wacc_components && val.wacc_components.tax_rate != null)
-    ? val.wacc_components.tax_rate : 25;
-  function _roicAt(i) {
-    if (ebit[i] == null || bv[i] == null) return null;
-    var tdI   = td[i]   != null ? td[i]   : 0;
-    var cashI = cash[i] != null ? cash[i] : 0;
-    var ic = bv[i] + tdI - cashI;
-    if (ic <= 0) return null;
-    return (ebit[i] * (1 - taxRate / 100) / ic) * 100;
+    ? val.wacc_components.tax_rate : null;
+  var _rwBrl = (qr && qr.descriptive && qr.descriptive.roicMinusWacc) || null;
+  if (!_rwBrl && taxRate != null && val.wacc_derived != null) {
+    try { _rwBrl = computeRoicMinusWacc(mj); } catch (e) { _rwBrl = null; }
   }
-  var roicCurrent = _roicAt(0);
-  var roicPrior   = _roicAt(2);
-  var roicTrend   = (roicCurrent != null && roicPrior != null) ? roicCurrent - roicPrior : null;
+  var _roicBlock = null;
+  if (taxRate == null) {
+    _roicBlock = 'Steuersatz (wacc_components.tax_rate) fehlt — kein Pauschalwert';
+  } else if (_rwBrl && _rwBrl._leaseRequired === true && _rwBrl.status !== 'ok') {
+    _roicBlock = 'Leasingbereinigung erforderlich, aber nicht erfüllbar (wie ROIC − WACC) — unbereinigter ROIC nicht bewertbar';
+  }
+  var _rm = _roicStockMatchers(f);
+  function _roicAt(i) {
+    var per = (_rm.periodMode && _rm.pE && _rm.pE[i] != null) ? String(_rm.pE[i]) : null;
+    if (_roicBlock) return { value: null, period: per, reason: _roicBlock };
+    if (ebit[i] == null) return { value: null, period: per, reason: 'EBIT fehlt' + (per ? ' (' + per + ')' : '') };
+    var b = _rm.mBv(i), t = _rm.mTd(i), c = _rm.mCash(i);
+    var miss = [];
+    if (!b || b.value == null) miss.push('Eigenkapital');
+    if (!t || t.value == null) miss.push('Finanzschulden');
+    if (!c || c.value == null) miss.push('Liquidität');
+    if (miss.length > 0) {
+      return { value: null, period: per, reason: (per ? 'für ' + per + ' ' : '') + 'ohne '
+        + (_rm.periodMode ? 'periodengleiche ' : '') + 'Angabe: ' + miss.join(', ')
+        + ' — fehlende Werte gelten nicht als 0' };
+    }
+    var ic = b.value + t.value - c.value;
+    if (ic <= 0) return { value: null, period: per, reason: 'investiertes Kapital ≤ 0' + (per ? ' (' + per + ')' : '') };
+    return { value: (ebit[i] * (1 - taxRate / 100) / ic) * 100, period: per, reason: null };
+  }
+  var _rc = _roicAt(0), _rp = _roicAt(2);
+  var roicCurrent = _rc.value;
+  var roicPrior   = _rp.value;
+  var roicTrend   = null, roicTrendReason = null;
+  if (roicCurrent == null) roicTrendReason = _rc.reason;
+  else if (roicPrior == null) roicTrendReason = 'Vergleichsjahr: ' + _rp.reason;
+  else if (_rm.periodMode && (_rc.period == null || _rp.period == null ||
+           _secPeriodYear(_rc.period) - _secPeriodYear(_rp.period) !== 2)) {
+    roicTrendReason = 'Vergleichsjahr ' + (_rp.period || 'unbekannt') + ' liegt nicht zwei Geschäftsjahre vor '
+      + (_rc.period || 'dem aktuellen Jahr');
+  } else {
+    roicTrend = roicCurrent - roicPrior;
+  }
 
   // Reinvestment-Rate (Capex / Revenue)
   var reinvest0 = (capex[0] != null && rev[0] != null && rev[0] > 0) ? (capex[0] / rev[0]) * 100 : null;
@@ -10262,6 +10311,9 @@ function computeBaseRateLite(mj, qr, vr) {
       fcfCagr3y: fcfCagr3y, fcfCagr5y: fcfCagr5y, fcfCagr10y: fcfCagr10y,
       opMgn0: opMgn0, opMgn4: opMgn4, marginTrend: marginTrend,
       roicCurrent: roicCurrent, roicPrior: roicPrior, roicTrend: roicTrend,
+      roicCurrentPeriod: _rc.period, roicCurrentReason: _rc.reason, roicTrendReason: roicTrendReason,
+      roicDefinition: 'vereinfacht: NOPAT / (Eigenkapital + Finanzschulden − Liquidität) eines Geschäftsjahres, '
+        + 'unbereinigt (ohne Leasing) — nicht der bewertete ROIC − WACC (Median, ggf. leasingbereinigt)',
       reinvest0: reinvest0, reinvest2: reinvest2, reinvestmentTrend: reinvestmentTrend
     },
     comparisons: comparisons,
@@ -10370,13 +10422,23 @@ function buildBaseRateLiteDetailBlock(mj, qr, vr) {
       hp.fcfCagr10y != null ? '<div><span style="color:var(--muted)">FCF CAGR 10J:</span> <span style="color:var(--text)">' + _fp(hp.fcfCagr10y) + '</span></div>' : '',
       hp.opMgn0     != null ? '<div><span style="color:var(--muted)">EBIT-Marge akt.:</span> <span style="color:var(--text)">' + hp.opMgn0.toFixed(1) + '%</span></div>' : '',
       hp.marginTrend!= null ? '<div><span style="color:var(--muted)">Margentrend (1J):</span> <span style="color:' + (hp.marginTrend >= 0 ? 'var(--accent2)' : 'var(--warn)') + '">' + _fpp(hp.marginTrend) + '</span></div>' : '',
-      hp.roicCurrent!= null ? '<div><span style="color:var(--muted)">ROIC akt.:</span> <span style="color:var(--text)">' + hp.roicCurrent.toFixed(1) + '%</span></div>' : '',
-      hp.roicTrend  != null ? '<div><span style="color:var(--muted)">ROIC-Trend (2J):</span> <span style="color:' + (hp.roicTrend >= 0 ? 'var(--accent2)' : 'var(--warn)') + '">' + _fpp(hp.roicTrend) + '</span></div>' : '',
+      // V1.0.77 (O-1): vereinfachte Einzeljahres-Kennzahl, als solche benannt;
+      // ohne belastbare Eingaben „nicht bewertbar“ mit Grund statt einer Zahl.
+      hp.roicCurrent!= null
+        ? '<div><span style="color:var(--muted)">ROIC akt. (vereinfacht' + (hp.roicCurrentPeriod ? ', ' + escapeHtml(hp.roicCurrentPeriod) : '') + '):</span> <span style="color:var(--text)">' + hp.roicCurrent.toFixed(1) + '%</span></div>'
+        : '<div><span style="color:var(--muted)">ROIC akt. (vereinfacht):</span> <span style="color:var(--muted)" title="' + escapeHtml(hp.roicCurrentReason || '') + '">nicht bewertbar</span></div>',
+      hp.roicTrend  != null
+        ? '<div><span style="color:var(--muted)">ROIC-Trend (2 GJ, vereinfacht):</span> <span style="color:' + (hp.roicTrend >= 0 ? 'var(--accent2)' : 'var(--warn)') + '">' + _fpp(hp.roicTrend) + '</span></div>'
+        : '<div><span style="color:var(--muted)">ROIC-Trend (2 GJ, vereinfacht):</span> <span style="color:var(--muted)">nicht bewertbar</span></div>',
       hp.reinvest0  != null ? '<div><span style="color:var(--muted)">Reinvest.-Rate akt.:</span> <span style="color:var(--text)">' + hp.reinvest0.toFixed(1) + '%</span></div>' : '',
       hp.reinvestmentTrend != null ? '<div><span style="color:var(--muted)">Reinvest.-Trend:</span> <span style="color:' + (hp.reinvestmentTrend >= 0 ? 'var(--warn)' : 'var(--accent2)') + '">' + _fpp(hp.reinvestmentTrend) + '</span></div>' : ''
     ].filter(Boolean).join('');
+    var _roicNote = 'ROIC ' + (hp.roicDefinition || 'vereinfacht') + '.'
+      + (hp.roicCurrent == null && hp.roicCurrentReason ? ' Nicht bewertbar: ' + hp.roicCurrentReason + '.' : '')
+      + (hp.roicCurrent != null && hp.roicTrend == null && hp.roicTrendReason ? ' Trend nicht bewertbar: ' + hp.roicTrendReason + '.' : '');
     histHtml = '<div style="margin-bottom:10px"><div style="font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:5px">Historisches Profil</div>' +
-      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:4px 10px;font-size:.7rem">' + hRows + '</div></div>';
+      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:4px 10px;font-size:.7rem">' + hRows + '</div>' +
+      '<div style="font-size:.58rem;color:var(--muted);margin-top:4px;line-height:1.5">' + escapeHtml(_roicNote) + '</div></div>';
   }
 
   var compHtml = '';
@@ -11264,7 +11326,15 @@ function computeAltmanZ(mj) {
   if (ta == null) missing.push('total_assets');
   if (ca == null) missing.push('current_assets');
   if (cl == null) missing.push('current_liabilities');
-  if (re == null) missing.push('retained_earnings');
+  if (re == null) {
+    // V1.0.77 (O-4): verworfener kombinierter Wert (RE + APIC) mit Grund benennen.
+    const _reU = f._v4_meta && f._v4_meta.retained_earnings && f._v4_meta.retained_earnings.unavailablePeriods;
+    const _reP0 = f._v4_meta && f._v4_meta.retained_earnings && Array.isArray(f._v4_meta.retained_earnings.periods)
+      ? f._v4_meta.retained_earnings.periods[0] : null;
+    const _reWhy = Array.isArray(_reU) && _reP0 ? _reU.find(u => String(u).indexOf(_reP0 + ':') === 0) : null;
+    missing.push(_reWhy ? 'retained_earnings (kombinierter Wert inkl. Kapitalrücklage, keine reine Gewinnrücklage belegt)'
+                        : 'retained_earnings');
+  }
   if (ebit == null) missing.push('ebit');
   if (bv == null) missing.push('book_value');
   if (tl == null) missing.push('total_liabilities');
@@ -11403,39 +11473,18 @@ function computeNetDebtToEbitda(mj) {
   return out;
 }
 
-function computeRoicMinusWacc(mj) {
-  const f = mj.fundamentals || {};
-  const ebit = f.ebit || [];
+// V1.0.77 (O-1): Periodenzuordnung der ROIC-Bestandsgroessen als eigene
+// Funktion, damit der vereinfachte ROIC im Wachstumsprofil (computeBaseRateLite)
+// DIESELBEN Regeln nutzt wie ROIC − WACC (Geschaeftsjahr + ≤ 45 Tage,
+// Eroeffnungsstichtage ausgeschlossen, Positionsbezug nur fuer Bestaende ohne
+// eigene Perioden bzw. periodenfreie Altdaten). Inhalt unveraendert aus
+// computeRoicMinusWacc (V1.0.71/72) herausgeloest.
+function _roicStockMatchers(f) {
+  f = f || {};
   const bv = f.book_value || [];
   const td = f.total_debt || [];
-  // V1.0.5 (B4): cash_and_equivalents zuerst (kanonisches Feld), fallback auf f.cash
-  // (Legacy/v3-Compat). Vorher nur f.cash → ROIC fiel bei reinen v4-MJs auf insufficient.
   const cash = f.cash_and_equivalents || f.cash || [];
   const oll = f.operating_lease_liabilities || [];
-  const taxRate = (mj.valuation && mj.valuation.wacc_components && mj.valuation.wacc_components.tax_rate);
-  const wacc = mj.valuation && mj.valuation.wacc_derived;
-  const subClass = (mj.meta && mj.meta.sub_classification) || 'standard_nonfin';
-
-  if (wacc == null) return metricInsufficient(0, 5, 'wacc_derived');
-  if (taxRate == null) return metricInsufficient(0, 5, 'tax_rate');
-
-  const yearsAvail = Math.min(ebit.length, bv.length, td.length, cash.length);
-  if (yearsAvail < 5) {
-    return metricInsufficient(yearsAvail, 5, 'ebit/book_value/total_debt/cash Zeitreihen');
-  }
-  const horizon = Math.min(10, yearsAvail);
-
-  // V1.0.71 (D2/F-5): Verknuepfung ueber die tatsaechliche Periode. Die
-  // Definition bleibt: ROIC_i = NOPAT_i / (Eigenkapital + Finanzschulden −
-  // Liquiditaet [+ Operating-Leasing]) jeweils zum ENDE desselben
-  // Geschaeftsjahres — keine Durchschnitte, kein Vorjahresbestand.
-  // Bis V1.0.70 wurde per Arrayposition gepaart; MCD: EBIT 2025 mit Leasing
-  // zum 2023-12-31. Zudem floss fehlendes Leasing als 0 in den Leasing-Median.
-  // Jetzt gilt: Traegt EBIT Perioden, werden Bestaende mit Perioden ueber
-  // Geschaeftsjahr und Stichtag (≤ 45 Tage) zugeordnet; Leasing ohne passende
-  // Periode ergibt fuer dieses Jahr KEINE Leasingbereinigung (kein Rueckgriff
-  // auf aeltere Jahre). Nur ohne jede Periodenangabe gilt der bisherige
-  // Positionsbezug (Altdatenregel).
   const _per = (k) => (f._v4_meta && f._v4_meta[k] && Array.isArray(f._v4_meta[k].periods)) ? f._v4_meta[k].periods : null;
   const pE = _per('ebit');
   const periodMode = !!pE;
@@ -11483,6 +11532,43 @@ function computeRoicMinusWacc(mj) {
   const pO = _per('operating_lease_liabilities');
   const mOll = _matcher(oll, pO, 'operating_lease_liabilities');
 
+  return { periodMode, pE, mBv, mTd, mCash, pO, mOll, openingSkips: _openingSkips };
+}
+
+function computeRoicMinusWacc(mj) {
+  const f = mj.fundamentals || {};
+  const ebit = f.ebit || [];
+  const bv = f.book_value || [];
+  const td = f.total_debt || [];
+  // V1.0.5 (B4): cash_and_equivalents zuerst (kanonisches Feld), fallback auf f.cash
+  // (Legacy/v3-Compat). Vorher nur f.cash → ROIC fiel bei reinen v4-MJs auf insufficient.
+  const cash = f.cash_and_equivalents || f.cash || [];
+  const oll = f.operating_lease_liabilities || [];
+  const taxRate = (mj.valuation && mj.valuation.wacc_components && mj.valuation.wacc_components.tax_rate);
+  const wacc = mj.valuation && mj.valuation.wacc_derived;
+  const subClass = (mj.meta && mj.meta.sub_classification) || 'standard_nonfin';
+
+  if (wacc == null) return metricInsufficient(0, 5, 'wacc_derived');
+  if (taxRate == null) return metricInsufficient(0, 5, 'tax_rate');
+
+  const yearsAvail = Math.min(ebit.length, bv.length, td.length, cash.length);
+  if (yearsAvail < 5) {
+    return metricInsufficient(yearsAvail, 5, 'ebit/book_value/total_debt/cash Zeitreihen');
+  }
+  const horizon = Math.min(10, yearsAvail);
+
+  // V1.0.71 (D2/F-5): Verknuepfung ueber die tatsaechliche Periode. Die
+  // Definition bleibt: ROIC_i = NOPAT_i / (Eigenkapital + Finanzschulden −
+  // Liquiditaet [+ Operating-Leasing]) jeweils zum ENDE desselben
+  // Geschaeftsjahres — keine Durchschnitte, kein Vorjahresbestand.
+  // Bis V1.0.70 wurde per Arrayposition gepaart; MCD: EBIT 2025 mit Leasing
+  // zum 2023-12-31. Zudem floss fehlendes Leasing als 0 in den Leasing-Median.
+  // Jetzt gilt: Traegt EBIT Perioden, werden Bestaende mit Perioden ueber
+  // Geschaeftsjahr und Stichtag (≤ 45 Tage) zugeordnet; Leasing ohne passende
+  // Periode ergibt fuer dieses Jahr KEINE Leasingbereinigung (kein Rueckgriff
+  // auf aeltere Jahre). Nur ohne jede Periodenangabe gilt der bisherige
+  // Positionsbezug (Altdatenregel).
+  const { periodMode, pE, mBv, mTd, mCash, pO, mOll, openingSkips: _openingSkips } = _roicStockMatchers(f);
   const roicsReported = [];
   const roicsLease = [];
   const rows = [];
@@ -31278,6 +31364,77 @@ function _renderSecDiag(report, masterJson) {
 // - Import-Button: secConfirmImport() prüft ticker-Match mit
 //   pendingMasterJson.meta.ticker gegen lastRequestedTicker.
 // ────────────────────────────────────────────────────────────────
+// ── V1.0.77 (O-4) · Umfang des Gewinnruecklagen-Tags pruefen ─────────────
+// us-gaap:RetainedEarningsAccumulatedDeficit umfasst nach Taxonomie-Definition
+// NUR die Gewinnruecklagen. Emittenten, die Gewinn- und Kapitalruecklage in
+// EINER Bilanzzeile zeigen, taggen diese Zeile teils trotzdem so (Realbefund
+// O-4: „Retained earnings and Additional-paid-in-capital“). Company Facts
+// liefern keine firmeneigenen Zeilenbezeichnungen; die Zusammenfassung folgt
+// aber aus den gemeldeten Daten selbst: Werden fuer ein Geschaeftsjahr
+// BEWEGUNGEN der Kapitalruecklage gemeldet (AdjustmentsToAdditionalPaidInCapital…),
+// zum Stichtag aber KEIN eigener Bestand (AdditionalPaidInCapital,
+// AdditionalPaidInCapitalCommonStock, CommonStocksIncludingAdditionalPaidInCapital),
+// dann steckt die Kapitalruecklage in einer anderen Eigenkapitalzeile, und der
+// RE-Wert ist als reine Gewinnruecklage nicht belegt. Eine Zerlegung waere nur
+// mit einem gemeldeten APIC-Bestand gleicher Einheit und Periode moeglich —
+// den gibt es in genau diesem Fall nicht. Der Wert wird daher je Periode
+// verworfen (null, Grund in unavailablePeriods); abhaengige Rechnungen
+// (Altman Z'') behandeln ihn als fehlend. Keine unternehmensspezifische Regel.
+// Stichtagsbezug wie in der ROIC-Zuordnung: gleiches Geschaeftsjahr und
+// ≤ 45 Tage Abstand. Grenze: Ein Emittent, der APIC-Bewegungen meldet, die
+// Kapitalruecklage aber im Stammkapital (CommonStockValue) fuehrt, wird
+// ebenfalls verworfen (konservativ, der Wert ist dann nicht belegt, nicht falsch).
+const RE_SCOPE_APIC_BALANCE_TAGS = ['AdditionalPaidInCapital', 'AdditionalPaidInCapitalCommonStock',
+  'CommonStocksIncludingAdditionalPaidInCapital'];
+const RE_SCOPE_APIC_MOVEMENT_PREFIX = 'AdjustmentsToAdditionalPaidInCapital';
+function _checkRetainedEarningsScope(facts, reEx) {
+  if (!reEx || !Array.isArray(reEx.values) || reEx.values.length === 0) return reEx;
+  const meta = reEx.meta || {};
+  const periods = Array.isArray(meta.periods) ? meta.periods : null;
+  const g = (facts && facts['us-gaap']) || {};
+  if (!periods) return reEx;
+  const _entries10k = (tag, wantFlow) => {
+    const c = g[tag]; if (!c || !c.units) return [];
+    const out = [];
+    for (const arr of Object.values(c.units)) {
+      for (const e of (arr || [])) {
+        if (!e || e.form !== '10-K' || !e.end || e.val == null) continue;
+        if (wantFlow ? !e.start : !!e.start) continue;
+        out.push(e);
+      }
+    }
+    return out;
+  };
+  const movementTags = Object.keys(g).filter(k => k.indexOf(RE_SCOPE_APIC_MOVEMENT_PREFIX) === 0);
+  if (movementTags.length === 0) return reEx;            // kein Hinweis auf eine Kapitalruecklage
+  const movements = movementTags.flatMap(t => _entries10k(t, true).map(e => ({ tag: t, end: e.end })));
+  const balances = RE_SCOPE_APIC_BALANCE_TAGS.flatMap(t => _entries10k(t, false).map(e => ({ tag: t, end: e.end })));
+  const _near = (a, b) => _secPeriodYear(a) === _secPeriodYear(b) &&
+    (() => { const d = _secPeriodDaysApart(a, b); return d != null && d <= 45; })();
+  const values = reEx.values.slice();
+  const unavailable = [];
+  for (let i = 0; i < values.length; i++) {
+    const p = periods[i];
+    if (values[i] == null || p == null) continue;
+    const mv = movements.find(m => _near(m.end, p));
+    if (!mv) continue;
+    if (balances.some(b => _near(b.end, p))) continue;
+    const shown = (typeof values[i] === 'number') ? values[i].toLocaleString('en-US') : String(values[i]);
+    unavailable.push(p + ': ' + (reEx.usedTag || 'RE-Tag') + ' = ' + shown + ' nicht als reine Gewinnrücklage belegt — '
+      + 'Bewegungen der Kapitalrücklage gemeldet (' + mv.tag + '), aber kein eigener Bestand ('
+      + RE_SCOPE_APIC_BALANCE_TAGS.join('/') + '); der Wert umfasst damit auch die Kapitalrücklage (RE + APIC) '
+      + 'und ist ohne gemeldeten APIC-Bestand nicht zerlegbar');
+    values[i] = null;
+  }
+  if (unavailable.length === 0) return reEx;
+  const note = 'Gewinnrücklagen für ' + unavailable.length + ' Periode(n) verworfen (kombinierter Wert inkl. Kapitalrücklage, '
+    + 'nicht als 0 und nicht als Gewinnrücklage verwendet) — ' + unavailable[0];
+  return Object.assign({}, reEx, { values, meta: Object.assign({}, meta, {
+    unavailablePeriods: (meta.unavailablePeriods || []).concat(unavailable),
+    unavailableNote: meta.unavailableNote ? meta.unavailableNote + ' · ' + note : note,
+    confidenceHint: 'medium', reScopeChecked: true }) });
+}
+
 // V1.0.71 (D2): Extraktion aller Felder aus SEC-companyfacts — unveraendert aus
 // secFetchAll herausgeloest (reine Funktion, kein DOM, kein Netz).
 function _extractSecFundamentals(facts) {
@@ -31319,6 +31476,9 @@ function _extractSecFundamentals(facts) {
       extracted[field] = _extractWithFallback(facts, tags, 10);
     }
   }
+
+  // V1.0.77 (O-4): kombinierter RE+APIC-Wert ist keine reine Gewinnruecklage.
+  extracted.retained_earnings = _checkRetainedEarningsScope(facts, extracted.retained_earnings);
 
   // V1.0.37: Alle abgeleiteten Serien period-keyed erzeugen (siehe _applySecDerivations)
   const _derivationNotes = _applySecDerivations(extracted);
@@ -46623,9 +46783,10 @@ function computeGrowthProfile(mj) {
 const REVERSE_DCF_FCF_BASIS_NOTE =
   'reverseDcfReported/reverseDcfOwner lösen das Wachstum des REPORTED FCF ' +
   '(CFO − CapEx) und dienen ausschließlich dem SBC-Vergleich beider Größen. Sie sind ' +
-  'nicht definitionskonsistent zum Haupt-DCF (kein ΔWC, keine Nettoschuldenbrücke, kein ' +
-  'Fade) und dürfen nicht als dessen implizites Wachstum gelesen werden — dafür ist ' +
-  'coreReverseDcf zuständig.';
+  'nicht definitionskonsistent zum Haupt-DCF (kein ΔWC, kein Fade, keine Aktienprojektion; ' +
+  'Nettoschulden nur als Stichtagswert im Ziel-Unternehmenswert, geprüft wie in der DCF-Brücke — ' +
+  'ohne belegte Nettoschulden kein Ergebnis) und dürfen nicht als dessen implizites Wachstum ' +
+  'gelesen werden — dafür ist coreReverseDcf zuständig.';
 
 // V1.0.58 (Auditbefund A-3): `opts` wird an den Bewertungskern durchgereicht
 // (Margenbasis, Zielkurs), damit beide Reverse-DCF-Anzeigen auf der wirklich
@@ -46665,6 +46826,8 @@ function computeReverseDcfFull(mj, opts) {
     return Object.assign({
       applicable: false,
       reason,
+      netDebtSource: null,
+      netDebtUnavailable: null,
       // Felder, die Consumer der computeReverseDcfFull-API erwarten
       impliedGrowthPct: null,
       impliedGrowthWarning: reason,
@@ -46699,7 +46862,17 @@ function computeReverseDcfFull(mj, opts) {
 
   const sharesM  = (f.shares_diluted && f.shares_diluted[0]) || null;
   const fcf0M    = (f.fcf && f.fcf[0] != null) ? f.fcf[0] : null;
-  const netDebtM = (f.net_debt && f.net_debt[0] != null) ? f.net_debt[0] : 0;
+  // V1.0.77 (Restpunkt PR #2): Nettoschulden ueber DIESELBE Pruefung wie
+  // DCF-Wertbruecke, Bewertungskern und Growth-Modul
+  // (_resolveNetDebtForDcfBridge: Umfang, Herkunft, Stichtag). Bis V1.0.76 las
+  // das Diagnosepaar nur net_debt[0] und setzte sonst 0 — ohne Schuldenangaben,
+  // bei fehlender Liquiditaet, bei gesperrter Bruecke (ungepruefter Teilbetrag)
+  // und sogar bei belegter Bruecke ohne net_debt-Feld. Das Ziel-EV
+  // (Kurs · Aktien + Nettoschulden) haengt unmittelbar davon ab; nicht belegte
+  // Nettoschulden sind keine 0. Die Pruefung folgt unten nach den FCF-/Kurs-/
+  // WACC-Gates, damit deren vorrangige Gruende unveraendert bleiben.
+  const _ndBridge = _resolveNetDebtForDcfBridge(f);
+  const netDebtM = _ndBridge.available ? _ndBridge.netDebtM : null;
   const price    = market.price ?? null;
   const waccPct  = v.wacc_derived ?? null;
   const tgPct    = v.growth_terminal ?? null;
@@ -46731,6 +46904,31 @@ function computeReverseDcfFull(mj, opts) {
       `FCF/Revenue inkonsistent — Reverse DCF nicht belastbar (${_gpForSuspect.fcfDataSuspectReason || 'FCF/Revenue außerhalb Plausibilität'})`,
       { fcf0M, fcfDataSuspect: true }
     );
+  }
+
+  // ── V1.0.77: Nettoschulden nicht belegt ⇒ Diagnosepaar nicht bestimmbar ──
+  // Kein Reported-/Owner-Wachstum, keine Kursszenarien, keine Klassifikation.
+  // Unabhaengig davon berechenbar und daher erhalten: Kernergebnis (eigener
+  // Status), SBC-Diagnose und historischer Umsatz-Benchmark.
+  if (!_ndBridge.available) {
+    const _ndWhy = _ndBridge.reason
+      ? String(_ndBridge.reason).split('. ')[0]
+      : ('fehlt: ' + ((_ndBridge.missing || []).join(', ') || 'Schulden-/Liquiditätsdaten'));
+    const _ndReason = 'Nettoschulden nicht belegt (Prüfung wie DCF-Brücke: ' + _ndWhy +
+      ') — Reverse DCF auf Reported-/Owner-FCF-Basis nicht bestimmbar; NICHT als 0 angenommen';
+    const _gpNd = computeGrowthProfile(mj);
+    const _sbcNd = computeSbcFcfDiagnostics(mj);
+    return _notApplicableReverseDcf(_ndReason, {
+      fcf0M,
+      inputs: { price, sharesM, netDebtM: null, fcf0M, waccPct, tgPct },
+      historicalBenchmark: _gpNd ? { cagr3y: _gpNd.revCagr3y, cagr5y: _gpNd.revCagr5y, label: 'Revenue CAGR' } : null,
+      cagr3y: _gpNd ? _gpNd.revCagr3y : null,
+      cagr5y: _gpNd ? _gpNd.revCagr5y : null,
+      sbcAdjustedFcm: _sbcNd.status === 'ok' ? _sbcNd.sbc_adjusted_fcf : null,
+      sbc0: _sbcNd.status === 'ok' ? _sbcNd.sbc_m : null,
+      netDebtSource: null,
+      netDebtUnavailable: _ndReason
+    });
   }
 
   // ── Impliziertes Wachstum bei aktuellem Kurs ─────────────────
@@ -46810,7 +47008,8 @@ function computeReverseDcfFull(mj, opts) {
   // reverseDcfReported/reverseDcfOwner bilden das SBC-Diagnosepaar auf der
   // REPORTED-FCF-Basis (CFO − CapEx). Beide Zahlen sind untereinander
   // vergleichbar, aber NICHT mit dem Haupt-DCF: andere Cashflow-Definition,
-  // kein ΔWC, keine Nettoschuldenbrücke, kein Fade.
+  // kein ΔWC, kein Fade; Nettoschulden (seit V1.0.77 geprueft wie die
+  // DCF-Bruecke) nur als Stichtagswert im Ziel-EV.
 
   // ── PATCH 3: Klassifikation implied growth ───────────────────
   function _classifyImpliedGrowth(impliedGrowth, cagr3y, cagr5y) {
@@ -46836,6 +47035,8 @@ function computeReverseDcfFull(mj, opts) {
     scenarioResults,
     historicalBenchmark,
     inputs: { price, sharesM, netDebtM, fcf0M, waccPct, tgPct },
+    netDebtSource: _ndBridge.source || null,
+    netDebtUnavailable: null,
     // ── Maßgeblich: Reverse DCF auf dem gemeinsamen Bewertungskern ──
     coreReverseDcf,
     coreImpliedGrowthPct: coreReverseDcf.ok ? coreReverseDcf.impliedGrowthPct : null,
@@ -48044,28 +48245,22 @@ function _computeOwnerFcfDcf(mj) {
   }
 
   // ── Net Debt in Mio ───────────────────────────────────────────
-  // Priorität: net_debt[0] → total_debt[0] − cash_and_equivalents[0] → total_debt[0] − cash[0]
-  let netDebtM = null;
-  let netDebtSource = '';
-  const nd0 = arr0(f.net_debt);
-  if (nd0 != null) {
-    netDebtM = nd0;
-    netDebtSource = 'net_debt[0]';
-  } else {
-    const td0   = arr0(f.total_debt);
-    const cae0  = arr0(f.cash_and_equivalents);
-    const cash0 = arr0(f.cash);
-    const cashVal = cae0 != null ? cae0 : (cash0 != null ? cash0 : 0);
-    if (td0 != null) {
-      netDebtM = td0 - cashVal;
-      netDebtSource = 'total_debt[0] − ' + (cae0 != null ? 'cash_and_equivalents[0]' : 'cash[0]');
-    }
-  }
-  if (netDebtM == null) {
-    netDebtM = 0;
-    netDebtSource = 'fehlt — 0 angenommen';
-    warnings.push('Net Debt nicht verfügbar — 0 M angenommen (EV = Equity Value)');
-  }
+  // V1.0.77 (Restpunkt PR #2): dieselbe Pruefung wie DCF-Wertbruecke,
+  // Bewertungskern, Growth-Modul und Reverse-DCF-Diagnosepaar
+  // (_resolveNetDebtForDcfBridge: Umfang, Herkunft, Stichtag). Bis V1.0.76:
+  // net_debt[0] → total_debt[0] − Liquiditaet mit FEHLENDER Liquiditaet = 0 →
+  // sonst 0 („EV = Equity Value“), ohne Umfangs- und Periodenpruefung. Nicht
+  // belegte Nettoschulden sind keine 0: dann kein Fair Value je Aktie (und kein
+  // daraus abgeleiteter SBC-Abschlag); die SBC-Diagnose selbst bleibt erhalten.
+  const _ndBridge = _resolveNetDebtForDcfBridge(f);
+  const netDebtM = _ndBridge.available ? _ndBridge.netDebtM : null;
+  const netDebtSource = _ndBridge.available ? (_ndBridge.source || '') : '';
+  const netDebtUnavailable = _ndBridge.available ? null
+    : ('Nettoschulden nicht belegt (Prüfung wie DCF-Brücke: '
+       + (_ndBridge.reason ? String(_ndBridge.reason).split('. ')[0]
+          : ('fehlt: ' + ((_ndBridge.missing || []).join(', ') || 'Schulden-/Liquiditätsdaten')))
+       + ') — kein Fair Value je Aktie; NICHT als 0 angenommen');
+  if (netDebtUnavailable) warnings.push(netDebtUnavailable);
 
   // ── Guards ────────────────────────────────────────────────────
   if (wacc == null)    return NOT_AVAIL;
@@ -48084,6 +48279,7 @@ function _computeOwnerFcfDcf(mj) {
   // Equity = EV − netDebtM
   // FV/Share = Equity / sharesM
   const _runDcfFV = (fcf0M, label) => {
+    if (netDebtM == null) return null;   // V1.0.77: Grund steht bereits in warnings
     if (!(fcf0M > 0)) {
       warnings.push(label + ': FCF ≤ 0 — DCF nicht berechenbar');
       return null;
@@ -48132,7 +48328,7 @@ function _computeOwnerFcfDcf(mj) {
     sbcAdjustedFcf: d.sbc_adjusted_fcf,
     sbc:            d.sbc_m,
     wacc, g1, tg,
-    netDebtM, netDebtSource,
+    netDebtM, netDebtSource, netDebtUnavailable,
     sharesM,
     warnings,
     _note: 'Diagnostisch. Kein Einfluss auf Buy Price oder Synthesis.'
@@ -48282,7 +48478,9 @@ function _renderSbcDiagnosticsBlock(mj) {
  */
 function _renderOwnerFcfDcfBlock(mj) {
   const od = _computeOwnerFcfDcf(mj);
-  const fmtFV = (v) => v != null && isFinite(v) ? '$' + v.toFixed(2) : 'n/a';
+  // V1.0.77: ohne belegte Nettoschulden „nicht bestimmbar“ statt „n/a“ (Grund in den Warnungen).
+  const fmtFV = (v) => v != null && isFinite(v) ? '$' + v.toFixed(2)
+    : (od.netDebtUnavailable ? 'nicht bestimmbar (Nettoschulden nicht belegt)' : 'n/a');
   const fmtM  = (v) => v != null ? '$' + v.toFixed(0) + ' M' : '–';
 
   if (od.status !== 'ok') {
@@ -48344,7 +48542,7 @@ function _renderOwnerFcfDcfBlock(mj) {
     + 'WACC ' + (od.wacc != null ? od.wacc.toFixed(2) + '%' : 'n/a')
     + ' · g₁ ' + (od.g1 != null ? od.g1.toFixed(2) + '%' : 'n/a')
     + ' · TG ' + (od.tg != null ? od.tg.toFixed(2) + '%' : 'n/a')
-    + ' · NetDebt ' + (od.netDebtM != null ? '$' + od.netDebtM.toFixed(0) + ' M' : 'n/a')
+    + ' · NetDebt ' + (od.netDebtM != null ? '$' + od.netDebtM.toFixed(0) + ' M' : 'nicht belegt')
     + (od.netDebtSource ? ' (' + escapeHtml(od.netDebtSource) + ')' : '')
     + ' · Shares ' + (od.sharesM != null ? od.sharesM.toFixed(1) + ' M' : 'n/a')
     + '</div>'
@@ -48658,7 +48856,7 @@ function renderGrowth() {
 
     html += `<div class="mc-block">
       <div class="mc-dl">Market-Implied Growth — 10J Stage-1 (WACC ${na(rdcf.inputs.waccPct, '%')}, TG ${na(rdcf.inputs.tgPct, '%')})</div>
-      <div class="txt-caption" style="margin-bottom:6px;color:var(--muted)">⚠ SBC-Vergleich auf REPORTED-FCF-Basis (CFO − CapEx) — beide Zahlen sind untereinander vergleichbar, aber NICHT mit dem Haupt-DCF: ohne ΔWC, ohne Nettoschuldenbrücke, ohne Fade. Der kernkonsistente Reverse DCF (${escapeHtml(rdcf.modelVersion || '')}) steht in der Reverse-DCF-Karte der Übersicht: ${rdcf.coreReverseDcf && rdcf.coreReverseDcf.ok ? escapeHtml(rdcf.coreReverseDcf.impliedGrowthPct.toFixed(1)) + '% Stage-1-Umsatzwachstum' : escapeHtml((rdcf.coreReverseDcf && rdcf.coreReverseDcf.status) || 'nicht verfügbar')}.</div>
+      <div class="txt-caption" style="margin-bottom:6px;color:var(--muted)">⚠ SBC-Vergleich auf REPORTED-FCF-Basis (CFO − CapEx) — beide Zahlen sind untereinander vergleichbar, aber NICHT mit dem Haupt-DCF: ohne ΔWC, ohne Fade, Nettoschulden nur als geprüfter Stichtagswert${rdcf.netDebtSource ? ' (' + escapeHtml(String(rdcf.netDebtSource)) + ')' : ''}. Der kernkonsistente Reverse DCF (${escapeHtml(rdcf.modelVersion || '')}) steht in der Reverse-DCF-Karte der Übersicht: ${rdcf.coreReverseDcf && rdcf.coreReverseDcf.ok ? escapeHtml(rdcf.coreReverseDcf.impliedGrowthPct.toFixed(1)) + '% Stage-1-Umsatzwachstum' : escapeHtml((rdcf.coreReverseDcf && rdcf.coreReverseDcf.status) || 'nicht verfügbar')}.</div>
       <div class="mc-hero">
         <div>
           <div class="mc-stat">Reported FCF Basis</div>

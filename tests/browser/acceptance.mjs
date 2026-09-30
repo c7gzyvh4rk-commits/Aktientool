@@ -682,6 +682,46 @@ async function main() {
     }
 
     // ══════════════════════════════════════════════════════════════════════
+    sec('11 · Restpunkte PR #2: FCF-Diagnostik ohne belegte Nettoschulden, vereinfachter ROIC (V1.0.77)');
+    {
+      const status = await importViaUi(FX.diagNetDebtMj('none'));
+      if (check('Diagnose ohne Schuldenangaben: Import', /Import OK/.test(status), status)) {
+        const val = await tab('valuation');
+        const diag = val.slice(val.search(/GETRENNTE DIAGNOSE AUF REPORTED-FCF-BASIS/i));
+        check('11.1 Bewertung: Reported-/Owner-FCF-Basis ohne Wachstumszahl, Grund „Nettoschulden nicht belegt“',
+          /REPORTED-FCF-BASIS\s*– \(Nettoschulden nicht belegt/i.test(diag) && /OWNER-FCF-BASIS\s*– \(Nettoschulden nicht belegt/i.test(diag)
+          && !/FCF-BASIS\s*[+-]\d/i.test(diag), diag.slice(0, 1500));
+        check('11.2 Bewertung: vereinfachter ROIC „nicht bewertbar“ mit Grund, keine Zahl',
+          /ROIC akt\. \(vereinfacht\):\s*nicht bewertbar/.test(val) && /Nicht bewertbar: [^\n]*Finanzschulden, Liquidität/.test(val)
+          && !/ROIC akt\.[^\n]*\d+\.\d%/.test(val), val.slice(val.indexOf('Historisches Profil') - 50, val.indexOf('Historisches Profil') + 1200));
+        const gr = await tab('growth');
+        const html = await panelHtml('growth');
+        check('11.3 Wachstum: Reverse DCF nicht berechenbar mit Nettoschulden-Grund, keine Kursszenarien',
+          /Reverse DCF nicht berechenbar: Nettoschulden nicht belegt/.test(gr) && !/Kurs heute\s+40\.00\s+\d/.test(gr), gr.slice(0, 4000));
+        check('11.4 Wachstum: Owner-FCF-DCF ohne Fair Value, NetDebt „nicht belegt“ statt $0 M, SBC-Diagnose sichtbar',
+          /DCF Fair Value: nicht bestimmbar \(Nettoschulden nicht belegt\)/.test(html) && !/DCF Fair Value: \$/.test(html)
+          && /NetDebt\s*nicht belegt/.test(html) && !/NetDebt\s*\$0/.test(html) && /\$160 M/.test(html), gr.slice(0, 6000));
+        const st = await ev(`(() => { const r = state.growth && state.growth.reverseDcfFull; return r ? { rep: r.reverseDcfReported, own: r.reverseDcfOwner, nd: r.inputs.netDebtM, v: state.growth.verdict } : null; })()`);
+        check('11.5 Zustand: kein Reported-/Owner-Wachstum, Nettoschulden null, kein Growth-Verdict aus Wachstum', st && st.rep == null && st.own == null && st.nd == null
+          && !['GROWTH_WATCH', 'GROWTH_BUY', 'PRICED_FOR_PERFECTION', 'BUBBLE_RISK'].includes(st.v), JSON.stringify(st));
+      }
+    }
+    {
+      const status = await importViaUi(FX.diagNetDebtMj('valid'));
+      if (check('Diagnose mit belegten Nettoschulden 4,000 (Gegenprobe): Import', /Import OK/.test(status), status)) {
+        const gr = await tab('growth');
+        const html = await panelHtml('growth');
+        check('11.6 Gegenprobe Wachstum: Reported-/Owner-Wachstum und Owner-FV sichtbar, NetDebt $4000 M',
+          /Reported FCF Basis\s*\d+\.\d%/i.test(gr) && /DCF Fair Value: \$\d/.test(html) && /NetDebt\s*\$4000\s*M/.test(html),
+          gr.slice(Math.max(0, gr.search(/Reported FCF Basis/i) - 200), gr.search(/Reported FCF Basis/i) + 400) + ' | '
+          + (html.match(/DCF Fair Value:[^<]*/g) || []).join(' ; ') + ' | ' + (html.match(/NetDebt[^·]*/) || [''])[0]);
+        const val = await tab('valuation');
+        check('11.7 Gegenprobe Bewertung: vereinfachter ROIC mit Stichtag und Zahl',
+          /ROIC akt\. \(vereinfacht, 2025-12-31\):\s*\d+\.\d%/.test(val), val.slice(val.indexOf('Historisches Profil') - 50, val.indexOf('Historisches Profil') + 1200));
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
     sec('8 · Abschluss');
     check('keine unbehandelte Ausnahme im gesamten Ablauf', exceptions.length === 0, exceptions.join(' | '));
     const nonFont = external.filter(u => !/^https:\/\/fonts\.(googleapis|gstatic)\.com\//.test(u));

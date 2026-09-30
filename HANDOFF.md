@@ -1,5 +1,68 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Restpunkte PR #2 geschlossen: FCF-Diagnostik, O-1, O-4 (V1.0.77)
+
+**Ausgangsstand (nach `git fetch origin`, 2026-09-30).** main =
+`1ee2e9240a1502922eb48af5d6d3c2f1da6bad55` (Merge PR #2, V1.0.76), ohne
+Abweichung vom Referenzstand; Produktdatei SHA-256 `7d60f54b…`. Gearbeitet in
+eigenem Worktree auf `claude/nifty-tesla-ye7ufw`; keine `AGENTS.md`, keine
+Nutzeränderungen. Grundlage: Abschlussreview
+https://github.com/c7gzyvh4rk-commits/Aktientool/pull/2#issuecomment-5914037854.
+Details, Messwerte und Tabellen: Auditbericht **§13.14**.
+
+**Korrekturen.**
+* **Reported-/Owner-FCF-Diagnostik:** `computeReverseDcfFull` (Diagnosepaar,
+  Kursszenarien) und `_computeOwnerFcfDcf` nutzen jetzt
+  `_resolveNetDebtForDcfBridge` statt `net_debt[0] ?? 0` bzw. „fehlende
+  Liquidität = 0 → sonst 0“. Nicht belegt ⇒ kein Wachstum, keine Szenarien,
+  kein Reported-/Owner-FV, kein SBC-Abschlag (FV), Grund sichtbar; Kernstatus,
+  SBC-Diagnose und Umsatz-Benchmark bleiben. Belegte 0 und negative
+  Nettoschulden bleiben gültig. Zuvor rechnete das Paar sogar bei belegter
+  Brücke ohne `net_debt`-Feld mit 0. Growth-Verdict ohne belegte Nettoschulden
+  jetzt `MODEL_UNSUITABLE` mit Grund statt eines Verdicts aus diesem Wachstum.
+* **O-1:** vereinfachter ROIC im Wachstumsprofil periodengleich über die aus
+  ROIC − WACC herausgelöste Zuordnung (`_roicStockMatchers`, unverändert);
+  fehlende Schulden/Liquidität/Steuersatz keine 0 bzw. 25 %; Leasingsperre wie
+  ROIC − WACC; Trend nur bei zwei Geschäftsjahren Abstand; als „vereinfacht“
+  benannt, sonst „nicht bewertbar“ mit Grund. Kein Score-/Urteilseffekt.
+* **O-4:** `_checkRetainedEarningsScope` im SEC-Import verwirft einen RE-Wert,
+  wenn für das Geschäftsjahr APIC-Bewegungen, aber kein APIC-Bestand gemeldet
+  sind (kombinierter RE+APIC-Wert, nicht zerlegbar). JNJ: 2018–2025 verworfen;
+  MCD unverändert. Altman nennt den Grund; synthetisch mit EBIT vorher
+  Z'' 2.93 ⇒ `investable_high`/MoS 15 %, jetzt wie „RE fehlt“ (`caution_data`,
+  25 %). Kein JNJ-Sonderfall, EBIT nicht erschlossen.
+
+**Tests.** Neu: `tests/diagnostic-net-debt.test.mjs` (18),
+`tests/base-rate-roic.test.mjs` (12), `tests/retained-earnings-scope.test.mjs`
+(8; Realauszug `tests/real-data/excerpts/re-apic-excerpt.json`), Browser §11
+(+9: Import, gerenderter Bewertungs- und Growth-Reiter). Gegen `1ee2e92`:
+16/18, 9/12, 4/8 rot, Browser 6 FAIL; gültige Gegenproben grün vorher und
+nachher. Angepasst: `audit-chat12` R7 (verlangte > 10 pp Abstand, der aus der
+Nullannahme stammte; jetzt gleiche geprüfte Nettoschulden + Kontrollrechnung).
+Keine Erwartung abgeschwächt, keine Modellsperre gelockert.
+
+**Geprüft (lokal, Produktdatei SHA-256 `196c3185…`, Node v22.22.2, Chromium
+141.0.7390.37, `TMPDIR=/tmp/cb`).** Testzahlen: Node-Tests 301 → 339 (+18 +12
++8), Browser 196 → 205 (+9), Rechenprüfungen 1700 und Auditwerkzeug 38
+unverändert. Die Läufe auf dem endgültigen Commit stehen im PR-Kommentar.
+
+| Befehl | Ergebnis | Exit |
+|---|---|---|
+| `npm test` | 1700 Rechenprüfungen; Node-Tests 339/339 | 0 |
+| `npm run test:audit-tool` | 38/38 | 0 |
+| `npm run test:browser` | 205/205 | 0 |
+
+**Verbleibende Grenzen / Voraussetzungen für Folgeaufträge.** O-4-Regel
+konservativ (APIC im Stammkapital geführt ⇒ RE ebenfalls verworfen; JNJ
+FY2018–FY2021 trotz Originalbeschriftung „Retained earnings“ verworfen).
+ROIC − WACC/ROIC-Trend behalten für periodenfreie Altdaten „fehlende
+Liquidität = 0“ (scorewirksam, nicht geändert). Diagnostik prüft Nettoschulden
+wie die DCF-Brücke, nicht zusätzlich gegen die FCF-Periode. Modellsperren und
+TTM-Grenzen aus §13.4–§13.7 unverändert (u. a. JNJ ohne EBIT, MCD-/JNJ-Brücke
+gesperrt). Kein Deployment.
+
+---
+
 ## Review-Nachbesserung PR #2: ROIC-Liquidität und Nettoschulden im Growth-Modul (V1.0.76)
 
 **Ausgangsstände (nach `git fetch origin`, 2026-09-30).** PR-Head

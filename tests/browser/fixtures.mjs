@@ -281,3 +281,33 @@ export function roicTrendMj(kind) {
     market: { price: 20 }
   };
 }
+
+// V1.0.77: Reported-/Owner-FCF-Diagnostik und vereinfachter ROIC im Wachstums-
+// profil. high_growth, damit der Reiter „Wachstum“ gerendert wird. 'none':
+// keinerlei Schulden-/Liquiditaetsangaben (Bruecke nicht belegt, ROIC ohne
+// Schulden/Liquiditaet); 'valid': eigenstaendig gemeldete Nettoschulden 4,000
+// zum 2025-12-31 (ein manueller total_debt-Wert ohne Umfangsnachweis traegt die
+// Bruecke nach der Umfangspruefung nicht) plus Schulden/Liquiditaet fuer den ROIC.
+export function diagNetDebtMj(kind) {
+  const per = (flow) => ({ periods: Y6.slice(), isFlowConcept: flow, unit: 'USD', source_type: 'reported' });
+  const f = {
+    revenue: [1000, 800, 640, 512, 410, 328], ebit: [200, 150, 110, 80, 60, 45], ebitda: [240, 185, 140, 105, 80, 62],
+    cfo: [230, 170, 125, 90, 70, 52], capex: [50, 40, 32, 26, 20, 16], fcf: [180, 130, 93, 64, 50, 36],
+    net_income: [150, 110, 80, 58, 43, 32], eps_diluted: [1.5, 1.1, 0.8, 0.58, 0.43, 0.32],
+    book_value: [2000, 1850, 1740, 1660, 1600, 1560], shares_diluted: Array(6).fill(100), sbc: Array(6).fill(20),
+    da: [40, 35, 30, 25, 20, 17],
+    _v4_meta: { revenue: per(true), ebit: per(true), ebitda: per(true), book_value: per(false) }
+  };
+  if (kind === 'valid') {
+    Object.assign(f, { net_debt: [4000], total_debt: Array(6).fill(4500), cash_and_equivalents: Array(6).fill(500) });
+    Object.assign(f._v4_meta, { net_debt: { periods: [Y6[0]], source_type: 'reported', unit: 'USD' },
+      total_debt: per(false), cash_and_equivalents: per(false) });
+  }
+  return {
+    schema_version: '4.0',
+    meta: META('DND' + kind.slice(0, 1).toUpperCase(), 'high_growth'),
+    fundamentals: f,
+    valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false }, wacc_derived: 9, growth_terminal: 3, growth_stage1: 15 },
+    market: { price: 40 }
+  };
+}
