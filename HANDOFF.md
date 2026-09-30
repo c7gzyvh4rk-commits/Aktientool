@@ -1,5 +1,50 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Review-Nachbesserung PR #2: ROIC-Liquidität und Nettoschulden im Growth-Modul (V1.0.76)
+
+**Ausgangsstände (nach `git fetch origin`, 2026-09-30).** PR-Head
+`7236c738de148926479c029662554a262ee798c7`, main
+`8b42fea6e3550ccbc4e2b723b96138886786b994` = Merge-Basis. Beide sind unverändert
+gegenüber dem Review
+(https://github.com/c7gzyvh4rk-commits/Aktientool/pull/2#issuecomment-5904559512).
+Gearbeitet wurde in einem eigenen Worktree; es gibt keine `AGENTS.md`.
+
+**Korrekturen (Details, Messwerte und Tabellen: Auditbericht §13.13).**
+* **R-1 ROIC − WACC:** Fehlende periodengleiche Liquidität ist jetzt eine
+  fehlende Eingabe und keine 0 mehr. Vorher führte das im Grenzfall zu
+  −2.18 pp ⇒ `value_destroyer` ⇒ `caution_quality` ⇒ Basis-MoS 25 %; jetzt ist
+  die Kennzahl nicht bewertbar ⇒ `investable_high`, Basis-MoS 15 %. Eine
+  belegte 0 bleibt gültig; Altdaten-, Leasing- und Periodenregeln sind
+  unverändert.
+* **R-2 Growth-Modul (vorbestehend, vom Auftraggeber als Mergeblocker
+  eingestuft):** Die Nettoschulden laufen jetzt über
+  `_resolveNetDebtForDcfBridge`. Nicht belegt ⇒ kein Szenario-Fair-Value, keine
+  IRR, kein `GROWTH_BUY`, Grund sichtbar. Vorher entstand „GROWTH BUY“ mit
+  Nettoschulden 0 sogar bei belegter Brücke von 4,000. Die Synthese bleibt
+  nachweislich unverändert.
+* Die Aussage in AUDIT §13.6 zum Reverse DCF ist berichtigt. **Offen:** Das
+  Reverse-DCF-Diagnosepaar auf Reported-/Owner-FCF-Basis liest weiterhin
+  `net_debt[0]` bzw. 0. Es ist nicht gewichtet und auf main identisch.
+
+**Geprüfter Stand:** Commit `7b22114` (ohne lokale Änderungen), Produktdatei
+SHA-256 `7d60f54be1657fabe1c454161684df27deffe050aacc55e0352d85f00c036de4`,
+Node v22.22.2, Chromium 141.0.7390.37, `TMPDIR=/tmp/cb`.
+
+| Befehl | Ergebnis | Exit |
+|---|---|---|
+| `npm test` | 1700 Rechenprüfungen; SEC-/Kernsuite 301/301 (+8 ROIC, +4 Growth) | 0 |
+| `npm run test:audit-tool` | 38/38 | 0 |
+| `npm run test:browser` | 196/196 | 0 |
+
+Die neuen Fehlerfalltests scheitern auf `7236c73` (ROIC 4 von 8, Growth 3 von 4);
+die Erhaltungstests bestehen vorher und nachher. Kein erneuter
+SEC-Realdatenabgleich: Die Realauszüge MCD/JNJ ergeben für ROIC − WACC
+unverändert „nicht bewertbar“. Das Growth-Modul ist für beide jetzt mit Grund
+gesperrt (Brücke nicht belegt). Die Grenzen aus §13.4–§13.7 gelten weiter.
+Nicht gemergt, Draft unverändert.
+
+---
+
 ## Merge-Vorbereitung: Auditbranch D1–D3 (V1.0.75) gegen aktuellen main geprüft
 
 **Ausgangsstände (nach `git fetch origin`, 2026-09-28).** Auditbranch
