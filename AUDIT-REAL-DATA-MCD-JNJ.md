@@ -882,6 +882,12 @@ Growth-FV-Differenz 4,000/100/1.09^N je Szenario).
 
 ### 13.14 · Restpunkte aus PR #2 geschlossen (V1.0.77): FCF-Diagnostik, O-1, O-4
 
+> **Berichtigt in §13.15 (V1.0.78).** O-1 und O-4 waren mit V1.0.77 nicht
+> vollständig geschlossen: Der vereinfachte ROIC paarte bei gemischten
+> Periodenangaben weiter per Arrayposition, und die O-4-Regel behauptete aus
+> einem bloßen Indiz eine Kombination (JNJ FY2018–FY2022 nach Primärquelle rein).
+> Die unten markierten Aussagen gelten nicht mehr. Punkt 1 (FCF-Diagnostik) bleibt.
+
 **Anlass.** Abschlussreview PR #2
 (https://github.com/c7gzyvh4rk-commits/Aktientool/pull/2#issuecomment-5914037854):
 drei nicht blockierende Restpunkte. Ausgangsstand main `1ee2e92` (V1.0.76,
@@ -928,7 +934,9 @@ z. B. 24.8 %, während ROIC − WACC „nicht bewertbar“ war.
 *Korrektur.* Die Periodenzuordnung von ROIC − WACC ist als `_roicStockMatchers`
 herausgelöst (Inhalt unverändert) und wird mitbenutzt: Bestände zum Ende
 desselben Geschäftsjahres (≤ 45 Tage, keine Eröffnungsstichtage),
-Positionsbezug nur bei periodenfreien Altdaten. Eigenkapital, Finanzschulden
+Positionsbezug nur bei periodenfreien Altdaten [**unzutreffend, §13.15:** im
+Standardmodus wurden Bestände ohne Perioden auch neben datiertem EBIT per
+Position gepaart]. Eigenkapital, Finanzschulden
 und Liquidität müssen belegt sein (belegte 0 gültig), Steuersatz aus
 `wacc_components.tax_rate`, Leasingsperre wie ROIC − WACC/ROIC-Trend; der
 2-Jahres-Trend verlangt zwei Geschäftsjahre Abstand. Die Kennzahl ist bewusst
@@ -945,11 +953,12 @@ AUDIT-D3 Tabelle JNJ Zeilen 837–840). Nach Taxonomie umfasst der Tag nur
 Gewinnrücklagen. In den Company Facts (Abruf 2026-09-30, SHA-256 `7141c0c9…`)
 meldet JNJ für jedes Geschäftsjahr FY2018–FY2025
 `AdjustmentsToAdditionalPaidInCapitalSharebasedCompensation…` (Bewegungen der
-Kapitalrücklage), aber keinen APIC-Bestand; die Eigenkapitalidentität
+Kapitalrücklage [**§13.15:** in der RE-Spalte als Belastung, Gutschrift bei den
+eigenen Aktien — kein Nachweis einer Kapitalrücklage im RE-Wert]), aber keinen APIC-Bestand; die Eigenkapitalidentität
 3,120 + 168,978 − 14,930 − 75,624 = 81,544 (Eigenkapital inkl. Minderheiten zum 2025-12-28) schließt
 nur mit dem RE-Tag als einziger Rücklagenzeile. MCD meldet
 `AdditionalPaidInCapital` eigens (SHA-256 `0394e814…`).
-*Korrektur.* `_checkRetainedEarningsScope` im Importweg
+*Korrektur [**ersetzt in §13.15**].* `_checkRetainedEarningsScope` im Importweg
 (`_extractSecFundamentals`): Gibt es für ein Geschäftsjahr APIC-Bewegungen,
 aber zum Stichtag (gleiches Geschäftsjahr, ≤ 45 Tage) keinen Bestand
 (`AdditionalPaidInCapital`, `AdditionalPaidInCapitalCommonStock`,
@@ -965,6 +974,8 @@ mit gemeldetem APIC-Bestand und reinem RE 500: Z'' = 1.4598 ⇒
 `caution_quality`.
 *Realdaten:* JNJ RE 2018-12-30 … 2025-12-28 verworfen, 2017-12-31/2017-01-01
 bleiben (keine APIC-Bewegung gemeldet); MCD unverändert (70,282 …).
+[**§13.15:** Seit V1.0.78 sind alle JNJ-Stichtage „Umfang ungeklärt“ (auch
+2017), MCD „rein“ über die Eigenkapitalidentität.]
 
 **Tests (Sollwerte aus Definition/Kontrollrechnung).**
 `tests/diagnostic-net-debt.test.mjs` (18), `tests/base-rate-roic.test.mjs` (12),
@@ -983,10 +994,134 @@ APIC-Bewegungen meldet, die Kapitalrücklage aber im Stammkapital
 (`CommonStockValue`) führt, verliert den RE-Wert ebenfalls (nicht belegt,
 nicht falsch). JNJ FY2018–FY2021 sind im Original als „Retained earnings“
 beschriftet, werden aber verworfen, weil APIC-Bewegungen ohne APIC-Bestand
-gemeldet sind (die Zeile nimmt diese Buchungen auf). (b) ROIC − WACC und
+gemeldet sind (die Zeile nimmt diese Buchungen auf) [**unzutreffend, §13.15:**
+die Buchungen in der RE-Spalte sind Belastungen, keine Kapitalgutschriften;
+FY2018–FY2022 sind nach Primärquelle reine Gewinnrücklagen]. (b) ROIC − WACC und
 ROIC-Trend behalten für periodenfreie Altdaten die bestehende Regel
 „fehlende Liquidität = 0“ (bewusst nicht geändert; scorewirksam, nicht Teil
 dieses Auftrags). (c) Die Diagnostik prüft Nettoschulden wie die DCF-Brücke,
 aber nicht zusätzlich den Stichtag gegen die FCF-Periode. (d) Für MCD/JNJ
 bleibt die Brücke gesperrt ⇒ Diagnosepaar/Owner-FV dort „nicht bestimmbar“,
 sobald FCF und Kurs vorliegen. Modellsperren aus §13.4–§13.7 unverändert.
+
+### 13.15 · Nachreview PR #3 (V1.0.78): O-4 und O-1 berichtigt
+
+**Anlass.** Nachreview von PR #3
+(https://github.com/c7gzyvh4rk-commits/Aktientool/pull/3, Abnahme
+https://github.com/c7gzyvh4rk-commits/Aktientool/pull/3#issuecomment-5916338234):
+zwei Lücken in V1.0.77. Ausgangsstand main `18f146c` (Produktdatei SHA-256
+`196c3185…`). Die Abschlussaussage „alle drei Restpunkte geschlossen“ ist
+damit berichtigt: Geschlossen war nur die FCF-Diagnostik.
+
+**O-4 · Befund.** `_checkRetainedEarningsScope` verwarf RE-Werte, sobald
+APIC-Bewegungen ohne APIC-Bestand gemeldet waren, und behauptete „der Wert
+umfasst damit auch die Kapitalrücklage“. Das Indiz trägt nicht:
+
+| Stichtag JNJ | RE-Wert | Bilanzzeile im 10-K derselben Periode | Buchungen der RE-Spalte im Geschäftsjahr (XBRL `RetainedEarningsMember`) | Einstufung nach Primärquelle |
+|---|---|---|---|---|
+| 2018-12-30 | 106,216 | „Retained earnings“ (10-K FY2019) | Ergebnis 15,297; Dividenden −9,494; Mitarbeiterpläne **−1,111**; Anpassung −254; Other 15 | rein |
+| 2019-12-29 | 110,659 | „Retained earnings“ (10-K FY2019) | 15,119; −9,917; **−758**; Other 1 | rein |
+| 2021-01-03 | 113,890 | „Retained earnings“ (10-K FY2020) | 14,714; −10,481; **−931**; Other 71 | rein |
+| 2022-01-02 | 123,060 | „Retained earnings“ (10-K FY2021) | 20,878; −11,032; **−676** | rein |
+| 2023-01-01 | 128,345 | „Retained earnings“ (10-K FY2022); im 10-K FY2023 betragsgleich unter der Sammelbezeichnung | 17,941; −11,682; **−974** | rein |
+| 2023-12-31 | 153,843 | „Retained earnings and Additional-paid-in-capital“ (10-K FY2023) | 35,153; −11,770; −336; **Kenvue Separation/IPO +2,451** | kombiniert |
+| 2024-12-29 | 155,791 | Sammelbezeichnung (10-K FY2025) | 14,066; −11,823; −295 | kombiniert |
+| 2025-12-28 | 168,978 | Sammelbezeichnung (10-K FY2025) | 26,804; −12,381; −1,236 | kombiniert |
+
+Die Buchung `AdjustmentsToAdditionalPaidInCapitalSharebasedCompensation…`
+(„Employee compensation and stock option plans“) steht in der RE-Spalte stets
+als **Belastung**; die Gutschrift liegt in der Spalte der eigenen Aktien
+(z. B. FY2021: gesamt 2,171 = −676 RE + 2,847 Treasury). Eine Kapitalgutschrift
+in die Zeile gibt es erst mit der Kenvue-Transaktion FY2023, zeitgleich mit der
+neuen Bezeichnung. Quellen: 10-K-Hauptdokumente (Inline-XBRL) 0000200406-20-000010
+(`form10-k20191229.htm`, SHA-256 `c70fc703…`), -21-000008 (`jnj-20210103.htm`,
+`6e2d7dfb…`), -22-000022 (`jnj-20220102.htm`, `c4e3c13f…`), -23-000016
+(`jnj-20230101.htm`, `9efb7472…`), -24-000013 (`jnj-20231231.htm`, `5e4fa5ea…`),
+-26-000016 (`jnj-20251228.htm`, `b2b020e8…`), abgerufen 2026-09-30; Auszug je
+Periode mit Wert, Zeile, Spaltenbuchungen und SHA-256 in
+`tests/real-data/excerpts/jnj-re-primary-sources.json`. Alle Beträge stimmen
+mit den Company Facts desselben Stichtags überein.
+
+**O-4 · Korrektur.** Einstufung je Stichtag aus den gemeldeten Bilanzwerten
+desselben Stichtags (Company Facts, je Tag die zuletzt eingereichte 10-K-Angabe):
+* *rein*: eigener Kapitalrücklagen-Bestand (`AdditionalPaidInCapital`,
+  `AdditionalPaidInCapitalCommonStock` oder
+  `CommonStocksIncludingAdditionalPaidInCapital`) **und** die Identität
+  Stammkapital + Kapitalrücklage + RE + OCI + Vorzugskapital − eigene Aktien
+  = Eigenkapital (bzw. inkl. Minderheiten − `MinorityInterest`) schließt
+  (Toleranz 0.05 % der Beträge). Die Kapitalrücklage ist dann außerhalb des
+  RE-Werts erfasst. MCD: 17 + 9,641 + 70,282 − 2,414 − 79,316 = −1,790 ≈ −1,791.
+* *kombiniert (belegt)*: Kapitalrücklage eigens gemeldet, Identität schließt
+  nur ohne sie, und Stammkapital = Nennwert × ausgegebene Aktien
+  (`CommonStockParOrStatedValuePerShare`, `CommonStockSharesIssued`). Keine
+  Zerlegung (es wird nichts subtrahiert), der Wert bleibt gesperrt.
+* *Umfang ungeklärt*: alles andere — kein eigener Kapitalrücklagen-Bestand
+  (die Identität schließt dann mit dem RE-Wert als Sammelposten, ob mit oder
+  ohne Kapitalrücklage), Identität schließt nicht, Eigenkapital fehlt,
+  Kapitalrücklage doppelt gezählt ohne Nennwertnachweis. Der Grund ist als
+  Unsicherheit formuliert, APIC-Bewegungen werden nur als Indiz genannt; die
+  Behauptung „umfasst damit auch die Kapitalrücklage“ entfällt.
+
+Nur „rein“ geht in Altman ein; Altman nennt „belegt kombiniert“ bzw.
+„Umfang ungeklärt“. Keine unternehmensspezifische Regel.
+
+**JNJ im Import.** Die Company Facts enthalten weder Zeilenbezeichnung noch
+Spalten der Eigenkapitalveränderung; die Identität schließt in allen Jahren
+nur mit dem RE-Wert als Sammelposten (z. B. 3,120 + 123,060 − 13,058 − 39,099
+= 74,023 zum 2022-01-02). Der Import kann FY2018–FY2022 (rein) daher nicht von
+FY2023–FY2025 (kombiniert) unterscheiden: **alle JNJ-Stichtage sind „Umfang
+ungeklärt“** und gesperrt, ohne eine Kombination zu behaupten. Das ist eine
+offen benannte Grenze der Datenbasis, keine Aussage über die Primärquelle.
+Eine Nutzung der Primärquellen-Einstufung im Produkt wäre eine
+Importerweiterung (nicht Teil dieses Auftrags).
+
+**O-4 · Folgepfad (synthetisch mit EBIT; TA 10,000, WC 500, EBIT 400,
+BV 4,000, TL 6,000; Piotroski fest bestanden).**
+
+| Fall | V1.0.77 | V1.0.78 |
+|---|---|---|
+| belegt kombiniert (CS 100 = 1 USD × 100 Mio., APIC 3,400, RE-Tag 3,900) | RE 3,900 übernommen ⇒ Z″ 2.5682 ⇒ `investable_mid`, Basis-MoS 20 % | gesperrt ⇒ wie „RE fehlt“: `caution_data`, 25 % |
+| rein (APIC 3,400 bzw. CommonStocksIncluding… 3,500, RE 500) | 500 ⇒ Z″ 1.4598 ⇒ `caution_quality` | unverändert |
+| ungeklärt (kein APIC-Bestand, mit/ohne APIC-Bewegung) | mit Bewegung verworfen „umfasst damit …“; ohne Bewegung übernommen | gesperrt, Grund „Umfang ungeklärt“ |
+| APIC-Bestand, Identität schließt nicht | übernommen | gesperrt, ungeklärt |
+
+**O-1 · Befund.** `_roicStockMatchers` (Standardmodus, unverändert aus
+ROIC − WACC) paart Bestände ohne Perioden neben datiertem EBIT per
+Arrayposition; ohne EBIT-Perioden gilt für alle Reihen Positionsbezug, auch bei
+datierten Beständen. Der vereinfachte ROIC zeigte so 10.7 % ohne belegte
+Zuordnung (beide Mischrichtungen, Bestandsperioden `null`, unmögliche Daten).
+**Korrektur.** Option `strictPeriods` nur für `computeBaseRateLite`:
+Positionsbezug nur, wenn keine der vier Reihen ein `periods`-Feld führt
+(Kriterium wie ROIC-Trend V1.0.75); sonst müssen alle vier gültige
+Kalenderdaten (`parseIsoDate`) tragen und nach Geschäftsjahr/≤ 45 Tage ohne
+Eröffnungsstichtag zuordenbar sein, sonst „nicht bewertbar“ mit Grund.
+ROIC − WACC, ROIC-Trend, QCE, Urteil und Sicherheitsabschlag nutzen weiter den
+Standardmodus. Alt/Neu-Vergleich (13 Datensätze: beide Mischrichtungen,
+`null`-Perioden, unmögliche Daten, voll datiert, periodenfrei, Browser-Fixtures
+Leasing/Trend/Mischfälle): ROIC − WACC, Trend-Score, QCE, Urteil, Kaufpreis und
+Basis-MoS identisch; geändert nur der angezeigte vereinfachte ROIC.
+
+**Tests.** `tests/retained-earnings-scope.test.mjs` neu gefasst (11 statt 8;
+ersetzt die V1.0.77-Erwartungen „keine APIC-Angaben ⇒ RE bleibt“ und
+„Bewegung ohne Bestand ⇒ kombiniert“, die auf dem unzulässigen Schluss
+beruhten; Fixtures mit schließender bzw. nicht schließender Identität),
+Realauszug `re-apic-excerpt.json` um die Eigenkapitalbestandteile erweitert,
+`jnj-re-primary-sources.json` neu; `tests/base-rate-roic-periods.test.mjs`
+(10); Browser-Abnahme §12 (+7: Import über die Oberfläche, gerenderter
+Bewertungsreiter, Bewertungsgrößen Mischfall = Altdaten). Gegenlauf mit der
+Produktdatei von `18f146c`: O-4 8/11 rot (MCD nur wegen des neuen Felds
+`reScope`, Werte gleich), O-1 5/10 rot, Browser §12 2 FAIL; gültige
+Gegenproben (rein mit APIC bzw. im Stammkapital, voll datiert, 52/53-Wochen,
+periodenfrei, belegte 0, keine Bewertungswirkung, Primärquellenabgleich)
+bestehen vorher und nachher.
+
+**Verbleibende Grenzen.** (a) Unterscheidung rein/kombiniert nur, soweit die
+Company Facts die Eigenkapitalbestandteile tragen; wo sie nur aus der
+Primärquelle hervorgeht (JNJ), bleibt der Umfang ungeklärt und Altman gesperrt.
+Emittenten ohne eigenen Kapitalrücklagen-Bestand oder mit nicht schließender
+Identität verlieren Altman ebenfalls (vorher teils ungeprüft übernommen).
+(b) Manuelle Importe (ohne Company Facts) werden nicht geprüft. (c) Offen und
+unverändert: Abgleich Nettoschuldenstichtag ↔ FCF-Periode in der Diagnostik;
+Altdatenregel „fehlende Liquidität = 0“ in ROIC − WACC/ROIC-Trend; MCD-/JNJ-
+Modellsperren; JNJ ohne EBIT.
+

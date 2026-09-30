@@ -10092,7 +10092,10 @@ function computeBaseRateLite(mj, qr, vr) {
   // Definition passen:
   //   · Bestaende zum Ende DESSELBEN Geschaeftsjahres wie das EBIT
   //     (_roicStockMatchers: Geschaeftsjahr + ≤ 45 Tage, keine
-  //     Eroeffnungsstichtage; Positionsbezug nur bei periodenfreien Altdaten);
+  //     Eroeffnungsstichtage). V1.0.78: mit `strictPeriods` — Positionsbezug
+  //     nur, wenn keine der vier Reihen Periodenkontext hat; gemischte oder
+  //     ungueltige Periodenangaben ⇒ nicht bewertbar (V1.0.77 paarte hier
+  //     entgegen dem Kommentar noch per Arrayposition);
   //   · Eigenkapital, Finanzschulden UND Liquiditaet muessen belegt sein —
   //     eine fehlende Angabe ist keine 0 (eine belegte 0 bleibt gueltig);
   //   · Steuersatz aus wacc_components.tax_rate, kein Pauschalwert;
@@ -10112,7 +10115,7 @@ function computeBaseRateLite(mj, qr, vr) {
   } else if (_rwBrl && _rwBrl._leaseRequired === true && _rwBrl.status !== 'ok') {
     _roicBlock = 'Leasingbereinigung erforderlich, aber nicht erfüllbar (wie ROIC − WACC) — unbereinigter ROIC nicht bewertbar';
   }
-  var _rm = _roicStockMatchers(f);
+  var _rm = _roicStockMatchers(f, { strictPeriods: true });
   function _roicAt(i) {
     var per = (_rm.periodMode && _rm.pE && _rm.pE[i] != null) ? String(_rm.pE[i]) : null;
     if (_roicBlock) return { value: null, period: per, reason: _roicBlock };
@@ -10123,9 +10126,16 @@ function computeBaseRateLite(mj, qr, vr) {
     if (!t || t.value == null) miss.push('Finanzschulden');
     if (!c || c.value == null) miss.push('Liquidität');
     if (miss.length > 0) {
+      // V1.0.78: Grund der strengen Zuordnung (fehlende/ungueltige Perioden) nennen.
+      var _why = [b, t, c].map(function (x) { return x && x.value == null && x.reason ? x.reason : null; })
+        .filter(Boolean).filter(function (x, k, a) { return a.indexOf(x) === k; });
+      if (_why.length > 0 && /^EBIT/.test(_why[0])) {
+        return { value: null, period: per, reason: _why[0] + ' — keine zeitliche Zuordnung, kein Positionsbezug' };
+      }
       return { value: null, period: per, reason: (per ? 'für ' + per + ' ' : '') + 'ohne '
         + (_rm.periodMode ? 'periodengleiche ' : '') + 'Angabe: ' + miss.join(', ')
-        + ' — fehlende Werte gelten nicht als 0' };
+        + (_why.length > 0 ? ' (' + _why.join('; ') + ')' : '')
+        + ' — fehlende Werte gelten nicht als 0, fehlende Perioden werden nicht durch die Arrayposition ersetzt' };
     }
     var ic = b.value + t.value - c.value;
     if (ic <= 0) return { value: null, period: per, reason: 'investiertes Kapital ≤ 0' + (per ? ' (' + per + ')' : '') };
@@ -11327,13 +11337,13 @@ function computeAltmanZ(mj) {
   if (ca == null) missing.push('current_assets');
   if (cl == null) missing.push('current_liabilities');
   if (re == null) {
-    // V1.0.77 (O-4): verworfener kombinierter Wert (RE + APIC) mit Grund benennen.
-    const _reU = f._v4_meta && f._v4_meta.retained_earnings && f._v4_meta.retained_earnings.unavailablePeriods;
-    const _reP0 = f._v4_meta && f._v4_meta.retained_earnings && Array.isArray(f._v4_meta.retained_earnings.periods)
-      ? f._v4_meta.retained_earnings.periods[0] : null;
-    const _reWhy = Array.isArray(_reU) && _reP0 ? _reU.find(u => String(u).indexOf(_reP0 + ':') === 0) : null;
-    missing.push(_reWhy ? 'retained_earnings (kombinierter Wert inkl. Kapitalrücklage, keine reine Gewinnrücklage belegt)'
-                        : 'retained_earnings');
+    // V1.0.77/V1.0.78 (O-4): nicht verwendeter RE-Wert mit seiner Einstufung benennen.
+    const _reM = f._v4_meta && f._v4_meta.retained_earnings;
+    const _reP0 = _reM && Array.isArray(_reM.periods) ? _reM.periods[0] : null;
+    const _sc = _reM && Array.isArray(_reM.reScope) && _reP0 ? _reM.reScope.find(x => x.period === _reP0) : null;
+    missing.push(!_sc ? 'retained_earnings'
+      : _sc.status === 'combined' ? 'retained_earnings (belegt kombiniert mit Kapitalrücklage, keine reine Gewinnrücklage)'
+      : 'retained_earnings (Umfang ungeklärt — als reine Gewinnrücklage nicht belegt)');
   }
   if (ebit == null) missing.push('ebit');
   if (bv == null) missing.push('book_value');
@@ -11474,20 +11484,39 @@ function computeNetDebtToEbitda(mj) {
 }
 
 // V1.0.77 (O-1): Periodenzuordnung der ROIC-Bestandsgroessen als eigene
-// Funktion, damit der vereinfachte ROIC im Wachstumsprofil (computeBaseRateLite)
-// DIESELBEN Regeln nutzt wie ROIC − WACC (Geschaeftsjahr + ≤ 45 Tage,
-// Eroeffnungsstichtage ausgeschlossen, Positionsbezug nur fuer Bestaende ohne
-// eigene Perioden bzw. periodenfreie Altdaten). Inhalt unveraendert aus
-// computeRoicMinusWacc (V1.0.71/72) herausgeloest.
-function _roicStockMatchers(f) {
+// Funktion (Inhalt unveraendert aus computeRoicMinusWacc V1.0.71/72): Bestaende
+// zum Ende desselben Geschaeftsjahres wie das EBIT (≤ 45 Tage, keine
+// Eroeffnungsstichtage). STANDARD (ROIC − WACC, unveraendert): Traegt das EBIT
+// Perioden, werden Bestandsreihen OHNE eigene Perioden weiter per Arrayposition
+// gepaart; traegt das EBIT keine Perioden, gilt fuer alle Reihen Positionsbezug
+// — auch wenn Bestaende Perioden fuehren. Die Aussage „Positionsbezug nur bei
+// periodenfreien Altdaten“ (V1.0.77) traf fuer diesen Standard nicht zu.
+//
+// V1.0.78 (Nachreview PR #3, O-1): Option `strictPeriods` NUR fuer den
+// vereinfachten ROIC im Wachstumsprofil. Positionsbezug gilt dort nur, wenn
+// KEINE der vier Reihen (EBIT, Eigenkapital, Schulden, Liquiditaet) ein
+// `periods`-Feld fuehrt (vollstaendig periodenfreie Altdaten, Kriterium wie im
+// ROIC-Trend V1.0.75). Sobald eine Reihe Periodenkontext hat, muessen alle vier
+// gueltige Kalenderdaten (parseIsoDate) tragen und nach den obigen Regeln
+// zuordenbar sein; fehlende, leere oder ungueltige Perioden werden nicht durch
+// die Arrayposition ersetzt. Beide Mischrichtungen (EBIT mit, Bestaende ohne
+// Perioden und umgekehrt) sind damit nicht bewertbar. ROIC − WACC, ROIC-Trend,
+// Score, Qualitaetsurteil und Sicherheitsabschlag rufen die Funktion ohne
+// Option auf und bleiben unveraendert.
+function _roicStockMatchers(f, opts) {
   f = f || {};
+  const _strictOpt = !!(opts && opts.strictPeriods);
   const bv = f.book_value || [];
   const td = f.total_debt || [];
   const cash = f.cash_and_equivalents || f.cash || [];
   const oll = f.operating_lease_liabilities || [];
   const _per = (k) => (f._v4_meta && f._v4_meta[k] && Array.isArray(f._v4_meta[k].periods)) ? f._v4_meta[k].periods : null;
   const pE = _per('ebit');
-  const periodMode = !!pE;
+  const _cashKey = f.cash_and_equivalents ? 'cash_and_equivalents' : 'cash';
+  const _hasCtx = (k) => !!(f._v4_meta && f._v4_meta[k] &&
+    Object.prototype.hasOwnProperty.call(f._v4_meta[k], 'periods'));
+  const strict = _strictOpt && ['ebit', 'book_value', 'total_debt', _cashKey].some(_hasCtx);
+  const periodMode = strict || !!pE;
   // V1.0.72 (D2-Nachbesserung): Eroeffnungsstichtage sind keine Jahresendbestaende.
   // Ein Stichtag, an dem eine Geschaeftsperiode des EBIT BEGINNT (und an dem
   // keine endet), ist der Anfangsbestand des Folgejahres — z. B. der
@@ -11522,8 +11551,26 @@ function _roicStockMatchers(f) {
   };
   // Bestandsgroessen ohne eigene Perioden bleiben im Positionsbezug (wie
   // bisher); fuer das Leasing gilt das nicht (siehe oben).
+  // V1.0.78: im strengen Modus nie; stattdessen null mit Grund.
+  const _nil = (reason) => ({ value: null, period: null, index: -1, reason });
+  const _strictMatcher = (arr, periods) => (i) => {
+    if (!Array.isArray(pE)) return _nil('EBIT ohne Periodenangabe, obwohl andere Reihen Perioden führen');
+    const pe = pE[i];
+    if (pe == null || parseIsoDate(pe) == null) return _nil('EBIT-Periode ' + (pe == null ? 'leer' : String(pe)) + ' ist kein gültiges Kalenderdatum');
+    if (!Array.isArray(periods)) return _nil('ohne Periodenangabe');
+    for (let j = 0; j < arr.length && j < periods.length; j++) {
+      if (arr[j] == null || periods[j] == null || parseIsoDate(periods[j]) == null) continue;
+      if (_secPeriodYear(periods[j]) !== _secPeriodYear(pe)) continue;
+      const d = _secPeriodDaysApart(pe, periods[j]);
+      if (d == null || d > 45) continue;
+      if (periods[j] !== pe && _openingDates.has(periods[j])) continue;   // Eroeffnungsstichtag
+      return { value: arr[j], period: periods[j], index: j };
+    }
+    return _nil('keine gültige periodengleiche Angabe');
+  };
   const _stock = (arr, k) => {
     const p = _per(k);
+    if (strict) return _strictMatcher(arr, p);
     if (periodMode && !p) return (i) => ({ value: arr[i] != null ? arr[i] : null, period: null, index: i });
     return _matcher(arr, p, k);
   };
@@ -11532,7 +11579,7 @@ function _roicStockMatchers(f) {
   const pO = _per('operating_lease_liabilities');
   const mOll = _matcher(oll, pO, 'operating_lease_liabilities');
 
-  return { periodMode, pE, mBv, mTd, mCash, pO, mOll, openingSkips: _openingSkips };
+  return { periodMode, strict, pE, mBv, mTd, mCash, pO, mOll, openingSkips: _openingSkips };
 }
 
 function computeRoicMinusWacc(mj) {
@@ -30100,7 +30147,9 @@ function _buildSecMasterJson({ ticker, cik, companyName, sic, fiscalYearEnd,
       gapFrom:        exMeta.gapFrom        || null,
       gapTo:          exMeta.gapTo          || null,
       gapYears:       exMeta.gapYears       || null,
-      droppedPeriods: exMeta.droppedPeriods || null
+      droppedPeriods: exMeta.droppedPeriods || null,
+      // V1.0.78 (O-4): Einstufung des Gewinnruecklagen-Umfangs je Stichtag
+      reScope: exMeta.reScope || null
     };
   }
 
@@ -31364,28 +31413,48 @@ function _renderSecDiag(report, masterJson) {
 // - Import-Button: secConfirmImport() prüft ticker-Match mit
 //   pendingMasterJson.meta.ticker gegen lastRequestedTicker.
 // ────────────────────────────────────────────────────────────────
-// ── V1.0.77 (O-4) · Umfang des Gewinnruecklagen-Tags pruefen ─────────────
+// ── O-4 · Umfang des Gewinnruecklagen-Tags pruefen (V1.0.77, berichtigt V1.0.78) ──
 // us-gaap:RetainedEarningsAccumulatedDeficit umfasst nach Taxonomie-Definition
-// NUR die Gewinnruecklagen. Emittenten, die Gewinn- und Kapitalruecklage in
-// EINER Bilanzzeile zeigen, taggen diese Zeile teils trotzdem so (Realbefund
-// O-4: „Retained earnings and Additional-paid-in-capital“). Company Facts
-// liefern keine firmeneigenen Zeilenbezeichnungen; die Zusammenfassung folgt
-// aber aus den gemeldeten Daten selbst: Werden fuer ein Geschaeftsjahr
-// BEWEGUNGEN der Kapitalruecklage gemeldet (AdjustmentsToAdditionalPaidInCapital…),
-// zum Stichtag aber KEIN eigener Bestand (AdditionalPaidInCapital,
-// AdditionalPaidInCapitalCommonStock, CommonStocksIncludingAdditionalPaidInCapital),
-// dann steckt die Kapitalruecklage in einer anderen Eigenkapitalzeile, und der
-// RE-Wert ist als reine Gewinnruecklage nicht belegt. Eine Zerlegung waere nur
-// mit einem gemeldeten APIC-Bestand gleicher Einheit und Periode moeglich —
-// den gibt es in genau diesem Fall nicht. Der Wert wird daher je Periode
-// verworfen (null, Grund in unavailablePeriods); abhaengige Rechnungen
-// (Altman Z'') behandeln ihn als fehlend. Keine unternehmensspezifische Regel.
-// Stichtagsbezug wie in der ROIC-Zuordnung: gleiches Geschaeftsjahr und
-// ≤ 45 Tage Abstand. Grenze: Ein Emittent, der APIC-Bewegungen meldet, die
-// Kapitalruecklage aber im Stammkapital (CommonStockValue) fuehrt, wird
-// ebenfalls verworfen (konservativ, der Wert ist dann nicht belegt, nicht falsch).
-const RE_SCOPE_APIC_BALANCE_TAGS = ['AdditionalPaidInCapital', 'AdditionalPaidInCapitalCommonStock',
-  'CommonStocksIncludingAdditionalPaidInCapital'];
+// nur die Gewinnruecklagen; Emittenten taggen aber teils eine Sammelzeile
+// „Gewinn- und Kapitalruecklage“ so. Company Facts enthalten weder die
+// firmeneigene Zeilenbezeichnung noch die Spalten der Eigenkapitalveraenderung.
+//
+// V1.0.77 schloss aus „APIC-Bewegungen, aber kein APIC-Bestand“ auf eine
+// Kombination. Das ist nur ein Indiz: Bei JNJ stehen diese Buchungen zum Teil in
+// der Gewinnruecklagen-Spalte, aber als BELASTUNG; die Gutschrift liegt bei den
+// eigenen Aktien (Nachreview PR #3, Primaerquellen je Periode in
+// tests/real-data/excerpts/jnj-re-primary-sources.json). Umgekehrt beweist ein
+// vorhandener APIC-Bestand allein keinen reinen RE-Wert.
+//
+// V1.0.78 stuft jeden Stichtag aus den gemeldeten Bilanzwerten DESSELBEN
+// Stichtags ein (je Tag die zuletzt eingereichte 10-K-Angabe):
+//   · 'pure'     — eigener Kapitalruecklagen-Bestand (AdditionalPaidInCapital,
+//                  AdditionalPaidInCapitalCommonStock oder
+//                  CommonStocksIncludingAdditionalPaidInCapital) UND die
+//                  Eigenkapitalidentitaet Stammkapital + Kapitalruecklage + RE +
+//                  OCI + Vorzugskapital − eigene Aktien = Eigenkapital schliesst.
+//                  Dann ist die Kapitalruecklage ausserhalb des RE-Werts erfasst
+//                  (sonst waere sie doppelt gezaehlt).
+//   · 'combined' — Kapitalruecklage eigens gemeldet, die Identitaet schliesst
+//                  aber nur OHNE sie, und das Stammkapital entspricht Nennwert ×
+//                  ausgegebene Aktien: Dann ist die gemeldete Kapitalruecklage im
+//                  RE-Wert enthalten. Keine Zerlegung (der RE-Wert bleibt
+//                  gesperrt; eine Subtraktion wird nicht vorgenommen).
+//   · 'unclear'  — alles andere, u. a. kein eigener Kapitalruecklagen-Bestand
+//                  (dann schliesst die Identitaet mit dem RE-Wert als Sammelposten,
+//                  ob mit oder ohne Kapitalruecklage ist nicht erkennbar),
+//                  Identitaet schliesst nicht, Eigenkapital fehlt. Der Grund ist
+//                  als Unsicherheit formuliert; APIC-Bewegungen werden nur als
+//                  Indiz genannt.
+// Nur 'pure' wird als Gewinnruecklage uebernommen; 'combined' und 'unclear'
+// werden fuer diese Periode verworfen (null, Grund in reScope/unavailablePeriods),
+// abhaengige Rechnungen (Altman Z'') behandeln den Wert als fehlend. Keine
+// unternehmensspezifische Regel. Grenze: Wo der Umfang nur aus der
+// Primaerquelle hervorgeht (Zeilenbezeichnung, Spalte der Eigenkapital-
+// veraenderung — z. B. JNJ), bleibt er fuer den Import ungeklaert.
+// Toleranz der Identitaet: 0.05 % der Summe der Betraege aller Bestandteile
+// (Rundung der Einzelangaben).
+const RE_SCOPE_APIC_TAGS = ['AdditionalPaidInCapital', 'AdditionalPaidInCapitalCommonStock'];
 const RE_SCOPE_APIC_MOVEMENT_PREFIX = 'AdjustmentsToAdditionalPaidInCapital';
 function _checkRetainedEarningsScope(facts, reEx) {
   if (!reEx || !Array.isArray(reEx.values) || reEx.values.length === 0) return reEx;
@@ -31393,46 +31462,105 @@ function _checkRetainedEarningsScope(facts, reEx) {
   const periods = Array.isArray(meta.periods) ? meta.periods : null;
   const g = (facts && facts['us-gaap']) || {};
   if (!periods) return reEx;
-  const _entries10k = (tag, wantFlow) => {
-    const c = g[tag]; if (!c || !c.units) return [];
-    const out = [];
-    for (const arr of Object.values(c.units)) {
-      for (const e of (arr || [])) {
-        if (!e || e.form !== '10-K' || !e.end || e.val == null) continue;
-        if (wantFlow ? !e.start : !!e.start) continue;
-        out.push(e);
-      }
+  // Stichtagswert (ohne start) eines Tags zum Datum `end`, zuletzt eingereicht.
+  const _inst = (tag, end, unit) => {
+    const c = g[tag]; if (!c || !c.units) return null;
+    const arr = unit ? (c.units[unit] || []) : (c.units.USD || []);
+    let best = null;
+    for (const e of arr) {
+      if (!e || e.form !== '10-K' || e.start || e.end !== end || e.val == null || !isFinite(e.val)) continue;
+      if (!best || String(e.filed || '') >= String(best.filed || '')) best = e;
     }
-    return out;
+    return best ? Number(best.val) : null;
   };
   const movementTags = Object.keys(g).filter(k => k.indexOf(RE_SCOPE_APIC_MOVEMENT_PREFIX) === 0);
-  if (movementTags.length === 0) return reEx;            // kein Hinweis auf eine Kapitalruecklage
-  const movements = movementTags.flatMap(t => _entries10k(t, true).map(e => ({ tag: t, end: e.end })));
-  const balances = RE_SCOPE_APIC_BALANCE_TAGS.flatMap(t => _entries10k(t, false).map(e => ({ tag: t, end: e.end })));
-  const _near = (a, b) => _secPeriodYear(a) === _secPeriodYear(b) &&
-    (() => { const d = _secPeriodDaysApart(a, b); return d != null && d <= 45; })();
+  const _hasMovement = (end) => movementTags.some(t => {
+    const c = g[t]; if (!c || !c.units) return false;
+    return Object.values(c.units).some(arr => (arr || []).some(e => e && e.form === '10-K' && e.start && e.end === end));
+  });
+  const _mio = (x) => (x / 1e6).toLocaleString('en-US', { maximumFractionDigits: 1 });
+  const usedTag = reEx.usedTag || 'RetainedEarningsAccumulatedDeficit';
   const values = reEx.values.slice();
+  const reScope = [];
   const unavailable = [];
   for (let i = 0; i < values.length; i++) {
     const p = periods[i];
     if (values[i] == null || p == null) continue;
-    const mv = movements.find(m => _near(m.end, p));
-    if (!mv) continue;
-    if (balances.some(b => _near(b.end, p))) continue;
-    const shown = (typeof values[i] === 'number') ? values[i].toLocaleString('en-US') : String(values[i]);
-    unavailable.push(p + ': ' + (reEx.usedTag || 'RE-Tag') + ' = ' + shown + ' nicht als reine Gewinnrücklage belegt — '
-      + 'Bewegungen der Kapitalrücklage gemeldet (' + mv.tag + '), aber kein eigener Bestand ('
-      + RE_SCOPE_APIC_BALANCE_TAGS.join('/') + '); der Wert umfasst damit auch die Kapitalrücklage (RE + APIC) '
-      + 'und ist ohne gemeldeten APIC-Bestand nicht zerlegbar');
-    values[i] = null;
+    const re = _inst(usedTag, p);
+    let se = _inst('StockholdersEquity', p);
+    let seTag = 'StockholdersEquity';
+    if (se == null) {
+      const inc = _inst('StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest', p);
+      if (inc != null) { const nci = _inst('MinorityInterest', p); se = inc - (nci || 0);
+        seTag = 'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest' + (nci != null ? ' − MinorityInterest' : ''); }
+    }
+    const cs = _inst('CommonStockValue', p);
+    const csi = _inst('CommonStocksIncludingAdditionalPaidInCapital', p);
+    const apicTag = RE_SCOPE_APIC_TAGS.find(t => _inst(t, p) != null) || null;
+    const apic = apicTag ? _inst(apicTag, p) : null;
+    const aoci = _inst('AccumulatedOtherComprehensiveIncomeLossNetOfTax', p);
+    const pref = _inst('PreferredStockValue', p);
+    const ts = _inst('TreasuryStockValue', p) != null ? _inst('TreasuryStockValue', p) : _inst('TreasuryStockCommonValue', p);
+    const mv = _hasMovement(p);
+    const _indiz = mv ? ' Gemeldete Buchungen ' + RE_SCOPE_APIC_MOVEMENT_PREFIX + '… sind nur ein Indiz, kein Nachweis.' : '';
+    let status = 'unclear', reason;
+    if (re == null) {
+      reason = 'Umfang ungeklärt: RE-Stichtagswert in den Company Facts nicht auffindbar';
+    } else if (se == null) {
+      reason = 'Umfang ungeklärt: Eigenkapital zum Stichtag nicht gemeldet — die Eigenkapitalidentität ist nicht prüfbar.' + _indiz;
+    } else {
+      const comps = [cs, csi, apic, re, aoci, pref, ts].filter(x => x != null);
+      const tol = 0.0005 * comps.reduce((a, x) => a + Math.abs(x), 0) + 0.0005 * Math.abs(se);
+      const without = (cs || 0) + (csi || 0) + re + (aoci || 0) + (pref || 0) - (ts || 0);
+      const withApic = without + (apic || 0);
+      const sepApic = apic != null || csi != null;
+      if (sepApic && Math.abs(withApic - se) <= tol) {
+        status = 'pure';
+        reason = 'rein: Kapitalrücklage eigens gemeldet (' + (apicTag || 'CommonStocksIncludingAdditionalPaidInCapital')
+          + ') und Eigenkapitalidentität schließt (' + _mio(withApic) + ' ≈ ' + _mio(se) + ')';
+      } else if (apic != null && Math.abs(apic) > 2 * tol && Math.abs(without - se) <= tol) {
+        const par = _inst('CommonStockParOrStatedValuePerShare', p, 'USD/shares');
+        const iss = _inst('CommonStockSharesIssued', p, 'shares');
+        const parOk = cs != null && par != null && iss != null && Math.abs(par * iss - cs) <= Math.max(tol, 0.005 * Math.abs(cs));
+        if (parOk) {
+          status = 'combined';
+          reason = 'kombiniert (belegt): Der RE-Wert ' + _mio(re) + ' enthält die gemeldete Kapitalrücklage ' + _mio(apic)
+            + ' (' + apicTag + '): Die Eigenkapitalidentität schließt nur ohne sie (' + _mio(without) + ' ≈ ' + _mio(se)
+            + '), und das Stammkapital entspricht Nennwert × ausgegebene Aktien. Keine Zerlegung — nicht als Gewinnrücklage verwendet';
+        } else {
+          reason = 'Umfang ungeklärt: Die gemeldete Kapitalrücklage (' + apicTag + ') wäre doppelt gezählt (Identität schließt nur ohne sie); '
+            + 'ob sie im RE-Wert oder im Stammkapital steckt, ist ohne Nennwert × ausgegebene Aktien nicht zuordenbar';
+        }
+      } else if (!sepApic) {
+        reason = 'Umfang ungeklärt: kein eigener Kapitalrücklagen-Bestand gemeldet ('
+          + RE_SCOPE_APIC_TAGS.concat('CommonStocksIncludingAdditionalPaidInCapital').join('/') + '). '
+          + (Math.abs(without - se) <= tol ? 'Die Eigenkapitalidentität schließt mit dem RE-Wert als Sammelposten; ' : '')
+          + 'ob er Kapitalrücklagen enthält, ist aus den Company Facts nicht bestimmbar (Zeilenbezeichnung und Spalten der '
+          + 'Eigenkapitalveränderung fehlen dort).' + _indiz;
+      } else {
+        reason = 'Umfang ungeklärt: Eigenkapitalidentität schließt nicht (Bestandteile ' + _mio(withApic) + ' gegenüber '
+          + seTag + ' ' + _mio(se) + ') — der Umfang des RE-Werts ist nicht bestimmbar.' + _indiz;
+      }
+    }
+    reScope.push({ period: p, value: values[i], status, reason });
+    if (status !== 'pure') {
+      unavailable.push(p + ': ' + usedTag + ' = ' + (typeof values[i] === 'number' ? values[i].toLocaleString('en-US') : String(values[i]))
+        + ' — ' + reason);
+      values[i] = null;
+    }
   }
-  if (unavailable.length === 0) return reEx;
-  const note = 'Gewinnrücklagen für ' + unavailable.length + ' Periode(n) verworfen (kombinierter Wert inkl. Kapitalrücklage, '
-    + 'nicht als 0 und nicht als Gewinnrücklage verwendet) — ' + unavailable[0];
+  if (reScope.length === 0) return reEx;
+  const nComb = reScope.filter(x => x.status === 'combined').length;
+  const nUnc = reScope.filter(x => x.status === 'unclear').length;
+  const note = unavailable.length === 0 ? null
+    : ('Gewinnrücklagen für ' + unavailable.length + ' Periode(n) nicht verwendet ('
+       + (nComb ? nComb + ' belegt kombiniert' : '') + (nComb && nUnc ? ', ' : '') + (nUnc ? nUnc + ' Umfang ungeklärt' : '')
+       + '; nicht als 0) — ' + unavailable[0]);
   return Object.assign({}, reEx, { values, meta: Object.assign({}, meta, {
-    unavailablePeriods: (meta.unavailablePeriods || []).concat(unavailable),
-    unavailableNote: meta.unavailableNote ? meta.unavailableNote + ' · ' + note : note,
-    confidenceHint: 'medium', reScopeChecked: true }) });
+    reScope,
+    unavailablePeriods: unavailable.length ? (meta.unavailablePeriods || []).concat(unavailable) : (meta.unavailablePeriods || null),
+    unavailableNote: note ? (meta.unavailableNote ? meta.unavailableNote + ' · ' + note : note) : (meta.unavailableNote || null),
+    confidenceHint: unavailable.length ? 'medium' : meta.confidenceHint }) });
 }
 
 // V1.0.71 (D2): Extraktion aller Felder aus SEC-companyfacts — unveraendert aus

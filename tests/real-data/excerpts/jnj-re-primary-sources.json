@@ -1,0 +1,272 @@
+{
+ "source": "https://www.sec.gov/Archives/edgar/data/200406/<accn ohne Bindestriche>/<document>",
+ "retrieved": "2026-09-30",
+ "note": "JNJ-Primaerquellen je Gewinnruecklagen-Stichtag: Bilanzzeile des 10-K DERSELBEN Periode (us-gaap:RetainedEarningsAccumulatedDeficit ohne Dimension) und alle Buchungen der Spalte StatementEquityComponentsAxis=RetainedEarningsMember im Geschaeftsjahr bis zu diesem Stichtag (Vorzeichen wie im XBRL, sign=\"-\" beruecksichtigt; DividendsCommonStockCash positiv = Minderung). Extraktion mit tests/real-data/ixbrl-Methodik (Regex ueber ix:nonFraction/xbrli:context), Rohdateien nicht versioniert (SHA-256 je Dokument).",
+ "periods": [
+  {
+   "period": "2018-12-30",
+   "value": 106216.0,
+   "document": "form10-k20191229.htm",
+   "form": "10-K FY2019",
+   "accn": "0000200406-20-000010",
+   "sha256": "c70fc7030153af06881775f2088b410c4dd00714f24c274a2b1cb1e12270d8d7",
+   "balanceSheetLabel": "Retained earnings",
+   "laterPresentations": [],
+   "retainedEarningsColumnFiscalYear": [
+    {
+     "concept": "CumulativeEffectOnRetainedEarningsNetOfTax1",
+     "line": "Cumulative adjustment",
+     "value": -254.0
+    },
+    {
+     "concept": "NetIncomeLoss",
+     "line": "Net earnings",
+     "value": 15297.0
+    },
+    {
+     "concept": "DividendsCommonStockCash",
+     "line": "Cash dividends paid",
+     "value": 9494.0
+    },
+    {
+     "concept": "StockIssuedDuringPeriodValueTreasuryStockReissued",
+     "line": "Employee compensation and stock option plans",
+     "value": -1111.0
+    },
+    {
+     "concept": "StockholdersEquityOther",
+     "line": "Other",
+     "value": 15.0
+    }
+   ]
+  },
+  {
+   "period": "2019-12-29",
+   "value": 110659.0,
+   "document": "form10-k20191229.htm",
+   "form": "10-K FY2019",
+   "accn": "0000200406-20-000010",
+   "sha256": "c70fc7030153af06881775f2088b410c4dd00714f24c274a2b1cb1e12270d8d7",
+   "balanceSheetLabel": "Retained earnings",
+   "laterPresentations": [
+    {
+     "document": "jnj-20210103.htm",
+     "label": "Retained earnings",
+     "value": 110659.0
+    }
+   ],
+   "retainedEarningsColumnFiscalYear": [
+    {
+     "concept": "NetIncomeLoss",
+     "line": "Net earnings",
+     "value": 15119.0
+    },
+    {
+     "concept": "DividendsCommonStockCash",
+     "line": "Cash dividends paid",
+     "value": 9917.0
+    },
+    {
+     "concept": "StockIssuedDuringPeriodValueTreasuryStockReissued",
+     "line": "Employee compensation and stock option plans",
+     "value": -758.0
+    },
+    {
+     "concept": "StockholdersEquityOther",
+     "line": "Other",
+     "value": 1.0
+    }
+   ]
+  },
+  {
+   "period": "2021-01-03",
+   "value": 113890.0,
+   "document": "jnj-20210103.htm",
+   "form": "10-K FY2020",
+   "accn": "0000200406-21-000008",
+   "sha256": "6e2d7dfb8025c3d6d52d33fa1bbd6f565a6e3c9df5ac3bab44084fcea31b983a",
+   "balanceSheetLabel": "Retained earnings",
+   "laterPresentations": [
+    {
+     "document": "jnj-20220102.htm",
+     "label": "Retained earnings",
+     "value": 113890.0
+    }
+   ],
+   "retainedEarningsColumnFiscalYear": [
+    {
+     "concept": "NetIncomeLoss",
+     "line": "Net earnings",
+     "value": 14714.0
+    },
+    {
+     "concept": "DividendsCommonStockCash",
+     "line": "Cash dividends paid",
+     "value": 10481.0
+    },
+    {
+     "concept": "AdjustmentsToAdditionalPaidInCapitalSharebasedCompensationRequisiteServicePeriodRecognitionValue",
+     "line": "Employee compensation and stock option plans",
+     "value": -931.0
+    },
+    {
+     "concept": "StockholdersEquityOther",
+     "line": "Other",
+     "value": 71.0
+    }
+   ]
+  },
+  {
+   "period": "2022-01-02",
+   "value": 123060.0,
+   "document": "jnj-20220102.htm",
+   "form": "10-K FY2021",
+   "accn": "0000200406-22-000022",
+   "sha256": "c4e3c13f9a0094fdccfa5b9ec0c95e18e15739f673192c5b7d7f9ee5425e08c9",
+   "balanceSheetLabel": "Retained earnings",
+   "laterPresentations": [
+    {
+     "document": "jnj-20230101.htm",
+     "label": "Retained earnings",
+     "value": 123060.0
+    }
+   ],
+   "retainedEarningsColumnFiscalYear": [
+    {
+     "concept": "NetIncomeLoss",
+     "line": "Net earnings",
+     "value": 20878.0
+    },
+    {
+     "concept": "DividendsCommonStockCash",
+     "line": "Cash dividends paid",
+     "value": 11032.0
+    },
+    {
+     "concept": "AdjustmentsToAdditionalPaidInCapitalSharebasedCompensationRequisiteServicePeriodRecognitionValue",
+     "line": "Employee compensation and stock option plans",
+     "value": -676.0
+    }
+   ]
+  },
+  {
+   "period": "2023-01-01",
+   "value": 128345.0,
+   "document": "jnj-20230101.htm",
+   "form": "10-K FY2022",
+   "accn": "0000200406-23-000016",
+   "sha256": "9efb7472e821c34d8b185bd172bb24775dcae5b9a1d8ff75c3b99e914b33183d",
+   "balanceSheetLabel": "Retained earnings",
+   "laterPresentations": [
+    {
+     "document": "jnj-20231231.htm",
+     "label": "Retained earnings and Additional-paid-in-capital",
+     "value": 128345.0
+    }
+   ],
+   "retainedEarningsColumnFiscalYear": [
+    {
+     "concept": "NetIncomeLoss",
+     "line": "Net earnings",
+     "value": 17941.0
+    },
+    {
+     "concept": "DividendsCommonStockCash",
+     "line": "Cash dividends paid",
+     "value": 11682.0
+    },
+    {
+     "concept": "AdjustmentsToAdditionalPaidInCapitalSharebasedCompensationRequisiteServicePeriodRecognitionValue",
+     "line": "Employee compensation and stock option plans",
+     "value": -974.0
+    }
+   ]
+  },
+  {
+   "period": "2023-12-31",
+   "value": 153843.0,
+   "document": "jnj-20231231.htm",
+   "form": "10-K FY2023",
+   "accn": "0000200406-24-000013",
+   "sha256": "5e4fa5ea566e62419fabf8d136609b67922ff6d6c23a8c71408aa240987fa0a0",
+   "balanceSheetLabel": "Retained earnings and Additional-paid-in-capital",
+   "laterPresentations": [],
+   "retainedEarningsColumnFiscalYear": [
+    {
+     "concept": "NetIncomeLoss",
+     "line": "Net earnings",
+     "value": 35153.0
+    },
+    {
+     "concept": "DividendsCommonStockCash",
+     "line": "Cash dividends paid",
+     "value": 11770.0
+    },
+    {
+     "concept": "AdjustmentsToAdditionalPaidInCapitalSharebasedCompensationRequisiteServicePeriodRecognitionValue",
+     "line": "Employee compensation and stock option plans",
+     "value": -336.0
+    },
+    {
+     "concept": "StockholdersEquityNoteSpinoffTransaction",
+     "line": "Kenvue Separation /IPO",
+     "value": 2451.0
+    }
+   ]
+  },
+  {
+   "period": "2024-12-29",
+   "value": 155791.0,
+   "document": "jnj-20251228.htm",
+   "form": "10-K FY2025",
+   "accn": "0000200406-26-000016",
+   "sha256": "b2b020e806702cb01c17bc64cfe4a9fe59def9353c2af0cced4b262a77875a9a",
+   "balanceSheetLabel": "Retained earnings and Additional-paid-in-capital",
+   "laterPresentations": [],
+   "retainedEarningsColumnFiscalYear": [
+    {
+     "concept": "NetIncomeLoss",
+     "line": "Net earnings",
+     "value": 14066.0
+    },
+    {
+     "concept": "DividendsCommonStockCash",
+     "line": "Cash dividends paid",
+     "value": 11823.0
+    },
+    {
+     "concept": "AdjustmentsToAdditionalPaidInCapitalSharebasedCompensationRequisiteServicePeriodRecognitionValue",
+     "line": "Employee compensation and stock option plans",
+     "value": -295.0
+    }
+   ]
+  },
+  {
+   "period": "2025-12-28",
+   "value": 168978.0,
+   "document": "jnj-20251228.htm",
+   "form": "10-K FY2025",
+   "accn": "0000200406-26-000016",
+   "sha256": "b2b020e806702cb01c17bc64cfe4a9fe59def9353c2af0cced4b262a77875a9a",
+   "balanceSheetLabel": "Retained earnings and Additional-paid-in-capital",
+   "laterPresentations": [],
+   "retainedEarningsColumnFiscalYear": [
+    {
+     "concept": "NetIncomeLoss",
+     "line": "Net earnings",
+     "value": 26804.0
+    },
+    {
+     "concept": "DividendsCommonStockCash",
+     "line": "Cash dividends paid",
+     "value": 12381.0
+    },
+    {
+     "concept": "AdjustmentsToAdditionalPaidInCapitalSharebasedCompensationRequisiteServicePeriodRecognitionValue",
+     "line": "Employee compensation and stock option plans",
+     "value": -1236.0
+    }
+   ]
+  }
+ ]
+}
