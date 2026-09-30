@@ -311,3 +311,27 @@ export function diagNetDebtMj(kind) {
     market: { price: 40 }
   };
 }
+
+// V1.0.78 (Nachreview PR #3, O-1): gemischte Periodenangaben im vereinfachten
+// ROIC. 'mixed': EBIT mit Perioden, Eigenkapital/Schulden/Liquiditaet ohne
+// Perioden (V1.0.77 paarte per Arrayposition ⇒ 10.7 %); 'reverse': Bestaende
+// mit, EBIT ohne Perioden; 'legacy': vollstaendig periodenfrei (Positionsbezug
+// zulaessig). Sonst identisch, damit Bewertung und Qualitaet vergleichbar sind.
+export function roicMixedMj(kind) {
+  const per = (flow) => ({ periods: Y6.slice(), isFlowConcept: flow, unit: 'USD', source_type: 'reported' });
+  const meta = kind === 'mixed' ? { ebit: per(true) }
+    : kind === 'reverse' ? { book_value: per(false), total_debt: per(false), cash_and_equivalents: per(false) } : {};
+  return {
+    schema_version: '4.0',
+    meta: META('RMX' + kind.slice(0, 1).toUpperCase(), 'standard_nonfin'),
+    fundamentals: {
+      revenue: Array(6).fill(1000), ebit: [100, 100, 80, 100, 100, 100], ebitda: Array(6).fill(150),
+      capex: Array(6).fill(50), cfo: Array(6).fill(130), net_income: Array(6).fill(70), eps_diluted: Array(6).fill(0.7),
+      dps: Array(6).fill(0.3), book_value: Array(6).fill(500), total_debt: Array(6).fill(600),
+      cash_and_equivalents: Array(6).fill(400), shares_diluted: Array(6).fill(100), _v4_meta: meta
+    },
+    valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false }, wacc_derived: 9, cost_of_equity: 9,
+      growth_terminal: 2, growth_stage1: 5 },
+    market: { price: 10 }
+  };
+}

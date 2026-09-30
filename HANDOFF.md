@@ -1,6 +1,68 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Nachreview PR #3: O-4 und O-1 berichtigt (V1.0.78)
+
+**Ausgangsstand (nach `git fetch origin`, 2026-09-30).** main =
+`18f146c5be0c529d7c93131b717161dd254f6bb1` (Merge PR #3, V1.0.77), ohne
+Abweichung vom Referenzstand; Produktdatei SHA-256 `196c3185…`. Neuer Worktree,
+Branch `claude/nifty-tesla-ye7ufw` neu ab main (PR #3 gemergt); Hauptcheckout
+unverändert; keine `AGENTS.md`. Details, Tabellen, Quellen: AUDIT **§13.15**.
+**Berichtigte Aussage aus PR #3:** „alle drei Restpunkte geschlossen“ — nur
+die FCF-Diagnostik war geschlossen; O-1 und O-4 hatten die unten genannten Lücken.
+
+**O-4.** V1.0.77 schloss aus „APIC-Bewegungen ohne APIC-Bestand“ auf einen
+kombinierten Wert. Primärquellen JNJ (10-K FY2019–FY2025, Inline-XBRL): Die
+Buchung aus Mitarbeiterplänen steht in der RE-Spalte als Belastung (Gutschrift
+bei den eigenen Aktien); **FY2018–FY2022 (bis 2023-01-01) sind reine
+Gewinnrücklagen** („Retained earnings“), **2023-12-31 bis 2025-12-28
+kombiniert** (neue Sammelbezeichnung, Kenvue-Gutschrift +2,451). Neu: Einstufung
+je Stichtag aus den Company Facts — *rein* (eigener Kapitalrücklagen-Bestand
+und Eigenkapitalidentität schließt), *kombiniert belegt* (Identität schließt
+nur ohne die gemeldete Kapitalrücklage, Stammkapital = Nennwert × Aktien),
+sonst *Umfang ungeklärt* (gesperrt, Grund als Unsicherheit, keine Behauptung).
+MCD bleibt rein. JNJ ist im Import in allen Perioden „ungeklärt“, weil die
+Company Facts Zeile und Spalte nicht enthalten — offen benannte Grenze.
+Synthetisch mit EBIT: belegt kombinierter Wert lief in V1.0.77 durch
+(Z″ 2.5682 ⇒ `investable_mid`, MoS 20 %), jetzt gesperrt (`caution_data`, 25 %).
+
+**O-1.** Der vereinfachte ROIC nutzte die Standardzuordnung und paarte bei
+gemischten Periodenangaben per Arrayposition. Neu: `_roicStockMatchers(f,
+{ strictPeriods: true })` nur für `computeBaseRateLite` — Positionsbezug nur bei
+vollständig periodenfreien Reihen, sonst gültige, zuordenbare Perioden aller
+vier Reihen oder „nicht bewertbar“ mit Grund. ROIC − WACC, ROIC-Trend, QCE,
+Urteil, MoS unverändert (Alt/Neu-Vergleich über 13 Datensätze identisch).
+
+**Tests.** `retained-earnings-scope` neu gefasst (8 → 11),
+`base-rate-roic-periods` neu (10), Browser §12 (+7); Realauszüge
+`re-apic-excerpt.json` (erweitert) und `jnj-re-primary-sources.json` (neu).
+Gegenlauf auf `18f146c`: 8/11, 5/10 rot, Browser 2 FAIL; gültige Gegenproben
+vorher und nachher grün. Testzahlen: Node 339 → 352 (−8 +11 +10), Browser
+205 → 212, Rechenprüfungen 1700 und Auditwerkzeug 38 unverändert.
+
+**Geprüft (lokal, Produktdatei SHA-256 `5ed6957d…`, Node v22.22.2, Chromium
+141.0.7390.37, `TMPDIR=/tmp/cb`).** Läufe auf dem endgültigen Commit im PR-Kommentar.
+
+| Befehl | Ergebnis | Exit |
+|---|---|---|
+| `npm test` | 1700 Rechenprüfungen; Node-Tests 352/352 | 0 |
+| `npm run test:audit-tool` | 38/38 | 0 |
+| `npm run test:browser` | 212/212 | 0 |
+
+**Offen (unverändert, nicht Teil dieses Auftrags).** Abgleich
+Nettoschuldenstichtag ↔ FCF-Periode in der FCF-Diagnostik; Altdatenregel
+„fehlende Liquidität = 0“ in ROIC − WACC/ROIC-Trend; Unterscheidung
+rein/kombiniert, wo sie nur aus Primärquellen hervorgeht (JNJ); manuelle
+Importe ohne RE-Prüfung; MCD-/JNJ-Modellsperren, JNJ ohne EBIT. Kein Deployment.
+
+---
+
 ## Restpunkte PR #2 geschlossen: FCF-Diagnostik, O-1, O-4 (V1.0.77)
+
+> **Berichtigt durch V1.0.78 (Eintrag darüber, AUDIT §13.15):** O-1 und O-4
+> waren hier nicht vollständig geschlossen. Die O-4-Aussagen „kombinierter Wert“
+> für JNJ FY2018–FY2021 und die Regel „APIC-Bewegungen ohne Bestand ⇒
+> kombiniert“ sowie „Positionsbezug nur bei periodenfreien Altdaten“ (O-1)
+> gelten nicht mehr.
 
 **Ausgangsstand (nach `git fetch origin`, 2026-09-30).** main =
 `1ee2e9240a1502922eb48af5d6d3c2f1da6bad55` (Merge PR #2, V1.0.76), ohne

@@ -722,6 +722,39 @@ async function main() {
     }
 
     // ══════════════════════════════════════════════════════════════════════
+    sec('12 · Nachreview PR #3: vereinfachter ROIC nur bei belegter Periodenzuordnung (V1.0.78)');
+    {
+      const snap = `(() => ({ rw: state.quality.descriptive.roicMinusWacc.value, v: state.quality.verdict,
+        qce: state.quality.qceScore && state.quality.qceScore.value,
+        buy: state.synthesis && state.synthesis.buyPrice, mos: state.synthesis && state.synthesis.mosComponents && state.synthesis.mosComponents.base }))()`;
+      const res = {};
+      for (const kind of ['mixed', 'reverse', 'legacy']) {
+        const status = await importViaUi(FX.roicMixedMj(kind));
+        if (!check(`ROIC-Perioden „${kind}“: Import`, /Import OK/.test(status), status)) continue;
+        const val = await tab('valuation');
+        const i0 = val.search(/Historisches Profil/i);
+        const hp = i0 < 0 ? '' : val.slice(i0, i0 + 1500);
+        if (kind === 'legacy') {
+          check('12.3 periodenfreie Altdaten: ROIC 10.7 % und Trend +2.1pp sichtbar',
+            /ROIC akt\. \(vereinfacht\):\s*10\.7%/.test(hp) && /ROIC-Trend \(2 GJ, vereinfacht\):\s*\+2\.1pp/.test(hp), hp);
+        } else {
+          check(`12.${kind === 'mixed' ? 1 : 2} Mischfall „${kind}“: ROIC „nicht bewertbar“ mit Periodengrund, keine Zahl`,
+            /ROIC akt\. \(vereinfacht\):\s*nicht bewertbar/.test(hp) && !/ROIC akt\.[^\n]*\d+\.\d%/.test(hp)
+            && (kind === 'mixed' ? /ohne Periodenangabe/ : /EBIT ohne Periodenangabe/).test(hp), hp);
+        }
+        res[kind] = await ev(snap);
+      }
+      // „mixed“ unterscheidet sich von „legacy“ nur durch die EBIT-Metadaten; bewertete
+      // Pfade (ROIC − WACC, Urteil, Kaufpreis, Basis-MoS) muessen identisch bleiben.
+      // („reverse“ aendert ueber die Bestandsperioden auch die Nettoschuldenbruecke —
+      // dort gilt der Alt/Neu-Vergleich im Auditbericht.)
+      if (res.mixed && res.legacy) {
+        check('12.4 keine Wirkung auf ROIC − WACC, Qualitaetsurteil, Kaufpreis und Basis-MoS (Mischfall = Altdaten)',
+          ['rw', 'v', 'buy', 'mos'].every(k => res.mixed[k] === res.legacy[k]), JSON.stringify(res));
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
     sec('8 · Abschluss');
     check('keine unbehandelte Ausnahme im gesamten Ablauf', exceptions.length === 0, exceptions.join(' | '));
     const nonFont = external.filter(u => !/^https:\/\/fonts\.(googleapis|gstatic)\.com\//.test(u));
