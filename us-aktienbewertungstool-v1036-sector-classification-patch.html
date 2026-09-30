@@ -11486,11 +11486,19 @@ function computeRoicMinusWacc(mj) {
   const roicsReported = [];
   const roicsLease = [];
   const rows = [];
+  // V1.0.76 (Review PR #2): Im Periodenmodus ist fehlende periodengleiche
+  // Liquiditaet eine fehlende Eingabe, keine 0. Bis V1.0.75 floss sie als 0 ins
+  // investierte Kapital; ein so gedrueckter ROIC konnte `value_destroyer`,
+  // `caution_quality` und eine hoehere Basis-MoS ausloesen. Das Jahr zaehlt
+  // jetzt nicht; eine belegte Liquiditaet von 0 bleibt gueltig. Periodenfreie
+  // Altdaten behalten ihre bisherige Regel.
+  const _cashMissing = [];
   for (let i = 0; i < horizon; i++) {
     if (ebit[i] == null) continue;
     const b = mBv(i), t = mTd(i);
     if (!b || !t || b.value == null || t.value == null) continue;
     const c = mCash(i);
+    if (periodMode && !(c && c.value != null)) { _cashMissing.push(pE[i] != null ? String(pE[i]) : ('Index ' + i)); continue; }
     const cashI = c && c.value != null ? c.value : 0;
     const investedReported = b.value + t.value - cashI;
     if (investedReported <= 0) continue;
@@ -11509,8 +11517,13 @@ function computeRoicMinusWacc(mj) {
     }
     rows.push(row);
   }
+  const _cashNote = _cashMissing.length > 0
+    ? `ohne periodengleiche Liquidität ausgelassen: ${_cashMissing.join(', ')}` : null;
   if (roicsReported.length < 5) {
-    return metricInsufficient(roicsReported.length, 5, 'gültige ROIC-Werte (Invested Capital ≤ 0 oder fehlende Felder)');
+    const res = metricInsufficient(roicsReported.length, 5, 'gültige ROIC-Werte (Invested Capital ≤ 0 oder fehlende Felder'
+      + (_cashNote ? '; ' + _cashNote : '') + ')');
+    if (_cashMissing.length > 0) res._cashMissingForPeriods = _cashMissing.slice();
+    return res;
   }
 
   const medReported = _median(roicsReported);
@@ -11558,6 +11571,7 @@ function computeRoicMinusWacc(mj) {
     res._leaseMissingForPeriod = _latestHasLease ? null : (_latestRow ? _latestRow.period : null);
     res._leasePairs = _leaseRows.map(r => ({ ebitPeriod: r.period, leasePeriod: r.ollPeriod }));
     res._openingBalanceExcluded = _openingSkips.slice();
+    if (_cashMissing.length > 0) res._cashMissingForPeriods = _cashMissing.slice();
     // Nachrichtlich, NICHT die Kennzahl: kein value, kein Score.
     res.informational = { roicReported: medReported, roicReportedMinusWacc: spreadReported,
                           note: 'unbereinigt, nur nachrichtlich — nicht bewertet' };
@@ -11597,6 +11611,10 @@ function computeRoicMinusWacc(mj) {
   }
   resultMetric._leasePairs = _leaseRows.map(r => ({ ebitPeriod: r.period, leasePeriod: r.ollPeriod }));
   resultMetric._openingBalanceExcluded = _openingSkips.slice();
+  if (_cashNote) {
+    resultMetric.detail += ' · ' + _cashNote;
+    resultMetric._cashMissingForPeriods = _cashMissing.slice();
+  }
   return resultMetric;
 }
 
@@ -47428,7 +47446,23 @@ function runGrowthCaseEngine(mj) {
   const price    = market.price ?? null;
   const fcf0M    = (f.fcf && f.fcf[0] != null) ? f.fcf[0] : null;
   const sharesM  = (f.shares_diluted && f.shares_diluted[0]) || null;
-  const netDebtM = (f.net_debt && f.net_debt[0] != null) ? f.net_debt[0] : 0;
+  // V1.0.76 (Review PR #2): Nettoschulden ueber DIESELBE Pruefung wie die
+  // DCF-Wertbruecke (_resolveNetDebtForDcfBridge: Umfang, Herkunft, Stichtag).
+  // Bis V1.0.75 las das Growth-Modul nur net_debt[0] und setzte sonst 0: ohne
+  // Schuldenangaben ODER bei belegter Bruecke ohne net_debt-Feld rechneten alle
+  // Szenarien schuldenfrei, bei gesperrter Bruecke mit dem ungeprueften
+  // Teilbetrag — gemessen „GROWTH BUY“ (WFV 77.06, E[IRR] 13.8 %) statt
+  // „GROWTH WATCH“ (60.16 / 6.8 %) bei Nettoschulden 4,000. Nicht belegte
+  // Nettoschulden sind keine 0: dann keine Szenario-Fair-Values, keine IRR,
+  // kein GROWTH_BUY, sondern der benannte Grund.
+  const _ndBridge = _resolveNetDebtForDcfBridge(f);
+  const netDebtM = _ndBridge.available ? _ndBridge.netDebtM : null;
+  const netDebtSource = _ndBridge.available ? (_ndBridge.source || null) : null;
+  const netDebtUnavailable = _ndBridge.available ? null
+    : ('Nettoschulden nicht belegt (Prüfung wie DCF-Brücke: '
+       + (_ndBridge.reason ? String(_ndBridge.reason).split('. ')[0]
+          : ('fehlt: ' + ((_ndBridge.missing || []).join(', ') || 'Schulden-/Liquiditätsdaten')))
+       + ') — keine Szenario-Fair-Values, keine IRR, kein GROWTH_BUY; NICHT als 0 angenommen');
   const waccPct  = v.wacc_derived ?? null;
   const tgPct    = v.growth_terminal ?? null;
 
@@ -47544,6 +47578,8 @@ function runGrowthCaseEngine(mj) {
 
     if (_irrGlobalBlock) {
       irrNote = _irrGlobalBlock;
+    } else if (netDebtUnavailable) {
+      irrNote = netDebtUnavailable;   // V1.0.76: keine Szenariorechnung ohne belegte Nettoschulden
     } else {
       const sc = _runGrowthScenario({
         scenarioCagr: c.cagr,
@@ -47645,7 +47681,12 @@ function runGrowthCaseEngine(mj) {
   // Deaktiviert growthModuleFairValue wenn baseTargetFcfMargin zu weit
   // von der beobachteten FCF-Marge abweicht.
   let growthModuleFairValue        = weightedFairValue;
-  let growthModuleFairValueActive  = weightedFairValue != null && !weightedFairValueIncomplete;
+  // V1.0.76: Bei nicht belegten Nettoschulden ist der Growth-Fair-Value nicht
+  // bestimmbar (null), nicht „wegen Margenkalibrierung deaktiviert“ (false).
+  // Nur `false` deckelt in der Synthese die Annahmenkonfidenz; die Synthese
+  // behandelt Nettoschulden selbst und bleibt durch diese Korrektur unveraendert.
+  let growthModuleFairValueActive  = netDebtUnavailable
+    ? null : (weightedFairValue != null && !weightedFairValueIncomplete);
   let growthModuleDiagnosticOnly   = false;
   const growthModuleValidationWarnings = [];
 
@@ -47713,6 +47754,12 @@ function runGrowthCaseEngine(mj) {
     }
   }
 
+  // V1.0.76: Grund der Nettoschuldensperre im Diagnosetext (nicht bei
+  // MODEL_UNSUITABLE — dort steht bereits der vorrangige Grund).
+  if (netDebtUnavailable && verdict !== 'MODEL_UNSUITABLE') {
+    verdictReason = (verdictReason ? verdictReason + ' · ' : '') + netDebtUnavailable + '.';
+  }
+
   // V1.0.6: Diagnostic-Only-Warnung für Nicht-high_growth-Klassen
   const _growthCls = meta.sub_classification || 'standard_nonfin';
   const _isHighGrowthCls = _growthCls === 'high_growth';
@@ -47752,6 +47799,8 @@ function runGrowthCaseEngine(mj) {
     revenue0M,                            // NEU
     sharesM,
     netDebtM,
+    netDebtSource,                        // V1.0.76: Quelle laut Brueckenpruefung
+    netDebtUnavailable,                   // V1.0.76: Grund, wenn nicht belegt (sonst null)
     fcfDataSuspect:       !!(gp && gp.fcfDataSuspect),
     fcfDataSuspectReason: (gp && gp.fcfDataSuspectReason) || null,
     _irrGlobalBlock,
@@ -48453,6 +48502,9 @@ function renderGrowth() {
           ? `<div class="big-value" style="color:var(--warn);font-size:1rem">–</div>
              <div class="big-meta" style="color:var(--warn)">Growth fair value disabled: invalid margin calibration</div>
              <div style="font-size:.62rem;color:var(--muted);margin-top:4px">Diagnose-Daten unten weiterhin verfügbar.</div>`
+        : gr.netDebtUnavailable
+          ? `<div class="big-value" style="color:var(--warn);font-size:1rem">N/A</div>
+             <div class="big-meta" style="color:var(--warn)">${escapeHtml(gr.netDebtUnavailable)}</div>`
         : gr.growthModuleFairValue != null
           ? (() => {
               const _np      = gr.normalizedProbs || { bear: 25, base: 50, bull: 25 };
@@ -48488,6 +48540,8 @@ function renderGrowth() {
           if (gr.fcfDataSuspect || gr.growthModuleFairValue == null || gr.price == null || !(gr.price > 0)) {
             const _why = gr.fcfDataSuspect
               ? 'FCF/Revenue inkonsistent'
+              : gr.netDebtUnavailable
+                ? 'Nettoschulden nicht belegt — kein Growth Fair Value'
               : gr.growthModuleFairValue == null
                 ? (!gr.growthModuleFairValueActive ? 'Growth Fair Value deaktiviert (Margin-Kalibrierung invalid)' : 'Weighted Fair Value nicht verfügbar')
                 : 'Kurs fehlt oder ≤ 0';

@@ -663,7 +663,11 @@ hinaus; ROIC paart seit D2 periodengleich, der ROIC-Trend seit D3-6 ebenso.
 Operativer Unternehmenswert und Eigenkapitalwert sind getrennt: Der MCD-DCF
 liefert nur den operativen Wert (nachrichtlich, ausdrücklich nicht mit dem Kurs
 vergleichbar); kein anderer Pfad (Markt-Vergleich, Net Debt/EBITDA,
-MoS-Zuschlag, Reverse DCF) rechnet mit einer unbelegten Nettoschuldenbrücke.
+MoS-Zuschlag, Kern des Reverse DCF) rechnet mit einer unbelegten Nettoschuldenbrücke.
+**Berichtigt im Review zu PR #2 (§13.13):** Diese Aussage war zu weit gefasst.
+Das Growth-Modul las bis V1.0.75 `net_debt[0]` bzw. 0 (seit V1.0.76 behoben).
+Das Reverse-DCF-Diagnosepaar auf Reported-/Owner-FCF-Basis tut das weiterhin
+(nicht gewichtet, offen).
 
 ### 13.7 · JNJ: getrennte Fragen und berechtigte Grenzen
 
@@ -803,3 +807,75 @@ Keine anderen ROIC-Verbraucher, Modelle oder Importvalidierung geändert.
 (38/38). Kein erneuter Quellen-/Realdatenabgleich (nicht erforderlich; MCD ist
 im ROIC-Trend bereits durch die Leasingsperre gesperrt, JNJ hat kein EBIT). Die
 TTM- und Bewertungsgrenzen aus §13.4–§13.7 gelten unverändert.
+
+### 13.13 · Review-Nachbesserung PR #2 (V1.0.76): ROIC ohne periodengleiche Liquidität, Nettoschulden im Growth-Modul
+
+**Anlass.** Das Review
+(https://github.com/c7gzyvh4rk-commits/Aktientool/pull/2#issuecomment-5904559512)
+auf `7236c73` fand zwei Fehler. Das Growth-Modul hat der Auftraggeber als
+Mergeblocker eingestuft.
+
+**R-1 · ROIC − WACC: fehlende periodengleiche Liquidität als 0 (neu durch F-5).**
+`computeRoicMinusWacc` setzte im Periodenmodus eine fehlende Liquidität per
+`const cashI = … : 0` auf 0. Das gilt für eine fehlende Periodenzuordnung ebenso
+wie für einen fehlenden Wert. Das investierte Kapital stieg dadurch, und der
+ROIC sank. Gemessen am Grenzfall: EBIT 100, Steuer 25 %, Buchwert 500,
+Schulden 600, Liquidität 400, aber für 2025–2022 nur zum 30.06. gemeldet;
+WACC 9 %.
+
+| | ROIC | Spread | Qualitätsurteil | Basis-MoS |
+|---|---|---|---|---|
+| V1.0.75 | 6.8 % (Median mit Liquidität 0) | −2.18 pp ⇒ `value_destroyer` | `caution_quality` | 25 % |
+| V1.0.76 | nicht bewertbar (2 von 5 Jahren; Grund nennt 2025-12-31 … 2022-12-31) | — | `investable_high` | 15 % |
+
+„Konservativ“ traf also nicht zu: Die Nullannahme erzeugte eine
+Qualitätsschwäche und einen höheren Sicherheitsabschlag. Korrektur: Im
+Periodenmodus zählt ein Jahr ohne periodengleiche Liquidität nicht. Bei
+genügend übrigen Jahren wird nur aus diesen gerechnet, und der Detailtext nennt
+die ausgelassenen Jahre. Sonst gilt `insufficient_data` mit Grund. Eine belegte
+Liquidität von 0 bleibt gültig. Periodenfreie Altdaten, Leasing- und
+Periodenregeln sind unverändert. Für MCD und JNJ ändert sich nichts (MCD:
+Leasingsperre; JNJ: kein EBIT).
+
+**R-2 · Growth-Modul: ungeprüfte Nettoschulden (vorbestehend, auf main
+`8b42fea` identisch).** `runGrowthCaseEngine` las nur `net_debt[0]`, sonst 0.
+Der Wert ging in jedes Szenario ein (Exit-Equity = Exit-EV − Nettoschulden).
+Davon abhängig waren Szenario-Fair-Values, gewichteter Fair Value, E[IRR],
+`GROWTH_BUY` und Upside im Growth-Tab. Welcher Wert verwendet wurde, zeigte der
+Tab nicht an. Synthetischer Nachweis (Umsatz 1,000, FCF 180, 100 Mio. Aktien,
+Kurs 40, WACC 9 %):
+
+| Fall | Brücke | Growth V1.0.75 | Growth V1.0.76 |
+|---|---|---|---|
+| keine Schuldenangaben | gesperrt | Nettoschulden 0: WFV 77.06, E[IRR] 13.8 %, **GROWTH_BUY** | gesperrt mit Grund, kein FV/IRR, GROWTH_WATCH |
+| Teilbetrag 4,000, Umfang offen | gesperrt | ungeprüfte 4,000: WFV 60.16 | gesperrt mit Grund |
+| belegt 4,500 − 500 (kein `net_debt`-Feld) | 4,000 | Nettoschulden 0: WFV 77.06, **GROWTH_BUY** | 4,000: WFV 60.16, E[IRR] 6.8 %, GROWTH_WATCH |
+
+Realauszüge mit angenommenem Kurs (MCD 300, JNJ 160; im Audit lag kein Kurs vor):
+Vorher rechnete das Modul mit den Teilbeträgen 39,199 bzw. 21,729 (WFV 3.72
+bzw. 41.84), jetzt ist es gesperrt und nennt den Grund.
+
+*Beobachtet ohne Wirkung auf die Synthese.* Buy Price, Position,
+Annahmen- und Gesamtkonfidenz sind mit und ohne `state.growth` identisch. Die
+einzige Kopplung ist `growthModuleFairValueActive === false`, die die
+Annahmenkonfidenz auf 65 deckelt. Nettoschulden konnten sie nicht auslösen
+(Exit-Equity ≤ 0 ergibt FV 0, nicht null).
+
+Korrektur: Das Growth-Modul prüft wie die DCF-Brücke
+(`_resolveNetDebtForDcfBridge`). Nicht belegt ⇒ kein Szenario-Fair-Value, keine
+IRR, kein `GROWTH_BUY`; der Grund steht im Diagnosetext, im
+Fair-Value-Feld und bei Upside. `growthModuleFairValueActive` ist dann
+`null` (nicht bestimmbar) und nicht `false` (ungültige Margenkalibrierung). Die
+Synthese bleibt dadurch nachweislich unverändert.
+
+**Offen (nicht in diesem Schritt).** Das Reverse-DCF-Diagnosepaar auf
+Reported-/Owner-FCF-Basis (`computeReverseDcfFull`, `_computeOwnerFcfDcf`)
+liest weiterhin `net_debt[0]` bzw. 0. Es ist nicht gewichtet, als Diagnose
+gekennzeichnet und auf main identisch.
+
+**Tests.** `tests/roic-cash-period.test.mjs` (8) und
+`tests/growth-net-debt.test.mjs` (4). Gegen den Stand `7236c73` scheitern
+4 bzw. 3 Fehlerfalltests; die Erhaltungstests bestehen vorher und nachher.
+Die Sollwerte sind unabhängig hergeleitet (ROIC 75/700, 75/1100, 75/1000;
+Growth-FV-Differenz 4,000/100/1.09^N je Szenario).
+
