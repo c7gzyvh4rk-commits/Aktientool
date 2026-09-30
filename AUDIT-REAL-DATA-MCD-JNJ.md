@@ -1125,3 +1125,44 @@ unverändert: Abgleich Nettoschuldenstichtag ↔ FCF-Periode in der Diagnostik;
 Altdatenregel „fehlende Liquidität = 0“ in ROIC − WACC/ROIC-Trend; MCD-/JNJ-
 Modellsperren; JNJ ohne EBIT.
 
+### 13.16 · O-4: Doppelzählung und Ersatznullen in der Eigenkapitalprüfung (V1.0.79)
+
+**Befunde (nach PR #4 reproduziert, Stand `b90ca50`).** `_checkRetainedEarningsScope`
+1. addierte `CommonStockValue`, `AdditionalPaidInCapital` **und** den
+   Summenposten `CommonStocksIncludingAdditionalPaidInCapital`: Stammkapital
+   100 + APIC 3,400 + RE 500 = Eigenkapital 4,000 ist „rein“; mit zusätzlichem,
+   passendem Summenposten 3,500 ergab sich 7,500 ⇒ „ungeklärt“, die reinen
+   Gewinnrücklagen gingen verloren;
+2. setzte fehlende Bestandteile (Vorzugskapital, OCI, eigene Aktien,
+   Minderheiten) per `|| 0` auf 0: Eigenkapital 7,400 = 100 + APIC 3,400 +
+   RE-Tag 3,900 (davon rein 500) + Vorzugskapital 3,400; ohne
+   Vorzugskapital-Angabe schloss 100 + 3,400 + 3,900 = 7,400 zufällig ⇒ „rein“,
+   Altman erhielt 3,900 (Z″ 3.1632 ⇒ `investable_high`, Basis-MoS 15 %).
+
+**Korrektur (nur diese Funktion).** (1) Bestandteile und Summenposten des
+eingezahlten Kapitals sind alternative Darstellungen: genau eine geht in die
+Summe ein; liegen beide vor, müssen CommonStockValue + Kapitalrücklage und
+Summenposten übereinstimmen (Toleranz 0.05 %), sonst „Umfang ungeklärt: … widersprechen
+sich“ ohne Auswahl. (2) OCI, eigene Aktien (`TreasuryStockValue` bzw.
+`…CommonValue`), Vorzugskapital und — wenn nur Eigenkapital inkl. Minderheiten
+gemeldet ist — `MinorityInterest` müssen gemeldet sein; eine belegte 0 zählt,
+eine fehlende Angabe nicht. Fehlt ein Bestandteil, wird weder „rein“ noch
+„belegt kombiniert“ abgeleitet, sondern „Umfang ungeklärt: Eigenkapitalbestandteile
+nicht gemeldet: …“. Kein Bestandteil wird aus der Differenz zurückgerechnet.
+Gleiche Einheit (USD), gleicher Stichtag, 10-K, wie bisher.
+
+**Nachweise.** `tests/retained-earnings-components.test.mjs` (11; Folgepfad
+Import → Altman → Urteil → Basis-MoS mit EBIT): Gegenlauf auf `b90ca50` 7 rot
+(beide Darstellungen, Redundanz, Widerspruch, fehlendes Vorzugskapital, OCI,
+eigene Aktien, Minderheiten), 4 Gegenproben grün vorher und nachher
+(Einzelbestandteile, nur Summenposten, vervollständigter kombinierter Fall,
+vollständig mit belegten Werten). Redundanter Summenposten: Wert, Einstufung,
+Altman, Urteil und MoS identisch. `tests/retained-earnings-scope.test.mjs`:
+sechs Fixtures meldeten OCI/eigene Aktien/Vorzugskapital nicht und waren nur
+über die Ersatznullen einstufbar; ergänzt um belegte Nullwerte, Erwartungen
+unverändert (alt und neu 11/11). MCD bleibt rein (alle Bestandteile gemeldet,
+Vorzugskapital 0), JNJ unverändert ungeklärt.
+
+**Grenze.** Emittenten, die OCI, eigene Aktien oder Vorzugskapital nicht
+ausdrücklich (auch nicht als 0) melden, erhalten keine Einstufung „rein“ mehr.
+

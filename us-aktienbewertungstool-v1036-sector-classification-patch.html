@@ -31454,6 +31454,10 @@ function _renderSecDiag(report, masterJson) {
 // veraenderung — z. B. JNJ), bleibt er fuer den Import ungeklaert.
 // Toleranz der Identitaet: 0.05 % der Summe der Betraege aller Bestandteile
 // (Rundung der Einzelangaben).
+// V1.0.79: Summenposten und Bestandteile des eingezahlten Kapitals sind
+// alternative Darstellungen (keine Doppelzaehlung, Widerspruch ⇒ ungeklaert);
+// OCI, eigene Aktien, Vorzugskapital und ggf. Minderheiten muessen gemeldet
+// sein (belegte 0 zaehlt) — fehlende Angaben sind keine Ersatznullen.
 const RE_SCOPE_APIC_TAGS = ['AdditionalPaidInCapital', 'AdditionalPaidInCapitalCommonStock'];
 const RE_SCOPE_APIC_MOVEMENT_PREFIX = 'AdjustmentsToAdditionalPaidInCapital';
 function _checkRetainedEarningsScope(facts, reEx) {
@@ -31487,12 +31491,18 @@ function _checkRetainedEarningsScope(facts, reEx) {
     const p = periods[i];
     if (values[i] == null || p == null) continue;
     const re = _inst(usedTag, p);
+    // V1.0.79: Eigenkapital. Nur inkl. Minderheiten gemeldet ⇒ MinorityInterest
+    // muss gemeldet sein (auch 0); bis V1.0.78 galt ein fehlender Wert als 0.
     let se = _inst('StockholdersEquity', p);
     let seTag = 'StockholdersEquity';
+    let seNciMissing = false;
     if (se == null) {
       const inc = _inst('StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest', p);
-      if (inc != null) { const nci = _inst('MinorityInterest', p); se = inc - (nci || 0);
-        seTag = 'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest' + (nci != null ? ' − MinorityInterest' : ''); }
+      if (inc != null) {
+        const nci = _inst('MinorityInterest', p);
+        if (nci == null) seNciMissing = true;
+        else { se = inc - nci; seTag = 'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest − MinorityInterest'; }
+      }
     }
     const cs = _inst('CommonStockValue', p);
     const csi = _inst('CommonStocksIncludingAdditionalPaidInCapital', p);
@@ -31500,43 +31510,82 @@ function _checkRetainedEarningsScope(facts, reEx) {
     const apic = apicTag ? _inst(apicTag, p) : null;
     const aoci = _inst('AccumulatedOtherComprehensiveIncomeLossNetOfTax', p);
     const pref = _inst('PreferredStockValue', p);
-    const ts = _inst('TreasuryStockValue', p) != null ? _inst('TreasuryStockValue', p) : _inst('TreasuryStockCommonValue', p);
+    const tsTag = _inst('TreasuryStockValue', p) != null ? 'TreasuryStockValue'
+      : (_inst('TreasuryStockCommonValue', p) != null ? 'TreasuryStockCommonValue' : null);
+    const ts = tsTag ? _inst(tsTag, p) : null;
     const mv = _hasMovement(p);
     const _indiz = mv ? ' Gemeldete Buchungen ' + RE_SCOPE_APIC_MOVEMENT_PREFIX + '… sind nur ein Indiz, kein Nachweis.' : '';
+    // V1.0.79 (Fehler 1): eingezahltes Kapital hat zwei ALTERNATIVE Darstellungen —
+    // Bestandteile (CommonStockValue + Kapitalruecklage) oder Summenposten
+    // (CommonStocksIncludingAdditionalPaidInCapital). Bis V1.0.78 wurden beide
+    // addiert (Doppelzaehlung). Jetzt: genau eine Darstellung geht in die Summe
+    // ein; liegen beide vor, muessen sie uebereinstimmen, sonst ungeklaert. Ein
+    // einzelner Bestandteil neben dem Summenposten ist darin enthalten und wird
+    // nicht addiert. Alle Werte: USD, derselbe Stichtag, 10-K.
+    const compsComplete = cs != null && apic != null;
+    let paidIn = null, paidInDesc = null, paidInConflict = null;
+    if (csi != null && compsComplete) {
+      const tolPi = 0.0005 * (Math.abs(cs) + Math.abs(apic) + Math.abs(csi));
+      if (Math.abs(cs + apic - csi) > tolPi) {
+        paidInConflict = 'CommonStockValue ' + _mio(cs) + ' + ' + apicTag + ' ' + _mio(apic) + ' = ' + _mio(cs + apic)
+          + ' gegenüber CommonStocksIncludingAdditionalPaidInCapital ' + _mio(csi);
+      } else { paidIn = csi; paidInDesc = 'Bestandteile und Summenposten stimmen überein (' + _mio(csi) + ')'; }
+    } else if (csi != null) {
+      paidIn = csi; paidInDesc = 'CommonStocksIncludingAdditionalPaidInCapital';
+    } else if (compsComplete) {
+      paidIn = cs + apic; paidInDesc = apicTag;
+    }
+    // V1.0.79 (Fehler 2): fehlende Bestandteile sind keine 0. Eine Einstufung aus
+    // der Eigenkapitalidentitaet setzt voraus, dass jeder Bestandteil gemeldet ist
+    // (belegte 0 zaehlt); fehlt einer, ist der Umfang ungeklaert. Kein Bestandteil
+    // wird aus der Differenz zurueckgerechnet.
+    const missing = [];
+    if (se == null) missing.push(seNciMissing ? 'MinorityInterest (Eigenkapital nur inkl. Minderheiten gemeldet)' : 'StockholdersEquity');
+    if (csi == null && apic != null && cs == null) missing.push('CommonStockValue');
+    if (aoci == null) missing.push('AccumulatedOtherComprehensiveIncomeLossNetOfTax');
+    if (ts == null) missing.push('TreasuryStockValue/TreasuryStockCommonValue');
+    if (pref == null) missing.push('PreferredStockValue');
     let status = 'unclear', reason;
     if (re == null) {
       reason = 'Umfang ungeklärt: RE-Stichtagswert in den Company Facts nicht auffindbar';
-    } else if (se == null) {
-      reason = 'Umfang ungeklärt: Eigenkapital zum Stichtag nicht gemeldet — die Eigenkapitalidentität ist nicht prüfbar.' + _indiz;
+    } else if (paidInConflict) {
+      reason = 'Umfang ungeklärt: Die Darstellungen des eingezahlten Kapitals widersprechen sich (' + paidInConflict
+        + ') — keine Darstellung wird ausgewählt.' + _indiz;
+    } else if (csi == null && apic == null) {
+      const _allOther = se != null && cs != null && aoci != null && ts != null && pref != null;
+      reason = 'Umfang ungeklärt: kein eigener Kapitalrücklagen-Bestand gemeldet ('
+        + RE_SCOPE_APIC_TAGS.concat('CommonStocksIncludingAdditionalPaidInCapital').join('/') + '). '
+        + (_allOther && Math.abs(cs + re + aoci + pref - ts - se) <= 0.0005 * (Math.abs(cs) + Math.abs(re) + Math.abs(aoci) + Math.abs(pref) + Math.abs(ts) + Math.abs(se))
+            ? 'Die Eigenkapitalidentität schließt mit dem RE-Wert als Sammelposten; ' : '')
+        + 'ob er Kapitalrücklagen enthält, ist aus den Company Facts nicht bestimmbar (Zeilenbezeichnung und Spalten der '
+        + 'Eigenkapitalveränderung fehlen dort).' + _indiz;
+    } else if (missing.length > 0) {
+      reason = 'Umfang ungeklärt: Eigenkapitalbestandteile nicht gemeldet: ' + missing.join(', ')
+        + ' — fehlende Angaben gelten nicht als 0; ohne sie ist die Eigenkapitalidentität nicht prüfbar.' + _indiz;
     } else {
-      const comps = [cs, csi, apic, re, aoci, pref, ts].filter(x => x != null);
-      const tol = 0.0005 * comps.reduce((a, x) => a + Math.abs(x), 0) + 0.0005 * Math.abs(se);
-      const without = (cs || 0) + (csi || 0) + re + (aoci || 0) + (pref || 0) - (ts || 0);
-      const withApic = without + (apic || 0);
-      const sepApic = apic != null || csi != null;
-      if (sepApic && Math.abs(withApic - se) <= tol) {
+      const partsAbs = (csi != null && !compsComplete ? Math.abs(csi) : Math.abs(cs) + Math.abs(apic))
+        + Math.abs(re) + Math.abs(aoci) + Math.abs(pref) + Math.abs(ts);
+      const tol = 0.0005 * partsAbs + 0.0005 * Math.abs(se);
+      const withApic = paidIn + re + aoci + pref - ts;
+      if (Math.abs(withApic - se) <= tol) {
         status = 'pure';
-        reason = 'rein: Kapitalrücklage eigens gemeldet (' + (apicTag || 'CommonStocksIncludingAdditionalPaidInCapital')
-          + ') und Eigenkapitalidentität schließt (' + _mio(withApic) + ' ≈ ' + _mio(se) + ')';
-      } else if (apic != null && Math.abs(apic) > 2 * tol && Math.abs(without - se) <= tol) {
+        reason = 'rein: Kapitalrücklage eigens gemeldet (' + paidInDesc + '), alle Bestandteile gemeldet und '
+          + 'Eigenkapitalidentität schließt (' + _mio(withApic) + ' ≈ ' + _mio(se) + ')';
+      } else if (compsComplete && Math.abs(apic) > 2 * tol && Math.abs(withApic - apic - se) <= tol) {
+        const without = withApic - apic;
         const par = _inst('CommonStockParOrStatedValuePerShare', p, 'USD/shares');
         const iss = _inst('CommonStockSharesIssued', p, 'shares');
-        const parOk = cs != null && par != null && iss != null && Math.abs(par * iss - cs) <= Math.max(tol, 0.005 * Math.abs(cs));
+        const parOk = par != null && iss != null && Math.abs(par * iss - cs) <= Math.max(tol, 0.005 * Math.abs(cs));
         if (parOk) {
           status = 'combined';
           reason = 'kombiniert (belegt): Der RE-Wert ' + _mio(re) + ' enthält die gemeldete Kapitalrücklage ' + _mio(apic)
-            + ' (' + apicTag + '): Die Eigenkapitalidentität schließt nur ohne sie (' + _mio(without) + ' ≈ ' + _mio(se)
+            + ' (' + apicTag + '): Bei vollständig gemeldeten Bestandteilen schließt die Eigenkapitalidentität nur ohne sie ('
+            + _mio(without) + ' ≈ ' + _mio(se)
             + '), und das Stammkapital entspricht Nennwert × ausgegebene Aktien. Keine Zerlegung — nicht als Gewinnrücklage verwendet';
         } else {
           reason = 'Umfang ungeklärt: Die gemeldete Kapitalrücklage (' + apicTag + ') wäre doppelt gezählt (Identität schließt nur ohne sie); '
             + 'ob sie im RE-Wert oder im Stammkapital steckt, ist ohne Nennwert × ausgegebene Aktien nicht zuordenbar';
         }
-      } else if (!sepApic) {
-        reason = 'Umfang ungeklärt: kein eigener Kapitalrücklagen-Bestand gemeldet ('
-          + RE_SCOPE_APIC_TAGS.concat('CommonStocksIncludingAdditionalPaidInCapital').join('/') + '). '
-          + (Math.abs(without - se) <= tol ? 'Die Eigenkapitalidentität schließt mit dem RE-Wert als Sammelposten; ' : '')
-          + 'ob er Kapitalrücklagen enthält, ist aus den Company Facts nicht bestimmbar (Zeilenbezeichnung und Spalten der '
-          + 'Eigenkapitalveränderung fehlen dort).' + _indiz;
       } else {
         reason = 'Umfang ungeklärt: Eigenkapitalidentität schließt nicht (Bestandteile ' + _mio(withApic) + ' gegenüber '
           + seTag + ' ' + _mio(se) + ') — der Umfang des RE-Werts ist nicht bestimmbar.' + _indiz;
