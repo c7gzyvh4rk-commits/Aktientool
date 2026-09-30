@@ -45,6 +45,11 @@ const APIC_FLOW = 'AdjustmentsToAdditionalPaidInCapitalSharebasedCompensationReq
 const YRS = [2022, 2023, 2024, 2025];
 const instUnit = (unit, v) => ({ units: { [unit]: YRS.map(y => ({ end: y + '-12-31', val: v, form: '10-K', filed: (y + 1) + '-02-15', accn: 'u' + y })) } });
 const PAR_1_100M = { CommonStockParOrStatedValuePerShare: instUnit('USD/shares', 1), CommonStockSharesIssued: instUnit('shares', 100e6) };
+// V1.0.79: OCI, eigene Aktien und Vorzugskapital ausdruecklich mit 0 gemeldet.
+// Bis V1.0.78 fehlten sie in den Fixtures und gingen per Ersatz-0 in die
+// Identitaet ein (Fehler 2); ohne sie ist der Umfang nicht bestimmbar.
+const ZEROS = { AccumulatedOtherComprehensiveIncomeLossNetOfTax: secInst(allYears(0)), TreasuryStockValue: secInst(allYears(0)),
+  PreferredStockValue: secInst(allYears(0)) };
 
 // Eigenkapital 4,000 in allen Faellen; `eq` ergaenzt die Eigenkapitalbestandteile.
 function facts(eq) {
@@ -64,14 +69,14 @@ function facts(eq) {
 }
 const CASES = {
   // Stammkapital 100 + Kapitalruecklage 3,400 + RE 500 = 4,000 ⇒ rein
-  pureApic: { CommonStockValue: secInst(allYears(100)), AdditionalPaidInCapital: secInst(allYears(3400)),
+  pureApic: { ...ZEROS, CommonStockValue: secInst(allYears(100)), AdditionalPaidInCapital: secInst(allYears(3400)),
     RetainedEarningsAccumulatedDeficit: secInst(allYears(500)), [APIC_FLOW]: secFlow(allYears(50)) },
   // Kapitalruecklage im Stammkapital (CommonStocksIncludingAdditionalPaidInCapital 3,500) + RE 500 = 4,000 ⇒ rein
-  pureInCommon: { CommonStocksIncludingAdditionalPaidInCapital: secInst(allYears(3500)),
+  pureInCommon: { ...ZEROS, CommonStocksIncludingAdditionalPaidInCapital: secInst(allYears(3500)),
     RetainedEarningsAccumulatedDeficit: secInst(allYears(500)), [APIC_FLOW]: secFlow(allYears(50)) },
   // Kapitalruecklage 3,400 gemeldet, aber Stammkapital 100 (= 1 USD × 100 Mio.) + RE-Tag 3,900 = 4,000
   // ⇒ die 3,400 sind im RE-Tag enthalten (reine Gewinnruecklage 500) ⇒ belegt kombiniert
-  combined: Object.assign({ CommonStockValue: secInst(allYears(100)), AdditionalPaidInCapital: secInst(allYears(3400)),
+  combined: Object.assign({ ...ZEROS, CommonStockValue: secInst(allYears(100)), AdditionalPaidInCapital: secInst(allYears(3400)),
     RetainedEarningsAccumulatedDeficit: secInst(allYears(3900)) }, PAR_1_100M),
   // kein Kapitalruecklagen-Bestand, APIC-Bewegungen gemeldet, Stammkapital 100 + RE 3,900 = 4,000 ⇒ ungeklaert
   unclearMovements: { CommonStockValue: secInst(allYears(100)), RetainedEarningsAccumulatedDeficit: secInst(allYears(3900)),
@@ -79,10 +84,10 @@ const CASES = {
   // keinerlei APIC-Angaben ⇒ ebenfalls ungeklaert (fehlende Bewegungen beweisen nichts)
   unclearNoApic: { CommonStockValue: secInst(allYears(100)), RetainedEarningsAccumulatedDeficit: secInst(allYears(3900)) },
   // APIC-Bestand vorhanden, Identitaet schliesst nicht (100 + 3,400 + 900 = 4,400 ≠ 4,000) ⇒ ungeklaert
-  unclearNoClose: { CommonStockValue: secInst(allYears(100)), AdditionalPaidInCapital: secInst(allYears(3400)),
+  unclearNoClose: { ...ZEROS, CommonStockValue: secInst(allYears(100)), AdditionalPaidInCapital: secInst(allYears(3400)),
     RetainedEarningsAccumulatedDeficit: secInst(allYears(900)) },
   // wie combined, aber ohne Nennwert/Aktienzahl ⇒ doppelt gezaehlte Kapitalruecklage nicht zuordenbar ⇒ ungeklaert
-  unclearNoPar: { CommonStockValue: secInst(allYears(100)), AdditionalPaidInCapital: secInst(allYears(3400)),
+  unclearNoPar: { ...ZEROS, CommonStockValue: secInst(allYears(100)), AdditionalPaidInCapital: secInst(allYears(3400)),
     RetainedEarningsAccumulatedDeficit: secInst(allYears(3900)) }
 };
 

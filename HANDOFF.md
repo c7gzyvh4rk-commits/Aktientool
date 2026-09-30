@@ -1,5 +1,29 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## O-4: Doppelzählung und Ersatznullen in `_checkRetainedEarningsScope` (V1.0.79)
+
+**Ausgangsstand (nach `git fetch origin`, 2026-09-30).** main =
+`670c4319a48e1004bf5ee16b6e51f206fab7edfe` (Merge PR #4, V1.0.78; Produkt =
+`b90ca50`), ohne Abweichung; neuer Worktree, Branch `claude/nifty-tesla-ye7ufw`
+neu ab main; Hauptcheckout unverändert; keine `AGENTS.md`. Details: AUDIT §13.16.
+
+**Korrekturen.** (1) Summenposten `CommonStocksIncludingAdditionalPaidInCapital`
+und Bestandteile (Stammkapital + Kapitalrücklage) werden nicht mehr addiert,
+sondern als alternative Darstellungen geprüft; Widerspruch ⇒ ungeklärt. Vorher
+wurden reine Gewinnrücklagen durch einen passenden redundanten Summenposten
+gesperrt (7,500 statt 4,000). (2) Fehlende OCI, eigene Aktien, Vorzugskapital
+bzw. Minderheiten sind keine 0 mehr; ohne vollständige Bestandteile keine
+Einstufung. Vorher gab ein fehlendes Vorzugskapital einen kombinierten Wert
+als „rein“ frei (Altman Z″ 3.1632 ⇒ `investable_high`, 15 %); jetzt
+`caution_data`, 25 %; mit gemeldetem Vorzugskapital „belegt kombiniert“.
+
+**Tests.** Neu `retained-earnings-components` (11; Gegenlauf `b90ca50`: 7 rot,
+4 grün). `retained-earnings-scope`: sechs Fixtures um belegte Nullwerte ergänzt
+(beruhten auf Fehler 2), Erwartungen unverändert. Node 352 → 363; übrige Zahlen
+unverändert (Läufe auf dem endgültigen Commit im PR-Kommentar).
+
+---
+
 ## Nachreview PR #3: O-4 und O-1 berichtigt (V1.0.78)
 
 **Ausgangsstand (nach `git fetch origin`, 2026-09-30).** main =
