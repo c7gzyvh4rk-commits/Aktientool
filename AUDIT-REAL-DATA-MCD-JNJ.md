@@ -714,7 +714,7 @@ gelockert, keine unternehmensspezifischen Werte im Produkt.
 
 * **O-1** Wachstumsprofil (Annahmen-Hinweis): „ROIC akt./ROIC-Trend (2J)“ als
   vereinfachter, unbereinigter ROIC mit fehlenden Schulden = 0 — nur Anzeige,
-  kein Score, keine Modellwirkung.
+  kein Score, keine Modellwirkung. **Geschlossen in V1.0.77 (§13.14).**
 * **O-2** Präzisionsregel bei MCD (`decimals=-5` in der GuV, `-6` für dieselben
   Werte an anderer Stelle): konservativ, per XBRL-Duplikatregel begründet;
   entscheidet nicht über die TTM-Verfügbarkeit (§13.4).
@@ -723,7 +723,8 @@ gelockert, keine unternehmensspezifischen Werte im Produkt.
   aus 10-K) — bei einer künftigen Nutzung wäre Doppelzählung möglich.
 * **O-4** JNJ taggt „Retained earnings and Additional-paid-in-capital“ als
   `RetainedEarningsAccumulatedDeficit` (168,978); betrifft nur diagnostische
-  Kennzahlen (Altman).
+  Kennzahlen (Altman). **Geschlossen in V1.0.77 (§13.14);** Altman ist nicht
+  rein diagnostisch, sondern wirkt über das Qualitätsurteil auf die Basis-MoS.
 
 ### 13.9 · Status der fünf Produktbefunde und Net Debt/EBITDA
 
@@ -871,7 +872,7 @@ Synthese bleibt dadurch nachweislich unverändert.
 **Offen (nicht in diesem Schritt).** Das Reverse-DCF-Diagnosepaar auf
 Reported-/Owner-FCF-Basis (`computeReverseDcfFull`, `_computeOwnerFcfDcf`)
 liest weiterhin `net_debt[0]` bzw. 0. Es ist nicht gewichtet, als Diagnose
-gekennzeichnet und auf main identisch.
+gekennzeichnet und auf main identisch. **Geschlossen in V1.0.77 (§13.14).**
 
 **Tests.** `tests/roic-cash-period.test.mjs` (8) und
 `tests/growth-net-debt.test.mjs` (4). Gegen den Stand `7236c73` scheitern
@@ -879,3 +880,113 @@ gekennzeichnet und auf main identisch.
 Die Sollwerte sind unabhängig hergeleitet (ROIC 75/700, 75/1100, 75/1000;
 Growth-FV-Differenz 4,000/100/1.09^N je Szenario).
 
+### 13.14 · Restpunkte aus PR #2 geschlossen (V1.0.77): FCF-Diagnostik, O-1, O-4
+
+**Anlass.** Abschlussreview PR #2
+(https://github.com/c7gzyvh4rk-commits/Aktientool/pull/2#issuecomment-5914037854):
+drei nicht blockierende Restpunkte. Ausgangsstand main `1ee2e92` (V1.0.76,
+Produktdatei SHA-256 `7d60f54b…`).
+
+**1 · Reported-/Owner-FCF-Diagnostik: ungeprüfte Nettoschulden.**
+*Ursache.* `computeReverseDcfFull` setzte für das Diagnosepaar
+(`reverseDcfReported`, `reverseDcfOwner`, `scenarioResults`)
+`netDebtM = net_debt[0] ?? 0`; `_computeOwnerFcfDcf` rechnete
+`net_debt[0]` → `total_debt[0] − Liquidität` mit fehlender Liquidität = 0 →
+sonst 0 („EV = Equity Value“). Keiner der Pfade prüfte Umfang, Herkunft oder
+Stichtag. Der Hinweis „keine Nettoschuldenbrücke“ war zudem ungenau: Das Paar
+setzt Nettoschulden sehr wohl ins Ziel-EV (Kurs · Aktien + Nettoschulden) ein.
+Das Growth-Verdict (BUBBLE_RISK … GROWTH_WATCH) leitete sich aus diesem
+Wachstum ab.
+
+| Fall (synthetisch, FCF 180, SBC 20, 100 Mio. Aktien, Kurs 40, WACC 9 %, TG 3 %) | V1.0.76 | V1.0.77 |
+|---|---|---|
+| keine Schuldenangaben | Paar mit 0; Owner-FV mit 0 | nicht bestimmbar, Grund „Nettoschulden nicht belegt … NICHT als 0“ |
+| Schulden 4,500 ohne Liquidität | Paar mit 0; Owner-FV mit 4,500 (Liquidität = 0) | nicht bestimmbar |
+| Teilbetrag, Umfang offen (abgeleitetes net_debt 4,000) | beide mit ungeprüften 4,000 | nicht bestimmbar |
+| Liquidität nur zum Halbjahresstichtag | Paar mit 0; Owner-FV mit 4,000 | nicht bestimmbar (Periodenprüfung) |
+| belegt 4,500 − 500, kein `net_debt`-Feld | Paar mit **0** (!); Owner-FV mit 4,000 | beide mit 4,000 |
+| belegt 0 / belegt −500 / manuelles `net_debt` 4,000 | 0 / Paar 0 statt −500 / 4,000 | 0 / −500 / 4,000 |
+
+*Korrektur.* Beide Pfade nutzen `_resolveNetDebtForDcfBridge` (dieselbe
+Prüfung wie Bewertungskern, DCF-Brücke, Growth-Modul; keine zweite
+Definition). Nicht belegt ⇒ kein Reported-/Owner-Wachstum, keine
+Kursszenarien, keine Klassifikation, kein Owner-/Reported-FV und kein
+SBC-Abschlag (FV); der Grund steht in Bewertungs- und Growth-Reiter.
+Unabhängig berechenbar und erhalten: Kernstatus (`coreStatus`, getrennt
+geführt), SBC-Diagnose (Owner-FCF 160), historischer Umsatz-Benchmark.
+Folge im Growth-Modul: Ohne belegte Nettoschulden gibt es auch kein aus dem
+impliziten Wachstum abgeleitetes Verdict mehr (`MODEL_UNSUITABLE` mit Grund
+statt z. B. `GROWTH_WATCH`); Synthese unverändert (Growth ist isoliert, §13.13).
+Diagnosen bleiben ungewichtet.
+
+**2 · O-1: vereinfachter ROIC im Wachstumsprofil.** *Ursache.*
+`computeBaseRateLite._roicAt` paarte je Arrayposition, setzte fehlende Schulden
+und Liquidität auf 0, einen fehlenden Steuersatz auf 25 % und ignorierte die
+Leasingsperre von ROIC − WACC. Einziger Verbraucher: Anzeige „Historisches
+Profil“ (kein Score, kein Qualitätsurteil, keine Bewertung). MCD zeigte dort
+z. B. 24.8 %, während ROIC − WACC „nicht bewertbar“ war.
+*Korrektur.* Die Periodenzuordnung von ROIC − WACC ist als `_roicStockMatchers`
+herausgelöst (Inhalt unverändert) und wird mitbenutzt: Bestände zum Ende
+desselben Geschäftsjahres (≤ 45 Tage, keine Eröffnungsstichtage),
+Positionsbezug nur bei periodenfreien Altdaten. Eigenkapital, Finanzschulden
+und Liquidität müssen belegt sein (belegte 0 gültig), Steuersatz aus
+`wacc_components.tax_rate`, Leasingsperre wie ROIC − WACC/ROIC-Trend; der
+2-Jahres-Trend verlangt zwei Geschäftsjahre Abstand. Die Kennzahl ist bewusst
+eine andere als ROIC − WACC (Einzeljahr statt Median, unbereinigt) und wird
+so benannt („ROIC akt. (vereinfacht, Stichtag)“ mit Definitionszeile); sonst
+„nicht bewertbar“ mit Grund. Auf den MCD-Auszügen (Steuer 21 %, WACC 8 %
+angenommen) jetzt „nicht bewertbar: Leasingbereinigung erforderlich …“.
+
+**3 · O-4: kombinierter RE+APIC-Wert als Gewinnrücklagen.** *Beleg.*
+Primärquelle jnj-20251228.htm, Bilanzzeile „Retained earnings and
+Additional-paid-in-capital“ = 168,978, getaggt als
+`us-gaap:RetainedEarningsAccumulatedDeficit` (Auditbeleg `bs.re_apic`,
+AUDIT-D3 Tabelle JNJ Zeilen 837–840). Nach Taxonomie umfasst der Tag nur
+Gewinnrücklagen. In den Company Facts (Abruf 2026-09-30, SHA-256 `7141c0c9…`)
+meldet JNJ für jedes Geschäftsjahr FY2018–FY2025
+`AdjustmentsToAdditionalPaidInCapitalSharebasedCompensation…` (Bewegungen der
+Kapitalrücklage), aber keinen APIC-Bestand; die Eigenkapitalidentität
+3,120 + 168,978 − 14,930 − 75,624 = 81,544 (Eigenkapital inkl. Minderheiten zum 2025-12-28) schließt
+nur mit dem RE-Tag als einziger Rücklagenzeile. MCD meldet
+`AdditionalPaidInCapital` eigens (SHA-256 `0394e814…`).
+*Korrektur.* `_checkRetainedEarningsScope` im Importweg
+(`_extractSecFundamentals`): Gibt es für ein Geschäftsjahr APIC-Bewegungen,
+aber zum Stichtag (gleiches Geschäftsjahr, ≤ 45 Tage) keinen Bestand
+(`AdditionalPaidInCapital`, `AdditionalPaidInCapitalCommonStock`,
+`CommonStocksIncludingAdditionalPaidInCapital`), wird der RE-Wert dieser
+Periode verworfen (null, Grund in `unavailablePeriods`). Eine Zerlegung ist
+ohne gemeldeten APIC-Bestand nicht möglich. Keine JNJ-spezifische Zahl oder
+Regel; Altman nennt den Grund. EBIT für JNJ wurde nicht erschlossen.
+*Folgepfad (synthetisch mit EBIT, TA 10,000, WC 500, EBIT 400, BV 4,000,
+TL 6,000, kombinierter Wert 5,000):* vorher Z'' = 2.9268 (safe) ⇒
+`investable_high` ⇒ Basis-MoS 15 %; jetzt Altman `insufficient_data` ⇒ Urteil
+und MoS identisch mit „RE nicht gemeldet“ (`caution_data`, 25 %). Gegenprobe
+mit gemeldetem APIC-Bestand und reinem RE 500: Z'' = 1.4598 ⇒
+`caution_quality`.
+*Realdaten:* JNJ RE 2018-12-30 … 2025-12-28 verworfen, 2017-12-31/2017-01-01
+bleiben (keine APIC-Bewegung gemeldet); MCD unverändert (70,282 …).
+
+**Tests (Sollwerte aus Definition/Kontrollrechnung).**
+`tests/diagnostic-net-debt.test.mjs` (18), `tests/base-rate-roic.test.mjs` (12),
+`tests/retained-earnings-scope.test.mjs` (8, inkl. Realauszug
+`tests/real-data/excerpts/re-apic-excerpt.json`), Browser-Abnahme §11 (+9).
+Gegenlauf mit der Produktdatei von `1ee2e92`: 16/18, 9/12, 4/8 rot, Browser §11
+6 FAIL; alle gültigen Gegenproben (belegte 0, Nettoliquidität, manuelles
+`net_debt`, belegte Liquidität 0, Altdaten, APIC-Bestand, keine APIC-Angaben,
+MCD) bestehen vorher und nachher. Angepasst: `audit-chat12` R7 verlangte
+> 10 pp Abstand zwischen Diagnosepaar und Kern — der Abstand war der Fehler
+selbst (Paar mit 0 statt belegter 2,000: −4.66 % statt 9.12 %). Jetzt: gleiche
+geprüfte Nettoschulden, Kontrollrechnung EV(g) = 3,200, Abstand > 1 pp.
+
+**Verbleibende Grenzen.** (a) O-4-Regel konservativ: Ein Emittent, der
+APIC-Bewegungen meldet, die Kapitalrücklage aber im Stammkapital
+(`CommonStockValue`) führt, verliert den RE-Wert ebenfalls (nicht belegt,
+nicht falsch). JNJ FY2018–FY2021 sind im Original als „Retained earnings“
+beschriftet, werden aber verworfen, weil APIC-Bewegungen ohne APIC-Bestand
+gemeldet sind (die Zeile nimmt diese Buchungen auf). (b) ROIC − WACC und
+ROIC-Trend behalten für periodenfreie Altdaten die bestehende Regel
+„fehlende Liquidität = 0“ (bewusst nicht geändert; scorewirksam, nicht Teil
+dieses Auftrags). (c) Die Diagnostik prüft Nettoschulden wie die DCF-Brücke,
+aber nicht zusätzlich den Stichtag gegen die FCF-Periode. (d) Für MCD/JNJ
+bleibt die Brücke gesperrt ⇒ Diagnosepaar/Owner-FV dort „nicht bestimmbar“,
+sobald FCF und Kurs vorliegen. Modellsperren aus §13.4–§13.7 unverändert.

@@ -560,7 +560,19 @@ test('R7 (A-1) Reverse-DCF-Karte der Bewertungsansicht rechnet auf dem FCFF-Kern
   const full = S.computeReverseDcfFull(mj);
   assert.equal(full.fcfBasisConsistentWithCore, false);
   assert.ok(full.reverseDcfReported != null);
-  assert.ok(Math.abs(full.reverseDcfReported - core.impliedGrowthPct) > 10,
+  // V1.0.77: Bis V1.0.76 rechnete das Diagnosepaar hier mit Nettoschulden 0
+  // (kein net_debt-Feld) und lag deshalb > 10 pp neben dem Kern (−4.66 % gegen
+  // +10.80 %) — dieser Abstand war der Fehler selbst. Jetzt nutzt es dieselben
+  // geprueften Nettoschulden wie der Kern (2,000). Kontrollrechnung nach
+  // Definition: Stage 1 zehn Jahre auf FCF 150, Gordon-TV, WACC 10 %, TG 2 %
+  // ⇒ EV(g) = Kurs 12 · 100 Aktien + 2,000 = 3,200.
+  assert.equal(full.inputs.netDebtM, bridge.netDebtM);
+  const evAt = (g) => { let pv = 0, cf = 150; for (let t = 1; t <= 10; t++) { cf *= 1 + g / 100; pv += cf / Math.pow(1.1, t); }
+    return pv + cf * 1.02 / 0.08 / Math.pow(1.1, 10); };
+  assert.ok(Math.abs(evAt(full.reverseDcfReported) - 3200) / 3200 < 1e-4, 'EV ' + evAt(full.reverseDcfReported));
+  // Andere Cashflow-Definition (CFO − CapEx statt FCFF mit ΔWC/Fade) ⇒ weiterhin
+  // eine andere Groesse als der Kern — deshalb getrennt beschriftet.
+  assert.ok(Math.abs(full.reverseDcfReported - core.impliedGrowthPct) > 1,
     'die beiden Groessen sind weiterhin verschieden — deshalb getrennt beschriftet');
 });
 
