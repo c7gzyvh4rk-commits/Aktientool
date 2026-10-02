@@ -820,6 +820,40 @@ async function main() {
     }
 
     // ══════════════════════════════════════════════════════════════════════
+    sec('14 · Nettoschulden ↔ Bewertungsbasis in Kern, Synthese und Growth (V1.0.81)');
+    {
+      const st = `(() => { const d = state.valuation && state.valuation.modelResults && state.valuation.modelResults.dcf;
+        const w = (state.synthesis && state.synthesis._modelWeightDiag || []).map(x => x.model);
+        const g = state.growth; return { dA: d ? d.applicable : null, dB: d ? d.base : null, dP: d ? d._netDebtPeriodBlocked : null,
+          op: d ? d._operatingValuePerShareBase : null, w, gfv: g ? g.growthCases.map(c => c.fairValuePerShare) : null,
+          gnd: g ? g.netDebtUnavailable : null, buy: state.synthesis ? state.synthesis.buyPrice : null }; })()`;
+      for (const kind of ['stale', 'str']) {
+        const status = await importViaUi(FX.corePeriodMj(kind));
+        if (!check(`14.${kind} Import`, /Import OK/.test(status), status)) continue;
+        const s = await ev(st);
+        check(`14.${kind} DCF ohne Eigenkapitalwert, gesperrt wegen Stichtag, operativer Wert erhalten`,
+          s.dA === false && s.dB == null && s.dP === true && s.op != null, JSON.stringify(s));
+        check(`14.${kind} Synthese gewichtet den DCF nicht`, !s.w.includes('dcf'), JSON.stringify(s.w));
+        check(`14.${kind} Growth-Szenarien ohne Fair Value, Grund genannt`,
+          s.gfv && s.gfv.every(x => x == null) && /nicht der Bewertungsbasis zuordenbar/.test(s.gnd || ''), JSON.stringify(s));
+        const val = await tab('valuation');
+        check(`14.${kind} Bewertung nennt den Sperrgrund`, /nicht der Bewertungsbasis zuordenbar/.test(val), val.slice(0, 4000));
+        const gr = await tab('growth');
+        check(`14.${kind} Wachstum: Weighted Fair Value N/A mit Grund`,
+          /nicht der Bewertungsbasis zuordenbar/.test(gr) && !/GROWTH BUY/.test(gr), gr.slice(0, 3000));
+      }
+      const status = await importViaUi(FX.corePeriodMj('valid'));
+      if (check('14.valid Gegenprobe Import', /Import OK/.test(status), status)) {
+        const s = await ev(st);
+        check('14.valid DCF gewichtet, Growth-Szenarien mit Fair Value',
+          s.dA === true && s.dB != null && s.w.includes('dcf') && s.gfv.every(x => x != null), JSON.stringify(s));
+        const val = await tab('valuation');
+        check('14.valid Bewertung weist die gepruefte Zuordnung aus',
+          /Stichtag 2025-12-31 zum Umsatz-Zeitraum bis 2025-12-31 geprueft/.test(val), val.slice(0, 4000));
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
     sec('8 · Abschluss');
     check('keine unbehandelte Ausnahme im gesamten Ablauf', exceptions.length === 0, exceptions.join(' | '));
     const nonFont = external.filter(u => !/^https:\/\/fonts\.(googleapis|gstatic)\.com\//.test(u));

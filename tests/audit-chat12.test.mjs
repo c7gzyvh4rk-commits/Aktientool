@@ -2591,9 +2591,12 @@ function daPeriodMj(opts) {
     shares_diluted: [100, 100, 100, 100, 100, 100],
     fcf:            [150, 150, 150, 150, 150, 150],
     net_debt:       [0],
+    // V1.0.81: net_debt traegt seinen Stichtag (FY2025) wie alle uebrigen Reihen.
+    // Ein undatiertes net_debt neben datierter Bewertungsbasis ist gemischt und
+    // sperrt seit V1.0.81 die Eigenkapitalbruecke; Gegenstand dieses Tests ist D&A.
     _v4_meta: Object.assign({
       revenue: fyMeta(6), ebit: fyMeta(6), capex: fyMeta(6),
-      fcf: fyMeta(6), shares_diluted: fyMeta(6),
+      fcf: fyMeta(6), shares_diluted: fyMeta(6), net_debt: fyMeta(1),
       ebitda: opts.ebitdaMeta !== undefined ? opts.ebitdaMeta : fyMeta(5, 2024)
     }, opts.meta || {})
   };
