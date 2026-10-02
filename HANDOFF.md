@@ -1,5 +1,57 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Offene Punkte geschlossen: Nettoschulden ↔ FCF-Zeitraum, Altdaten-ROIC ohne Liquidität (V1.0.80)
+
+**Ausgangsstand (nach `git fetch origin`, 2026-10-02).** main =
+`b523867c9b2725e0bd2b920181d3423e48ac24c7` (Merge PR #5, V1.0.79) = Referenzstand,
+ohne Abweichung; keine `AGENTS.md`. Eigener Worktree, Branch
+`claude/netdebt-fcf-roic-cash` ab main; Hauptcheckout unverändert. Beide Befunde
+auf `b523867` reproduziert. Details, Regeln, Tabellen: AUDIT **§13.17**.
+
+**1 · Diagnostik: Nettoschulden-Stichtag ↔ FCF-Zeitraum.** *Ursache:*
+Diagnosepaar (`computeReverseDcfFull`) und Owner-FCF-DCF prüften die
+Nettoschulden nur wie die DCF-Brücke, nicht gegen den FCF. Bilanz zum
+2024-12-31 neben FCF FY2025 ⇒ 15.46 %/17.02 %, FV 37.26/28.68, `GROWTH_WATCH`.
+*Regel:* Stichtag am Ende des tatsächlich verwendeten FCF-Zeitraums (FY:
+Geschäftsjahresende; TTM: Fensterende; FY-Rückfall: FY-Regel), ≤ 45 Tage
+(bestehende Toleranz, 52/53-Wochen-Jahre); älter oder jünger unzulässig. Stichtag
+des verwendeten Betrags nach der Regel der EV/EBITDA-Brücke (jetzt gemeinsamer
+Helfer `_dcfBridgePeriodEvidence`), kein fremdes Datum, Ersatzreihen ohne
+Stichtag. Gemischte/ungültige Angaben sperren; nur vollständig periodenfreie
+Daten laufen als ausgewiesene Annahme („NICHT geprueft“). *Reparatur:*
+`_resolveFcfDiagnosticNetDebt` = zentrale Prüfung + Zuordnung. Gesperrt ⇒ kein
+Wachstum, keine Szenarien, kein FV/SBC-Abschlag, Growth-Verdict
+`MODEL_UNSUITABLE` mit Grund; Kernstatus, SBC-Diagnose, Umsatz-Benchmark, belegte
+0/Nettoliquidität erhalten. Synthese, gewichtete Bewertung, Kern-Reverse-DCF,
+Growth-Szenarien unverändert (Alt/Neu-Vergleich).
+
+**2 · ROIC − WACC/ROIC-Trend: fehlende Liquidität keine 0.** *Ursache:*
+`cashI = … : 0` im Positionsbezug (ROIC − WACC) und `cash[i] ?? 0` in beiden
+Modi (Trend); einzelne null-Werte und null-Reihen, nicht fehlende Arrays (schon
+gesperrt), kein Alias-Rückgriff. *Reparatur:* Jahr ohne Angabe ausgelassen und
+benannt; Mindestjahre, Definitionen, Leasing-/Periodenregeln, Positionsbezug,
+vereinfachter ROIC (O-1) unverändert. *Wirkung:* Liquidität 6 × null: −2.18 pp
+⇒ `caution_quality`, MoS 25 %, Einstieg 5.1147 ⇒ jetzt nicht bewertbar,
+`investable_high`, 15 %, 5.7967. Zwei fehlende Jahre: Trend −3.9 pp (Score 1)
+⇒ nicht bewertbar. Belegte 0/100 bleiben negativ (`value_destroyer`, 25 %).
+
+**Tests.** Neu `fcf-net-debt-period` (14), `roic-legacy-cash` (10), Browser §13
+(+15). Gegenlauf `b523867`: 20/24 neue Node-Tests rot (4 Erhaltungstests grün),
+Browser §13 9 FAIL, Gegenproben grün. Fixtures `diagnostic-net-debt`,
+`growth-net-debt`, Browser `diagNetDebtMj` um FCF-Perioden ergänzt (waren nach
+neuer Regel gemischt; Erwartungen unverändert, auch auf `b523867` grün).
+Testzahlen: Node 363 → 387, Browser 212 → 227, Rechenprüfungen 1700 und
+Auditwerkzeug 38 unverändert. Läufe auf dem endgültigen Commit im PR-Kommentar.
+
+**Verbleibend (nicht Teil dieses Auftrags).** Kern-DCF und Growth-Szenarien
+gleichen die Brücke nicht mit dem Zeitraum ihrer Flüsse ab (synthetisch
+nachgewiesen, betrifft gewichtete Bewertung; eigener Auftrag empfohlen; bei
+MCD/JNJ gleiche Stichtage). EV/EBITDA-Brücke lässt einseitig periodenfreie
+Angaben zu. JNJ rein/kombiniert nur aus Primärquellen; manuelle Importe ohne
+RE-Prüfung; MCD-/JNJ-Modellsperren, JNJ ohne EBIT. Kein Deployment.
+
+---
+
 ## O-4: Doppelzählung und Ersatznullen in `_checkRetainedEarningsScope` (V1.0.79)
 
 **Ausgangsstand (nach `git fetch origin`, 2026-09-30).** main =

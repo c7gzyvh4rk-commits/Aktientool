@@ -755,6 +755,71 @@ async function main() {
     }
 
     // ══════════════════════════════════════════════════════════════════════
+    sec('13 · Nettoschulden ↔ FCF-Zeitraum und fehlende Liquiditaet in Altdaten (V1.0.80)');
+    {
+      const status = await importViaUi(FX.diagPeriodMj('stale'));
+      if (check('13.0 Nettoschulden zum 2024-12-31 neben FCF FY2025: Import', /Import OK/.test(status), status)) {
+        const val = await tab('valuation');
+        const diag = val.slice(val.search(/GETRENNTE DIAGNOSE AUF REPORTED-FCF-BASIS/i));
+        check('13.1 Bewertung: Reported-/Owner-FCF-Basis ohne Wachstumszahl, Grund „nicht dem FCF-Zeitraum zuordenbar“ mit beiden Daten',
+          /REPORTED-FCF-BASIS\s*– \(Nettoschulden nicht dem FCF-Zeitraum zuordenbar \(FCF-Zeitraum endet 2025-12-31[\s\S]{0,80}ist 2024-12-31 — 365 Tage/i.test(diag)
+          && !/FCF-BASIS\s*[+-]\d/i.test(diag), diag.slice(0, 1500));
+        const gr = await tab('growth');
+        const html = await panelHtml('growth');
+        check('13.2 Wachstum: Reverse DCF nicht berechenbar mit Periodengrund, kein Growth-Verdict aus Wachstum',
+          /Reverse DCF nicht berechenbar: Nettoschulden nicht dem FCF-Zeitraum zuordenbar/.test(gr), gr.slice(0, 4000));
+        check('13.3 Wachstum: Owner-FCF-DCF ohne Fair Value, Grund genannt, SBC-Diagnose sichtbar',
+          /DCF Fair Value: nicht bestimmbar \(Nettoschulden nicht dem FCF-Zeitraum zuordenbar\)/.test(html) && !/DCF Fair Value: \$/.test(html)
+          && !/SBC-Abschlag \(FV\)/.test(html) && /\$160 M/.test(html), gr.slice(0, 6000));
+        const st = await ev(`(() => { const r = state.growth.reverseDcfFull; return { rep: r.reverseDcfReported, own: r.reverseDcfOwner, nd: r.inputs.netDebtM,
+          b: r.netDebtPeriodBlocked, v: state.growth.verdict, core: r.coreStatus }; })()`);
+        check('13.4 Zustand: kein Reported-/Owner-Wachstum, Sperre wegen Periode, Verdict MODEL_UNSUITABLE',
+          st.rep == null && st.own == null && st.nd == null && st.b === true && st.v === 'MODEL_UNSUITABLE', JSON.stringify(st));
+      }
+    }
+    {
+      const status = await importViaUi(FX.diagPeriodMj('manual'));
+      if (check('13.5 vollstaendig periodenfreier Datensatz mit manuellem net_debt: Import', /Import OK/.test(status), status)) {
+        const val = await tab('valuation');
+        check('13.6 Bewertung: Diagnose rechnet, Zuordnung als Annahme „NICHT geprueft“ ausgewiesen',
+          /Nettoschulden ↔ FCF₀\s*Annahme: FCF \(fcf\[0\]\) und Nettoschulden \(net_debt\[0\]\) ohne Periodenangaben[^\n]*NICHT geprueft/i.test(val)
+          && /REPORTED-FCF-BASIS\s*[+-]\d+\.\d\d%/i.test(val), val.slice(Math.max(0, val.search(/GETRENNTE DIAGNOSE/i)), val.search(/GETRENNTE DIAGNOSE/i) + 1500));
+        await tab('growth');
+        const html = await panelHtml('growth');
+        check('13.7 Wachstum: Owner-FV sichtbar und Annahme ausgewiesen', /DCF Fair Value: \$\d/.test(html) && /NICHT geprueft/.test(html),
+          (html.match(/DCF Fair Value:[^<]*/g) || []).join(' ; '));
+      }
+    }
+    {
+      const status = await importViaUi(FX.diagNetDebtMj('valid'));
+      if (check('13.8 belegte Nettoschulden zum FCF-Stichtag (Gegenprobe): Import', /Import OK/.test(status), status)) {
+        const val = await tab('valuation');
+        check('13.9 Bewertung: Zuordnung als geprueft ausgewiesen, keine Annahme',
+          /Nettoschulden ↔ FCF₀\s*Stichtag 2025-12-31 zum FCF-Zeitraum bis 2025-12-31 geprueft/i.test(val) && !/NICHT geprueft/.test(val),
+          val.slice(Math.max(0, val.search(/GETRENNTE DIAGNOSE/i)), val.search(/GETRENNTE DIAGNOSE/i) + 1500));
+      }
+    }
+    {
+      const qs = `(() => { const d = state.quality.descriptive.roicMinusWacc; const c = state.quality.qceScore.components.find(x => x.key === 'roicTrend');
+        return { s: d.status, v: d.value, vd: (state.quality.reasons || []).includes('value_destroyer'), ta: c.available, tr: c.reason || null }; })()`;
+      const status = await importViaUi(FX.roicLegacyCashMj('null'));
+      if (check('13.10 Altdaten mit Liquiditaet 6 × null: Import', /Import OK/.test(status), status)) {
+        const q = await tab('quality');
+        check('13.11 Qualitaet: ROIC − WACC nicht bewertbar mit Grund, kein Spread −2.2pp',
+          /ohne Liquiditätsangabe ausgelassen/.test(q) && !/-2\.2pp|−2\.2pp/.test(q), q.slice(0, 5000));
+        const st = await ev(qs);
+        check('13.12 Zustand: kein Spread, kein value_destroyer, ROIC-Trend ohne Score mit Grund',
+          st.s === 'insufficient_data' && st.v == null && !st.vd && st.ta === false && /nicht als 0 gewertet/.test(st.tr || ''), JSON.stringify(st));
+      }
+      const status0 = await importViaUi(FX.roicLegacyCashMj('zero'));
+      if (check('13.13 Altdaten mit belegter Liquiditaet 0 (Gegenprobe): Import', /Import OK/.test(status0), status0)) {
+        const st = await ev(qs);
+        check('13.14 echter negativer Spread bleibt: −2.18 pp, value_destroyer',
+          st.s === 'ok' && Math.abs(st.v - (75 / 1100 * 100 - 9)) < 1e-9 && st.vd === true, JSON.stringify(st));
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
     sec('8 · Abschluss');
     check('keine unbehandelte Ausnahme im gesamten Ablauf', exceptions.length === 0, exceptions.join(' | '));
     const nonFont = external.filter(u => !/^https:\/\/fonts\.(googleapis|gstatic)\.com\//.test(u));

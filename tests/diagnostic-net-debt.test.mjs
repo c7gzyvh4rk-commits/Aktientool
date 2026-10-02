@@ -42,7 +42,11 @@ function mj(kind) {
     book_value: [2000, 1850, 1740, 1660, 1600, 1560], shares_diluted: Array(6).fill(SHARES), sbc: Array(6).fill(SBC),
     da: [40, 35, 30, 25, 20, 17]
   };
-  const meta = { revenue: { periods: YE }, ebitda: { periods: YE } };
+  // V1.0.80: Auch die Cashflow-Reihen tragen ihre Geschaeftsjahresenden. Ohne sie
+  // waere der FCF undatiert neben einer datierten Bruecke — eine gemischte, nicht
+  // nachweisbare Zuordnung, die die Diagnostik seit V1.0.80 sperrt.
+  const meta = { revenue: { periods: YE }, ebitda: { periods: YE },
+                 fcf: { periods: YE }, cfo: { periods: YE }, capex: { periods: YE } };
   const P0 = { periods: [YE[0]] };
   switch (kind) {
     case 'none': break;                                   // keinerlei Schulden-/Liquiditaetsangaben
@@ -65,8 +69,11 @@ function mj(kind) {
     case 'negative':                                      // belegt 100 − 600 = −500 (Nettoliquiditaet)
       Object.assign(f, { total_debt: [100], cash_and_equivalents: [600] });
       Object.assign(meta, { total_debt: P0, cash_and_equivalents: P0 }); break;
-    case 'manualNd':                                      // manuell gesetztes net_debt ohne Metadaten (Altdatenregel)
-      Object.assign(f, { net_debt: [4000] }); break;
+    case 'manualNd':                                      // manuell gesetztes net_debt, Datensatz vollstaendig periodenfrei
+      // V1.0.80: Altdatenregel nur, wenn auch der FCF keine Periodenangaben fuehrt
+      // (sonst gemischte Angaben ⇒ gesperrt, siehe fcf-net-debt-period.test.mjs).
+      Object.assign(f, { net_debt: [4000] });
+      Object.keys(meta).forEach(k => delete meta[k]); break;
     default: throw new Error(kind);
   }
   f._v4_meta = meta;
