@@ -1324,7 +1324,13 @@ Test). Alle angepassten Tests bestehen auch auf `b523867`.
 #### Verbleibende Grenzen und Beobachtungen (nicht Teil dieses Auftrags, unverändert)
 
 * **Kern-DCF und Growth-Szenarien** nutzen `_resolveNetDebtForDcfBridge` ohne
-  Abgleich mit dem Zeitraum ihrer Flussgrößen. Im synthetischen Fall „Bilanz
+  Abgleich mit dem Zeitraum ihrer Flussgrößen [**geschlossen in V1.0.81, §13.18**;
+  dort auch berichtigt: Bei einer Bilanz aus `total_debt`/`cash` eines anderen
+  Geschäftsjahres sperrte der Perioden-Gate der Engine (`validatePeriodAlignment`)
+  bereits die gesamte gewichtete Bewertung — weiter gerechnet haben Kern-Reverse-DCF
+  bei direktem Aufruf und Growth-Szenarien; die gewichtete Bewertung war bei
+  `net_debt[0]` mit fremdem Stichtag und bei Versatz innerhalb desselben Jahres
+  betroffen]. Im synthetischen Fall „Bilanz
   2024-12-31, Flüsse FY2025“ rechnen Kern-Reverse-DCF (18.07 %), gewichtete
   Bewertung und Growth-Szenarien (FV 2.11/48.28/141.98) weiter mit 4,000. Das
   betrifft die gewichtete Bewertung und war ausdrücklich nicht zu ändern;
@@ -1337,3 +1343,143 @@ Test). Alle angepassten Tests bestehen auch auf `b523867`.
 * SBC-Periode gegen FCF-Periode wird nicht geprüft (SBC-Diagnose unverändert).
 * MCD-/JNJ-Modellsperren, JNJ ohne EBIT, TTM-Grenzen aus §13.4–§13.7 und die
   O-4-Grenzen aus §13.15/§13.16 unverändert.
+
+### 13.18 · Nachreview PR #6 (V1.0.81): Periodenmetadaten, Nettoschulden im Kern und in den Growth-Szenarien
+
+**Ausgangsstand.** main `bad9553174746d251a0a3fcb0ba5091d564f3c0f` (Merge PR #6,
+V1.0.80) = Referenzstand, ohne Abweichung; keine `AGENTS.md`. Eigener Worktree,
+Branch `claude/netdebt-core-growth-period`; Hauptcheckout unverändert. Beide
+Befunde auf `bad9553` reproduziert (Werte unten, Gegenlauf der neuen Tests).
+
+#### 1 · Unbrauchbare Periodenmetadaten galten als periodenfreie Altdaten
+
+**Ursache.** `_seriesClaimPeriodContext` (V1.0.80, gemeinsam für FCF-Diagnostik
+und EV/EBITDA-Brücke) erkannte nur ein Array in `periods` als Anspruch. `periods:
+null` oder ein String fielen in den Modus „vollständig periodenfrei“.
+Reproduziert: `fcf.periods = ["2025-12-31"]`, `net_debt.periods = ["2024-12-31"]`
+⇒ gesperrt (richtig); beide `null` bzw. beide als String ⇒ `unverified_manual`,
+Reported 15.46 %.
+
+**Regel.** Vorhandensein und Gültigkeit sind getrennt. Ein vorhandenes
+`periods`-Feld einer Reihe **mit Wert** ist beanspruchter Periodenkontext — auch
+`null`, falscher Datentyp, leeres Array oder unbrauchbarer Inhalt. Dann muss der
+tatsächlich verwendete Betrag ein gültiges Datum JJJJ-MM-TT (`parseIsoDate`,
+unverändert) und eine zulässige Zuordnung haben, sonst Sperre mit Grund (der
+Grund nennt die gemeldete Angabe, z. B. „periods ist kein Array (string:
+"2025-12-31")“). Ein Array galt schon bisher immer als Anspruch; Periodensperren
+(`_seriesHasPeriodContext`) unverändert. *Abgrenzung:* Eine Reihe **ohne jeden
+Wert** trägt keinen Betrag; ihre Importkennzeichnung (`source_type:
+'unavailable', periods: null`, z. B. „no current-year debt fact“ bei einem
+manuellen Datensatz ohne Schuldenangaben) ist kein Anspruch — sonst wären
+vollständig periodenfreie manuelle Daten nach dem Import nie mehr als solche
+erkennbar (gemessen: Browser-Gegenproben „metadatenfreie Altdaten 16.00“ und
+§13.5–13.7 wären gekippt). Kein Datum eines unbenutzten Feldes wird übernommen.
+
+**EV/EBITDA-Brücke (Verbraucher des Helfers).** Keine Neudefinition. Neu
+gesperrt sind nur Fälle mit vorhandener, unbrauchbarer `periods`-Angabe an einer
+Reihe mit Wert (z. B. EBITDA `periods: null` oder String neben datierter
+Brücke). Unverändert: gültig/unvereinbar, beidseitig periodenfrei, eine Seite
+ganz ohne Angabe (bestehende Regel). Alle Browser-Fälle §1 unverändert grün.
+
+#### 2 · Nettoschulden im Bewertungskern und in den Growth-Szenarien
+
+**Datenflüsse.** Bewertungskern (`buildCoreValuationContext`) — gemeinsam für
+Haupt-DCF, DCF Mid-Cycle, Kern-Reverse-DCF (`solveReverseDcfGrowth`, auch
+Übersichtskarte und `computeReverseDcf`), Sensitivitätsmatrix und Monte Carlo.
+Einzige Niveaugröße der Prognose ist `revenue[0]`; Marge (`ebit[0]/revenue[0]`
+bzw. Override/Mid-Cycle), CapEx-, D&A- und OWC-Quote sind Verhältniszahlen.
+FY: Jahresreihe; TTM: die TTM-Sicht (`buildValuationBasisView`) liefert Umsatz
+und Bilanz aus demselben Fenster; FY-Rückfall: die FY-Reihe. Growth-Szenarien
+(`runGrowthCaseEngine` → `_runGrowthScenario`): Basis `revenue[0]`,
+Startmarge aus `fcf[0]`, sofern vorhanden; Exit-Equity = Exit-EV − Nettoschulden.
+
+**Befund (bad9553).** Die Engine sperrt mit `validatePeriodAlignment` nur
+Jahresabweichungen der Kernfelder (`total_debt`, `cash_and_equivalents`, …;
+nicht `net_debt`, nicht der Alias `cash`, kein Versatz innerhalb eines Jahres).
+Synthetisch (Umsatz 1,000 … FY2025, Kurs 40, WACC 9 %, TG 3 %, g1 15 %):
+
+| Fall | bad9553 | V1.0.81 |
+|---|---|---|
+| `net_debt[0]` 4,000 zum 2024-12-31 | DCF 23.45 (85 % gewichtet), Reverse 18.07 %, Growth-FV 2.11/48.28/141.98 | DCF nicht anwendbar, operativer Wert 63.45 nur nachrichtlich; Reverse `net_debt_unknown`; Matrix/MC gesperrt; Growth ohne FV/IRR |
+| Bilanz 4,500 − 500 zum 2025-06-30 bzw. 2025-11-15 (gleiches Jahr) | wie oben | wie oben |
+| Bilanz zum 2024-12-31 (`total_debt`/`cash`) | Engine `PERIOD_MISMATCH` (schon gesperrt); Reverse/Growth rechneten bei direktem Aufruf | zusätzlich Reverse/Growth gesperrt |
+| `net_debt` mit `periods: null`/String/[]/2025-02-30, ohne Metadaten neben datiertem Umsatz, Ersatzreihe | wie gültig gerechnet | gesperrt mit Grund |
+| gültig zum 2025-12-31, 2025-11-16 (45 Tage), belegte 0, −500, vollständig periodenfrei | — | **identisch** (DCF 23.45/63.45/68.45, Synthese, MoS, Einstiegspreis, Konfidenz) |
+
+**Regel/Reparatur.** Eine Prüfung für Diagnostik, Kern und Growth:
+`_resolveNetDebtForFlowBasis(f, flows)` = zentrale Brücke
+(`_resolveNetDebtForDcfBridge`, unverändert) + Zuordnung ihres Stichtags
+(`_dcfBridgePeriodEvidence`) zu **jeder tatsächlich verwendeten Flussgröße**,
+≤ 45 Tage (`MULTIPLES_PERIOD_TOLERANCE_DAYS`, Wert unverändert; die Deklaration
+liegt jetzt im DCF-CORE-BLOCK, damit das isolierte Kernmodul sie mitlädt).
+Kern: `DCF_CORE_NET_DEBT_FLOWS = [revenue]`; Growth: `revenue` und, falls
+vorhanden, `fcf`; Diagnostik: `fcf` bzw. `cfo − capex` (V1.0.80,
+`_resolveFcfDiagnosticNetDebt` ist jetzt eine dünne Hülle). Keine zusätzliche
+Toleranz, keine Abweichung von der V1.0.80-Regel. Gesperrt ⇒ der Kern erhält
+`netDebtPerShare = null` und folgt den **bestehenden** Regeln für eine unbelegte
+Brücke: kein Eigenkapitalwert, kein Wert je Aktie, kein implizites Wachstum,
+Matrix `equityValueUnavailable`, Monte Carlo `_blocked`, DCF/Mid-Cycle
+`applicable: false`, `_excludedFromSynthesis`; der operative Unternehmenswert
+bleibt als solcher gekennzeichnet (`_operatingValuePerShareBase`, Warnung
+„KEINEN Eigenkapitalwert … NICHT mit dem Aktienkurs vergleichbar“). Growth: keine
+Szenario-FV, keine IRR, kein `GROWTH_BUY`, `growthModuleFairValueActive = null`
+(nicht `false`). Neue Felder: `ctx.netDebt.periodCheck/periodNote/assumption/
+blockedBy/flowPeriods`, Modell `_netDebtPeriodCheck/_netDebtPeriodBlocked/
+_netDebtAssumption`, Growth `netDebtPeriodCheck/…Note/…Assumption/
+…PeriodBlocked`. Anzeige: DCF-Warnung mit Sperrgrund bzw. geprüfter Zuordnung
+oder Annahme; Reverse-DCF-Diagnoseblock (Zeile „Netto-Schulden“ über dieselbe
+Prüfung wie der Kern); Wachstumsreiter (Weighted FV, Upside, Hinweis).
+
+**Synthese.** Gesperrter DCF wird nicht gewichtet und nicht als 0
+eingerechnet. Nachgewiesen: Die Synthese eines periodengesperrten Falls ist
+**identisch** mit derselben Datenlage, deren Brücke aus einem bestehenden Grund
+(Umfang offen) unbelegt ist — Gewichte (`dcf 0.85, rim 0.15` ⇒ `rim 1`),
+Bandbreite (Basis 24.78 ⇒ 32.31), Einstiegspreis (20.01 ⇒ 26.09), MoS-Zahlen
+(unverändert, Basis 15 %), Konfidenz (Daten 70, Modellpassung 72 ⇒ 55, Annahmen
+80, gesamt 74 ⇒ 69). Die Konfidenzänderung ist fachlich notwendig: Sie folgt
+allein aus dem kleineren Bewertungsumfang (ein Modell statt zwei) nach der
+bestehenden Regel; die Annahmenkonfidenz bleibt unberührt, weil das
+Growth-Modul `null` (nicht bestimmbar) statt `false` meldet. Der höhere
+Einstiegspreis stammt aus dem verbleibenden RIM-Wert, nicht aus einer neuen Regel.
+
+**Exporte/gespeicherte Ergebnisse.** Snapshots speichern die Modellergebnisse;
+ein gesperrter DCF wird als nicht anwendbar gespeichert. „Neu rechnen“ läuft
+über denselben Kern. Kein Nebenpfad liest `net_debt[0]` an der Prüfung vorbei
+(Legacy-DCF mit externem FCF-Startwert ist ausgeschlossen und rechnet keine
+Brücke; EV/EBITDA und ND/EBITDA haben ihre eigene, unveränderte Periodenprüfung).
+
+#### Tests
+
+`tests/core-growth-net-debt-period.test.mjs` (22): Metadaten null/String/[]/
+2025-02-30 je Brücke, Basis, beide; Diagnostik-Nachreviewfälle; gültig passend/
+unvereinbar; EV/EBITDA-Absicherung; Kern FY gültig mit Kontrollrechnung
+`refValuePerShare` (operativ) und Brückenidentität; 52/53 Wochen, 45/46 Tage,
+90 Tage, Halbjahr; `net_debt[0]` mit falschem/fehlendem Stichtag; Ersatzreihe;
+Matrix, Monte Carlo, Mid-Cycle, Anzeige; Engine bis Synthese (Gewichte,
+Einstiegspreis, MoS, Konfidenz gegen die Referenz „Brücke unbelegt“); Growth
+mit/ohne FCF; periodenfreie Daten; TTM über den produktiven Quartalsweg
+(Umsatz 1,375, ND 400 zum 2025-09-30) und FY desselben Imports; FY-Rückfall;
+zwei Erhaltungstests ohne neue Felder; Abgrenzung leere Reihe. Browser §14 (+15).
+Gegenlauf mit `bad9553`: 20 von 22 neuen Node-Tests rot (die 2 Erhaltungstests
+grün), Browser §14: 11 FAIL (alle Sperrfälle und der neue Ausweis „geprüft“),
+Gegenprobe-Werte grün.
+
+*Angepasste Fixtures/Erwartungen (einzeln begründet).*
+* In-File-Selbsttest `T-NDLOCK` D/E: Umsatz ohne `periods` neben datierter Brücke
+  war nach der Regel gemischt; Umsatz trägt jetzt FY-Enden. Erwartungen 11/15 USD
+  unverändert.
+* `audit-chat12` R37 (`daPeriodMj`): `net_debt [0]` ohne Stichtag neben
+  vollständig datierten Reihen; `net_debt` trägt jetzt FY2025. Gegenstand des
+  Tests ist D&A; Erwartungen unverändert, auch auf `bad9553` grün.
+* `fcf-net-debt-period` (Fehlerfall 2024): Die Erwartung „Growth-Szenarien
+  unberührt“ (`growthModuleFairValueActive` wie im gültigen Fall) war V1.0.80-
+  Absicht und ist jetzt bewusst geändert: `null`, keine Szenario-FV/IRR.
+
+#### Verbleibende Grenzen
+* Der Perioden-Gate der Engine bleibt jahresbasiert (unverändert; die
+  Feinprüfung liegt jetzt an der Brücke).
+* EV/EBITDA-Brücke: eine Seite ganz ohne Periodenangaben bleibt zulässig
+  (bestehende Regel, nicht Teil dieses Auftrags).
+* Die Periodenkonsistenz der Flussgrößen untereinander (z. B. `ebit[0]` gegen
+  `revenue[0]`) ist nicht Gegenstand der Brückenprüfung.
+* SBC-Periode, MCD-/JNJ-Sperren, JNJ ohne EBIT, O-4-Grenzen unverändert.

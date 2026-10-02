@@ -377,3 +377,18 @@ export function roicLegacyCashMj(kind) {
     market: { price: 10 }
   };
 }
+
+// V1.0.81: Nettoschulden ↔ Bewertungsbasis im Kern und in den Growth-Szenarien.
+// Wie diagNetDebtMj('valid'), aber net_debt[0] 4,000 mit eigenem Stichtag:
+// 'stale' 2024-12-31 (Engine-Gate erfasst net_debt nicht), 'str' periods als
+// String statt Array (unbrauchbare Metadaten), 'valid' 2025-12-31 (Gegenprobe).
+export function corePeriodMj(kind) {
+  const m = diagNetDebtMj('valid');
+  m.meta = META('CPR' + kind.slice(0, 1).toUpperCase(), 'high_growth');
+  const f = m.fundamentals;
+  delete f.total_debt; delete f.cash_and_equivalents;
+  delete f._v4_meta.total_debt; delete f._v4_meta.cash_and_equivalents;
+  f._v4_meta.net_debt = { periods: kind === 'stale' ? ['2024-12-31'] : kind === 'str' ? '2025-12-31' : [Y6[0]],
+                          source_type: 'reported', unit: 'USD' };
+  return m;
+}

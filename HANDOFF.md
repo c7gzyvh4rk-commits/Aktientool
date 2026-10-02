@@ -1,5 +1,44 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Nachreview PR #6: Periodenmetadaten, Nettoschulden in Kern und Growth (V1.0.81)
+
+**Ausgangsstand (nach `git fetch origin`, 2026-10-02).** main =
+`bad9553174746d251a0a3fcb0ba5091d564f3c0f` (Merge PR #6, V1.0.80) = Referenzstand;
+keine `AGENTS.md`. Eigener Worktree, Branch `claude/netdebt-core-growth-period`;
+Hauptcheckout unverändert. Beide Befunde reproduziert. Details: AUDIT **§13.18**
+(dort auch Berichtigung einer Aussage aus §13.17).
+
+**1 · Metadaten.** `periods: null`/String/leeres Array/ungültiges Datum an einer
+Reihe mit Wert galt als „periodenfrei“ (⇒ `unverified_manual`, 15.46 %). Jetzt
+beanspruchter Kontext ⇒ gültiges Datum nötig, sonst Sperre mit Grund. Leere,
+vom Import als „unavailable“ markierte Reihen beanspruchen nichts. EV/EBITDA:
+nur die neu erkannten unbrauchbaren Angaben sperren; sonst unverändert.
+
+**2 · Kern und Growth.** Bewertungskern (DCF, Mid-Cycle, Kern-Reverse-DCF,
+Matrix, Monte Carlo) und Growth-Szenarien prüfen den Stichtag der Brücke gegen
+ihre Basis (`revenue[0]`; Growth zusätzlich `fcf[0]`) über dieselbe Funktion wie
+die Diagnostik (`_resolveNetDebtForFlowBasis`, ≤ 45 Tage). Vorher z. B.
+`net_debt[0]` zum 2024-12-31 neben FY2025: DCF 23.45 (85 % gewichtet), Reverse
+18.07 %, Growth-FV 2.11/48.28/141.98. Jetzt: kein Eigenkapitalwert (operativer
+Wert gekennzeichnet), DCF ungewichtet, Synthese identisch mit „Brücke unbelegt“
+(nur RIM; Einstieg 20.01 ⇒ 26.09; Modellpassung 72 ⇒ 55, gesamt 74 ⇒ 69; MoS
+unverändert), Growth ohne FV/IRR. Gültige Fälle, belegte 0, Nettoliquidität,
+periodenfreie Daten, TTM/FY/FY-Rückfall: Werte unverändert.
+
+**Tests.** Neu `core-growth-net-debt-period` (22), Browser §14 (+15). Gegenlauf
+`bad9553`: 20/22 rot (2 Erhaltungstests grün), Browser §14 11 FAIL. Angepasst
+(Erwartungen unverändert): In-File `T-NDLOCK` D/E (Umsatz datiert),
+`audit-chat12` R37 (`net_debt` datiert); bewusst geändert: `fcf-net-debt-period`
+Growth-Erwartung. Testzahlen: Node 387 → 409, Browser 227 → 242,
+Rechenprüfungen 1700 und Auditwerkzeug 38 unverändert. Läufe auf dem
+endgültigen Commit im PR-Kommentar.
+
+**Verbleibend.** Jahresbasierter Engine-Gate unverändert; EV/EBITDA lässt eine
+Seite ganz ohne Angaben zu; Flussgrößen untereinander nicht Teil der
+Brückenprüfung; SBC-Periode; MCD-/JNJ-Sperren, JNJ ohne EBIT. Kein Deployment.
+
+---
+
 ## Offene Punkte geschlossen: Nettoschulden ↔ FCF-Zeitraum, Altdaten-ROIC ohne Liquidität (V1.0.80)
 
 **Ausgangsstand (nach `git fetch origin`, 2026-10-02).** main =

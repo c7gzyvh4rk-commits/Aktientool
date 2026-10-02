@@ -249,12 +249,18 @@ test('Fehlerfall: Bruecke ein Jahr aelter als der FCF (2024-12-31 zu FY2025) ⇒
   const gr = S.runGrowthCaseEngine(mg);
   assert.equal(gr.verdict, 'MODEL_UNSUITABLE');
   assert.match(gr.verdictReason, /nicht dem FCF-Zeitraum zuordenbar/);
-  // Einzige Kopplung an die Synthese (growthModuleFairValueActive) unveraendert gegenueber dem gueltigen Fall.
+  // V1.0.81 (geaendert, AUDIT §13.18): Bis V1.0.80 blieben die Growth-Szenarien
+  // hier ausdruecklich unberuehrt (growthModuleFairValueActive wie im gueltigen
+  // Fall). Seit V1.0.81 pruefen auch sie den Stichtag gegen Umsatz/FCF: keine
+  // Szenario-FV, growthModuleFairValueActive = null („nicht bestimmbar“) — nicht
+  // false, das in der Synthese die Annahmenkonfidenz deckeln wuerde.
   const mv = mj({ bridge: debtCash(4500, 500, YE[0]) }); mv.meta.sub_classification = 'high_growth';
   S._ensureGrowthAssumptionsBlock(mv);
   const gv = S.runGrowthCaseEngine(mv);
   assert.notEqual(gv.verdict, 'MODEL_UNSUITABLE');
-  assert.equal(gr.growthModuleFairValueActive, gv.growthModuleFairValueActive);
+  assert.equal(gv.growthModuleFairValueActive, true);
+  assert.equal(gr.growthModuleFairValueActive, null);
+  assert.ok(gr.growthCases.every(c => c.fairValuePerShare == null && c.irr == null));
 });
 
 test('Fehlerfall: juengere Bilanz (Quartal nach dem Geschaeftsjahr) ist ebenfalls unzulaessig', () => {
