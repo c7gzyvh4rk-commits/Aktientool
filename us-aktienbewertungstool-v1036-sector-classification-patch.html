@@ -11623,16 +11623,24 @@ function computeRoicMinusWacc(mj) {
   // Liquiditaet eine fehlende Eingabe, keine 0. Bis V1.0.75 floss sie als 0 ins
   // investierte Kapital; ein so gedrueckter ROIC konnte `value_destroyer`,
   // `caution_quality` und eine hoehere Basis-MoS ausloesen. Das Jahr zaehlt
-  // jetzt nicht; eine belegte Liquiditaet von 0 bleibt gueltig. Periodenfreie
-  // Altdaten behalten ihre bisherige Regel.
+  // jetzt nicht; eine belegte Liquiditaet von 0 bleibt gueltig.
+  // V1.0.80: dasselbe fuer vollstaendig periodenfreie Altdaten. Bis V1.0.79
+  // galt dort `cashI = … : 0` — eine fehlende Liquiditaet (einzelner Wert
+  // oder ganze Reihe aus null) erhoehte das investierte Kapital; gemessen
+  // ROIC 6.82 % statt nicht bewertbar ⇒ −2.18 pp ⇒ `value_destroyer` ⇒
+  // `caution_quality` ⇒ Basis-MoS 25 %. Der Positionsbezug der Altdaten
+  // bleibt; ein Jahr ohne Liquiditaetsangabe zaehlt nicht. Belegte 0 gilt.
   const _cashMissing = [];
   for (let i = 0; i < horizon; i++) {
     if (ebit[i] == null) continue;
     const b = mBv(i), t = mTd(i);
     if (!b || !t || b.value == null || t.value == null) continue;
     const c = mCash(i);
-    if (periodMode && !(c && c.value != null)) { _cashMissing.push(pE[i] != null ? String(pE[i]) : ('Index ' + i)); continue; }
-    const cashI = c && c.value != null ? c.value : 0;
+    if (!(c && c.value != null)) {
+      _cashMissing.push(periodMode ? (pE[i] != null ? String(pE[i]) : ('Index ' + i)) : ('Position ' + i));
+      continue;
+    }
+    const cashI = c.value;
     const investedReported = b.value + t.value - cashI;
     if (investedReported <= 0) continue;
     const nopat = ebit[i] * (1 - taxRate / 100);
@@ -11651,7 +11659,10 @@ function computeRoicMinusWacc(mj) {
     rows.push(row);
   }
   const _cashNote = _cashMissing.length > 0
-    ? `ohne periodengleiche Liquidität ausgelassen: ${_cashMissing.join(', ')}` : null;
+    ? (periodMode
+        ? `ohne periodengleiche Liquidität ausgelassen: ${_cashMissing.join(', ')}`
+        : `ohne Liquiditätsangabe ausgelassen (Altdaten, Position 0 = jüngstes Jahr): ${_cashMissing.join(', ')}`)
+    : null;
   if (roicsReported.length < 5) {
     const res = metricInsufficient(roicsReported.length, 5, 'gültige ROIC-Werte (Invested Capital ≤ 0 oder fehlende Felder'
       + (_cashNote ? '; ' + _cashNote : '') + ')');
@@ -12188,11 +12199,18 @@ function _qceRoicTrend(mj, qr) {
   const samePeriod = (i) => !periodMode || (pers.every(p => p != null && parseIsoDate(p[i]) != null)
     && pers.every(p => p[i] === pers[0][i]));
 
+  // V1.0.80: Fehlende Liquiditaet ist keine 0 (wie ROIC − WACC). Bis V1.0.79
+  // galt `cash[i] ?? 0` in beiden Modi; gemessen: zwei fehlende juengste
+  // Liquiditaetswerte (Altdaten) ⇒ ROIC 6.82 % statt 10.71 % ⇒ Trend −3.9 pp,
+  // Score 1 statt 7. Ein Jahr ohne Liquiditaetsangabe bleibt leer; reichen die
+  // bestehenden Mindestbeobachtungen nicht, gibt es keinen Score (mit Grund).
   const roics = [];
+  const cashMissing = [];
   for (let i = 0; i < Math.min(yearsAvail, 8); i++) {
     if (ebit[i] == null || bv[i] == null || td[i] == null) { roics.push(null); continue; }
     if (!samePeriod(i)) { roics.push(null); continue; }
-    const cashI = cash[i] != null ? cash[i] : 0;
+    if (cash[i] == null) { roics.push(null); cashMissing.push(periodMode ? String(pers[0][i]) : ('Position ' + i)); continue; }
+    const cashI = cash[i];
     const invested = bv[i] + td[i] - cashI;
     if (invested <= 0) { roics.push(null); continue; }
     const nopat = ebit[i] * (1 - taxRate / 100);
@@ -12201,7 +12219,13 @@ function _qceRoicTrend(mj, qr) {
   // Index 0 = neueste. recent = indizes 0..2, prior = 3..5
   const recent = roics.slice(0, 3).filter(x => x != null);
   const prior  = roics.slice(3, 6).filter(x => x != null);
-  if (recent.length < 2 || prior.length < 2) return null;
+  if (recent.length < 2 || prior.length < 2) {
+    if (cashMissing.length === 0) return null;
+    return { status: 'insufficient_data', cashMissing: cashMissing.slice(),
+             reason: 'ohne Liquiditätsangabe ausgelassen: ' + cashMissing.join(', ')
+               + ' — zu wenige Beobachtungen (je 2 in den Fenstern 0–2 und 3–5 erforderlich); '
+               + 'fehlende Liquidität wird nicht als 0 gewertet' };
+  }
   const delta = _median(recent) - _median(prior);
   return { status: 'ok', delta_pp: delta, recent: _median(recent), prior: _median(prior) };
 }
@@ -12385,7 +12409,8 @@ function computeQualityCapitalEfficiencyScore(qr, mj) {
         dir: s >= 7 ? 'pos' : s <= 3 ? 'neg' : 'neu' });
     } else {
       comps.push({ key: 'roicTrend', label: 'ROIC-Trend (3y vs 3y)', weight: 1.0,
-        score: null, available: false, valStr: 'n/a', dir: 'neu' });
+        score: null, available: false, valStr: 'n/a', dir: 'neu',
+        reason: (r && r.reason) || null });   // V1.0.80: Grund mitfuehren
     }
   }
   // 9. Reinvestment Rate
@@ -20712,7 +20737,12 @@ function buildReverseDcfDiagnosticBlock(mj, v, baseRateWarnings) {
       }</span></div>
       <div class="rdcf-row"><span class="rdcf-lbl">SBC-adj. Owner-FCF-Basis</span><span class="rdcf-val">${
         _ownG != null ? _pctTxt(_ownG) : '– ' + (_ownWarn ? '(' + escapeHtml(String(_ownWarn)) + ')' : '')
-      }</span></div>
+      }</span></div>${
+        // V1.0.80: Zuordnung Nettoschulden ↔ FCF₀ sichtbar — geprueft oder ausgewiesene Annahme.
+        (rdcf.netDebtAssumption || rdcf.netDebtPeriodNote)
+          ? `
+      <div class="rdcf-row"><span class="rdcf-lbl">Nettoschulden ↔ FCF₀</span><span class="rdcf-val"${rdcf.netDebtAssumption ? ' style="color:var(--warn)"' : ''}>${escapeHtml(String(rdcf.netDebtAssumption || rdcf.netDebtPeriodNote))}</span></div>`
+          : ''}
       <div class="rdcf-note" style="margin-top:4px">${escapeHtml(rdcf.fcfBasisNote || REVERSE_DCF_FCF_BASIS_NOTE)}</div>
     </div>`;
 
@@ -20923,6 +20953,42 @@ function buildSensitivityMatrix(mj, v) {
 // Geschaeftsjahresenden bleiben damit zulaessig, ein Quartalsversatz nicht.
 const MULTIPLES_PERIOD_TOLERANCE_DAYS = 45;
 
+// ── V1.0.80 · Stichtag des tatsaechlich verwendeten Brueckenbetrags ───────
+// Aus _resolveMultiplesEvBridge herausgeloest (Regeln V1.0.68/V1.0.69,
+// unveraendert), damit EV/EBITDA-Vergleich und Reported-/Owner-FCF-Diagnostik
+// den Stichtag der Bruecke nach DERSELBEN Regel bestimmen:
+//   · `net_debt[0]`                 ⇒ nur `_v4_meta.net_debt.periods[0]`;
+//   · period-keyed total_debt − cash ⇒ die Periode der Verknuepfung;
+//   · Indexpfad ohne Periodenkontext ⇒ keine Periode (Altdaten).
+// Periodenkontext einer Seite: eine gefuehrte `periods`-Angabe (auch leer
+// oder unlesbar) oder ein sonstiger Periodenkontext der Datenaufbereitung.
+function _seriesClaimPeriodContext(fund, fields) {
+  const meta = (fund && fund._v4_meta) || {};
+  return fields.some((fld) => {
+    const m = meta[fld];
+    return !!(m && Array.isArray(m.periods)) ||
+      ((typeof _seriesHasPeriodContext === 'function') && _seriesHasPeriodContext(fund, fld));
+  });
+}
+function _dcfBridgePeriodEvidence(fund, res) {
+  const meta = (fund && fund._v4_meta) || {};
+  const _period0 = (field) => {
+    const m = meta[field];
+    return (m && Array.isArray(m.periods) && m.periods[0] != null) ? m.periods[0] : null;
+  };
+  let period = null;
+  let field = null;
+  if (res && res.source === 'net_debt[0]') {
+    period = _period0('net_debt');
+    field = period != null ? 'net_debt' : null;
+  } else if (res && res.period != null) {
+    period = res.period;
+    field = 'total_debt/cash (period-keyed)';
+  }
+  return { period, field,
+           hasCtx: _seriesClaimPeriodContext(fund, ['net_debt', 'total_debt', 'cash_and_equivalents', 'cash']) };
+}
+
 // ── V1.0.66 (Befund 2, Korrekturchat 12D) · Eigenkapitalbruecke der ───────
 // Vergleichsmultiples
 //
@@ -21014,25 +21080,12 @@ function _resolveMultiplesEvBridge(f) {
   //   · Indexpfad ohne Periodenkontext ⇒ keine Periode (Altdaten).
   // Es wird kein Datum eines unbenutzten Feldes uebernommen und kein Betrag
   // aus anderen Feldern ersatzweise gebildet.
-  const _claimsPeriods = (field) => {
-    const m = meta[field];
-    return !!(m && Array.isArray(m.periods));
-  };
-  // Periodenkontext einer Seite: eine gefuehrte `periods`-Angabe (auch leer
-  // oder unlesbar) oder ein sonstiger Periodenkontext der Datenaufbereitung.
-  const _sideHasCtx = (fields) => fields.some(
-    (fld) => _claimsPeriods(fld) ||
-      ((typeof _seriesHasPeriodContext === 'function') && _seriesHasPeriodContext(fund, fld)));
-
-  let bridgePeriod = null;
-  let bridgePeriodField = null;
-  if (res.source === 'net_debt[0]') {
-    bridgePeriod = _period0('net_debt');
-    bridgePeriodField = bridgePeriod != null ? 'net_debt' : null;
-  } else if (res.period != null) {
-    bridgePeriod = res.period;
-    bridgePeriodField = 'total_debt/cash (period-keyed)';
-  }
+  // V1.0.80: Stichtagszuordnung und Periodenkontext als gemeinsame Helfer
+  // herausgeloest (_dcfBridgePeriodEvidence, _seriesClaimPeriodContext; Inhalt
+  // unveraendert) — die Reported-/Owner-FCF-Diagnostik nutzt dieselben.
+  const _bpe = _dcfBridgePeriodEvidence(fund, res);
+  const bridgePeriod = _bpe.period;
+  const bridgePeriodField = _bpe.field;
   const ebitdaPeriod = _period0('ebitda');
 
   // Liegt auf einer Seite der Bruecke Periodenkontext vor, muss diese Seite
@@ -21040,8 +21093,8 @@ function _resolveMultiplesEvBridge(f) {
   // gleich behandelt (V1.0.67 pruefte nur die Bilanzseite). Nur wenn eine
   // Seite GAR KEINE Periodenangaben fuehrt — manuelle Altdaten —, bleibt es
   // bei der bestehenden Regel, die solche Daten ungeprueft zulaesst.
-  const bridgeHasCtx = _sideHasCtx(['net_debt', 'total_debt', 'cash_and_equivalents', 'cash']);
-  const ebitdaHasCtx = _sideHasCtx(['ebitda']);
+  const bridgeHasCtx = _bpe.hasCtx;
+  const ebitdaHasCtx = _seriesClaimPeriodContext(fund, ['ebitda']);
   const _blocked = (reason) => ({
     available: false, netDebtM: null, source: null, period: null, reason
   });
@@ -24919,7 +24972,7 @@ function _qceColor(severity) {
 }
 function _qceCompChip(c) {
   if (!c.available) {
-    return `<div class="qce-chip qce-chip-na" title="nicht verfügbar">
+    return `<div class="qce-chip qce-chip-na" title="${escapeHtml(c.reason ? 'nicht bewertbar: ' + c.reason : 'nicht verfügbar')}">
       <span class="qce-chip-lbl">${escapeHtml(c.label)}</span>
       <span class="qce-chip-val">n/a</span>
     </div>`;
@@ -46954,6 +47007,140 @@ function computeGrowthProfile(mj) {
 //   • Szenario-Breakeven-Analyse (welches g wäre bei MoS X% nötig)
 //   • g bei verschiedenen Exit-Kursen (Upside-Szenarien)
 // KEIN Buy-Signal. KEIN Einfluss auf Synthese.
+// ── V1.0.80 · Nettoschulden passend zum verwendeten FCF (Diagnostik) ─────
+// Offener Punkt aus V1.0.77/V1.0.78: Das Reported-/Owner-FCF-Diagnosepaar
+// (computeReverseDcfFull) und der Owner-FCF-DCF (_computeOwnerFcfDcf) pruefen
+// die Nettoschulden wie die DCF-Bruecke (Umfang, Herkunft, Verknuepfung von
+// Schulden und Liquiditaet), aber nicht gegen den Zeitraum des FCF, mit dem
+// sie verrechnet werden. Gemessen: FCF FY2025 (bis 2025-12-31) mit
+// Nettoschulden zum 2024-12-31 ergab Reported 15.46 %, Owner 17.02 %, FV
+// 37.26/28.68 USD und „GROWTH_WATCH“ — dieselben Zahlen wie mit Nettoschulden
+// zum 2025-12-31.
+//
+// Fachliche Regel. Beide Diagnosen setzen FCF₀ (Zeitraumgroesse) und die
+// Nettoschulden (Stichtagsgroesse) in EIN Bewertungsverhaeltnis
+// (Ziel-EV = Kurs · Aktien + Nettoschulden bzw. Eigenkapital = EV − ND). Der
+// Stichtag gehoert deshalb an das ENDE des FCF-Zeitraums:
+//   · FY:  FCF des Geschaeftsjahres ⇔ Bilanz zum Geschaeftsjahresende;
+//   · TTM: FCF der vier Quartale ⇔ Bilanz zum Ende des TTM-Fensters (die
+//     TTM-Sicht liefert beide aus demselben Fenster);
+//   · FY-Rueckfall (TTM angefordert, unvollstaendig): es gilt die FY-Regel,
+//     weil dann auch der FCF der Jahreswert ist.
+// Zulaessiger Abstand: MULTIPLES_PERIOD_TOLERANCE_DAYS (45 Tage) — dieselbe
+// Toleranz wie fuer Geschaeftsjahresenden in _joinPeriodKeyed und fuer die
+// EV/EBITDA-Bruecke (52/53-Wochen-Jahre, z. B. FCF bis 2025-12-28 und
+// Bilanz zum 2025-12-31). Ein Quartals- oder Jahresversatz ist unzulaessig —
+// in beide Richtungen: ein aelterer Bestand enthaelt die Mittelzu- und
+// -abfluesse des FCF-Zeitraums nicht, ein juengerer schon die des
+// Folgezeitraums. Eine juengere Bilanz gehoert zur TTM-Sicht.
+// Nachweis: Fuehrt eine Seite Periodenangaben, muss sie einen gueltigen
+// Stichtag/ein gueltiges Periodenende JJJJ-MM-TT fuer den TATSAECHLICH
+// verwendeten Betrag belegen (Stichtag der Bruecke nach
+// _dcfBridgePeriodEvidence, FCF-Periode des verwendeten Feldes — kein Datum
+// eines unbenutzten Feldes oder Aliases). Nur wenn BEIDE Seiten vollstaendig
+// periodenfrei sind (manuelle Altdaten), gilt der Positionsbezug als
+// ausgewiesene ANNAHME, nicht als gepruefte Periodengleichheit. Gemischte
+// Angaben (eine Seite datiert, die andere ohne Beleg) sind nicht nachweisbar
+// und sperren. Ausdruecklich gesetzte Ersatzreihen (derived.*.override_series)
+// tragen keinen eigenen Stichtag; die Periodenangabe der ersetzten Reihe wird
+// ihnen nicht zugeschrieben.
+// `fcfBasis`: 'fcf' (fcf[0]) oder 'cfo_capex' (cfo[0] − capex[0], Rueckfall
+// der SBC-Diagnose). Belegte 0 und negative Nettoschulden bleiben gueltig.
+function _resolveFcfDiagnosticNetDebt(f, fcfBasis) {
+  f = f || {};
+  const meta = f._v4_meta || {};
+  const bridge = _resolveNetDebtForDcfBridge(f);
+  if (!bridge.available) {
+    return { available: false, blockedBy: 'bridge', netDebtM: null, source: null, bridge,
+             bridgePeriod: null, fcfPeriod: null, periodCheck: null, assumption: null,
+             reason: bridge.reason || null };
+  }
+  const _ovActive = (k) => {
+    const d = f.derived && f.derived[k];
+    return !!(d && Array.isArray(d.override_series) && d.override_series.some(v => v != null));
+  };
+  const _p0 = (k) => {
+    const m = meta[k];
+    return (m && Array.isArray(m.periods) && m.periods[0] != null) ? m.periods[0] : null;
+  };
+  const _ok = (p) => parseIsoDate(p) != null;
+  const _shown = (p) => (p == null ? 'leer' : String(p));
+  const tol = MULTIPLES_PERIOD_TOLERANCE_DAYS;
+
+  // Bilanzseite: Stichtag des verwendeten Betrags.
+  let br;
+  if (bridge.source === 'net_debt[0]' && _ovActive('net_debt')) {
+    br = { period: null, hasCtx: false, label: 'net_debt (manuell gesetzte Ersatzreihe)' };
+  } else {
+    const ev = _dcfBridgePeriodEvidence(f, bridge);
+    br = { period: ev.period, hasCtx: ev.hasCtx, label: bridge.source || 'Nettoschulden' };
+  }
+
+  // FCF-Seite: Periode des tatsaechlich verwendeten FCF.
+  let fc;
+  if (fcfBasis === 'cfo_capex') {
+    const pc = _p0('cfo'), pk = _p0('capex');
+    const cCtx = _seriesClaimPeriodContext(f, ['cfo']), kCtx = _seriesClaimPeriodContext(f, ['capex']);
+    if (!cCtx && !kCtx) {
+      fc = { period: null, hasCtx: false, label: 'cfo[0] − capex[0]' };
+    } else if (_ok(pc) && _ok(pk) && _secPeriodDaysApart(pc, pk) <= tol) {
+      fc = { period: pc, hasCtx: true, label: 'cfo[0] − capex[0]' };
+    } else {
+      return { available: false, blockedBy: 'period', netDebtM: null, source: null, bridge,
+               bridgePeriod: br.period, fcfPeriod: null, periodCheck: null, assumption: null,
+               reason: 'Der Zeitraum des verwendeten FCF (cfo[0] − capex[0]) ist nicht belegt '
+                 + '(CFO ' + _shown(pc) + ', CapEx ' + _shown(pk) + '); ein Stichtag laesst sich ihm '
+                 + 'nicht zuordnen' };
+    }
+  } else if (_ovActive('fcf')) {
+    fc = { period: null, hasCtx: false, label: 'fcf (manuell gesetzte Ersatzreihe)' };
+  } else {
+    fc = { period: _p0('fcf'), hasCtx: _seriesClaimPeriodContext(f, ['fcf']), label: 'fcf[0]' };
+  }
+
+  const _blocked = (reason) => ({
+    available: false, blockedBy: 'period', netDebtM: null, source: null, bridge,
+    bridgePeriod: br.period, fcfPeriod: fc.period, periodCheck: null, assumption: null, reason });
+  const fcOk = _ok(fc.period), brOk = _ok(br.period);
+
+  if (fcOk && brOk) {
+    const days = _secPeriodDaysApart(fc.period, br.period);
+    if (!(days <= tol)) {
+      return _blocked('FCF-Zeitraum endet ' + fc.period + ', Stichtag der Nettoschulden ('
+        + br.label + ') ist ' + br.period + ' — ' + Math.round(days) + ' Tage Abstand, zulaessig sind '
+        + tol + '. Ein Abzug ueber verschiedene Stichtage wuerde Zeitraeume vermischen');
+    }
+    return { available: true, blockedBy: null, netDebtM: bridge.netDebtM, source: bridge.source || null,
+             bridge, bridgePeriod: br.period, fcfPeriod: fc.period, periodCheck: 'period_checked',
+             assumption: null,
+             periodNote: 'Stichtag ' + br.period + ' zum FCF-Zeitraum bis ' + fc.period
+               + ' geprueft (≤ ' + tol + ' Tage)', reason: null };
+  }
+  if (fc.hasCtx && !fcOk) {
+    return _blocked('Der FCF (' + fc.label + ') fuehrt Periodenangaben, belegt aber kein gueltiges '
+      + 'Periodenende (gemeldet: ' + _shown(fc.period) + ')');
+  }
+  if (br.hasCtx && !brOk) {
+    return _blocked('Die Nettoschulden (' + br.label + ') fuehren Periodenangaben, belegen fuer den '
+      + 'verwendeten Betrag aber keinen gueltigen Stichtag (gemeldet: ' + _shown(br.period)
+      + '); das Datum eines anderen Feldes wird nicht uebernommen');
+  }
+  if (fcOk || brOk) {
+    // Gemischt: eine Seite datiert, die andere ohne jeden Periodenbeleg.
+    return _blocked(fcOk
+      ? ('FCF-Zeitraum endet ' + fc.period + ', der Stichtag der Nettoschulden (' + br.label
+         + ') ist nicht belegt (keine Periodenangabe); eine Zuordnung ist nicht nachweisbar')
+      : ('Stichtag der Nettoschulden ist ' + br.period + ', der Zeitraum des FCF (' + fc.label
+         + ') ist nicht belegt (keine Periodenangabe); eine Zuordnung ist nicht nachweisbar'));
+  }
+  // Beide Seiten vollstaendig periodenfrei (manuelle Altdaten).
+  return { available: true, blockedBy: null, netDebtM: bridge.netDebtM, source: bridge.source || null,
+           bridge, bridgePeriod: null, fcfPeriod: null, periodCheck: 'unverified_manual',
+           assumption: 'Annahme: FCF (' + fc.label + ') und Nettoschulden (' + br.label + ') ohne '
+             + 'Periodenangaben — gleiche Periode per Positionsbezug angenommen, NICHT geprueft',
+           periodNote: null, reason: null };
+}
+
 // ── Eine Textquelle fuer den Basis-Hinweis des Diagnosepaares ───────────
 // V1.0.58: Der Hinweis erreicht jetzt AUCH die Rueckgabepfade, die an den
 // Reported-FCF-Gates abbrechen — bis V1.0.57 stand er nur im Erfolgsfall.
@@ -46961,8 +47148,8 @@ const REVERSE_DCF_FCF_BASIS_NOTE =
   'reverseDcfReported/reverseDcfOwner lösen das Wachstum des REPORTED FCF ' +
   '(CFO − CapEx) und dienen ausschließlich dem SBC-Vergleich beider Größen. Sie sind ' +
   'nicht definitionskonsistent zum Haupt-DCF (kein ΔWC, kein Fade, keine Aktienprojektion; ' +
-  'Nettoschulden nur als Stichtagswert im Ziel-Unternehmenswert, geprüft wie in der DCF-Brücke — ' +
-  'ohne belegte Nettoschulden kein Ergebnis) und dürfen nicht als dessen implizites Wachstum ' +
+  'Nettoschulden nur als Stichtagswert im Ziel-Unternehmenswert, geprüft wie in der DCF-Brücke und ' +
+  'dem Ende des FCF-Zeitraums zugeordnet — ohne belegte, zuordenbare Nettoschulden kein Ergebnis) und dürfen nicht als dessen implizites Wachstum ' +
   'gelesen werden — dafür ist coreReverseDcf zuständig.';
 
 // V1.0.58 (Auditbefund A-3): `opts` wird an den Bewertungskern durchgereicht
@@ -47005,6 +47192,13 @@ function computeReverseDcfFull(mj, opts) {
       reason,
       netDebtSource: null,
       netDebtUnavailable: null,
+      // V1.0.80: Zuordnung Nettoschulden ↔ FCF-Zeitraum (nur Diagnosepaar)
+      netDebtPeriodCheck: null,
+      netDebtPeriodBlocked: false,
+      netDebtPeriod: null,
+      fcfPeriod: null,
+      netDebtPeriodNote: null,
+      netDebtAssumption: null,
       // Felder, die Consumer der computeReverseDcfFull-API erwarten
       impliedGrowthPct: null,
       impliedGrowthWarning: reason,
@@ -47048,8 +47242,12 @@ function computeReverseDcfFull(mj, opts) {
   // (Kurs · Aktien + Nettoschulden) haengt unmittelbar davon ab; nicht belegte
   // Nettoschulden sind keine 0. Die Pruefung folgt unten nach den FCF-/Kurs-/
   // WACC-Gates, damit deren vorrangige Gruende unveraendert bleiben.
-  const _ndBridge = _resolveNetDebtForDcfBridge(f);
-  const netDebtM = _ndBridge.available ? _ndBridge.netDebtM : null;
+  // V1.0.80: dieselbe Pruefung plus Zuordnung des Stichtags zum Zeitraum von
+  // FCF₀ = fcf[0] (_resolveFcfDiagnosticNetDebt). Der Kern (coreReverseDcf)
+  // bleibt davon unberuehrt.
+  const _ndDiag = _resolveFcfDiagnosticNetDebt(f, 'fcf');
+  const _ndBridge = _ndDiag.bridge;
+  const netDebtM = _ndDiag.available ? _ndDiag.netDebtM : null;
   const price    = market.price ?? null;
   const waccPct  = v.wacc_derived ?? null;
   const tgPct    = v.growth_terminal ?? null;
@@ -47087,12 +47285,19 @@ function computeReverseDcfFull(mj, opts) {
   // Kein Reported-/Owner-Wachstum, keine Kursszenarien, keine Klassifikation.
   // Unabhaengig davon berechenbar und daher erhalten: Kernergebnis (eigener
   // Status), SBC-Diagnose und historischer Umsatz-Benchmark.
-  if (!_ndBridge.available) {
-    const _ndWhy = _ndBridge.reason
-      ? String(_ndBridge.reason).split('. ')[0]
-      : ('fehlt: ' + ((_ndBridge.missing || []).join(', ') || 'Schulden-/Liquiditätsdaten'));
-    const _ndReason = 'Nettoschulden nicht belegt (Prüfung wie DCF-Brücke: ' + _ndWhy +
-      ') — Reverse DCF auf Reported-/Owner-FCF-Basis nicht bestimmbar; NICHT als 0 angenommen';
+  if (!_ndDiag.available) {
+    let _ndReason;
+    if (_ndDiag.blockedBy === 'period') {
+      // V1.0.80: Bruecke belegt, aber nicht dem Zeitraum von FCF₀ zuordenbar.
+      _ndReason = 'Nettoschulden nicht dem FCF-Zeitraum zuordenbar (' + _ndDiag.reason +
+        ') — Reverse DCF auf Reported-/Owner-FCF-Basis nicht bestimmbar; keine Ersatzzuordnung';
+    } else {
+      const _ndWhy = _ndBridge.reason
+        ? String(_ndBridge.reason).split('. ')[0]
+        : ('fehlt: ' + ((_ndBridge.missing || []).join(', ') || 'Schulden-/Liquiditätsdaten'));
+      _ndReason = 'Nettoschulden nicht belegt (Prüfung wie DCF-Brücke: ' + _ndWhy +
+        ') — Reverse DCF auf Reported-/Owner-FCF-Basis nicht bestimmbar; NICHT als 0 angenommen';
+    }
     const _gpNd = computeGrowthProfile(mj);
     const _sbcNd = computeSbcFcfDiagnostics(mj);
     return _notApplicableReverseDcf(_ndReason, {
@@ -47104,7 +47309,10 @@ function computeReverseDcfFull(mj, opts) {
       sbcAdjustedFcm: _sbcNd.status === 'ok' ? _sbcNd.sbc_adjusted_fcf : null,
       sbc0: _sbcNd.status === 'ok' ? _sbcNd.sbc_m : null,
       netDebtSource: null,
-      netDebtUnavailable: _ndReason
+      netDebtUnavailable: _ndReason,
+      netDebtPeriodBlocked: _ndDiag.blockedBy === 'period',
+      netDebtPeriod: _ndDiag.bridgePeriod,
+      fcfPeriod: _ndDiag.fcfPeriod
     });
   }
 
@@ -47212,8 +47420,16 @@ function computeReverseDcfFull(mj, opts) {
     scenarioResults,
     historicalBenchmark,
     inputs: { price, sharesM, netDebtM, fcf0M, waccPct, tgPct },
-    netDebtSource: _ndBridge.source || null,
+    netDebtSource: _ndDiag.source || null,
     netDebtUnavailable: null,
+    // V1.0.80: 'period_checked' (Stichtag zum FCF-Zeitraum geprueft) oder
+    // 'unverified_manual' (beide Seiten periodenfrei — ausgewiesene Annahme).
+    netDebtPeriodCheck: _ndDiag.periodCheck,
+    netDebtPeriodBlocked: false,
+    netDebtPeriod: _ndDiag.bridgePeriod,
+    fcfPeriod: _ndDiag.fcfPeriod,
+    netDebtPeriodNote: _ndDiag.periodNote || null,
+    netDebtAssumption: _ndDiag.assumption,
     // ── Maßgeblich: Reverse DCF auf dem gemeinsamen Bewertungskern ──
     coreReverseDcf,
     coreImpliedGrowthPct: coreReverseDcf.ok ? coreReverseDcf.impliedGrowthPct : null,
@@ -48220,16 +48436,19 @@ function computeSbcFcfDiagnostics(mj) {
   // ── Reported FCF ────────────────────────────────────────────
   // Bevorzuge f.fcf[0]; sonst CFO[0] - CapEx[0]
   let reported_fcf = null;
+  let reported_fcf_source = null;   // V1.0.80: welches Feld FCF₀ traegt (Periodenzuordnung)
   const fcfArr  = Array.isArray(f.fcf)   ? f.fcf   : [];
   const cfoArr  = Array.isArray(f.cfo)   ? f.cfo   : [];
   const capArr  = Array.isArray(f.capex) ? f.capex : [];
 
   if (fcfArr.length > 0 && fcfArr[0] != null && isFinite(fcfArr[0])) {
     reported_fcf = Number(fcfArr[0]);
+    reported_fcf_source = 'fcf';
   } else if (cfoArr.length > 0 && cfoArr[0] != null && isFinite(cfoArr[0]) &&
              capArr.length > 0 && capArr[0] != null && isFinite(capArr[0])) {
     // CapEx ist im Tool als positive Cash-Outflow normalisiert
     reported_fcf = Number(cfoArr[0]) - Math.abs(Number(capArr[0]));
+    reported_fcf_source = 'cfo_capex';
   }
 
   if (reported_fcf === null) return UNAVAILABLE;
@@ -48299,6 +48518,7 @@ function computeSbcFcfDiagnostics(mj) {
     status: 'ok',
     sbc_m,
     reported_fcf,
+    reported_fcf_source,
     sbc_adjusted_fcf,
     buyback_offset_fcf,     // legacy: reported_fcf − sbc_buyback_offset
     sbc_over_revenue,
@@ -48429,14 +48649,24 @@ function _computeOwnerFcfDcf(mj) {
   // sonst 0 („EV = Equity Value“), ohne Umfangs- und Periodenpruefung. Nicht
   // belegte Nettoschulden sind keine 0: dann kein Fair Value je Aktie (und kein
   // daraus abgeleiteter SBC-Abschlag); die SBC-Diagnose selbst bleibt erhalten.
-  const _ndBridge = _resolveNetDebtForDcfBridge(f);
-  const netDebtM = _ndBridge.available ? _ndBridge.netDebtM : null;
-  const netDebtSource = _ndBridge.available ? (_ndBridge.source || '') : '';
-  const netDebtUnavailable = _ndBridge.available ? null
-    : ('Nettoschulden nicht belegt (Prüfung wie DCF-Brücke: '
-       + (_ndBridge.reason ? String(_ndBridge.reason).split('. ')[0]
-          : ('fehlt: ' + ((_ndBridge.missing || []).join(', ') || 'Schulden-/Liquiditätsdaten')))
-       + ') — kein Fair Value je Aktie; NICHT als 0 angenommen');
+  // V1.0.80: zusaetzlich Zuordnung des Stichtags zum Zeitraum des
+  // tatsaechlich verwendeten Reported FCF (fcf[0] oder cfo[0] − capex[0],
+  // siehe computeSbcFcfDiagnostics) — _resolveFcfDiagnosticNetDebt.
+  const _ndDiag = _resolveFcfDiagnosticNetDebt(f, d.reported_fcf_source === 'cfo_capex' ? 'cfo_capex' : 'fcf');
+  const _ndBridge = _ndDiag.bridge;
+  const netDebtM = _ndDiag.available ? _ndDiag.netDebtM : null;
+  const netDebtSource = _ndDiag.available ? (_ndDiag.source || '') : '';
+  const netDebtUnavailable = _ndDiag.available ? null
+    : _ndDiag.blockedBy === 'period'
+      ? ('Nettoschulden nicht dem FCF-Zeitraum zuordenbar (' + _ndDiag.reason
+         + ') — kein Fair Value je Aktie; keine Ersatzzuordnung')
+      : ('Nettoschulden nicht belegt (Prüfung wie DCF-Brücke: '
+         + (_ndBridge.reason ? String(_ndBridge.reason).split('. ')[0]
+            : ('fehlt: ' + ((_ndBridge.missing || []).join(', ') || 'Schulden-/Liquiditätsdaten')))
+         + ') — kein Fair Value je Aktie; NICHT als 0 angenommen');
+  const netDebtPeriodCheck = _ndDiag.periodCheck;
+  const netDebtAssumption = _ndDiag.assumption;
+  const netDebtPeriodNote = _ndDiag.periodNote || null;
   if (netDebtUnavailable) warnings.push(netDebtUnavailable);
 
   // ── Guards ────────────────────────────────────────────────────
@@ -48506,6 +48736,9 @@ function _computeOwnerFcfDcf(mj) {
     sbc:            d.sbc_m,
     wacc, g1, tg,
     netDebtM, netDebtSource, netDebtUnavailable,
+    netDebtPeriodCheck, netDebtAssumption, netDebtPeriodNote,
+    netDebtPeriodBlocked: _ndDiag.blockedBy === 'period',
+    netDebtPeriod: _ndDiag.bridgePeriod, fcfPeriod: _ndDiag.fcfPeriod,
     sharesM,
     warnings,
     _note: 'Diagnostisch. Kein Einfluss auf Buy Price oder Synthesis.'
@@ -48656,8 +48889,12 @@ function _renderSbcDiagnosticsBlock(mj) {
 function _renderOwnerFcfDcfBlock(mj) {
   const od = _computeOwnerFcfDcf(mj);
   // V1.0.77: ohne belegte Nettoschulden „nicht bestimmbar“ statt „n/a“ (Grund in den Warnungen).
+  // V1.0.80: Sperre wegen Periodenzuordnung getrennt benannt.
   const fmtFV = (v) => v != null && isFinite(v) ? '$' + v.toFixed(2)
-    : (od.netDebtUnavailable ? 'nicht bestimmbar (Nettoschulden nicht belegt)' : 'n/a');
+    : (od.netDebtUnavailable
+        ? (od.netDebtPeriodBlocked ? 'nicht bestimmbar (Nettoschulden nicht dem FCF-Zeitraum zuordenbar)'
+                                   : 'nicht bestimmbar (Nettoschulden nicht belegt)')
+        : 'n/a');
   const fmtM  = (v) => v != null ? '$' + v.toFixed(0) + ' M' : '–';
 
   if (od.status !== 'ok') {
@@ -48722,7 +48959,11 @@ function _renderOwnerFcfDcfBlock(mj) {
     + ' · NetDebt ' + (od.netDebtM != null ? '$' + od.netDebtM.toFixed(0) + ' M' : 'nicht belegt')
     + (od.netDebtSource ? ' (' + escapeHtml(od.netDebtSource) + ')' : '')
     + ' · Shares ' + (od.sharesM != null ? od.sharesM.toFixed(1) + ' M' : 'n/a')
+    + (od.netDebtPeriodNote ? '<br>' + escapeHtml(od.netDebtPeriodNote) : '')
     + '</div>'
+    + (od.netDebtAssumption
+        ? '<div style="font-size:.6rem;color:var(--warn);margin-top:4px">⚠ ' + escapeHtml(od.netDebtAssumption) + '</div>'
+        : '')
     + warnRows
     + '</div>'
     + '</div>';
@@ -49057,6 +49298,9 @@ function renderGrowth() {
       ${(rdcf.ownerFcfWarnings || []).length > 0
         ? `<div style="font-size:.6rem;color:var(--muted);margin-top:4px">${escapeHtml(rdcf.ownerFcfWarnings.join(' · '))}</div>`
         : ''}
+      ${rdcf.netDebtAssumption
+        ? `<div style="font-size:.6rem;color:var(--warn);margin-top:4px">⚠ ${escapeHtml(rdcf.netDebtAssumption)}</div>`
+        : (rdcf.netDebtPeriodNote ? `<div style="font-size:.6rem;color:var(--muted);margin-top:4px">${escapeHtml(rdcf.netDebtPeriodNote)}</div>` : '')}
       <div style="font-size:.68rem;color:var(--muted);font-style:italic;margin-top:4px">
         Hohe Anforderung = höheres Risiko, nicht automatisch Marge.
         Owner FCF = Reported FCF − SBC (konservativer).

@@ -30,7 +30,11 @@ function mj(kind) {
     book_value: [2000, 1850, 1740, 1660, 1600, 1560], shares_diluted: Array(6).fill(100), sbc: Array(6).fill(0),
     da: [40, 35, 30, 25, 20, 17]
   };
-  const meta = { revenue: { periods: YE }, ebitda: { periods: YE } };
+  // V1.0.80: Auch die Cashflow-Reihen tragen ihre Geschaeftsjahresenden. Ohne sie
+  // waere der FCF undatiert neben einer datierten Bruecke — eine gemischte, nicht
+  // nachweisbare Zuordnung, die die Diagnostik seit V1.0.80 sperrt.
+  const meta = { revenue: { periods: YE }, ebitda: { periods: YE },
+                 fcf: { periods: YE }, cfo: { periods: YE }, capex: { periods: YE } };
   const P0 = { periods: [YE[0]] };
   if (kind === 'partial') {        // Teilbetrag, Umfang offen: Bruecke gesperrt, net_debt[0] = 4,000 vorhanden
     Object.assign(f, { total_debt: [4500], cash_and_equivalents: [500], net_debt: [4000] });

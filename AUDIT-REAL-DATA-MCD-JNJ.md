@@ -999,8 +999,9 @@ die Buchungen in der RE-Spalte sind Belastungen, keine Kapitalgutschriften;
 FY2018–FY2022 sind nach Primärquelle reine Gewinnrücklagen]. (b) ROIC − WACC und
 ROIC-Trend behalten für periodenfreie Altdaten die bestehende Regel
 „fehlende Liquidität = 0“ (bewusst nicht geändert; scorewirksam, nicht Teil
-dieses Auftrags). (c) Die Diagnostik prüft Nettoschulden wie die DCF-Brücke,
-aber nicht zusätzlich den Stichtag gegen die FCF-Periode. (d) Für MCD/JNJ
+dieses Auftrags) [**geschlossen in V1.0.80, §13.17**]. (c) Die Diagnostik prüft
+Nettoschulden wie die DCF-Brücke, aber nicht zusätzlich den Stichtag gegen die
+FCF-Periode [**geschlossen in V1.0.80, §13.17**]. (d) Für MCD/JNJ
 bleibt die Brücke gesperrt ⇒ Diagnosepaar/Owner-FV dort „nicht bestimmbar“,
 sobald FCF und Kurs vorliegen. Modellsperren aus §13.4–§13.7 unverändert.
 
@@ -1166,3 +1167,173 @@ Vorzugskapital 0), JNJ unverändert ungeklärt.
 **Grenze.** Emittenten, die OCI, eigene Aktien oder Vorzugskapital nicht
 ausdrücklich (auch nicht als 0) melden, erhalten keine Einstufung „rein“ mehr.
 
+
+### 13.17 · Offene Punkte geschlossen (V1.0.80): Nettoschulden ↔ FCF-Zeitraum in der Diagnostik, fehlende Liquidität in Altdaten-ROIC
+
+**Ausgangsstand.** main `b523867c9b2725e0bd2b920181d3423e48ac24c7` (Merge PR #5,
+V1.0.79) = Referenzstand, ohne Abweichung; keine `AGENTS.md`. Gearbeitet in
+eigenem Worktree auf `claude/netdebt-fcf-roic-cash`; Hauptcheckout unverändert.
+Beide Befunde vor der Reparatur auf `b523867` reproduziert (Werte unten).
+
+#### 1 · Nettoschulden-Stichtag ↔ FCF-Zeitraum (Reported-/Owner-FCF-Diagnostik)
+
+**Ursache.** `computeReverseDcfFull` (Diagnosepaar, Kursszenarien) und
+`_computeOwnerFcfDcf` nutzten seit V1.0.77 `_resolveNetDebtForDcfBridge`. Diese
+Prüfung belegt Umfang, Herkunft und die periodengleiche Verknüpfung von Schulden
+und Liquidität — sie kennt den FCF nicht. Ein belegter, aber zu einem anderen
+Stichtag gehörender Bestand ging ungeprüft in Ziel-EV bzw. Eigenkapital ein,
+ebenso ein vorhandenes `net_debt[0]` ohne Stichtag neben datiertem FCF.
+
+| Fall (FCF 180 FY2025 bis 2025-12-31, SBC 20, 100 Mio. Aktien, Kurs 40, WACC 9 %, TG 3 %, g1 15 %) | `b523867` | V1.0.80 |
+|---|---|---|
+| Bilanz 4,500 − 500 zum **2024-12-31** | Reported 15.46 %, Owner 17.02 %, FV 37.26/28.68, `GROWTH_WATCH` | gesperrt: „FCF-Zeitraum endet 2025-12-31 … 2024-12-31 — 365 Tage Abstand, zulässig sind 45“; `MODEL_UNSUITABLE` mit Grund |
+| Bilanz zum 2026-03-31 (juengeres Quartal) | wie oben | gesperrt (90 Tage) |
+| `net_debt[0]` 4,000 ohne Metadaten neben datiertem FCF | wie oben | gesperrt (gemischt, Stichtag nicht belegt) |
+| Bilanz zum 2025-12-31 (gültig) | 15.46 % / 17.02 % / 37.26 / 28.68 | identisch, „Stichtag … geprüft (≤ 45 Tage)“ |
+| vollständig periodenfrei, `net_debt` 4,000 | wie gültig | identisch, als **Annahme** ausgewiesen („… NICHT geprueft“) |
+
+**Fachliche Regel.**
+* *Verwendeter FCF:* Diagnosepaar `fcf[0]`; Owner-FCF-DCF der FCF der
+  SBC-Diagnose (`fcf[0]`, sonst `cfo[0] − capex[0]`; `computeSbcFcfDiagnostics`
+  meldet jetzt `reported_fcf_source`). Periode = `_v4_meta.<Feld>.periods[0]`;
+  beim Rückfall müssen CFO und CapEx gültige, ≤ 45 Tage auseinanderliegende
+  Periodenenden belegen.
+* *Zulässiger Stichtag:* das Ende des FCF-Zeitraums. FY: Geschäftsjahresende;
+  TTM: Ende des TTM-Fensters (die TTM-Sicht liefert Fluss- und Bilanzwerte aus
+  demselben Fenster); FY-Rückfall (TTM angefordert, unvollständig): FY-Regel,
+  weil dann auch der FCF der Jahreswert ist. Toleranz 45 Tage
+  (`MULTIPLES_PERIOD_TOLERANCE_DAYS`, dieselbe wie `_joinPeriodKeyed` und die
+  EV/EBITDA-Brücke): abweichende Geschäftsjahresenden (52/53 Wochen, z. B.
+  2025-12-28 ↔ 2025-12-31) sind zulässig; ein Quartals- oder Jahresversatz nicht
+  — in beide Richtungen. Ein älterer Bestand enthält die Zu-/Abflüsse des
+  FCF-Zeitraums nicht, ein jüngerer bereits die des Folgezeitraums; eine
+  jüngere Bilanz gehört zur TTM-Sicht.
+* *Nachweis:* Stichtag des **tatsächlich verwendeten** Betrags nach derselben
+  Regel wie die EV/EBITDA-Brücke (`net_debt[0]` ⇒ nur dessen Periode;
+  period-keyed `total_debt − cash` ⇒ Periode der Verknüpfung; kein Datum eines
+  unbenutzten Feldes). Diese Zuordnung ist jetzt als `_dcfBridgePeriodEvidence`
+  / `_seriesClaimPeriodContext` aus `_resolveMultiplesEvBridge` herausgelöst
+  (Inhalt unverändert) und wird von beiden genutzt. Führt eine Seite
+  Periodenangaben, muss sie ein gültiges Datum JJJJ-MM-TT (`parseIsoDate`) belegen.
+* *Manuelle Daten:* Nur wenn **beide** Seiten vollständig periodenfrei sind,
+  gilt der Positionsbezug — ausgewiesen als „Annahme … NICHT geprueft“
+  (`netDebtPeriodCheck: 'unverified_manual'`), nie als geprüfte
+  Periodengleichheit. Gemischte Angaben (eine Seite datiert, die andere ohne
+  Beleg) sperren. Ersatzreihen (`derived.fcf/net_debt.override_series`)
+  tragen keinen eigenen Stichtag; die Periodenangabe der ersetzten Reihe wird
+  ihnen nicht zugeschrieben.
+
+**Reparatur.** `_resolveFcfDiagnosticNetDebt(f, fcfBasis)` ruft zuerst die
+zentrale Prüfung `_resolveNetDebtForDcfBridge` auf (keine zweite Definition für
+Umfang/Herkunft), danach nur die Zuordnung zum FCF. Beide Diagnosepfade
+verwenden sie; Sperrgründe getrennt: „Nettoschulden nicht belegt (…)“ bzw.
+„Nettoschulden nicht dem FCF-Zeitraum zuordenbar (…)“. Gesperrt ⇒ kein
+Reported-/Owner-Wachstum, keine Kursszenarien, keine Klassifikation, kein
+Reported-/Owner-FV, kein SBC-Abschlag (FV). Erhalten: Kernstatus
+(`coreReverseDcf`, eigener Status), SBC-Diagnose, Umsatz-Benchmark, belegte 0
+und Nettoliquidität. Neue Ergebnisfelder: `netDebtPeriodCheck`,
+`netDebtPeriodBlocked`, `netDebtPeriod`, `fcfPeriod`, `netDebtPeriodNote`,
+`netDebtAssumption`.
+
+**Verbraucher.** Bewertungsreiter (Diagnosepaar auf der FY-/TTM-Sicht, neue
+Zeile „Nettoschulden ↔ FCF₀“), Wachstumsreiter (Reverse-DCF-Block, Hinweis
+geprüft/Annahme; Growth-Verdict ⇒ `MODEL_UNSUITABLE` mit Grund, weil es aus
+`rdcf.applicable` folgt), Owner-FCF-DCF-Karte (Bewertungs- und
+Wachstumsreiter). Exporte: Snapshot und Master-JSON enthalten keine Felder des
+Diagnosepaars; das gespeicherte `state.growth` trägt das neue Verdict. Einzige
+Kopplung des Growth-Moduls an die Synthese (`growthModuleFairValueActive`,
+aus den Szenarien) bleibt unverändert. Alt/Neu-Vergleich (Tabelle unten):
+Kern-Reverse-DCF, Growth-Szenarien, gewichtete Bewertung, Urteil, MoS und
+Einstiegspreis identisch.
+
+#### 2 · Fehlende Liquidität als 0 in ROIC − WACC und ROIC-Trend (Altdaten)
+
+**Ursache (lokalisiert).** `computeRoicMinusWacc`: im Positionsbezug
+(vollständig periodenfreie Altdaten) `cashI = c && c.value != null ? c.value : 0`.
+`_qceRoicTrend`: `cash[i] != null ? cash[i] : 0` — in **beiden** Modi (auch
+datiert bei gültiger Periode und leerem Wert). Auftreten: bei einzelnen
+null-Werten und bei einer Reihe, die nur aus null besteht. Eine **fehlende**
+Reihe (kein Array bzw. leeres Array) war schon vorher „nicht bewertbar“
+(Längenprüfung `yearsAvail`). Alias: Gewählt wird je Kennzahl eine Reihe als
+Ganzes (`cash_and_equivalents`, sonst `cash`); einen jahresweisen Rückgriff auf
+das andere Feld gibt es nicht — die Nullannahme entstand allein durch `: 0`
+(unverändert kein neuer Rückgriff).
+
+**Regel/Reparatur.** Nur eine ausdrücklich vorhandene Liquidität (auch 0) zählt.
+Jahre ohne Angabe werden ausgelassen und benannt („ohne Liquiditätsangabe
+ausgelassen (Altdaten, Position 0 = jüngstes Jahr): …“). Mindestjahre (5 für
+ROIC − WACC; je 2 in den Fenstern 0–2/3–5 für den Trend), Definition, Median,
+Leasing- und Periodenregeln, Positionsbezug der Altdaten unverändert. Reichen
+die Jahre nicht: `insufficient_data` mit Grund; der Trend liefert dann
+`{ status: 'insufficient_data', reason }` (Grund als Tooltip der QCE-Kachel).
+Vereinfachter ROIC (O-1, `computeBaseRateLite`) nicht berührt.
+
+**Wirkung (EBIT 100, t 25 %, Buchwert 500, Schulden 600, WACC 9 %; Piotroski/Altman bestanden):**
+
+| Datensatz | ROIC − WACC | ROIC-Trend | QCE | Urteil | Basis-MoS | Einstiegspreis |
+|---|---|---|---|---|---|---|
+| Liquidität 6 × null, vorher | 6.82 % ⇒ −2.18 pp (`value_destroyer`) | 0.0 pp (Score 7) | 6.67 | `caution_quality` | 25 % | 5.1147 |
+| … V1.0.80 | nicht bewertbar (0 von 5) | nicht bewertbar | – (zu wenige Komponenten) | `investable_high` | 15 % | 5.7967 |
+| 2 × null + 4 × 400, vorher | +1.71 pp (6 Jahre, 2 mit 0) | −3.9 pp (Score 1) | 6.67 | `investable_high` | 15 % | unverändert |
+| … V1.0.80 | nicht bewertbar (4 von 5) | nicht bewertbar | – | `investable_high` | 15 % | unverändert |
+| 7 Jahre, 2 × null, vorher / V1.0.80 | +1.71 pp (7y) / +1.71 pp (5y, Grund) | −3.9 pp / nicht bewertbar | 6.67 / 7.8 | unverändert | unverändert | unverändert |
+| belegte Liquidität 0 bzw. 100 | −2.18 / −1.50 pp, `value_destroyer` | unverändert | unverändert | `caution_quality` | 25 % | unverändert |
+| Liquidität 400 (vollständig) | +1.71 pp | 0.0 pp | unverändert | `investable_high` | 15 % | unverändert |
+
+Fachlich notwendige Änderung: Der Einstiegspreis steigt im ersten Fall, weil
+die Basis-MoS nicht mehr aus einem unbelegten Qualitätsmangel folgt
+(5.1147 ⇒ 5.7967, identisch mit „Liquiditätsfeld fehlt“). Ein tatsächlich
+negativer Spread mit belegter Liquidität wirkt unverändert.
+
+#### Alt/Neu-Vergleich (beide Produktdateien, dieselben 15 Datensätze)
+
+Verglichen: Diagnosepaar, Owner-FV, Growth-Verdict, Kern-Reverse-DCF,
+Growth-Szenario-FV, `growthModuleFairValueActive`, ROIC − WACC, ROIC-Trend, QCE,
+Urteil, Basis-MoS, Einstiegspreis. Abweichungen nur dort, wo beabsichtigt:
+FCF „stale“, „newer“, „mixedNd“ (Diagnosepaar/Owner-FV gesperrt,
+`GROWTH_WATCH ⇒ MODEL_UNSUITABLE`) und die drei ROIC-Fälle mit null-Liquidität
+(oben). Identisch: FCF gültig, belegte 0, Nettoliquidität, periodenfreier
+manueller Fall, ROIC belegt 0/100/400, MCD- und JNJ-Realauszug (FY; Brücke
+gesperrt bzw. ohne EBIT wie bisher).
+
+#### Tests
+
+`tests/fcf-net-debt-period.test.mjs` (14): FY gültig mit Kontrollrechnung
+EV(g*) = Kurs · Aktien + ND und FV = (EV(g1) − ND)/Aktien; 52/53-Wochen und
+Toleranzgrenze 45/46 Tage; belegte 0, −500; FY über den produktiven Import und
+FY-Rückfall; TTM über den produktiven Quartalsweg (FCF 206.25 = 275 − 68.75,
+ND 400, beide zum 2025-09-30) mit FY-Gegenprobe; TTM mit eingemischter
+FY-Brücke (273 Tage); veraltete und jüngere Brücke inkl. Growth-Verdict;
+`net_debt[0]` mit eigenem älterem/unlesbarem/fehlendem Stichtag; FCF ohne bzw.
+mit ungültiger Periode; Ersatzreihen; CFO−CapEx-Rückfall; vollständig
+periodenfreie Daten; Anzeigen. `tests/roic-legacy-cash.test.mjs` (10).
+Browser §13 (+15, Import über die Oberfläche, gerenderte Reiter).
+Gegenlauf mit `b523867`: 20 von 24 neuen Node-Tests rot (die 4 grünen sind
+Erhaltungstests: fehlendes Feld, belegte 0, vollständige Altdaten, vereinfachter
+ROIC); Browser §13 9 FAIL (13.1–13.4, 13.6, 13.7, 13.9, 13.11, 13.12),
+Gegenproben 13.5/13.8/13.13/13.14 grün.
+
+*Angepasste Fixtures (Erwartungen unverändert).* `diagnostic-net-debt`,
+`growth-net-debt` und Browser `diagNetDebtMj`: Die Fixtures datierten Umsatz und
+Brücke, nicht aber `fcf`/`cfo`/`capex` — nach der neuen Regel ein gemischter,
+nicht nachweisbarer Fall. Die Cashflow-Reihen tragen jetzt ihre
+Geschäftsjahresenden; der Fall „manuelles net_debt“ ist jetzt vollständig
+periodenfrei (sonst wäre er gemischt; der gemischte Fall steht gesperrt im neuen
+Test). Alle angepassten Tests bestehen auch auf `b523867`.
+
+#### Verbleibende Grenzen und Beobachtungen (nicht Teil dieses Auftrags, unverändert)
+
+* **Kern-DCF und Growth-Szenarien** nutzen `_resolveNetDebtForDcfBridge` ohne
+  Abgleich mit dem Zeitraum ihrer Flussgrößen. Im synthetischen Fall „Bilanz
+  2024-12-31, Flüsse FY2025“ rechnen Kern-Reverse-DCF (18.07 %), gewichtete
+  Bewertung und Growth-Szenarien (FV 2.11/48.28/141.98) weiter mit 4,000. Das
+  betrifft die gewichtete Bewertung und war ausdrücklich nicht zu ändern;
+  Empfehlung: eigener Auftrag mit derselben Regel. In SEC-Importen entsteht der
+  Versatz nur, wenn die jüngste gemeinsame Bilanzperiode hinter der jüngsten
+  Flussperiode zurückbleibt (bei MCD/JNJ nicht der Fall; Brücke dort ohnehin
+  gesperrt).
+* EV/EBITDA-Brücke: lässt eine Seite ganz ohne Periodenangaben weiterhin zu
+  (bestehende Regel, unverändert); die FCF-Diagnostik ist hier strenger.
+* SBC-Periode gegen FCF-Periode wird nicht geprüft (SBC-Diagnose unverändert).
+* MCD-/JNJ-Modellsperren, JNJ ohne EBIT, TTM-Grenzen aus §13.4–§13.7 und die
+  O-4-Grenzen aus §13.15/§13.16 unverändert.

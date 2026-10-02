@@ -296,7 +296,10 @@ export function diagNetDebtMj(kind) {
     net_income: [150, 110, 80, 58, 43, 32], eps_diluted: [1.5, 1.1, 0.8, 0.58, 0.43, 0.32],
     book_value: [2000, 1850, 1740, 1660, 1600, 1560], shares_diluted: Array(6).fill(100), sbc: Array(6).fill(20),
     da: [40, 35, 30, 25, 20, 17],
-    _v4_meta: { revenue: per(true), ebit: per(true), ebitda: per(true), book_value: per(false) }
+    // V1.0.80: Cashflow-Reihen mit ihren Geschaeftsjahresenden — sonst stuende ein
+    // undatierter FCF neben datierten Nettoschulden (gemischt ⇒ gesperrt).
+    _v4_meta: { revenue: per(true), ebit: per(true), ebitda: per(true), book_value: per(false),
+                cfo: per(true), capex: per(true), fcf: per(true) }
   };
   if (kind === 'valid') {
     Object.assign(f, { net_debt: [4000], total_debt: Array(6).fill(4500), cash_and_equivalents: Array(6).fill(500) });
@@ -329,6 +332,45 @@ export function roicMixedMj(kind) {
       capex: Array(6).fill(50), cfo: Array(6).fill(130), net_income: Array(6).fill(70), eps_diluted: Array(6).fill(0.7),
       dps: Array(6).fill(0.3), book_value: Array(6).fill(500), total_debt: Array(6).fill(600),
       cash_and_equivalents: Array(6).fill(400), shares_diluted: Array(6).fill(100), _v4_meta: meta
+    },
+    valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false }, wacc_derived: 9, cost_of_equity: 9,
+      growth_terminal: 2, growth_stage1: 5 },
+    market: { price: 10 }
+  };
+}
+
+// V1.0.80: Nettoschulden-Stichtag ↔ FCF-Zeitraum in der Reported-/Owner-FCF-
+// Diagnostik. 'stale': FCF FY2025 (bis 2025-12-31), Nettoschulden 4,000 zum
+// 2024-12-31 (bis V1.0.79 ungeprueft verrechnet); 'manual': vollstaendig
+// periodenfreier Datensatz mit manuellem net_debt (Positionsbezug nur als
+// ausgewiesene Annahme). Sonst wie diagNetDebtMj('valid').
+export function diagPeriodMj(kind) {
+  const m = diagNetDebtMj('valid');
+  m.meta = META('DPR' + kind.slice(0, 1).toUpperCase(), 'high_growth');
+  const f = m.fundamentals;
+  if (kind === 'stale') {
+    f._v4_meta.net_debt = { periods: ['2024-12-31'], source_type: 'reported', unit: 'USD' };
+  } else if (kind === 'manual') {
+    delete f.total_debt; delete f.cash_and_equivalents;
+    f._v4_meta = {};
+  }
+  return m;
+}
+
+// V1.0.80: fehlende Liquiditaet in periodenfreien Altdaten (ROIC − WACC,
+// ROIC-Trend). 'null': Liquiditaetsreihe 6 × null (bis V1.0.79 als 0 ⇒ ROIC
+// 6.8 %, Spread −2.2 pp, value_destroyer); 'zero': belegte Liquiditaet 0
+// (echter negativer Spread, bleibt). Steuer 25 %, EBIT 100, Buchwert 500,
+// Schulden 600, WACC 9 %.
+export function roicLegacyCashMj(kind) {
+  return {
+    schema_version: '4.0',
+    meta: META('RLC' + kind.slice(0, 1).toUpperCase(), 'standard_nonfin'),
+    fundamentals: {
+      revenue: Array(6).fill(1000), ebit: Array(6).fill(100), ebitda: Array(6).fill(150),
+      capex: Array(6).fill(50), cfo: Array(6).fill(130), net_income: Array(6).fill(70), eps_diluted: Array(6).fill(0.7),
+      dps: Array(6).fill(0.3), book_value: Array(6).fill(500), total_debt: Array(6).fill(600),
+      cash_and_equivalents: Array(6).fill(kind === 'zero' ? 0 : null), shares_diluted: Array(6).fill(100)
     },
     valuation: { wacc_components: { tax_rate: 25 }, fade: { enabled: false }, wacc_derived: 9, cost_of_equity: 9,
       growth_terminal: 2, growth_stage1: 5 },
