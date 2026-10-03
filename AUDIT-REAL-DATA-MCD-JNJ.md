@@ -1483,3 +1483,41 @@ Gegenprobe-Werte grün.
 * Die Periodenkonsistenz der Flussgrößen untereinander (z. B. `ebit[0]` gegen
   `revenue[0]`) ist nicht Gegenstand der Brückenprüfung.
 * SBC-Periode, MCD-/JNJ-Sperren, JNJ ohne EBIT, O-4-Grenzen unverändert.
+
+### 13.19 · Ersatzreihen löschen keinen Periodenkontext (V1.0.82)
+
+**Ausgangsstand.** main `00879f678fd64b642923e877af065afef125832b` (Merge PR #7,
+V1.0.81) = Referenzstand; keine `AGENTS.md`; eigener Worktree, Branch
+`claude/override-period-claim`.
+
+**Ursache.** `_resolveNetDebtForFlowBasis` setzte für eine aktive Ersatzreihe
+(`derived.net_debt`/`derived.fcf.override_series`) nicht nur `period: null`
+(richtig: kein Datum der ersetzten Reihe), sondern auch `hasCtx: false`. Bei
+einseitiger Ersatzreihe sperrte die datierte Gegenseite weiter („gemischt“).
+Waren beide Seiten ersetzt, galt der Fall als vollständig periodenfrei.
+Reproduziert: `net_debt` 2024-12-31, `fcf` 2025-12-31, beide ersetzt ⇒
+`available: true`, `periodCheck: 'unverified_manual'`. Ebenso über den
+Master-JSON-Importweg (`applyDerivedFieldsV4`) ⇒ Reported-/Owner-Wachstum und
+Kursszenarien berechnet.
+
+**Korrektur (nur diese Funktion).** Datum und Kontext getrennt: Die Ersatzreihe
+bekommt weiterhin kein Datum. Ihre Seite behält aber den Periodenkontext der
+ersetzten Reihe (`_dcfBridgePeriodEvidence(...).hasCtx` bzw.
+`_seriesClaimPeriodContext`, unverändert, einschließlich `null`/String/leer und
+der Ausnahme für leere „unavailable“-Reihen). Neuer Schritt vor dem
+Altdatenmodus: Ist keine Seite datiert, liegt aber an einer Ersatzreihe
+Periodenkontext vor ⇒ Sperre „Periodenangaben vorhanden, die verwendeten
+Ersatzwerte (…) tragen jedoch keinen eigenen Stichtag“. Einseitige Fälle
+behalten ihren bisherigen Sperrgrund. Gleiches gilt für den zusammengesetzten
+Rückfall `cfo − capex`. Keine neue Datumsquelle, keine Toleranzänderung. Wirkt
+über die gemeinsame Prüfung auf Diagnostik, Kern und Growth.
+
+**Nachweise.** `tests/override-period-claim.test.mjs` (7): kombinierter Fall;
+beide ersetzt bei ursprünglich passenden Daten; unbrauchbare Angaben
+(null/String/[]/2025-02-30, ein- und beidseitig); einseitige Ersatzreihe;
+vollständig periodenfreie Daten mit und ohne Ersatzreihen (`unverified_manual`,
+„NICHT geprueft“) inkl. Ausnahme der leeren „unavailable“-Reihe; gültige
+datierte Daten inkl. 0 und −500; produktiver Importweg bis
+`computeReverseDcfFull`, `_computeOwnerFcfDcf` und Growth. Gegenlauf auf
+`00879f6`: 4 rot (Fehlerfälle 1–3, produktiver Weg: `applicable: true`),
+3 Gegenproben grün vorher und nachher. Bestehende Tests unverändert grün.
