@@ -1,5 +1,21 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Ersatzreihen löschen keinen Periodenkontext (V1.0.82)
+
+Ausgangsstand main `00879f678fd64b642923e877af065afef125832b`; Details AUDIT
+**§13.19**. *Ursache:* In `_resolveNetDebtForFlowBasis` verlor eine aktive
+Ersatzreihe neben dem Datum auch den Periodenkontext der ersetzten Reihe. Bei
+zwei Ersatzreihen fiel der Fall daher in `unverified_manual` zurück
+(`net_debt` 2024 / `fcf` 2025 ⇒ zugelassen). *Korrektur:* Die Ersatzreihe
+bekommt weiterhin kein Datum, ihre Seite behält aber den Kontext. Ist keine
+Seite datiert, wird mit Grund gesperrt. Vollständig periodenfreie Daten mit
+oder ohne Ersatzreihen bleiben `unverified_manual`. *Tests:*
+`override-period-claim` (7), davon 4 auf `00879f6` rot, 3 Gegenproben vorher
+und nachher grün. Node 409 → 416; Rechenprüfungen 1700, Audit 38, Browser 242
+unverändert. Kein Deployment.
+
+---
+
 ## Nachreview PR #6: Periodenmetadaten, Nettoschulden in Kern und Growth (V1.0.81)
 
 **Ausgangsstand (nach `git fetch origin`, 2026-10-02).** main =

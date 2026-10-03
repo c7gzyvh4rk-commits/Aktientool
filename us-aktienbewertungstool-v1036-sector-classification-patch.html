@@ -21128,9 +21128,17 @@ function _resolveNetDebtForFlowBasis(f, flows) {
   const list = (Array.isArray(flows) && flows.length > 0) ? flows : [{ field: 'fcf', name: 'FCF', gen: 'des FCF', label: 'fcf[0]' }];
 
   // Bilanzseite: Stichtag des verwendeten Betrags.
+  // V1.0.82: Eine aktive Ersatzreihe uebernimmt NICHT das Datum der ersetzten
+  // Reihe (period null), laesst deren vorhandenen Periodenkontext aber auch
+  // nicht verschwinden (hasCtx wie ohne Ersatzreihe). Bis V1.0.81 galt
+  // hasCtx: false — zwei gleichzeitig aktive Ersatzreihen fielen so in
+  // `unverified_manual` zurueck (gemessen: net_debt 2024, fcf 2025, beide
+  // ersetzt ⇒ available: true).
+  const _ovClaim = 'Ersatzreihe ohne eigenen Stichtag; die Periodenangabe der ersetzten Reihe gilt nicht fuer sie';
   let br;
   if (bridge.source === 'net_debt[0]' && _ovActive('net_debt')) {
-    br = { period: null, hasCtx: false, label: 'net_debt (manuell gesetzte Ersatzreihe)', claim: 'Ersatzreihe' };
+    br = { period: null, hasCtx: _dcfBridgePeriodEvidence(f, bridge).hasCtx, override: true,
+           label: 'net_debt (manuell gesetzte Ersatzreihe)', claim: _ovClaim };
   } else {
     const ev = _dcfBridgePeriodEvidence(f, bridge);
     br = { period: ev.period, hasCtx: ev.hasCtx, label: bridge.source || 'Nettoschulden',
@@ -21151,8 +21159,11 @@ function _resolveNetDebtForFlowBasis(f, flows) {
       const [a, b] = fl.composite;
       const pa = _p0(a), pb = _p0(b);
       const aCtx = _seriesClaimPeriodContext(f, [a]), bCtx = _seriesClaimPeriodContext(f, [b]);
-      if (_ovActive(a) || _ovActive(b) || (!aCtx && !bCtx)) {
+      if (!aCtx && !bCtx) {
         fcs.push({ period: null, hasCtx: false, label: fl.label, name, gen });
+      } else if (_ovActive(a) || _ovActive(b)) {
+        // V1.0.82: Ersatzreihe neben vorhandenem Periodenkontext ⇒ kein Stichtag, kein Altdatenmodus.
+        fcs.push({ period: null, hasCtx: true, override: true, label: fl.label + ' (manuell gesetzte Ersatzreihe)', name, gen, claim: _ovClaim });
       } else if (_ok(pa) && _ok(pb) && _secPeriodDaysApart(pa, pb) <= tol) {
         fcs.push({ period: pa, hasCtx: true, label: fl.label, name, gen });
       } else {
@@ -21162,7 +21173,8 @@ function _resolveNetDebtForFlowBasis(f, flows) {
           + b.toUpperCase().replace('CAPEX', 'CapEx') + ' ' + _sh(b, pb) + '); ein Stichtag laesst sich ihm nicht zuordnen', fcs);
       }
     } else if (_ovActive(fl.field)) {
-      fcs.push({ period: null, hasCtx: false, label: fl.field + ' (manuell gesetzte Ersatzreihe)', name, gen });
+      fcs.push({ period: null, hasCtx: _seriesClaimPeriodContext(f, [fl.field]), override: true,
+                 label: fl.field + ' (manuell gesetzte Ersatzreihe)', name, gen, claim: _ovClaim });
     } else {
       fcs.push({ period: _p0(fl.field), hasCtx: _seriesClaimPeriodContext(f, [fl.field]),
                  label: fl.label || (fl.field + '[0]'), name, gen, claim: _describePeriodsClaim(f, fl.field) });
@@ -21170,14 +21182,15 @@ function _resolveNetDebtForFlowBasis(f, flows) {
   }
 
   // 1) Beanspruchter, aber unbrauchbarer Periodenkontext ⇒ Sperre.
+  //    (Ersatzreihen werden unten gesondert behandelt: sie haben nie ein eigenes Datum.)
   for (const fc of fcs) {
-    if (fc.hasCtx && !_ok(fc.period)) {
+    if (fc.hasCtx && !fc.override && !_ok(fc.period)) {
       return _blocked('Der ' + fc.name + ' (' + fc.label + ') fuehrt Periodenangaben, belegt aber kein gueltiges '
         + 'Periodenende (gemeldet: ' + (fc.period != null ? String(fc.period) : (fc.claim || 'leer')) + ')', fcs);
     }
   }
   const brOk = _ok(br.period);
-  if (br.hasCtx && !brOk) {
+  if (br.hasCtx && !br.override && !brOk) {
     return _blocked('Die Nettoschulden (' + br.label + ') fuehren Periodenangaben, belegen fuer den '
       + 'verwendeten Betrag aber keinen gueltigen Stichtag (gemeldet: '
       + (br.period != null ? String(br.period) : br.claim) + '); das Datum eines anderen Feldes wird nicht uebernommen', fcs);
@@ -21212,6 +21225,15 @@ function _resolveNetDebtForFlowBasis(f, flows) {
     }
     return _blocked(datedFlows[0].name + '-Zeitraum endet ' + datedFlows[0].period + ', der Stichtag der Nettoschulden ('
       + br.label + ') ist nicht belegt (keine Periodenangabe); eine Zuordnung ist nicht nachweisbar', fcs);
+  }
+  // 3b) V1.0.82: Keine Seite datiert, aber Periodenangaben vorhanden — nur bei
+  //     Ersatzreihen moeglich, deren ersetzte Reihe Periodenkontext fuehrt
+  //     (auch null, String, leeres Array). Kein Rueckfall in den Altdatenmodus.
+  const ovCtx = [br].concat(fcs).filter(x => x.override && x.hasCtx);
+  if (ovCtx.length > 0) {
+    return _blocked('Periodenangaben vorhanden, die verwendeten Ersatzwerte ('
+      + ovCtx.map(x => x.label).join(', ') + ') tragen jedoch keinen eigenen Stichtag; die Periodenangabe '
+      + 'der ersetzten Reihe gilt nicht fuer sie, eine Zuordnung ist nicht nachweisbar', fcs);
   }
   // 4) Alle Seiten vollstaendig periodenfrei (manuelle Altdaten).
   return Object.assign({}, bridge, _base, {
