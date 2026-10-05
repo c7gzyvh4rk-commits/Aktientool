@@ -1,5 +1,18 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Kritische Schema-Befunde folgen dem aktuellen Stand (V1.0.84)
+
+Ausgangsstand main `f785bf8b7aecc9f7ad1a9ae1adbfb80e5febb89c`; Details AUDIT
+**§13.21**. Befund der Praxisabnahme (CRH): Nach Kurseingabe blieb in der
+Übersicht „market.price fehlt … Valuation blockiert“ stehen, weil
+`state.v4criticals` nur beim Import gesetzt wurde. *Korrektur:*
+`recalcFromAssumptions` erneuert die Befundliste aus `validateMasterJsonV4(mj)`.
+Reine Anzeige, keine Wertwirkung. *Tests:* `schema-criticals-recalc` (3; 1 rot
+auf `f785bf8`), Browser §16 (+3; 16.2 rot auf `f785bf8`). Node 422 → 425,
+Browser 248 → 251; Rechenprüfungen 1700, Audit 38 unverändert. Kein Deployment.
+
+---
+
 ## Steuerquote bleibt bei „Neu berechnen“ in Prozentpunkten (V1.0.83)
 
 Ausgangsstand main `a52897b6e40189500e7cbd733a1bdb9354ef5188`; Details AUDIT

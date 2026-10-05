@@ -1557,3 +1557,25 @@ bis zum nächsten „Neu berechnen“ weiter mit diesem Wert (der Kern meldet ih
 als `unitWarnings`); danach wird er als Bruch gelesen und in Prozentpunkte
 überführt. Ein Master-JSON mit `tax_rate: 0.21` (Bruch) wird ebenso erst beim
 „Neu berechnen“ umgestellt. Keine stille Umdeutung beim Laden (unverändert).
+
+### 13.21 · Kritische Schema-Befunde folgen dem aktuellen Stand (V1.0.84)
+
+**Ausgangsstand.** main `f785bf8b7aecc9f7ad1a9ae1adbfb80e5febb89c` (Merge PR #9,
+V1.0.83); Branch `claude/schema-criticals-recalc`. Zweiter Befund der
+Praxisabnahme CRH (Anzeige, keine Wertwirkung).
+
+**Ursache.** `state.v4criticals` wurde nur beim Import gesetzt
+(`validateMasterJsonV4(parsed)`). Ein SEC-Import ohne Yahoo braucht immer eine
+Kurseingabe; danach zeigte die Übersicht neben Kurs 81.96 und Einstiegszone
+51.08 weiter „Kritische Schema-Befunde (3): market.price fehlt —
+SEC-Fundamentals importiert, Valuation blockiert bis Kurs gesetzt ist“ sowie
+„3 Schema-Probleme (kritisch)“. Die Befundliste ist reine Anzeige (die
+Datenverlässlichkeit nutzt `computeDataQualityScore`).
+
+**Korrektur.** `recalcFromAssumptions` erneuert nach der Bewertung
+`state.v4criticals = validateMasterJsonV4(mj).criticals`. CRH danach: C-MKT
+entfällt; C-07 lautet mit bekanntem Kurs „bei materieller
+Finanzverschuldung“. Blocking-Prüfung, Import, Werte unverändert.
+
+**Nachweise.** `tests/schema-criticals-recalc.test.mjs` (3; Bindung rot auf
+`f785bf8`, Validierungsregel grün) und Browser §16 (3; 16.2 rot auf `f785bf8`).

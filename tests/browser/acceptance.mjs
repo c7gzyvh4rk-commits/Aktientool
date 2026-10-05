@@ -900,6 +900,34 @@ async function main() {
     }
 
     // ══════════════════════════════════════════════════════════════════════
+    sec('16 · Kritische Schema-Befunde folgen der Kurseingabe (V1.0.84)');
+    {
+      // Befund der Praxisabnahme CRH: SEC-Import ohne Yahoo ⇒ C-MKT „market.price
+      // fehlt … Valuation blockiert“. Nach Kurseingabe und „Neu berechnen“ blieb
+      // der Befund in der Uebersicht stehen, obwohl Kurs und Einstiegszone da waren.
+      const m = FX.corePeriodMj('valid');
+      m.market = Object.assign({}, m.market, { price: null });
+      m.meta = Object.assign({}, m.meta, { _sec_fetch: Object.assign({}, m.meta._sec_fetch || {}, { price_missing: true }) });
+      const MSG = /market\.price fehlt/;
+      const status = await importViaUi(m);
+      if (check('16.1 Import ohne Kurs (SEC-Fall)', /Import OK/.test(status), status)) {
+        const ov0 = await tab('overview');
+        const c0 = await ev(`state.v4criticals.slice()`);
+        check('16.1 ohne Kurs: C-MKT als kritischer Befund sichtbar', MSG.test(ov0) && c0.some(c => /^C-MKT/.test(c)), JSON.stringify(c0));
+        await tab('assumptions');
+        await typeInto(`document.getElementById('as-price')`, '25', 'Kurs');
+        await ev('window.__accPrevVal = state.valuation; true');
+        await click(byText('#assumptions-output button', '/^\\s*Neu berechnen\\s*$/'), 'Neu berechnen');
+        await waitFor('state.valuation !== window.__accPrevVal', 5000);
+        await sleep(200);
+        const ov1 = await tab('overview');
+        const c1 = await ev(`({ crits: state.v4criticals.slice(), price: state.masterJson.market.price })`);
+        check('16.2 nach Kurseingabe: kein C-MKT mehr im Zustand und in der Uebersicht',
+          c1.price === 25 && !c1.crits.some(c => /^C-MKT/.test(c)) && !MSG.test(ov1), JSON.stringify(c1));
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
     sec('8 · Abschluss');
     check('keine unbehandelte Ausnahme im gesamten Ablauf', exceptions.length === 0, exceptions.join(' | '));
     const nonFont = external.filter(u => !/^https:\/\/fonts\.(googleapis|gstatic)\.com\//.test(u));

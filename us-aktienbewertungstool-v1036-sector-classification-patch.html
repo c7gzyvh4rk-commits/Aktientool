@@ -22899,6 +22899,12 @@ function recalcFromAssumptions() {
     });
   }
   state.baseRateWarnings = evaluateBaseRateWarnings(mj, state.quality, state.valuation);
+  // V1.0.84: Kritische Schema-Befunde auf den AKTUELLEN Stand beziehen. Bis
+  // V1.0.83 galten die beim Import ermittelten Befunde weiter — nach einer
+  // Kurseingabe (SEC-Import ohne Yahoo) zeigte die Uebersicht neben Kurs und
+  // Einstiegszone weiter „market.price fehlt … Valuation blockiert“. Nur die
+  // Befundliste wird erneuert; Blocking-Pruefung und Import bleiben unveraendert.
+  state.v4criticals = validateMasterJsonV4(mj).criticals || [];
 
   if (prev != null && state.synthesis && state.synthesis.buyPrice != null) {
     const diff = state.synthesis.buyPrice - prev;
