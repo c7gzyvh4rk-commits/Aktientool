@@ -1,5 +1,25 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Anzeige und Export folgen dem aktuellen Stand (V1.0.84)
+
+Ausgangsstand main `f785bf8b7aecc9f7ad1a9ae1adbfb80e5febb89c`; Details AUDIT
+**§13.21**. Befund der Praxisabnahme (CRH): Nach Kurseingabe blieb in der
+Übersicht „market.price fehlt … Valuation blockiert“ stehen, weil
+`state.v4criticals` nur beim Import gesetzt wurde. *Korrektur:*
+`recalcFromAssumptions` erneuert die Befundliste aus `validateMasterJsonV4(mj)`.
+Zusätzlich: MoS-Aufschlüsselung „Cap aktiv“ nur bei greifender Obergrenze
+(`safetyDiscount.capActive`; vorher bei jeder multiplikativen Zusammensetzung),
+D&A-Beschriftung ohne doppelte Maskierung, von Hand gesetzter Kurs nach
+SEC-Import ohne Kurs nicht mehr als „Yahoo Finance“, RF/ERP als Prozent statt
+„0.04 %“, kein „undefined%“ im Heuristik-Kasten, QCE-Score aus `qceScore.value`
+(Übersichtszeile und Hinweis „Kapitaleffizienz schwach“ fehlten bisher immer;
+CSV-Spalten QCE/Datennote waren leer). Reine Anzeige/Export, keine Wertwirkung.
+*Tests:* `display-current-state` (8; 5 rot auf `f785bf8`), Browser §16 (+9;
+16.2–16.8 rot auf `f785bf8`). Node 422 → 430, Browser 248 → 257;
+Rechenprüfungen 1700, Audit 38 unverändert. Kein Deployment.
+
+---
+
 ## Steuerquote bleibt bei „Neu berechnen“ in Prozentpunkten (V1.0.83)
 
 Ausgangsstand main `a52897b6e40189500e7cbd733a1bdb9354ef5188`; Details AUDIT

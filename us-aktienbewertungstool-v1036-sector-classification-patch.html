@@ -10940,7 +10940,14 @@ function computeMarketDataDiagnostics(mj) {
   const priceOverride = mo_mkt.price != null ? mo_mkt.price : null;
   const priceRaw      = mkt.price;
   const priceFinal    = priceOverride != null ? priceOverride : priceRaw;
+  // V1.0.84: Ein SEC-Import ohne Yahoo-Kurs (meta._sec_fetch.price_missing) hat
+  // keinen Marktdaten-Kurs; ein danach vorhandener Kurs wurde von Hand gesetzt.
+  // Bis V1.0.83 stand er als „Yahoo Finance · medium“ in der Tabelle.
+  const _secFetchP    = (mj.meta && mj.meta._sec_fetch) || mj._sec_fetch || null;
+  const priceManualSec = priceOverride == null && priceRaw != null && !mkt.source
+    && !!(_secFetchP && _secFetchP.price_missing === true);
   const priceConf     = priceOverride != null ? 'manual'
+    : priceManualSec ? 'manual'
     : priceRaw != null ? (mkt.source === 'market_data_unofficial' ? 'medium' : 'medium') : 'missing';
   const priceWarn     = priceConf === 'missing' ? 'Kurs fehlt — MoS-Berechnung blockiert' : null;
 
@@ -11010,7 +11017,7 @@ function computeMarketDataDiagnostics(mj) {
     : coeDerived != null ? 'derived' : 'missing';
 
   return {
-    price:              { value: priceFinal,  source: priceOverride!=null?'manual override':(mkt.source||'Yahoo Finance'), confidence: priceConf,  warning: priceWarn,  override_active: priceOverride!=null },
+    price:              { value: priceFinal,  source: priceOverride!=null?'manual override':(priceManualSec?'manuell eingegeben (SEC-Import ohne Kurs)':(mkt.source||'Yahoo Finance')), confidence: priceConf,  warning: priceWarn,  override_active: priceOverride!=null },
     market_cap:         { value: mcFinal,     source: mcSource, confidence: mcConf, warning: mcWarn, override_active: mcOverride!=null, implied_b: impliedMcB },
     beta:               { value: betaFinal,   source: betaSource, confidence: betaConf, warning: betaWarn, override_active: betaOverride!=null },
     risk_free_rate:     { value: rfFinal,     source: rfSource,   confidence: rfConf,   warning: null, override_active: rfOverride!=null },
@@ -12335,6 +12342,14 @@ function _qceSbcOverRev(mj) {
  *
  * Diagnostic Only: kein Einfluss auf Einstiegszone/MoS/Verdict.
  */
+// V1.0.84: Zahlenwert des QCE-Scores. Das Ergebnis fuehrt ihn als `value`; aeltere
+// Fixtures/Snapshots als `total`. Fehlt beides ⇒ null (kein 0-Ersatz).
+function _qceValue(qce) {
+  if (!qce) return null;
+  const v = qce.value != null ? qce.value : qce.total;
+  return (typeof v === 'number' && isFinite(v)) ? v : null;
+}
+
 function computeQualityCapitalEfficiencyScore(qr, mj) {
   if (!qr || !mj) {
     return { status: 'insufficient_data', value: null, label: 'n/a',
@@ -22526,7 +22541,7 @@ function buildDataBasisCard(mj, valuation, opts) {
             + ' (nur nachrichtlich, nicht Teil des Bewertungsdatenstands)' : ''))}
     ${istTtm && sb.eps_ttm != null ? zeile('EPS (TTM)', _dbFmtNum(sb.eps_ttm, 2),
        'TTM-Ergebnis / gewichtete TTM-Aktienzahl — nicht die Summe der Quartals-EPS.') : ''}
-    ${rep.da ? zeile('Abschreibungen (D&amp;A) / Umsatz',
+    ${rep.da ? zeile('Abschreibungen (D&A) / Umsatz',
        rep.da.ratio_pct != null
          ? _dbFmtNum(rep.da.ratio_pct, 2) + ' %'
          : '<span style="color:var(--warn)">nicht belegt</span>',
@@ -22899,6 +22914,12 @@ function recalcFromAssumptions() {
     });
   }
   state.baseRateWarnings = evaluateBaseRateWarnings(mj, state.quality, state.valuation);
+  // V1.0.84: Kritische Schema-Befunde auf den AKTUELLEN Stand beziehen. Bis
+  // V1.0.83 galten die beim Import ermittelten Befunde weiter — nach einer
+  // Kurseingabe (SEC-Import ohne Yahoo) zeigte die Uebersicht neben Kurs und
+  // Einstiegszone weiter „market.price fehlt … Valuation blockiert“. Nur die
+  // Befundliste wird erneuert; Blocking-Pruefung und Import bleiben unveraendert.
+  state.v4criticals = validateMasterJsonV4(mj).criticals || [];
 
   if (prev != null && state.synthesis && state.synthesis.buyPrice != null) {
     const diff = state.synthesis.buyPrice - prev;
@@ -23769,8 +23790,10 @@ function renderOverview() {
     body += _ovFactRow('Qualitätsurteil', q ? verdictLbl.text : null, 'hist', q ? verdictLbl.note : 'Die Qualitätsprüfung wurde nicht ausgeführt.');
     body += _ovMetricRow('Piotroski F-Score', q && q.scores && q.scores.piotroski, 'hist',
       'neun Ja/Nein-Prüfungen zu Ertrag, Verschuldung und Effizienz; je höher, desto solider', 0, ' von 9');
-    if (q && q.qceScore && q.qceScore.total != null)
-      body += _ovFactRow('Qualität und Kapitaleffizienz', ovNum(q.qceScore.total, 1) + ' von 10', 'hist',
+    // V1.0.84: Der Score steht in qceScore.value (computeQualityCapitalEfficiencyScore);
+    // bis V1.0.83 wurde nur .total gelesen (gibt es nur in Alt-Fixtures) ⇒ Zeile fehlte immer.
+    if (q && q.qceScore && _qceValue(q.qceScore) != null)
+      body += _ovFactRow('Qualität und Kapitaleffizienz', ovNum(_qceValue(q.qceScore), 1) + ' von 10', 'hist',
         'zusammengefasster Wert aus Rendite, Verschuldung und Cash-Umwandlung — nur Diagnose');
     body += _ovMetricRow('Kapitalrendite minus Kapitalkosten', q && q.descriptive && q.descriptive.roicMinusWacc, 'hist',
       'verdient das Unternehmen mehr als seine Finanzierung kostet? Positiv ist gut', 1, ' Prozentpunkte');
@@ -24083,8 +24106,9 @@ function _ovKippenBlock(mj, q, s) {
   else if (s && s._modelDivergenceRangeOnly && s._divergenceRatio != null)
     add('Nur Bandbreite verwendbar', 'Streuung um das ' + ovNum(s._divergenceRatio, 1) + '-Fache — ein einzelner Punktwert ist nicht belastbar.');
 
-  if (q && q.qceScore && q.qceScore.total != null && q.qceScore.total <= 4)
-    add('Kapitaleffizienz schwach', 'Wert ' + ovNum(q.qceScore.total, 1) + ' von 10 — die Kapitaleffizienz ist nicht ausreichend belegt.');
+  // V1.0.84: wie oben — bis V1.0.83 wurde dieser Hinweis nie ausgeloest.
+  if (q && q.qceScore && _qceValue(q.qceScore) != null && _qceValue(q.qceScore) <= 4)
+    add('Kapitaleffizienz schwach', 'Wert ' + ovNum(_qceValue(q.qceScore), 1) + ' von 10 — die Kapitaleffizienz ist nicht ausreichend belegt.');
 
   const heuF = mj ? getHeuristicInputsUsed(mj) : [];
   if (heuF.length > 0)
@@ -24873,7 +24897,13 @@ function buildRangeBoxFull(s) {
         ${row('Sector/Cyclicality Add-on', mc2.sectorAddon, null, 'var(--warn)')}
         ${row('Buyback-Dependency Add-on', mc2.buybackAddon, bbDetail, 'var(--warn)')}
         <div class="ml total"><span>MoS Total (Cap 50%)</span><span>${(mc2.total*100).toFixed(0)}%</span></div>
-        ${mc2._additiveSum != null && mc2._additiveSum > mc2.total + 0.001
+        ${/* V1.0.84: „Cap aktiv“ nur, wenn die Obergrenze tatsaechlich greift (capActive der
+             Synthese). Bis V1.0.83 genuegte additive Summe > Gesamt — das gilt bei der
+             multiplikativen Zusammensetzung immer (CRH: additiv 40 %, zusammengesetzt 35,2 %,
+             Cap 50 % nicht erreicht), der Zweig „Komposition“ wurde nie erreicht. */
+          ((s.safetyDiscount && typeof s.safetyDiscount.capActive === 'boolean')
+              ? s.safetyDiscount.capActive
+              : (mc2._composedRaw != null && mc2._composedRaw > 0.5 + 1e-12))
           ? `<div class="ml txt-caption" style="color:var(--info)"><span>↳ Cap aktiv (additiv wäre ${(mc2._additiveSum*100).toFixed(0)}%)</span><span></span></div>`
           : (mc2._additiveSum != null && Math.abs(mc2._additiveSum - mc2.total) > 0.001
             ? `<div class="ml txt-caption" style="color:var(--muted)"><span>↳ Komposition (additiv wäre ${(mc2._additiveSum*100).toFixed(0)}%)</span><span></span></div>`
@@ -26223,6 +26253,9 @@ function renderAssumptions(keepValues) {
                     missing:'<span class="src-badge src-missing txt-caption">fehlt</span>' };
         return m[conf] || '<span class="src-badge txt-caption">' + (conf||'?') + '</span>';
       }
+      function _pctOfFraction(v) {
+        return (typeof v === 'number' && isFinite(v) && Math.abs(v) <= 1) ? v * 100 : v;
+      }
       function _fmtVal(v, decimals, suffix) {
         if (v == null) return '<span style="color:var(--muted)">–</span>';
         return (typeof v === 'number' ? v.toFixed(decimals||2) : v) + (suffix||'');
@@ -26248,8 +26281,9 @@ function renderAssumptions(keepValues) {
           : (diag.market_cap.implied_b ? `${diag.market_cap.implied_b.toFixed(1)} B` : '<span style="color:var(--muted)">–</span>'),
           _confBadge(diag.market_cap.confidence, diag.market_cap.override_active), diag.market_cap.source],
         ['Beta', _fmtVal(diag.beta.value, 2), _confBadge(diag.beta.confidence, diag.beta.override_active), diag.beta.source],
-        ['Risk-free Rate', _fmtVal(diag.risk_free_rate.value, 2, ' %'), _confBadge(diag.risk_free_rate.confidence, diag.risk_free_rate.override_active), diag.risk_free_rate.source],
-        ['ERP', _fmtVal(diag.equity_risk_premium.value, 2, ' %'), _confBadge(diag.equity_risk_premium.confidence, diag.equity_risk_premium.override_active), diag.equity_risk_premium.source],
+        // V1.0.84: RF/ERP werden als Bruch gefuehrt (0.043 = 4,3 %); bis V1.0.83 stand „0.04 %“.
+        ['Risk-free Rate', _fmtVal(_pctOfFraction(diag.risk_free_rate.value), 2, ' %'), _confBadge(diag.risk_free_rate.confidence, diag.risk_free_rate.override_active), diag.risk_free_rate.source],
+        ['ERP', _fmtVal(_pctOfFraction(diag.equity_risk_premium.value), 2, ' %'), _confBadge(diag.equity_risk_premium.confidence, diag.equity_risk_premium.override_active), diag.equity_risk_premium.source],
         ['WACC', _fmtVal(diag.wacc.value, 2, ' %'), _confBadge(diag.wacc.confidence, diag.wacc.override_active), (val._derivationFlags && val._derivationFlags.wacc_derived)||'abgeleitet'],
         ['Cost of Equity', _fmtVal(diag.cost_of_equity.value, 2, ' %'), _confBadge(diag.cost_of_equity.confidence, diag.cost_of_equity.override_active), (val._derivationFlags && val._derivationFlags.cost_of_equity_derived)||'abgeleitet'],
       ];
@@ -26386,8 +26420,9 @@ function renderAssumptions(keepValues) {
         hdKeys.forEach(k => {
           const h = hd[k];
           hdHtml += `<div style="font-size:.56rem;margin-top:6px;border-top:1px solid #4a2a5a;padding-top:5px">
-            <strong>${escapeHtml(k)}</strong> = ${h.value}% <span class="src-badge src-heuristic">${escapeHtml(h.method)}</span><br>
-            <span style="opacity:.75">${escapeHtml(h.detail)}</span>
+            <strong>${escapeHtml(k)}</strong>${/* V1.0.84: Eintraege ohne Zahlenwert (debt_materiality, wacc_cod_missing) zeigten „undefined%“ */
+              typeof h.value === 'number' ? ' = ' + h.value + '%' : (h.level != null ? ' = ' + escapeHtml(String(h.level)) : '')}${h.method ? ` <span class="src-badge src-heuristic">${escapeHtml(h.method)}</span>` : ''}<br>
+            <span style="opacity:.75">${escapeHtml(h.detail || h.message || '')}</span>
           </div>`;
         });
         hdHtml += `<div style="font-size:.54rem;margin-top:8px;border-top:1px solid #4a2a5a;padding-top:5px;opacity:.8">
@@ -27177,9 +27212,10 @@ function buildSnapshotRecord(ctx) {
       range_base:         synthesis && synthesis.range && synthesis.range.base,
       buyPrice:           synthesis && synthesis.buyPrice,
       deepValuePrice:     synthesis && synthesis.deepValuePrice,
-      dataQuality:        dataQuality && dataQuality.label,
+      // V1.0.84: state.dataQuality fuehrt die Note als `grade` (A–D); `label` gibt es nicht.
+      dataQuality:        dataQuality && (dataQuality.label || dataQuality.grade || null),
       dataQualityScore:   dataQuality && dataQuality.score,
-      qceScore:           quality && quality.qceScore && quality.qceScore.total,
+      qceScore:           quality && quality.qceScore ? _qceValue(quality.qceScore) : null,
       topWarnings:        (quality && Array.isArray(quality.hardStops))
                             ? quality.hardStops.filter(h => h.triggered && !h.overridden).map(h => h.name).slice(0, 5)
                             : [],

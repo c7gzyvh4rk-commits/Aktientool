@@ -900,6 +900,61 @@ async function main() {
     }
 
     // ══════════════════════════════════════════════════════════════════════
+    sec('16 · Kritische Schema-Befunde folgen der Kurseingabe (V1.0.84)');
+    {
+      // Befund der Praxisabnahme CRH: SEC-Import ohne Yahoo ⇒ C-MKT „market.price
+      // fehlt … Valuation blockiert“. Nach Kurseingabe und „Neu berechnen“ blieb
+      // der Befund in der Uebersicht stehen, obwohl Kurs und Einstiegszone da waren.
+      const m = FX.corePeriodMj('valid');
+      m.market = Object.assign({}, m.market, { price: null });
+      m.meta = Object.assign({}, m.meta, { _sec_fetch: Object.assign({}, m.meta._sec_fetch || {}, { price_missing: true }) });
+      m.valuation = Object.assign({}, m.valuation, { wacc_components: Object.assign({}, m.valuation.wacc_components,
+        { risk_free: 0.043, equity_risk_premium: 0.055 }) });
+      const MSG = /market\.price fehlt/;
+      const status = await importViaUi(m);
+      if (check('16.1 Import ohne Kurs (SEC-Fall)', /Import OK/.test(status), status)) {
+        const ov0 = await tab('overview');
+        const c0 = await ev(`state.v4criticals.slice()`);
+        check('16.1 ohne Kurs: C-MKT als kritischer Befund sichtbar', MSG.test(ov0) && c0.some(c => /^C-MKT/.test(c)), JSON.stringify(c0));
+        await tab('assumptions');
+        await typeInto(`document.getElementById('as-price')`, '25', 'Kurs');
+        await ev('window.__accPrevVal = state.valuation; true');
+        await click(byText('#assumptions-output button', '/^\\s*Neu berechnen\\s*$/'), 'Neu berechnen');
+        await waitFor('state.valuation !== window.__accPrevVal', 5000);
+        await sleep(200);
+        const ov1 = await tab('overview');
+        const c1 = await ev(`({ crits: state.v4criticals.slice(), price: state.masterJson.market.price })`);
+        check('16.2 nach Kurseingabe: kein C-MKT mehr im Zustand und in der Uebersicht',
+          c1.price === 25 && !c1.crits.some(c => /^C-MKT/.test(c)) && !MSG.test(ov1), JSON.stringify(c1));
+        // MoS-Aufschluesselung: „Cap aktiv“ nur bei tatsaechlich greifender Obergrenze.
+        const val = await tab('valuation');
+        const sd = await ev(`(() => { const s = state.synthesis.safetyDiscount || {}, m = state.synthesis.mosComponents || {};
+          return { capActive: s.capActive, total: m.total, additive: m._additiveSum }; })()`);
+        const expectCap = sd.capActive === true;
+        const expectComp = !expectCap && sd.additive != null && Math.abs(sd.additive - sd.total) > 0.001;
+        check('16.3 MoS: „Cap aktiv“ genau dann, wenn die Obergrenze greift; sonst „Komposition“',
+          /Cap aktiv \(additiv/.test(val) === expectCap && /Komposition \(additiv/.test(val) === expectComp && (expectCap || expectComp),
+          JSON.stringify(sd));
+        check('16.4 Datenbasis-Karte: D&A-Beschriftung ohne doppelt maskiertes &',
+          !/D&AMP;A|D&amp;A/i.test(val) && /Abschreibungen \(D&A\) \/ Umsatz/i.test(val), (val.match(/Abschreibungen[^\n]*/i) || [''])[0]);
+        const as = await tab('assumptions');
+        const kursZeile = (as.match(/Kurs \(USD\)[^\n]*(\n[^\n]*){0,3}/) || [''])[0];
+        check('16.5 Marktdaten-Tabelle: von Hand gesetzter Kurs nicht als „Yahoo Finance“',
+          /manuell eingegeben/.test(kursZeile) && !/Yahoo/.test(kursZeile), kursZeile);
+        check('16.6 Marktdaten-Tabelle: Risk-free 4.30 %, ERP 5.50 % (Bruch als Prozent)',
+          /Risk-free Rate\s+4\.30 %/.test(as) && /ERP\s+5\.50 %/.test(as), (as.match(/Risk-free Rate[^\n]*\n?[^\n]*/) || [''])[0]);
+        check('16.7 Annahmen ohne „undefined“', !/undefined/.test(as), (as.match(/[^\n]*undefined[^\n]*/) || [''])[0]);
+        // QCE-Zeile in der Uebersicht (Wert aus qceScore.value), sofern ein Score vorliegt.
+        const qv = await ev(`(state.quality && state.quality.qceScore && state.quality.qceScore.value != null) ? state.quality.qceScore.value : null`);
+        const ov2 = await tab('overview');
+        check('16.8 Uebersicht: Zeile „Qualität und Kapitaleffizienz“ mit dem Engine-Wert',
+          qv == null ? !/Qualität und Kapitaleffizienz\s+\d/.test(ov2)
+                     : new RegExp('Qualität und Kapitaleffizienz\\s+' + qv.toFixed(1).replace('.', ',') + ' von 10').test(ov2),
+          String(qv) + ' · ' + ((ov2.match(/Qualität und Kapitaleffizienz[^\n]*\n?[^\n]*/) || [''])[0]));
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
     sec('8 · Abschluss');
     check('keine unbehandelte Ausnahme im gesamten Ablauf', exceptions.length === 0, exceptions.join(' | '));
     const nonFont = external.filter(u => !/^https:\/\/fonts\.(googleapis|gstatic)\.com\//.test(u));
