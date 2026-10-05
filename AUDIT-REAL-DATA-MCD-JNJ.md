@@ -1521,3 +1521,39 @@ datierte Daten inkl. 0 und −500; produktiver Importweg bis
 `computeReverseDcfFull`, `_computeOwnerFcfDcf` und Growth. Gegenlauf auf
 `00879f6`: 4 rot (Fehlerfälle 1–3, produktiver Weg: `applicable: true`),
 3 Gegenproben grün vorher und nachher. Bestehende Tests unverändert grün.
+
+### 13.20 · Steuerquote bleibt bei „Neu berechnen“ in Prozentpunkten (V1.0.83)
+
+**Ausgangsstand.** main `a52897b6e40189500e7cbd733a1bdb9354ef5188` (Merge PR #8,
+V1.0.82) = Referenzstand; keine `AGENTS.md`; eigener Worktree, Branch
+`claude/tax-rate-unit-recalc`. Befund aus der Praxisabnahme mit einem
+vollständigen Realdatenfall (CRH plc, FY2025; Bericht folgt gesondert).
+
+**Ursache (Berechnung, nicht Quelle/Import/Anzeige).** Der Import setzt
+`wacc_components.tax_rate` als Prozentpunkte (TE/(NI+TE) × 100 = 21.71), wie
+`DCF_CORE_UNITS` und alle Verbraucher (`1 − taxRate / 100`: DCF-Kern, ROIC,
+ROIC − WACC, ROIC-Trend, Mid-Cycle, EPV, Monte Carlo) es erwarten.
+`recalcFromAssumptions` las das Feld `as-tax` aber mit
+`normalizeDecimalRateInput` (laut Kommentar nur für RF/ERP/CoD) und schrieb
+0.2171 zurück. Reproduziert mit dem produktiven Importweg (CRH, Cache-Replay,
+echter Klick auf „Neu berechnen“ ohne Änderung): DCF 91.68 ⇒ 124.09 je Aktie,
+operativer Wert 112.49 ⇒ 144.91, `_coreTaxRatePct` 21.71 ⇒ 0.2171,
+`tax_rate` zusätzlich als „manuell“ geführt. Jede Übernahme der Annahmen
+(auch nur Kurs) löste das aus; ein zweites „Neu berechnen“ änderte nichts mehr.
+
+**Korrektur.** Neuer Helfer `normalizeTaxRatePctInput` (Eingabe weiterhin
+„dez. oder %“: 0..1 als Bruch ⇒ × 100, > 1 unverändert; Wertebereich und
+Warnung wie `normalizeDecimalRateInput`); `as-tax` nutzt ihn
+(`normalize: 'pct_points'`). RF/ERP/CoD/Gewichte unverändert. Keine Änderung
+an Kern, Kennzahlen, Import oder Gewichtung.
+
+**Nachweise.** `tests/tax-rate-unit.test.mjs` (6) und Browser §15 (5 Prüfungen
++ Import). Gegenlauf `a52897b`: Node 5/6 rot (Gegenprobe RF/ERP/CoD grün),
+Browser §15.2–15.5 rot, 15.1 grün. Nachher CRH: DCF bleibt 91.68 über zwei
+„Neu berechnen“.
+
+**Grenzen.** Ein vor V1.0.83 gespeicherter Zustand mit `tax_rate` < 1 rechnet
+bis zum nächsten „Neu berechnen“ weiter mit diesem Wert (der Kern meldet ihn
+als `unitWarnings`); danach wird er als Bruch gelesen und in Prozentpunkte
+überführt. Ein Master-JSON mit `tax_rate: 0.21` (Bruch) wird ebenso erst beim
+„Neu berechnen“ umgestellt. Keine stille Umdeutung beim Laden (unverändert).

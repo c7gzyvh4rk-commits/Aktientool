@@ -2845,6 +2845,25 @@ function normalizeDecimalRateInput(x) {
 }
 
 /**
+ * V1.0.83: Steuerquote (wacc_components.tax_rate) in PROZENTPUNKTEN.
+ * Anders als RF/ERP/CoD fuehren Import (TE/(NI+TE) × 100), DCF-Kern,
+ * ROIC-Kennzahlen, Mid-Cycle, EPV und Monte Carlo die Steuerquote in
+ * Prozentpunkten (DCF_CORE_UNITS; Rechnung `1 − taxRate / 100`). Bis V1.0.82
+ * schrieb „Neu berechnen“ sie ueber normalizeDecimalRateInput als Bruch
+ * (21.71 ⇒ 0.2171) — jede Uebernahme der Annahmen rechnete danach mit rund
+ * 0,2 % Steuern. Eingabe weiterhin „dez. oder %“ (Feldbeschriftung): 0..1 als
+ * Bruch, > 1 als Prozent; Wertebereich und Warnung wie normalizeDecimalRateInput.
+ * Eine Prozentangabe bleibt exakt erhalten (keine Rundtrip-Abweichung).
+ */
+function normalizeTaxRatePctInput(x) {
+  const d = normalizeDecimalRateInput(x);
+  if (d.value == null) return d;
+  const n = Number(x);
+  const v = n > 1 ? n : Math.round(d.value * 100 * 1e10) / 1e10;
+  return { value: v, warning: d.warning };
+}
+
+/**
  * Normalisiert eine Gewicht-Eingabe (debt_weight, equity_weight) auf Dezimal.
  * Gibt { value: number|null, warning: string|null } zurück.
  */
@@ -22640,7 +22659,7 @@ function recalcFromAssumptions() {
     { id: 'as-rf',        path: ['valuation','wacc_components','risk_free'],               normalize: 'rate' },
     { id: 'as-erp',       path: ['valuation','wacc_components','equity_risk_premium'],     normalize: 'rate' },
     { id: 'as-beta',      path: ['valuation','wacc_components','beta'] },
-    { id: 'as-tax',       path: ['valuation','wacc_components','tax_rate'],                normalize: 'rate' },
+    { id: 'as-tax',       path: ['valuation','wacc_components','tax_rate'],                normalize: 'pct_points' },
     { id: 'as-kd',        path: ['valuation','wacc_components','cost_of_debt_pretax'],     normalize: 'rate' },
     { id: 'as-wd',        path: ['valuation','wacc_components','debt_weight'],             normalize: 'weight' },
     { id: 'as-we',        path: ['valuation','wacc_components','equity_weight'],           normalize: 'weight' },
@@ -22665,6 +22684,11 @@ function recalcFromAssumptions() {
     let val = raw;
     if (f.normalize === 'rate') {
       const _n = normalizeDecimalRateInput(raw);
+      if (_n.value == null) return; // unplausibel, nicht schreiben
+      val = _n.value;
+    } else if (f.normalize === 'pct_points') {
+      // V1.0.83: Steuerquote in Prozentpunkten (siehe normalizeTaxRatePctInput).
+      const _n = normalizeTaxRatePctInput(raw);
       if (_n.value == null) return; // unplausibel, nicht schreiben
       val = _n.value;
     } else if (f.normalize === 'weight') {
