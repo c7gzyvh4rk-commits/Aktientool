@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// V1.0.84 · Kritische Schema-Befunde folgen dem aktuellen Stand.
+// V1.0.84 · Anzeige folgt dem aktuellen Stand (Schema-Befunde, Kurs-Herkunft).
 //
 // Befund der Praxisabnahme (CRH, SEC-Import ohne Yahoo): state.v4criticals
 // wurde nur beim Import gesetzt. Nach Kurseingabe und „Neu berechnen“ zeigte
@@ -37,4 +37,27 @@ test('3 · recalcFromAssumptions erneuert state.v4criticals aus validateMasterJs
   const iCrit = src.indexOf('state.v4criticals');
   const iRender = src.indexOf('renderAssumptions(true)');
   assert.ok(iVal >= 0 && iCrit > iVal && iRender > iCrit, [iVal, iCrit, iRender].join(','));
+});
+
+// V1.0.84 · Herkunft des Kurses: SEC-Import ohne Yahoo-Kurs ⇒ von Hand gesetzt.
+const diagMj = (secPriceMissing, source) => ({
+  meta: secPriceMissing == null ? {} : { _sec_fetch: { price_missing: secPriceMissing } },
+  market: Object.assign({ price: 81.96 }, source ? { source } : {}),
+  fundamentals: { shares_diluted: [677] },
+  valuation: { wacc_components: { risk_free: 0.043, equity_risk_premium: 0.055 }, _derivationFlags: {} }
+});
+
+test('4 · SEC-Import ohne Kurs, Kurs danach gesetzt: Herkunft „manuell“, nicht „Yahoo Finance“', () => {
+  const d = S.computeMarketDataDiagnostics(diagMj(true));
+  assert.equal(d.price.confidence, 'manual');
+  assert.match(d.price.source, /manuell eingegeben/);
+  assert.doesNotMatch(d.price.source, /Yahoo/);
+});
+
+test('5 · Gegenproben: Yahoo-Kurs beim Import bzw. angegebene Quelle bleiben unveraendert', () => {
+  assert.equal(S.computeMarketDataDiagnostics(diagMj(false)).price.source, 'Yahoo Finance');
+  assert.equal(S.computeMarketDataDiagnostics(diagMj(null)).price.source, 'Yahoo Finance');
+  assert.equal(S.computeMarketDataDiagnostics(diagMj(true, 'market_data_unofficial')).price.source, 'market_data_unofficial');
+  const d = S.computeMarketDataDiagnostics(Object.assign(diagMj(true), { market: { price: 81.96, manual_overrides: { price: 80 } } }));
+  assert.equal(d.price.source, 'manual override');
 });

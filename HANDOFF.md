@@ -1,15 +1,20 @@
 # HANDOFF — US-Aktienbewertungstool
 
-## Kritische Schema-Befunde folgen dem aktuellen Stand (V1.0.84)
+## Anzeige folgt dem aktuellen Stand: Schema-Befunde, MoS-Obergrenze, Kurs-Herkunft, Einheiten (V1.0.84)
 
 Ausgangsstand main `f785bf8b7aecc9f7ad1a9ae1adbfb80e5febb89c`; Details AUDIT
 **§13.21**. Befund der Praxisabnahme (CRH): Nach Kurseingabe blieb in der
 Übersicht „market.price fehlt … Valuation blockiert“ stehen, weil
 `state.v4criticals` nur beim Import gesetzt wurde. *Korrektur:*
 `recalcFromAssumptions` erneuert die Befundliste aus `validateMasterJsonV4(mj)`.
-Reine Anzeige, keine Wertwirkung. *Tests:* `schema-criticals-recalc` (3; 1 rot
-auf `f785bf8`), Browser §16 (+3; 16.2 rot auf `f785bf8`). Node 422 → 425,
-Browser 248 → 251; Rechenprüfungen 1700, Audit 38 unverändert. Kein Deployment.
+Zusätzlich: MoS-Aufschlüsselung „Cap aktiv“ nur bei greifender Obergrenze
+(`safetyDiscount.capActive`; vorher bei jeder multiplikativen Zusammensetzung),
+D&A-Beschriftung ohne doppelte Maskierung, von Hand gesetzter Kurs nach
+SEC-Import ohne Kurs nicht mehr als „Yahoo Finance“, RF/ERP als Prozent statt
+„0.04 %“, kein „undefined%“ im Heuristik-Kasten. Reine Anzeige, keine
+Wertwirkung. *Tests:* `display-current-state` (5; 2 rot auf `f785bf8`), Browser
+§16 (+8; 16.2–16.7 rot auf `f785bf8`). Node 422 → 427, Browser 248 → 256;
+Rechenprüfungen 1700, Audit 38 unverändert. Kein Deployment.
 
 ---
 

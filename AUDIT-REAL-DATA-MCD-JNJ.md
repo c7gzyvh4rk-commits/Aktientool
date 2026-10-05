@@ -1558,7 +1558,7 @@ als `unitWarnings`); danach wird er als Bruch gelesen und in Prozentpunkte
 überführt. Ein Master-JSON mit `tax_rate: 0.21` (Bruch) wird ebenso erst beim
 „Neu berechnen“ umgestellt. Keine stille Umdeutung beim Laden (unverändert).
 
-### 13.21 · Kritische Schema-Befunde folgen dem aktuellen Stand (V1.0.84)
+### 13.21 · Anzeige folgt dem aktuellen Stand: Schema-Befunde, MoS-Obergrenze, Kurs-Herkunft, Einheiten (V1.0.84)
 
 **Ausgangsstand.** main `f785bf8b7aecc9f7ad1a9ae1adbfb80e5febb89c` (Merge PR #9,
 V1.0.83); Branch `claude/schema-criticals-recalc`. Zweiter Befund der
@@ -1577,5 +1577,22 @@ Datenverlässlichkeit nutzt `computeDataQualityScore`).
 entfällt; C-07 lautet mit bekanntem Kurs „bei materieller
 Finanzverschuldung“. Blocking-Prüfung, Import, Werte unverändert.
 
-**Nachweise.** `tests/schema-criticals-recalc.test.mjs` (3; Bindung rot auf
-`f785bf8`, Validierungsregel grün) und Browser §16 (3; 16.2 rot auf `f785bf8`).
+**Weitere Anzeigebefunde derselben Sichtprüfung.** (a) Die MoS-Aufschlüsselung
+zeigte „↳ Cap aktiv (additiv wäre 40%)“, obwohl die Obergrenze 50 % nicht griff
+(CRH: zusammengesetzt 35,2 %, `capActive: false`): Bedingung war „additive Summe
+> Gesamt“, was bei multiplikativer Zusammensetzung immer gilt; der Zweig
+„Komposition (additiv wäre …)“ wurde nie erreicht. Jetzt entscheidet
+`safetyDiscount.capActive` (Rückfall: zusammengesetzter Rohwert > 50 %).
+(b) Die Datenbasis-Karte zeigte „Abschreibungen (D&amp;A) / Umsatz“ (Beschriftung
+doppelt maskiert); jetzt „(D&A)“. (c) Die Tabelle „Market Data & WACC Inputs“
+wies den von Hand eingegebenen Kurs als „Yahoo Finance · medium“ aus, obwohl
+der Import keinen Yahoo-Kurs hatte (`meta._sec_fetch.price_missing`); jetzt
+„manuell eingegeben (SEC-Import ohne Kurs)“ · manual. Ein Yahoo-Kurs oder eine
+angegebene `market.source` bleiben unverändert. (d) Risk-free Rate und ERP
+(Brüche 0.043/0.055) erschienen als „0.04 %“/„0.06 %“; jetzt 4.30 %/5.50 %.
+(e) Heuristik-Kasten: Einträge ohne Zahlenwert zeigten „= undefined%“; jetzt
+Stufe bzw. Meldung. Werte unverändert.
+
+**Nachweise.** `tests/display-current-state.test.mjs` (5; auf `f785bf8` 2 rot:
+Bindung, Kurs-Herkunft; Validierungsregel und Gegenproben grün) und Browser §16
+(8; 16.2–16.7 rot auf `f785bf8`, 16.1 grün).
