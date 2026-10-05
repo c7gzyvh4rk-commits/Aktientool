@@ -2845,22 +2845,26 @@ function normalizeDecimalRateInput(x) {
 }
 
 /**
- * V1.0.83: Steuerquote (wacc_components.tax_rate) in PROZENTPUNKTEN.
- * Anders als RF/ERP/CoD fuehren Import (TE/(NI+TE) × 100), DCF-Kern,
- * ROIC-Kennzahlen, Mid-Cycle, EPV und Monte Carlo die Steuerquote in
- * Prozentpunkten (DCF_CORE_UNITS; Rechnung `1 − taxRate / 100`). Bis V1.0.82
- * schrieb „Neu berechnen“ sie ueber normalizeDecimalRateInput als Bruch
- * (21.71 ⇒ 0.2171) — jede Uebernahme der Annahmen rechnete danach mit rund
- * 0,2 % Steuern. Eingabe weiterhin „dez. oder %“ (Feldbeschriftung): 0..1 als
- * Bruch, > 1 als Prozent; Wertebereich und Warnung wie normalizeDecimalRateInput.
- * Eine Prozentangabe bleibt exakt erhalten (keine Rundtrip-Abweichung).
+ * V1.0.85: Steuerquote (wacc_components.tax_rate) in PROZENTPUNKTEN — gespeichert,
+ * angezeigt und eingegeben in derselben Einheit (Feld „Steuerquote (%)“):
+ * 0.5 = 0,5 %, 21.71 = 21,71 %. Import (TE/(NI+TE) × 100), DCF-Kern, ROIC-
+ * Kennzahlen, Mid-Cycle, EPV und Monte Carlo rechnen `1 − taxRate / 100`.
+ * V1.0.83 deutete Eingaben ≤ 1 als Bruch; da das Feld den gespeicherten Wert
+ * unveraendert in Prozent zeigt, machte schon ein unveraendertes „Neu berechnen“
+ * aus 0,5 % 50 % und aus 1 % 100 %. Die Groessenordnung entscheidet nicht mehr
+ * ueber die Einheit. Gespeicherte Werte < 1 werden NICHT umgedeutet (eine echte
+ * niedrige Quote ist von einem frueher irrtuemlich gespeicherten Bruch ohne
+ * Herkunftsnachweis nicht zu unterscheiden). Wertebereich: 0 … 100; negativ
+ * oder > 100 ⇒ nicht uebernommen (wie bisher); > 30 % ⇒ Plausibilitaetswarnung.
  */
 function normalizeTaxRatePctInput(x) {
-  const d = normalizeDecimalRateInput(x);
-  if (d.value == null) return d;
+  if (x == null || x === '' || isNaN(Number(x))) return { value: null, warning: null };
   const n = Number(x);
-  const v = n > 1 ? n : Math.round(d.value * 100 * 1e10) / 1e10;
-  return { value: v, warning: d.warning };
+  if (!isFinite(n)) return { value: null, warning: 'Steuerquote nicht endlich (' + n + ')' };
+  if (n < 0) return { value: null, warning: 'Negative Steuerquote nicht zulässig (' + n + ' %)' };
+  if (n > 100) return { value: null, warning: 'Steuerquote > 100 % unplausibel (' + n + ' %)' };
+  const warn = n > 30 ? ('Steuerquote > 30 % – plausibel? (' + n.toFixed(2) + ' %)') : null;
+  return { value: n, warning: warn };
 }
 
 /**
@@ -22702,7 +22706,7 @@ function recalcFromAssumptions() {
       if (_n.value == null) return; // unplausibel, nicht schreiben
       val = _n.value;
     } else if (f.normalize === 'pct_points') {
-      // V1.0.83: Steuerquote in Prozentpunkten (siehe normalizeTaxRatePctInput).
+      // V1.0.83/V1.0.85: Steuerquote in Prozentpunkten, Eingabe ausdruecklich in % (normalizeTaxRatePctInput).
       const _n = normalizeTaxRatePctInput(raw);
       if (_n.value == null) return; // unplausibel, nicht schreiben
       val = _n.value;
@@ -26503,8 +26507,8 @@ function renderAssumptions(keepValues) {
           <input type="number" id="as-beta" step="0.05" value="${get(['valuation','wacc_components','beta'], '') || ''}">
         </div>
         <div class="assumption-row">
-          <span class="alabel">Tax Rate (dez. oder %) ${srcBadge(getAssumptionSource(mj,'tax_rate'))}</span>
-          <input type="number" id="as-tax" step="0.5" value="${get(['valuation','wacc_components','tax_rate'], '') || ''}">
+          <span class="alabel">Steuerquote (%) ${srcBadge(getAssumptionSource(mj,'tax_rate'))}</span>
+          <input type="number" id="as-tax" step="0.01" min="0" max="100" title="in Prozent: 0.5 = 0,5 %, 21.71 = 21,71 %" value="${(() => { const _t = get(['valuation','wacc_components','tax_rate'], null); return (_t != null && isFinite(_t)) ? _t : ''; })()}">
         </div>
         <div class="assumption-row">
           <span class="alabel">Cost of Debt pre-tax (dez. oder %) ${srcBadge(getAssumptionSource(mj,'cost_of_debt_pretax'))}</span>

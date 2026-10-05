@@ -1601,3 +1601,59 @@ leer. Ebenso las der Snapshot `dataQuality.label` statt `grade`. Jetzt
 **Nachweise.** `tests/display-current-state.test.mjs` (8; auf `f785bf8` 5 rot,
 Validierungsregel und Gegenproben grün) und Browser §16 (9; 16.2–16.8 rot auf
 `f785bf8`, 16.1 grün).
+
+### 13.22 · Steuerquote eindeutig in Prozent; Kontrolle gegen aktuelle Erfassung (V1.0.85)
+
+**Ausgangsstand.** main `beb041f0d57e89b95ae0ce3ec71a4def2f851ca2` (Merge PR #11,
+Bericht der Praxisabnahme CRH); Branch `claude/tax-pct-and-current-capture`.
+Zwei Befunde des Nachreviews.
+
+**Befund 1 · Ursache (Eingabeverarbeitung).** V1.0.83 (§13.20) liess `as-tax`
+„dez. oder %“ zu: Werte 0..1 wurden × 100 genommen. Das Feld zeigt aber den
+gespeicherten Wert in Prozentpunkten. Damit war die Einheit eine Frage der
+Größenordnung: gespeichert 0,5 % ⇒ Feld „0.5“ ⇒ „Neu berechnen“ ⇒ 50 %; 1 % ⇒
+100 % (Kern: NOPAT 0, DCF nicht bestimmbar). Reproduziert auf `beb041f` über
+Import in der Oberfläche und Klick auf „Neu berechnen“ (Werte im Bericht §7.3).
+
+**Korrektur.** `normalizeTaxRatePctInput` nimmt die Eingabe ausdrücklich als
+Prozent (0 ≤ x ≤ 100, sonst nicht übernommen; Warnung > 30 %). Feld
+„Steuerquote (%)“ mit Hinweis „0.5 = 0,5 %“; der Wert 0 wird angezeigt (vorher
+leer wegen `|| ''`). Keine Umdeutung gespeicherter Werte unter 1 — das
+entspricht der Kernregel „nicht still umrechnen“ (`DCF_CORE_UNITS`,
+`unitWarnings`). RF/ERP/CoD unverändert (Brüche).
+
+**Bewusst nicht geändert.** Die WACC-Komponentenableitung
+(`applyDerivedFieldsV4`, `deriveCostOfCapital`, `validateMasterJson`) rechnet
+weiter `tr > 1 ? tr : tr × 100`. Die In-File-Fixtures führen `tax_rate` dort als
+Bruch; eine Umstellung ließ 6 Rechenprüfungen rot werden (T-BRL1b, GT-3,
+Chat9 P75), und der Auftrag schloss die übrigen WACC-Einheiten aus. Folge: Bei
+einer echten Steuerquote von 0–1 % weicht der abgeleitete WACC vom Kern ab.
+
+**Geänderte Grenze gegenüber §13.20.** Ein Altzustand oder Master-JSON mit
+`tax_rate` < 1 als Bruch (z. B. 0.21) wird nicht mehr beim „Neu berechnen“ in
+Prozentpunkte überführt, sondern als 0,21 % angezeigt und gerechnet; der Kern
+meldet ihn als `unitWarnings`. Korrektur durch Eingabe in Prozent.
+
+**Befund 2 · Ursache (Auditwerkzeug).** `tests/real-data/valuation-control.mjs`
+verglich sechs Ergebnisse (Altman Z″, Piotroski, g₁, Sicherheitsabschlag,
+Einstiegs- und tiefer Prüfpreis) mit `valuationControl.engineObserved`, einer
+historischen Beobachtung. Eine Engine-Änderung konnte diese Zeilen nicht rot
+machen.
+
+**Korrektur.** `replay-import.mjs` erfasst die sechs Werte aus dem bewerteten
+Zustand (`fy.valuationResults`, mit Eingaben) und schreibt Produktdatei-SHA-256
+und `productFileChanged` in den Bericht. `valuation-control.mjs` ist ein Modul
+(`computeControl`, `checkCapture`, `compareCapture`); Istseite nur die aktuelle
+Erfassung, Erfassungsprüfung (Ticker, Import, kein Selbsttest, Commit, Hash,
+keine lokale Änderung, Datenbasis, Kurs/WACC/CoE/g_T), fehlender Wert = fehlender
+Nachweis. `engineObserved` bleibt als historischer Beleg, wird nicht verglichen.
+Toleranzen unverändert.
+
+**Nachweise.** `tests/tax-rate-unit.test.mjs` 8 (Test 2 der V1.0.83-Fassung
+erwartete „0.2171 ⇒ 21.71“, also das Fehlverhalten, und ist ersetzt; neu 3b, 3c;
+auf `beb041f` 3 rot, Gegenproben 1, 3, 4, 5, 6 grün). Browser §15.4/§15.5 auf die
+Prozenteinheit umgestellt, §17 neu (24 Prüfungen: 0 %, 0,5 %, 1 %, 21,71 %, 35 %;
+Kursänderung; bewusste Änderung; unzulässige Eingaben; Export und Wiederimport);
+auf `beb041f` 267/281, 14 rot. `tests/real-data/valuation-control.test.mjs` 9 auf
+einer Teilmenge eines echten CRH-Laufs; das Werkzeug von `beb041f` meldete auf
+demselben Bericht mit sechs verfälschten bzw. ohne erfasste Werte jeweils 26/26.

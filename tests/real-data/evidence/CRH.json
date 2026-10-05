@@ -1510,6 +1510,11 @@
       "reverseGrowthPp": 0.05,
       "entryPrice": 0.01
     },
+    "expectedCapture": {
+      "dataBasis": "fy",
+      "note": "Die Ist-Seite stammt seit V1.0.85 ausschliesslich aus der aktuellen Replay-Erfassung (out/<T>-report.json, fy.valuationResults). Erwartet: Ticker CRH, Datenbasis fy (angefordert und verwendet), Kurs/WACC/CoE/g_T = assumptions, Produktdatei ohne lokale Aenderung."
+    },
+    "engineObservedNote": "Nur historischer Beleg einer frueheren Beobachtung (Praxisabnahme auf b3f0c1e). Wird von valuation-control.mjs NICHT verglichen und nie als Ersatz fuer einen fehlenden aktuellen Wert verwendet.",
     "engineObserved": {
       "source": "Browser-Zustand nach produktivem Import und Kurseingabe 81.96 ueber den Annahmen-Reiter (state.quality.scores.altman/piotroski, state.synthesis.safetyDiscount/buyPrice/deepValuePrice, state.masterJson.valuation.growth_stage1); nicht Teil des Replay-Berichts. Erfasst auf Produktstand b3f0c1e8e4150816d756a07d49d64a04b6c9be1e (identisch auf f785bf8).",
       "altmanZ": 3.55537742003716,

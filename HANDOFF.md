@@ -1,19 +1,51 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Nachreview der Praxisabnahme: Steuerquote in Prozent, Kontrolle gegen aktuelle Erfassung (V1.0.85)
+
+Ausgangsstand main `beb041f0d57e89b95ae0ce3ec71a4def2f851ca2` (PR #11); Details
+AUDIT **§13.22** und `AUDIT-PRAXISABNAHME-CRH.md` §7.3/§7.4.
+*Befund 1:* Das Feld „Steuerquote“ zeigte Prozent, `normalizeTaxRatePctInput`
+deutete Werte ≤ 1 als Bruch: unverändertes „Neu berechnen“ machte aus 0,5 %
+50 % (DCF 36.94 ⇒ −1.76) und aus 1 % 100 %. *Korrektur:* Eingabe ausdrücklich
+Prozent („Steuerquote (%)“, 0.5 = 0,5 %), keine Deutung nach Größenordnung,
+keine Umdeutung gespeicherter Werte < 1; 0 wird angezeigt. RF/ERP/CoD und die
+WACC-Komponentenableitung unverändert (Grenze: Bericht §9.10).
+*Befund 2:* `valuation-control.mjs` verglich Z″, Piotroski, g₁, MoS, Einstiegs-
+und tiefen Prüfpreis mit historischem `engineObserved`. *Korrektur:* Replay
+erfasst sie aus dem bewerteten Zustand (`fy.valuationResults`, dazu
+Produktdatei-SHA-256 und Änderungsstatus); das Werkzeug vergleicht nur dagegen,
+prüft die Erfassung (Ticker, Basis, Kurs/WACC/CoE/g_T, Commit, Hash) und wertet
+Fehlendes als fehlenden Nachweis. Toleranzen unverändert.
+*Tests:* `tax-rate-unit` 8 (Test 2 ersetzt, 3b/3c neu; 3 rot auf `beb041f`),
+Browser §15.4/15.5 angepasst und §17 neu (+24; 14 rot auf `beb041f`),
+`valuation-control.test.mjs` 9 (altes Werkzeug: verfälschte oder fehlende
+Erfassung trotzdem 26/26). Node 430 → 432, Audit 38 → 47, Browser 257 → 281;
+Rechenprüfungen 1700. CRH auf `545427e` wiederholt: alle Kennwerte bitgleich.
+Kein Deployment.
+
+---
+
 ## Praxisabnahme mit vollständigem Realdatenfall: CRH plc FY2025 (Bericht)
 
 Bericht: `AUDIT-PRAXISABNAHME-CRH.md`. Ausgangsstand main `a52897b` (PR #8);
 während der Abnahme integriert: PR #9 (V1.0.83, Steuerquote bei „Neu berechnen“:
-DCF 91.68 ⇒ 124.09 ohne Änderung) und PR #10 (V1.0.84, Anzeige/Export).
-Endstand **`b3f0c1e`**, alle Prüfungen dort wiederholt. *Urteil:* **FY im
-genannten Umfang abgenommen** (Import → FY → DCF/RIM → Synthese → MoS 35.2 % →
-Einstieg 51.08 → Anzeige → Export → Wiederimport; unabhängige Kontrolle 26/26,
-Belege 100/100, Kontrollposten 39/39, Anzeige ↔ Engine 58/58). **TTM nicht
-abgenommen** (korrekter FY-Rückfall: CapEx-Tagwechsel, Q4-D&A, Q4-Aktien).
-**Nutzertest im eigenen Browser offen** (nur Chromium 141 headless geprüft;
-Anleitung im Bericht §8). CL und LMT: DCF berechtigt gesperrt (Schuldenumfang),
-dokumentiert. Neu: `evidence/CRH.json`, `tests/real-data/valuation-control.mjs`.
-Folgeaufträge: Bericht §9. Kein Deployment.
+DCF 91.68 ⇒ 124.09 ohne Änderung) und PR #10 (V1.0.84, Anzeige/Export); nach
+dem Nachreview V1.0.85 (oben). Aktueller Prüfstand **`545427e`**, alle
+CRH-Prüfungen dort wiederholt. *Status, getrennt:*
+* **FY:** Ablauf und Rechenkonsistenz geprüft, unter den ausgewiesenen Annahmen
+  (WACC/CoE/g₁/g_T heuristisch) und Vereinfachungen (Import → FY → DCF/RIM →
+  Synthese → MoS 35.2 % → Einstieg 51.08 → Anzeige → Export → Wiederimport;
+  unabhängige Kontrolle 26/26 gegen die aktuelle Erfassung, Belege 100/100,
+  Kontrollposten 39/39, Anzeige ↔ Engine 58/58).
+* **TTM:** nicht abgenommen (korrekter FY-Rückfall: CapEx-Tagwechsel, Q4-D&A,
+  Q4-Aktien).
+* **Nutzerbrowser:** offen (nur Chromium 141 headless geprüft; Anleitung im
+  Bericht §8 mit Auditdatenstand und Live-Import getrennt).
+* **Kursabhängige Ergebnisse:** nur unter der unbestätigten Kursannahme 81.96 USD.
+* **Minderheiten, Beteiligungen, Brückenvereinfachungen:** abgegrenzt (§9.5).
+
+CL und LMT: DCF berechtigt gesperrt (Schuldenumfang), dokumentiert.
+Folgeaufträge und Grenzen: Bericht §9. Keine Produktfreigabe. Kein Deployment.
 
 ---
 

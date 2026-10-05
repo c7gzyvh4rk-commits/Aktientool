@@ -202,23 +202,47 @@ Skripte, die nicht zu `npm test` gehören.
    (TTM angefordert, FY verwendet, Rückfall ausgewiesen, Fundamentaldaten
    unverändert). Die Kontrollwerte sind Auditbelege, kein Produktcode.
 
-7. **Unabhängige Bewertungskontrolle (Praxisabnahme CRH, Produktstand ab V1.0.84)** — nach Schritt 1,
-   den Originalberichten und dem Replay **mit** `--price`, ohne Netz und ohne Browser:
+7. **Unabhängige Bewertungskontrolle (Praxisabnahme CRH, Produktstand ab V1.0.85)** — nach Schritt 1,
+   den Originalberichten und dem Replay **mit** `--price` auf einem **committeten**
+   Produktstand, ohne Netz und ohne Browser:
 
    ```sh
+   node tests/real-data/replay-import.mjs CRH --price 81.96
    node tests/real-data/valuation-control.mjs CRH [--md tabelle.md]
    ```
 
-   Rechnet DCF (FCFF, 10 Jahre, Gordon), Szenarien, RIM, Synthese,
+   **Sollseite.** Rechnet DCF (FCFF, 10 Jahre, Gordon), Szenarien, RIM, Synthese,
    Sicherheitsabschlag, Einstiegspreis, Reverse DCF (Bisektion), Altman Z″,
    Piotroski und Net Debt/EBITDA **ohne Produktcode** nach — nur aus den gegen
    das Original geprüften Belegen (`evidence/<T>.json`) und den dort unter
    `valuationControl` ausdrücklich ausgewiesenen Annahmen (WACC/CoE/g_T
-   heuristisch, Kurs als Annahme, Regelparameter). Verglichen wird mit der
-   Replay-Erfassung (`out/<T>-report.json`) gegen die im Beleg festgelegten
-   Toleranzen; Werte, die der Replay-Bericht nicht erfasst (Z″, Piotroski, MoS,
-   Einstiegspreis), stehen mit Herkunft unter `valuationControl.engineObserved`.
-   Exit 0 = alle Vergleiche in Toleranz · 1 = Abweichung · 2 = nicht ausführbar.
+   heuristisch, Kurs als Annahme, Regelparameter). Kein Engine-Wert fließt ein.
+
+   **Istseite.** Ausschließlich die **aktuelle** Replay-Erfassung
+   (`out/<T>-report.json`). Die sechs Ergebnisse Altman Z″, Piotroski, g₁,
+   Sicherheitsabschlag, Einstiegs- und tiefer Prüfpreis erfasst der Replay seit
+   V1.0.85 aus dem bewerteten Zustand (`fy.valuationResults`, mit Kurs,
+   Steuerquote, WACC, CoE, g_T, Datenbasis, Urteil, Position). Der Bericht
+   enthält außerdem Produkt-Commit, SHA-256 der Produktdatei und
+   `productFileChanged`.
+
+   **Passt die Erfassung?** Geprüft werden Ticker, Import, kein Selbsttest,
+   Commit (40 hex) und Hash (64 hex) vorhanden, Produktdatei **ohne** lokale
+   Änderung, Datenbasis angefordert und verwendet = `expectedCapture.dataBasis`
+   (Default `fy`), Kurs/WACC/CoE/g_T = Annahmen. Sonst „UNPASSENDE ERFASSUNG“.
+   Ein fehlender oder nicht endlicher Wert ist „FEHLENDER NACHWEIS“ — keine
+   Ersatznull und kein Rückfall auf ältere Zahlen.
+   `valuationControl.engineObserved` ist nur ein **historischer** Beleg (Beobachtung
+   auf `b3f0c1e`) und wird nie verglichen.
+   Toleranzen aus `valuationControl.tolerances` (unverändert).
+   Exit 0 = alle Vergleiche in Toleranz und Erfassung passend · 1 = Abweichung,
+   fehlender oder unpassender Nachweis · 2 = nicht ausführbar.
+
+   Die Vergleichslogik testet `valuation-control.test.mjs` (Teil von
+   `npm run test:audit-tool`) auf einer Teilmenge eines echten Laufs
+   (`fixtures/valuation-control-capture.json`). Nach einem neuen Replay auf einem
+   neuen Produktstand erneuern mit
+   `node tests/real-data/fixtures/make-valuation-control-capture.mjs CRH`.
    Bericht: `AUDIT-PRAXISABNAHME-CRH.md`.
 
 **Original-XBRL (seit D2).** Company Facts enthält keine Berichtspräzision. Der

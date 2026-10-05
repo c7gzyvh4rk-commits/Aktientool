@@ -312,6 +312,27 @@ const CAPTURE_JS = `(() => {
   // D3-3: Einordnung der Synthese (Sperre und Grund) fuer den Abgleich der Uebersicht.
   const syn0 = state.synthesis || null;
   out.synthesis = syn0 ? { position: syn0.position || null, status: syn0.status || null, blockReason: syn0.blockReason || null } : null;
+  // Praxisabnahme (V1.0.85): Ergebnisse, die valuation-control.mjs mit der
+  // unabhaengigen Rechnung vergleicht, unmittelbar aus dem bewerteten Zustand
+  // DIESES Schritts — nicht aus einer frueheren Beobachtung. Fehlt ein Wert,
+  // bleibt er null (keine Ersatzzahl); dazu die relevanten Eingaben.
+  {
+    const num = (x) => (typeof x === 'number' && isFinite(x)) ? x : null;
+    const sc = (q && q.scores) || {}, val = mj.valuation || {}, wc = val.wacc_components || {};
+    const sd = (syn0 && syn0.safetyDiscount) || {};
+    out.valuationResults = {
+      altmanZ: num(sc.altman && sc.altman.value),
+      piotroski: num(sc.piotroski && sc.piotroski.value),
+      g1: num(val.growth_stage1),
+      mosTotal: num(sd.total),
+      entryPrice: num(syn0 && syn0.buyPrice),
+      deepValuePrice: num(syn0 && syn0.deepValuePrice),
+      inputs: { price: num(mj.market && mj.market.price), taxRatePct: num(wc.tax_rate), wacc: num(val.wacc_derived),
+        coe: num(val.cost_of_equity_derived), growthTerminal: num(val.growth_terminal),
+        dataBasisSelected: rep ? rep.selected : null, dataBasisRequested: rep ? rep.requested : null,
+        verdict: (q && q.verdict) || null, synthesisPosition: (syn0 && syn0.position) || null }
+    };
+  }
   Object.assign(out, { router: v.router || null, reverseDcf: { status: v._reverseDcfStatus, reason: v._reverseDcfStatusReason,
       impliedGrowth: v.reverseDcfImpliedGrowth != null ? v.reverseDcfImpliedGrowth : null },
     gates, models, multiples: rm ? rm.models : null, range: state.synthesis && state.synthesis.range,
@@ -514,7 +535,12 @@ async function main() {
 
   let commit = 'unbekannt', dirty = 'unbekannt';
   try { commit = execSync('git rev-parse HEAD', { cwd: ROOT }).toString().trim(); dirty = execSync('git status --porcelain', { cwd: ROOT }).toString().trim() ? 'ja' : 'nein'; } catch { }
-  const report = { ticker: o.ticker, commit, localChanges: dirty, browser: b.version.product, dataDir, selftest: o.selftest,
+  // Produktdatei selbst: Hash und ob sie vom Commit abweicht (unabhaengig von
+  // Aenderungen an Test-/Auditdateien im Arbeitsbaum).
+  let productSha256 = null, productFileChanged = 'unbekannt';
+  try { productSha256 = createHash('sha256').update(readFileSync(APP)).digest('hex'); } catch { }
+  try { productFileChanged = execSync('git status --porcelain -- ' + JSON.stringify(APP), { cwd: ROOT }).toString().trim() ? 'ja' : 'nein'; } catch { }
+  const report = { ticker: o.ticker, commit, localChanges: dirty, productSha256, productFileChanged, browser: b.version.product, dataDir, selftest: o.selftest,
     priceAssumption: o.price, runAt: new Date().toISOString() };
   let exit = 0;
   try {
