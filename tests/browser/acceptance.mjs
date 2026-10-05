@@ -886,16 +886,20 @@ async function main() {
         const waccCard = `Array.from(document.querySelectorAll('#assumptions-output .card-title')).find(e => /WACC-Komponenten/.test(e.textContent))`;
         const openWacc = async () => { if (await ev(`${waccCard}.parentElement.classList.contains('collapsed')`)) await click(waccCard, 'Karte WACC-Komponenten'); };
         await openWacc();
-        await typeInto(`document.getElementById('as-tax')`, '0.3', 'Steuerquote');
-        await recalc();
-        const s3 = await ev(st);
-        check('15.4 Eingabe als Bruch 0.3 ⇒ 30 Prozentpunkte, als manuell gefuehrt, DCF sinkt',
-          s3.tax === 30 && s3.core === 30 && s3.manual && s3.dcf != null && s3.dcf < s0.dcf, JSON.stringify(s3));
-        await openWacc();
+        // V1.0.85: Das Feld ist ausdruecklich Prozent. Bis V1.0.84 erwartete 15.4
+        // „0.3 ⇒ 30 %“ — genau die Deutung nach Groessenordnung, die aus einer
+        // angezeigten 0,5 % bei „Neu berechnen“ 50 % machte (Befund Nachreview).
         await typeInto(`document.getElementById('as-tax')`, '30', 'Steuerquote');
         await recalc();
+        const s3 = await ev(st);
+        check('15.4 Eingabe 30 ⇒ 30 %, als manuell gefuehrt, DCF sinkt',
+          s3.tax === 30 && s3.core === 30 && s3.manual && s3.dcf != null && s3.dcf < s0.dcf, JSON.stringify(s3));
+        await openWacc();
+        await typeInto(`document.getElementById('as-tax')`, '0.3', 'Steuerquote');
+        await recalc();
         const s4 = await ev(st);
-        check('15.5 Eingabe als Prozent 30 ⇒ identisch mit 0.3', s4.tax === 30 && s4.dcf === s3.dcf, JSON.stringify([s3, s4]));
+        check('15.5 Eingabe 0.3 ⇒ 0,3 % (kein Bruch), DCF hoeher als bei 30 %',
+          s4.tax === 0.3 && s4.core === 0.3 && s4.dcf != null && s4.dcf > s3.dcf, JSON.stringify([s3, s4]));
       }
     }
 
@@ -951,6 +955,97 @@ async function main() {
           qv == null ? !/Qualität und Kapitaleffizienz\s+\d/.test(ov2)
                      : new RegExp('Qualität und Kapitaleffizienz\\s+' + qv.toFixed(1).replace('.', ',') + ' von 10').test(ov2),
           String(qv) + ' · ' + ((ov2.match(/Qualität und Kapitaleffizienz[^\n]*\n?[^\n]*/) || [''])[0]));
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    sec('17 · Steuerquote: Anzeige ↔ Uebernahme in derselben Einheit (Prozent, V1.0.85)');
+    {
+      // Befund Nachreview: Das Feld zeigt tax_rate in Prozent; die Uebernahme
+      // deutete Werte ≤ 1 als Bruch ⇒ unveraendertes „Neu berechnen“ machte aus
+      // 0,5 % 50 % (DCF 36.94 ⇒ −1.76) und aus 1 % 100 % (DCF ⇒ null). 0 % wurde
+      // als leeres Feld angezeigt.
+      const st = `({ tax: state.masterJson.valuation.wacc_components.tax_rate,
+        core: state.valuation.modelResults.dcf && state.valuation.modelResults.dcf._coreTaxRatePct,
+        dcf: state.valuation.modelResults.dcf && state.valuation.modelResults.dcf.base,
+        rim: state.valuation.modelResults.rim && state.valuation.modelResults.rim.base,
+        range: state.synthesis && state.synthesis.range ? JSON.stringify(state.synthesis.range) : null,
+        price: state.masterJson.market.price,
+        field: document.getElementById('as-tax') ? document.getElementById('as-tax').value : null })`;
+      const recalc = async () => {
+        await ev('window.__accPrevVal = state.valuation; true');
+        await click(byText('#assumptions-output button', '/^\\s*Neu berechnen\\s*$/'), 'Neu berechnen');
+        await waitFor('state.valuation !== window.__accPrevVal', 5000);
+        await sleep(150);
+      };
+      const waccCard = `Array.from(document.querySelectorAll('#assumptions-output .card-title')).find(e => /WACC-Komponenten/.test(e.textContent))`;
+      const openWacc = async () => { if (await ev(`${waccCard}.parentElement.classList.contains('collapsed')`)) await click(waccCard, 'Karte WACC-Komponenten'); };
+      const withTax = (t) => { const m = FX.corePeriodMj('valid'); m.valuation = Object.assign({}, m.valuation,
+        { wacc_components: Object.assign({}, m.valuation.wacc_components, { tax_rate: t }) }); return m; };
+      for (const t of [0, 0.5, 1, 21.71, 35]) {
+        const status = await importViaUi(withTax(t));
+        if (!check(`17.${t} Import mit Steuerquote ${t} %`, /Import OK/.test(status), status)) continue;
+        await tab('assumptions');
+        const a = await ev(st);
+        const label = await ev(`(() => { const el = document.getElementById('as-tax'); const r = el && el.closest('.assumption-row, label, div'); return r ? r.innerText : ''; })()`);
+        check(`17.${t} Feld zeigt ${t} in Prozent (auch 0), Beschriftung „Steuerquote (%)“`,
+          a.tax === t && a.core === t && a.field === String(t) && /Steuerquote \(%\)/i.test(label), JSON.stringify(a) + ' · ' + label.slice(0, 80));
+        await recalc();
+        const b = await ev(st);
+        await recalc();
+        const c = await ev(st);
+        check(`17.${t} zweimal „Neu berechnen“ ohne Aenderung: Steuerquote und DCF stabil`,
+          b.tax === t && c.tax === t && b.core === t && c.core === t && b.dcf === a.dcf && c.dcf === a.dcf && c.field === String(t),
+          JSON.stringify([a, b, c]));
+      }
+      // Nur der Kurs aendert sich: Steuerquote und kursunabhaengige Modellwerte stabil.
+      const status = await importViaUi(withTax(0.5));
+      if (check('17.K Import (0,5 %) fuer Kurs-/Steuer-/Exportpruefung', /Import OK/.test(status), status)) {
+        await tab('assumptions');
+        const a = await ev(st);
+        await typeInto(`document.getElementById('as-price')`, String(Math.round((a.price || 20) * 1.37 * 100) / 100), 'Kurs');
+        await recalc();
+        const b = await ev(st);
+        check('17.K nur Kurs geaendert: Steuerquote 0,5 %, DCF, RIM und Szenariospanne unveraendert',
+          b.price !== a.price && b.tax === 0.5 && b.core === 0.5 && b.dcf === a.dcf && b.rim === a.rim && b.range === a.range,
+          JSON.stringify([a, b]));
+        // Bewusste Aenderung der Steuerquote.
+        await openWacc();
+        await typeInto(`document.getElementById('as-tax')`, '12.5', 'Steuerquote');
+        await recalc();
+        const c = await ev(st);
+        check('17.E Eingabe 12.5 ⇒ 12,5 % in Zustand, Kern und Feld; DCF niedriger als bei 0,5 %',
+          c.tax === 12.5 && c.core === 12.5 && c.field === '12.5' && c.dcf < b.dcf, JSON.stringify([b, c]));
+        // Unzulaessige und leere Eingaben nach den bestehenden Regeln: nicht uebernommen.
+        for (const bad of ['-1', '150', '']) {
+          await openWacc();
+          await typeInto(`document.getElementById('as-tax')`, bad, 'Steuerquote');
+          await recalc();
+          const d = await ev(st);
+          check(`17.U Eingabe „${bad}“ wird nicht uebernommen (12,5 % bleibt)`, d.tax === 12.5 && d.core === 12.5 && d.dcf === c.dcf, JSON.stringify(d));
+        }
+        // Export und Wiederimport: Einheit und Wert bleiben erhalten.
+        await openWacc();
+        await typeInto(`document.getElementById('as-tax')`, '0.5', 'Steuerquote');
+        await recalc();
+        const e = await ev(st);
+        await openSettings();
+        await click(byText('#settings-card button', '/JSON herunterladen/'), 'JSON herunterladen');
+        const file = await waitDownload('_master.json');
+        let exported = null;
+        try { exported = JSON.parse(readFileSync(file, 'utf8')); } catch { /* unten geprueft */ }
+        const exTax = exported && exported.valuation && exported.valuation.wacc_components && exported.valuation.wacc_components.tax_rate;
+        check('17.X Export: tax_rate 0.5 (Prozentpunkte) im Master-JSON', e.tax === 0.5 && exTax === 0.5, String(exTax));
+        if (exported) {
+          const st2 = await importViaUi(exported);
+          await tab('assumptions');
+          const f = await ev(st);
+          check('17.X Wiederimport: 0,5 % in Zustand, Kern und Feld, DCF identisch',
+            /Import OK/.test(st2) && f.tax === 0.5 && f.core === 0.5 && f.field === '0.5' && f.dcf === e.dcf, JSON.stringify([e, f]) + ' ' + st2);
+          await recalc();
+          const g2 = await ev(st);
+          check('17.X nach Wiederimport „Neu berechnen“: weiterhin 0,5 %', g2.tax === 0.5 && g2.dcf === e.dcf, JSON.stringify(g2));
+        }
       }
     }
 

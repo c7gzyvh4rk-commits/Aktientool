@@ -9,6 +9,7 @@
 // DCF 91.68 je Aktie nach dem Import, 124.09 nach „Neu berechnen“ ohne jede
 // Aenderung (Kern rechnet mit 0,2171 % Steuern); tax_rate zudem als „manuell“
 // markiert. Der Browser-Ablauf steht in tests/browser/acceptance.mjs §15.
+// V1.0.85: Einheit eindeutig Prozent (Tests 2, 3, 3b, 3c); Browser §17.
 // ─────────────────────────────────────────────────────────────────────────────
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -23,18 +24,42 @@ test('1 · Prozentangabe bleibt exakt erhalten (kein Bruch, keine Rundtrip-Abwei
   }
 });
 
-test('2 · Bruchangabe (dez.) wird in Prozentpunkte umgerechnet', () => {
-  assert.equal(S.normalizeTaxRatePctInput(0.2171).value, 21.71);
-  assert.equal(S.normalizeTaxRatePctInput(0.25).value, 25);
-  assert.equal(S.normalizeTaxRatePctInput(0.21).value, 21);
-  assert.equal(S.normalizeTaxRatePctInput(0).value, 0);
+// V1.0.85: Das Feld zeigt den gespeicherten Wert in Prozent; die Eingabe ist
+// ausdruecklich Prozent. V1.0.83 deutete Werte ≤ 1 als Bruch, sodass ein
+// unveraendertes „Neu berechnen“ aus 0,5 % 50 % und aus 1 % 100 % machte.
+// Die bisherige Erwartung „0.2171 ⇒ 21.71“ schrieb genau diesen Fehler fest und
+// ist bewusst ersetzt.
+test('2 · Prozent bleibt Prozent — auch fuer Werte ≤ 1 (keine Deutung nach Groessenordnung)', () => {
+  for (const x of [0, 0.5, 1, 0.2171, 21.71, 35, 100]) {
+    assert.equal(S.normalizeTaxRatePctInput(x).value, x, String(x));
+    assert.equal(S.normalizeTaxRatePctInput(String(x)).value, x, 'Text ' + x);
+  }
 });
 
-test('3 · Wertebereich wie bei den uebrigen Raten: negativ und > 100 unzulaessig', () => {
-  assert.equal(S.normalizeTaxRatePctInput(-0.01).value, null);
-  assert.equal(S.normalizeTaxRatePctInput(150).value, null);
-  assert.equal(S.normalizeTaxRatePctInput('').value, null);
-  assert.equal(S.normalizeTaxRatePctInput('abc').value, null);
+test('3 · Wertebereich: negativ, > 100, leer, nicht numerisch, unendlich ⇒ nicht uebernommen', () => {
+  for (const x of [-0.01, -5, 100.01, 150, '', 'abc', null, undefined, Infinity, -Infinity, NaN]) {
+    assert.equal(S.normalizeTaxRatePctInput(x).value, null, String(x));
+  }
+  assert.match(S.normalizeTaxRatePctInput(-1).warning, /Negative/);
+  assert.match(S.normalizeTaxRatePctInput(150).warning, /> 100 %/);
+  assert.equal(S.normalizeTaxRatePctInput(21.71).warning, null);
+  assert.match(S.normalizeTaxRatePctInput(35).warning, /> 30 %/);
+});
+
+test('3b · Rundlauf Anzeige → Uebernahme: der angezeigte Wert ergibt denselben gespeicherten Wert', () => {
+  for (const stored of [0, 0.5, 1, 21.71, 35]) {
+    const shown = String(stored);                 // Feld as-tax zeigt den gespeicherten Wert unveraendert
+    const again = S.normalizeTaxRatePctInput(parseFloat(shown)).value;
+    assert.equal(again, stored, String(stored));
+    assert.equal(S.normalizeTaxRatePctInput(String(again)).value, stored, 'zweiter Lauf ' + stored);
+  }
+});
+
+test('3c · Feld as-tax: Beschriftung in %, Wert 0 wird angezeigt (keine leere Nullanzeige)', () => {
+  const src = S.renderAssumptions.toString();
+  assert.match(src, /Steuerquote \(%\)/);
+  assert.doesNotMatch(src, /Tax Rate \(dez\. oder %\)/);
+  assert.doesNotMatch(src, /'tax_rate'\], ''\) \|\| ''/);
 });
 
 test('4 · RF/ERP/CoD bleiben Brueche (Gegenprobe, unveraendert)', () => {
