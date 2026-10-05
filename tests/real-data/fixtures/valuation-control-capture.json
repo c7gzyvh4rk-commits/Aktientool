@@ -1,0 +1,72 @@
+{
+ "_note": "Teilmenge eines echten Replay-Berichts (CRH, Lauf 2026-10-05T14:40:27.787Z), erzeugt mit make-valuation-control-capture.mjs. Nur fuer valuation-control.test.mjs.",
+ "ticker": "CRH",
+ "commit": "545427e9105db7e748a2f2eaa2986cf9a19ff265",
+ "productSha256": "a49d96b793d6cb35aba36b46107a429720a2c50f106c3b3f0d11aa7c81792bed",
+ "productFileChanged": "nein",
+ "imported": true,
+ "selftest": false,
+ "priceAssumption": 81.96,
+ "runAt": "2026-10-05T14:40:27.787Z",
+ "fy": {
+  "basis": {
+   "requested": "fy",
+   "selected": "fy"
+  },
+  "modelInputs": {
+   "dcf": {
+    "_coreTaxRatePct": 21.71,
+    "_coreOpMarginPctUsed": 14.527198440462522,
+    "_coreCapexIntensityPct": 5.3208244881188795,
+    "_coreDaRatioPct": 5.054537276509614,
+    "_owcPctOfRevenue": 8.023522655861662,
+    "_netDebtM": 14091,
+    "_sharesUsedM": 677,
+    "_operatingValuePerShareBase": 112.49434148392241,
+    "conservative": 48.70796388536375,
+    "base": 91.68045669810262,
+    "optimistic": 152.10501660096259,
+    "_buybackUpliftPct": 38.71253711881422
+   },
+   "rim": {
+    "conservative": 30.37276686859859,
+    "base": 48.8377204030688,
+    "optimistic": 74.36939273432444
+   }
+  },
+  "range": {
+   "conservative": 43.2074047803342,
+   "base": 78.82763580959246,
+   "optimistic": 128.78432944097113
+  },
+  "reverseDcf": {
+   "impliedGrowth": 3.564849853515625
+  },
+  "quality": {
+   "descriptive": {
+    "netDebtToEbitda": {
+     "value": 1.8550552922590837
+    }
+   }
+  },
+  "valuationResults": {
+   "altmanZ": 3.55537742003716,
+   "piotroski": 6,
+   "g1": 4.81,
+   "mosTotal": 0.35199999999999987,
+   "entryPrice": 51.08030800461593,
+   "deepValuePrice": 27.998398297656568,
+   "inputs": {
+    "price": 81.96,
+    "taxRatePct": 21.71,
+    "wacc": 9,
+    "coe": 10,
+    "growthTerminal": 2.5,
+    "dataBasisSelected": "fy",
+    "dataBasisRequested": "fy",
+    "verdict": "investable_mid",
+    "synthesisPosition": "expensive"
+   }
+  }
+ }
+}

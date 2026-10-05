@@ -1,11 +1,16 @@
 # Praxisabnahme mit einem vollständigen Realdatenfall — CRH plc (FY2025)
 
-**Urteil.**
-* **FY: im genannten Umfang abgenommen.** CRH plc, Geschäftsjahr 2025 (Ende 2025-12-31), Produktstand `b3f0c1e8e4150816d756a07d49d64a04b6c9be1e`. Abgenommen ist der Ablauf: produktiver SEC-Import → FY-Daten → DCF (Base/Konservativ/Optimistisch) → RIM → Synthese → Sicherheitsabschlag → Einstiegspreis → Anzeige → Export → Wiederimport. Die Grenzen nennt §9.
-* **TTM: nicht abgenommen.** Das Fenster 2025-07-01 – 2026-06-30 wurde richtig erkannt, und die gebildeten Flussgrößen stimmen exakt. Bewertet wurde aber zu Recht mit FY (ausgewiesener Rückfall, §5). Ein FY-Rückfall ist keine TTM-Abnahme.
-* **Nutzertest im tatsächlich verwendeten Browser: offen** (§8). Geprüft wurde nur Chromium 141.0.7390.37 (headless) in dieser Umgebung.
+**Urteil** (Stand nach dem Nachreview, V1.0.85; Produktstand `545427e9105db7e748a2f2eaa2986cf9a19ff265`, Produktdatei SHA-256 `a49d96b793d6cb35aba36b46107a429720a2c50f106c3b3f0d11aa7c81792bed`). Die Bereiche sind getrennt zu lesen:
 
-Ein erfolgreicher Fall belegt diesen Ablauf für diese Daten. Er belegt weder die Zuverlässigkeit für andere Unternehmen noch allgemeine Modellgültigkeit oder Fehlerfreiheit. Kein Deployment.
+| Bereich | Status | Umfang und Vorbehalt |
+|---|---|---|
+| **FY** (CRH plc, Geschäftsjahr 2025, Ende 2025-12-31) | **Ablauf und Rechenkonsistenz geprüft — unter den ausgewiesenen Annahmen und Vereinfachungen** | Produktiver SEC-Import → FY-Daten → DCF (Base/Konservativ/Optimistisch) → RIM → Synthese → Sicherheitsabschlag → Einstiegspreis → Anzeige → Export → Wiederimport. Werte unabhängig nachgerechnet (§6) gegen die **aktuelle** Erfassung des Endstands. WACC, CoE, g₁ und g_T sind heuristisch (§6); das ist eine Konsistenz-, keine Richtigkeitsaussage über die Annahmen. |
+| **TTM** | **nicht abgenommen** | Fenster 2025-07-01 – 2026-06-30 richtig erkannt, Flussgrößen exakt; bewertet wurde zu Recht mit FY (ausgewiesener Rückfall, §5). Ein FY-Rückfall ist keine TTM-Abnahme. |
+| **Nutzertest im tatsächlich verwendeten Browser** | **offen** | Geprüft wurde nur Chromium 141.0.7390.37 (headless) in dieser Umgebung (§8). |
+| **Kursabhängige Ergebnisse** (Reverse DCF, Abstand zum Kurs, Einordnung „Beobachten/expensive“) | **nur unter der Kursannahme 81.96 USD geprüft** | Der Kurs ist nicht primär verifiziert (§3). Rechenweg geprüft, nicht der Kurs. |
+| **Minderheiten, Equity-Beteiligungen, Operating-Leasing, Aktienbasis, SBC** | **abgegrenzt, nicht abgenommen** | Vereinfachungen der Brücke und des FCFF (§9.5), ausgewiesen und unverändert. |
+
+Zusätzlich offen sind die Grenzen in §9 (u. a. Steuerquote-Altzustände und WACC-Ableitung, §9.9–9.10). Ein erfolgreicher Fall belegt diesen Ablauf für diese Daten. Er belegt weder die Zuverlässigkeit für andere Unternehmen noch allgemeine Modellgültigkeit oder Fehlerfreiheit; eine vollständige Produktfreigabe ist damit nicht verbunden. Kein Deployment.
 
 ---
 
@@ -22,6 +27,7 @@ Ein erfolgreicher Fall belegt diesen Ablauf für diese Daten. Er belegt weder di
 * Während der Abnahme wurden zwei Korrektur-PRs integriert (§7). Endgültiger Produktstand: `b3f0c1e`.
   * Produktdatei SHA-256 `3618c750e21f68e9a4ccf83912c5ba5089363a7e6f68f7a8acc04adca6b437cc`.
   * Alle Realdaten-, Anzeige- und Exportprüfungen in diesem Bericht wurden **auf `b3f0c1e` wiederholt**.
+* **Nachreview (V1.0.85).** Referenz main `beb041f0d57e89b95ae0ce3ec71a4def2f851ca2` (Merge PR #11, dieser Bericht). Das Nachreview fand zwei konkrete Befunde (§7.3, §7.4). Behoben auf Branch `claude/tax-pct-and-current-capture` (eigener Worktree, Hauptcheckout unverändert); Produktstand danach `545427e`, Produktdatei SHA-256 `a49d96b7…2bed`. **Alle CRH-Prüfungen wurden auf diesem Stand wiederholt** (§10), mit demselben Datenstichtag 2026-10-05, demselben Cache (Quell-Hashes §3) und denselben Annahmen. Abweichungen gegenüber `b3f0c1e`: keine in den Bewertungswerten (alle Kennwerte bitgleich, §8); die Zählung der Testläufe ändert sich (§10).
 
 ## 2 · Fallauswahl (vor der Ergebnisprüfung)
 
@@ -80,7 +86,7 @@ Die CL- und LMT-Sperren sind berechtigt und bleiben als Sperrfälle dokumentiert
 **Manuelle Eingabe.** Einzige manuelle Eingabe ist der **Kurs 81.96 USD**: NYSE-Schlusskurs vom 2026-10-02 laut Websuche, ohne Split im Betrachtungszeitraum.
 * Die Primär-Kursquellen waren in dieser Umgebung per Netzrichtlinie gesperrt.
 * Die Sekundärangaben widersprechen sich teilweise (97.66 USD am 2026-08-06; undatierte LSE-Notiz).
-* Der Kurs ist deshalb eine **nicht verifizierte Annahme**. Er wirkt nur auf Reverse DCF, Abstand zum Kurs und Einordnung. Modellwerte, MoS und Einstiegspreis hängen nicht davon ab.
+* Der Kurs ist deshalb eine **nicht verifizierte Annahme**. Er wirkt nur auf Reverse DCF, Abstand zum Kurs und Einordnung. Modellwerte, MoS und Einstiegspreis hängen nicht davon ab (auf dem Endstand nachgeprüft: nur Kurs geändert ⇒ Steuerquote, DCF, RIM und Spanne unverändert, Browser §17.K). Kursabhängige Ergebnisse gelten **nur unter dieser Annahme**.
 
 **Belege.** Die Auditbelege stehen in `tests/real-data/evidence/CRH.json`: 100 Posten, jeder mit Akte, Konzept, Periode und Fundstelle. Jeder Posten wird gegen das unveränderte iXBRL geprüft.
 
@@ -136,7 +142,10 @@ Die CL- und LMT-Sperren sind berechtigt und bleiben als Sperrfälle dokumentiert
 | Gewichte, MoS-Bausteine | DCF 70 % / RIM 30 %; investable_mid 20 %, Heuristik +10 pp, Buyback +10 pp, Cap 50 % | **Regeln** des Produkts |
 | Kurs | 81.96 USD | **manuell** (§3) |
 
-**Unabhängige Kontrollrechnung.** `tests/real-data/valuation-control.mjs CRH`, ohne Produktcode, nur geprüfte Belege und die obigen Annahmen: **26/26 innerhalb der Toleranz**.
+**Unabhängige Kontrollrechnung.** `tests/real-data/valuation-control.mjs CRH`, ohne Produktcode, nur geprüfte Belege und die obigen Annahmen: **26/26 innerhalb der Toleranz, Erfassung passend** (Endstand `545427e`).
+* **Sollseite:** eigene Formeln aus den gegen das Original-iXBRL geprüften Belegen und den Annahmen; kein Produktcode, kein Engine-Wert.
+* **Istseite:** ausschließlich die **aktuelle** Replay-Erfassung desselben Laufs (`out/CRH-report.json`). Seit V1.0.85 gilt das auch für Altman Z″, Piotroski, g₁, Sicherheitsabschlag, Einstiegs- und tiefen Prüfpreis (`fy.valuationResults`, aus dem bewerteten Zustand erfasst). Bis V1.0.84 standen dort historische Werte (§7.4).
+* **Erfassung dokumentiert und geprüft:** Produkt-Commit `545427e9105db7e748a2f2eaa2986cf9a19ff265`, Produktdatei SHA-256 `a49d96b7…2bed` ohne lokale Änderung, Unternehmen CRH, Datenbasis fy (angefordert und verwendet), Kurs 81.96, Steuer 21.71 %, WACC 9, CoE 10, g_T 2.5, Urteil investable_mid, Position expensive.
 * **DCF:**
   * FCFF₁ = 4,214.8 Mio.; Umsatzbasis 37,447 × 1.0481ᵗ.
   * NOPAT = U·14.527 %·(1 − 21.71 %), + D&A-Quote, − CapEx-Quote, − OWC-Quote·ΔU.
@@ -184,11 +193,32 @@ Alle Befunde wurden minimal reproduziert, getestet (Gegenlauf rot), reviewt und 
    * „(D&amp;A)“ doppelt maskiert;
    * QCE-Score aus einem nicht existierenden Feld gelesen: Die Übersichtszeile fehlte immer, der Hinweis „Kapitaleffizienz schwach“ wurde nie ausgelöst, die CSV-Spalten waren leer.
 
+**Nachreview (V1.0.85, ein PR).**
+
+3. **Steuerquote: Anzeige und Übernahme in verschiedenen Einheiten** (Ursache in der Eingabeverarbeitung von V1.0.83).
+   * Das Feld `as-tax` zeigte den gespeicherten Wert in Prozent. `normalizeTaxRatePctInput` deutete Werte ≤ 1 aber als Bruch (× 100).
+   * Reproduziert auf `beb041f` über den echten Ablauf (Import über die Oberfläche → Annahmen → „Neu berechnen“ ohne Änderung):
+
+     | gespeichert | Feld zeigt | nach „Neu berechnen“ | DCF je Aktie |
+     |---|---|---|---|
+     | 0 % | leer | 0 | 37.334 ⇒ 37.334 |
+     | 0.5 % | 0.5 | **50** | 36.943 ⇒ **−1.758** |
+     | 1 % | 1 | **100** | 36.552 ⇒ **nicht bestimmbar** |
+     | 21.71 % / 35 % | 21.71 / 35 | unverändert | stabil |
+
+   * Korrektur: Die Eingabe ist ausdrücklich **Prozent** (Beschriftung „Steuerquote (%)“, Hinweis „0.5 = 0,5 %, 21.71 = 21,71 %“). Die Größenordnung entscheidet nicht mehr über die Einheit; gespeicherte Werte unter 1 werden nicht umgedeutet. Wertebereich 0–100 wie bisher (negativ, > 100, leer, nicht numerisch ⇒ nicht übernommen; Warnung > 30 %). Der Wert 0 wird jetzt angezeigt statt eines leeren Felds. RF, ERP und CoD bleiben Brüche.
+   * Die bisherige Node-Erwartung „0.2171 ⇒ 21.71“ schrieb das Fehlverhalten fest und wurde bewusst ersetzt; Browser §15.4/§15.5 prüfen jetzt Eingabe 30 ⇒ 30 % und 0.3 ⇒ 0.3 %.
+   * Nachweis: `tests/tax-rate-unit.test.mjs` 8/8 und Browser §17 (0 %, 0,5 %, 1 %, 21,71 %, 35 %; zweimal „Neu berechnen“ stabil; nur Kurs geändert ⇒ Steuer und kursunabhängige Werte stabil; bewusste Änderung auf 12.5 übernommen; −1, 150 und leer nicht übernommen; Export „JSON herunterladen“ und Wiederimport erhalten 0.5 %). Gegenlauf auf `beb041f`: Node 4 rot (Tests 2, 3, 3b, 3c), Gegenproben 1, 4, 5, 6 grün; Browser 267/281, 14 rot: 15.5 (0.3 ⇒ 30 %); 0 %, 0,5 % und 1 % (Anzeige bzw. Stabilität); Beschriftung bei 21,71 % und 35 % (alte Bezeichnung „Tax Rate (dez. oder %)“); 17.K, 17.E und 17.X (Ausgangswert 0,5 % wird zu 50 %). Gegenproben grün: Stabilität bei 21,71 % und 35 %, 15.4 (30 ⇒ 30 %), unzulässige Eingaben 17.U.
+4. **Kontrollwerkzeug verglich sechs Werte mit historischen Zahlen** (Ursache im Auditwerkzeug, keine Produktwirkung).
+   * `valuation-control.mjs` nahm für Altman Z″, Piotroski, g₁, Sicherheitsabschlag, Einstiegs- und tiefen Prüfpreis die Istwerte aus `evidence/CRH.json` (`engineObserved`, beobachtet auf `b3f0c1e`). Eine Änderung der Engine konnte diese Zeilen nicht rot machen.
+   * Korrektur: `replay-import.mjs` erfasst die sechs Werte jetzt aus dem bewerteten Zustand (`fy.valuationResults`, mit Kurs, Steuer, WACC, CoE, g_T, Datenbasis, Urteil und Position) und schreibt Produktdatei-SHA-256 und Änderungsstatus in den Bericht. `valuation-control.mjs` vergleicht nur noch dagegen und prüft, ob die Erfassung passt (Ticker, Import, kein Selbsttest, Commit und Hash vorhanden, Produktdatei unverändert, Datenbasis, Kurs, WACC, CoE, g_T). Ein fehlender Wert ist ein fehlender Nachweis (keine 0, kein Rückfall). `engineObserved` bleibt nur als historischer Beleg und wird ausdrücklich nicht verglichen. Toleranzen unverändert.
+   * Nachweis: `tests/real-data/valuation-control.test.mjs` 9/9 auf einer Teilmenge des echten Endstand-Laufs (`fixtures/valuation-control-capture.json`): jeder der sechs Werte knapp außerhalb der Toleranz in beide Richtungen ⇒ genau diese Zeile rot; innerhalb ⇒ grün; fehlend, `null`, `NaN` oder Text ⇒ fehlender Nachweis; 18 unpassende Metadaten ⇒ rot; historische Werte verdecken weder einen fehlenden noch einen abweichenden Wert. Gegenlauf mit dem Werkzeug von `beb041f` auf demselben Bericht: sechs Werte verfälscht ⇒ **26/26, Exit 0**; Erfassung entfernt ⇒ **26/26, Exit 0**. Neues Werkzeug: 20/26 mit sechs „ABWEICHUNG“ bzw. sechs „FEHLENDER NACHWEIS“, Exit 1.
+
 ## 8 · Anzeige, Export, Browser
 
 **Browser.** Chromium **141.0.7390.37**, headless (`/opt/pw-browsers/chromium`), 1400×1000. Es lief ohne Netz außer den lokal bedienten SEC-Antworten; die Web-Fonts wurden abgewiesen.
 
-**Abläufe auf `b3f0c1e`** (echte Klicks und Tastatureingaben):
+**Abläufe auf `b3f0c1e`, auf dem Endstand `545427e` wiederholt** (echte Klicks und Tastatureingaben):
 * „Daten abrufen“ → „Daten übernehmen & berechnen“;
 * Kurs im Reiter Annahmen eingegeben, „Neu berechnen“;
 * alle Reiter (Übersicht, Qualität, Bewertung, Wachstum, Markt-Vergleich, Annahmen, SEC-Daten);
@@ -204,21 +234,39 @@ Alle Befunde wurden minimal reproduziert, getestet (Gegenlauf rot), reviewt und 
 * Export: Unternehmen, Periode 2025-12-31, Einheiten (Mio. USD/Mio. Aktien), Annahmen (g₁, g_T, WACC, Steuer, RF/ERP), Ergebnisse (DCF, Spanne, Einstieg, MoS, Position, Urteil), Datenbasis mit Rückfallgründen und CSV mit Datennote B und QCE 8.89 stimmen mit der Anzeige überein.
 * Wiederimport: alle Kennwerte identisch (DCF, RIM, DDM, Spanne, Einstieg, Tiefpreis, MoS, Reverse DCF, Z″, Piotroski).
 
-**Nutzertest im tatsächlich verwendeten Browser: offen.** Browser und Version des Nutzers sind hier nicht belastbar bekannt; ein Chromium-Test gilt nicht als Test eines anderen Browsers. Anleitung, etwa 10 Minuten:
+**Steuerquote und kursunabhängige Werte vor und nach unverändertem „Neu berechnen“ (Endstand `545427e`, CRH).** Das Feld zeigt „21.71“ unter „Steuerquote (%)“.
 
-1. main ab `b3f0c1e` auschecken und `us-aktienbewertungstool-v1036-sector-classification-patch.html` im eigenen Browser öffnen. Datenverbindung wie gewohnt einrichten, „Yahoo“ aus.
-2. Ticker `CRH` eingeben, „Daten abrufen“, dann „Daten übernehmen & berechnen“. Erwartet: „CRH PUBLIC LTD CO importiert und berechnet“ und eine Übersicht mit dem Hinweis „Kein Kurs verfügbar“.
-3. Im Reiter **Annahmen** den Kurs 81.96 eintragen und „Neu berechnen“ wählen. Erwartet wird in der Übersicht:
-   * Einstiegszone **51,08**, Basis **78,83**, Sicherheitsabschlag **35 %**, „Beobachten“;
-   * **kein** „market.price fehlt“.
-   
-   Bei aktuellem SEC-Datenstand können spätere Filings die Werte verändern; dann den Datenstichtag beachten.
-4. Im Reiter **Bewertung**: MoS-Aufschlüsselung mit „Komposition (additiv wäre 40%)“ und DCF-Basiswert **91.68**. Im Reiter **Annahmen**: Kurs als „manuell eingegeben“, Risk-free 4.30 %, ERP 5.50 %.
-5. Datenbasis auf **TTM** stellen. Erwartet: Warnkasten „TTM war angefordert, gerechnet wurde mit dem letzten Geschäftsjahr“ mit drei Gründen, Werte unverändert. Danach zurück auf FY.
-6. „JSON herunterladen“ und Snapshot-Export auslösen, Dateien öffnen, Werte mit der Anzeige vergleichen.
-7. Konsole (F12) auf Fehler prüfen; Seitenumbrüche und abgeschnittene Texte bei der eigenen Fensterbreite ansehen.
+| Zustand | Steuer | DCF Base / kons. / opt. | RIM | Spanne | Einstieg / Tiefpreis | MoS | Z″ / Piotroski | Reverse DCF |
+|---|---|---|---|---|---|---|---|---|
+| nach Import (ohne Kurs) | 21.71 | 91.680457 / 48.707964 / 152.105017 | 48.837720 | 43.2074 / 78.8276 / 128.7843 | — / 27.998398 | 0.352 | 3.555377 / 6 | — |
+| Kurs 81.96, „Neu berechnen“ | 21.71 | gleich | gleich | gleich | 51.080308 / 27.998398 | 0.352 | gleich | 3.564850 |
+| erneut „Neu berechnen“ (2×) | 21.71 | gleich | gleich | gleich | gleich | gleich | gleich | gleich |
+| TTM angefordert / zurück FY | 21.71 | gleich | gleich | gleich | gleich | gleich | gleich | gleich |
+| Wiederimport des Exports, dann „Neu berechnen“ | 21.71 | gleich | gleich | gleich | gleich | gleich | gleich | gleich |
 
-Browser, Version und Abweichungen bitte notieren. Erst danach gilt der Nutzertest als bestanden.
+„gleich“ heißt bitgleich zur Zeile darüber. Export `CRH_master.json`: `tax_rate` 21.71, Kurs 81.96. Die Werte sind identisch mit denen auf `b3f0c1e`.
+
+**Nutzertest im tatsächlich verwendeten Browser: offen.** Browser und Version des Nutzers sind hier nicht belastbar bekannt; ein Chromium-Test gilt nicht als Test eines anderen Browsers. Es gibt zwei verschiedene Tests; nur der erste hat feste Erwartungswerte.
+
+**A · Reproduzierter Auditdatenstand (feste Erwartungswerte).** Nur so sind die Zahlen unten verbindlich, denn nur dann sind Daten und Stichtag dieselben wie in der Abnahme.
+* Voraussetzung: der Datenstand 2026-10-05 (Quell-Hashes §3), erzeugt mit `fetch-sources.mjs CRH --cutoff 2026-10-05` und `fetch-filings.mjs … --cutoff 2026-10-05`, im Browser über dieselbe lokale Bereitstellung wie im Replay. Wer das nicht einrichten kann, macht Test B.
+1. main ab `545427e` (oder dem Merge dieses Stands) auschecken und `us-aktienbewertungstool-v1036-sector-classification-patch.html` im eigenen Browser öffnen. „Yahoo“ aus.
+2. Ticker `CRH`, „Daten abrufen“, „Daten übernehmen & berechnen“. Erwartet: „CRH PUBLIC LTD CO importiert und berechnet“, Übersicht mit „Kein Kurs verfügbar“.
+3. Reiter **Annahmen**: Feld „Steuerquote (%)“ zeigt **21.71**. Kurs 81.96 eintragen, „Neu berechnen“. Erwartet in der Übersicht: Einstiegszone **51,08**, Basis **78,83**, Sicherheitsabschlag **35 %**, „Beobachten“; **kein** „market.price fehlt“.
+4. Ohne Änderung noch zweimal „Neu berechnen“: Steuerquote bleibt **21.71**, DCF-Basiswert (Reiter **Bewertung**) bleibt **91.68**, Einstiegszone **51,08**.
+5. Reiter **Bewertung**: MoS-Aufschlüsselung mit „Komposition (additiv wäre 40%)“. Reiter **Annahmen**: Kurs „manuell eingegeben“, Risk-free 4.30 %, ERP 5.50 %.
+6. Datenbasis **TTM**: Warnkasten „TTM war angefordert, gerechnet wurde mit dem letzten Geschäftsjahr“ mit drei Gründen, Werte unverändert. Zurück auf FY.
+7. „JSON herunterladen“ und Snapshot-Export; Dateien öffnen (`tax_rate` 21.71) und mit der Anzeige vergleichen. Master-JSON wieder importieren, „Neu berechnen“: Werte wie in Schritt 3.
+8. Konsole (F12) auf Fehler prüfen; Umbrüche und abgeschnittene Texte bei der eigenen Fensterbreite ansehen.
+
+**B · Aktueller Live-Import (keine festen Erwartungswerte).** Mit der normalen Datenverbindung liefert die SEC den Datenstand des Testtags. Spätere Filings (z. B. ein 10-Q Q3/2026 oder das 10-K FY2026) ändern Umsatz, Schulden, Fenster und damit alle Zahlen; die Werte aus A gelten dann **nicht**. Geprüft wird nur Verhalten:
+* Import ohne Fehler, Datenbasis und Stichtag werden angezeigt;
+* die angezeigte Steuerquote bleibt über zwei unveränderte „Neu berechnen“ gleich, der DCF-Basiswert ebenso;
+* nur der Kurs geändert ⇒ Steuerquote, DCF, RIM und Spanne unverändert;
+* Export und Wiederimport ergeben dieselben Werte wie die Anzeige;
+* keine „undefined“, „NaN“ oder veralteten Sperrhinweise, Konsole ohne Fehler.
+
+Browser, Version, Test (A oder B), Datum und Abweichungen bitte notieren. Erst danach gilt der Nutzertest als bestanden.
 
 ## 9 · Verbleibende Grenzen und Folgeaufträge (nicht behoben)
 
@@ -248,21 +296,26 @@ Browser, Version und Abweichungen bitte notieren. Erst danach gilt der Nutzertes
    * ungerundete Growth-Szenariofelder;
    * veralteter Text `_owcDefinition` (Rechnung korrekt);
    * Snapshot-Felder `*_ttm` mit FY-Werten (daneben korrekt `latest_fy_*`, `data_basis`).
-9. **Alt-Zustände.** Vor V1.0.83 gespeicherte Zustände mit `tax_rate` < 1 rechnen bis zum nächsten „Neu berechnen“ falsch (AUDIT §13.20).
+9. **Steuerquote-Altzustände.** Seit V1.0.85 wird ein gespeichertes `tax_rate` unter 1 nicht mehr umgedeutet: Ein vor V1.0.83 durch „Neu berechnen“ entstandener Bruch (z. B. 0.2171) oder ein Master-JSON mit `tax_rate: 0.21` wird als 0,2171 % bzw. 0,21 % angezeigt **und gerechnet**, auch nach „Neu berechnen“. Der Kern meldet solche Werte weiter als `unitWarnings` („sieht nach einem Bruch aus … bewusst NICHT still umgerechnet“). Abhilfe: Steuerquote im Feld in Prozent eintragen. Das ist die Folge der Vorgabe, die Einheit nicht aus der Größenordnung abzuleiten (AUDIT §13.22).
+10. **WACC-Komponentenableitung deutet `tax_rate` ≤ 1 weiter als Bruch.** `applyDerivedFieldsV4`, `deriveCostOfCapital` und `validateMasterJson` rechnen für den abgeleiteten WACC `tr > 1 ? tr : tr × 100`. Bei einer echten Steuerquote von 0–1 % weicht der abgeleitete WACC daher vom Kern ab (der Kern rechnet mit dem Prozentwert). Nicht geändert, weil die In-File-Fixtures `tax_rate` dort als Bruch führen (eine Umstellung brach 6 Rechenprüfungen: T-BRL1b, GT-3, Chat9 P75) und weil der Auftrag die übrigen WACC-Einheiten ausschließt. Bei CRH ohne Wirkung (WACC heuristisch, Steuer 21.71 %). Folgeauftrag: Einheit der WACC-Ableitung und der Fixtures vereinheitlichen.
 
-## 10 · Ausgeführte Prüfungen (Endstand `b3f0c1e`, ohne lokale Produktänderungen)
+## 10 · Ausgeführte Prüfungen
+
+**Endstand nach dem Nachreview** (Produktstand `545427e9105db7e748a2f2eaa2986cf9a19ff265`, Produktdatei ohne lokale Änderung; die Testläufe der Testsuiten auf dem finalen PR-Head, siehe PR):
 
 | Befehl | Ergebnis |
 |---|---|
-| `npm test` | 1700 Rechenprüfungen · Node 430/430 · Exit 0 |
-| `npm run test:audit-tool` | 38/38 · Exit 0 |
-| `TMPDIR=/tmp/cb npm run test:browser` | 257/257 · Exit 0 |
-| `replay-import.mjs CRH --price 81.96` | Import ok · Anzeige ↔ Engine 58/58 · Exit 0 |
-| `replay-import.mjs CL --price 84.26` / `LMT --price 505.41` | Sperrfälle unverändert korrekt · 49/49 · Exit 0 |
+| `npm test` | 1700 Rechenprüfungen · Node 432/432 · Exit 0 |
+| `npm run test:audit-tool` | 47/47 · Exit 0 (neu: `valuation-control.test.mjs` 9) |
+| `TMPDIR=/tmp/cb npm run test:browser` | 281/281 · Exit 0 (neu: §17, 24 Prüfungen) |
+| `replay-import.mjs CRH --price 81.96` | Import ok · Anzeige ↔ Engine 58/58 · `valuationResults` erfasst · Exit 0 |
+| `replay-import.mjs CL --price 84.26` / `LMT --price 505.41` | Sperrfälle unverändert (DCF: „Nettoschulden nicht ermittelbar … Umfang unvollständig“) · 49/49 · Exit 0 |
 | `control-calcs.mjs CRH` | 100/100 Belege · 39/39 · Fallprüfungen 7/7 · Exit 0 |
-| `valuation-control.mjs CRH` | 26/26 · Exit 0 |
-| `reconcile-sources.mjs CRH` | 162 korrekt · 4 offen · 4 Werkzeuggrenze (§9.4) · Exit 1 |
-| Sichtprüfung, Export und Wiederimport (Chromium 141) | siehe §8 |
+| `valuation-control.mjs CRH` | 26/26 gegen die aktuelle Erfassung · Erfassung passend · Exit 0 |
+| `reconcile-sources.mjs CRH` | 162 korrekt · 4 offen · 4 Werkzeuggrenze (§9.4) · Exit 1 (unverändert) |
+| Sichtprüfung, Steuer-Rundlauf, Export und Wiederimport (Chromium 141) | siehe §8 |
+
+**Vorheriger Stand** `b3f0c1e` (zum Vergleich): 1700 · 430/430 · 38/38 · 257/257; übrige Zeilen wie oben, `valuation-control` damals 26/26 mit sechs historischen Istwerten (§7.4).
 
 **Reproduktion** (Cache nicht versioniert):
 
@@ -271,6 +324,7 @@ SEC_USER_AGENT="…" NODE_USE_ENV_PROXY=1 node tests/real-data/fetch-sources.mjs
 SEC_USER_AGENT="…" NODE_USE_ENV_PROXY=1 node tests/real-data/fetch-filings.mjs CRH --cutoff 2026-10-05 --since 2023-01-01
 node tests/real-data/replay-import.mjs CRH --price 81.96
 node tests/real-data/control-calcs.mjs CRH && node tests/real-data/valuation-control.mjs CRH
+node tests/real-data/fixtures/make-valuation-control-capture.mjs CRH   # nur zum Erneuern der Testfixture
 ```
 
 Die SHA-256 der Quelldateien stehen in §3. Spätere Filings werden durch `--cutoff` ausgeschlossen.
