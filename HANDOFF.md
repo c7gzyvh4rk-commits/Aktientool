@@ -1,5 +1,22 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Praxisabnahme mit vollständigem Realdatenfall: CRH plc FY2025 (Bericht)
+
+Bericht: `AUDIT-PRAXISABNAHME-CRH.md`. Ausgangsstand main `a52897b` (PR #8);
+während der Abnahme integriert: PR #9 (V1.0.83, Steuerquote bei „Neu berechnen“:
+DCF 91.68 ⇒ 124.09 ohne Änderung) und PR #10 (V1.0.84, Anzeige/Export).
+Endstand **`b3f0c1e`**, alle Prüfungen dort wiederholt. *Urteil:* **FY im
+genannten Umfang abgenommen** (Import → FY → DCF/RIM → Synthese → MoS 35.2 % →
+Einstieg 51.08 → Anzeige → Export → Wiederimport; unabhängige Kontrolle 26/26,
+Belege 100/100, Kontrollposten 39/39, Anzeige ↔ Engine 58/58). **TTM nicht
+abgenommen** (korrekter FY-Rückfall: CapEx-Tagwechsel, Q4-D&A, Q4-Aktien).
+**Nutzertest im eigenen Browser offen** (nur Chromium 141 headless geprüft;
+Anleitung im Bericht §8). CL und LMT: DCF berechtigt gesperrt (Schuldenumfang),
+dokumentiert. Neu: `evidence/CRH.json`, `tests/real-data/valuation-control.mjs`.
+Folgeaufträge: Bericht §9. Kein Deployment.
+
+---
+
 ## Anzeige und Export folgen dem aktuellen Stand (V1.0.84)
 
 Ausgangsstand main `f785bf8b7aecc9f7ad1a9ae1adbfb80e5febb89c`; Details AUDIT
