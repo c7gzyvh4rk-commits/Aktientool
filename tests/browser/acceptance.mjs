@@ -854,6 +854,52 @@ async function main() {
     }
 
     // ══════════════════════════════════════════════════════════════════════
+    sec('15 · Steuerquote bleibt bei „Neu berechnen“ in Prozentpunkten (V1.0.83)');
+    {
+      // Befund der Praxisabnahme CRH: „Neu berechnen“ ohne Aenderung schrieb
+      // tax_rate 21.71 als 0.2171 zurueck; der Kern rechnete danach mit 0,2 %
+      // Steuern (DCF 91.68 ⇒ 124.09). Fixture mit tax_rate 25 (Prozentpunkte).
+      const st = `({ tax: state.masterJson.valuation.wacc_components.tax_rate,
+        core: state.valuation.modelResults.dcf && state.valuation.modelResults.dcf._coreTaxRatePct,
+        dcf: state.valuation.modelResults.dcf && state.valuation.modelResults.dcf.base,
+        manual: state.manualAssumptionFields.has('tax_rate'), field: document.getElementById('as-tax') && document.getElementById('as-tax').value })`;
+      const recalc = async () => {
+        await ev('window.__accPrevVal = state.valuation; true');
+        await click(byText('#assumptions-output button', '/^\\s*Neu berechnen\\s*$/'), 'Neu berechnen');
+        await waitFor('state.valuation !== window.__accPrevVal', 5000);
+        await sleep(200);
+      };
+      const status = await importViaUi(FX.corePeriodMj('valid'));
+      if (check('15.1 Import', /Import OK/.test(status), status)) {
+        await tab('assumptions');
+        const s0 = await ev(st);
+        check('15.1 nach dem Import: Steuerquote 25 (Prozentpunkte) im Zustand, im Kern und im Feld',
+          s0.tax === 25 && s0.core === 25 && s0.field === '25' && s0.dcf != null && !s0.manual, JSON.stringify(s0));
+        await recalc();
+        const s1 = await ev(st);
+        check('15.2 „Neu berechnen“ ohne Aenderung: Steuerquote, DCF und Herkunft unveraendert',
+          s1.tax === 25 && s1.core === 25 && s1.field === '25' && s1.dcf === s0.dcf && !s1.manual, JSON.stringify([s0, s1]));
+        await recalc();
+        const s2 = await ev(st);
+        check('15.3 zweites „Neu berechnen“: weiterhin unveraendert', s2.tax === 25 && s2.dcf === s0.dcf, JSON.stringify(s2));
+        // Das Feld steht in der (eingeklappten) Karte „WACC-Komponenten“.
+        const waccCard = `Array.from(document.querySelectorAll('#assumptions-output .card-title')).find(e => /WACC-Komponenten/.test(e.textContent))`;
+        const openWacc = async () => { if (await ev(`${waccCard}.parentElement.classList.contains('collapsed')`)) await click(waccCard, 'Karte WACC-Komponenten'); };
+        await openWacc();
+        await typeInto(`document.getElementById('as-tax')`, '0.3', 'Steuerquote');
+        await recalc();
+        const s3 = await ev(st);
+        check('15.4 Eingabe als Bruch 0.3 ⇒ 30 Prozentpunkte, als manuell gefuehrt, DCF sinkt',
+          s3.tax === 30 && s3.core === 30 && s3.manual && s3.dcf != null && s3.dcf < s0.dcf, JSON.stringify(s3));
+        await openWacc();
+        await typeInto(`document.getElementById('as-tax')`, '30', 'Steuerquote');
+        await recalc();
+        const s4 = await ev(st);
+        check('15.5 Eingabe als Prozent 30 ⇒ identisch mit 0.3', s4.tax === 30 && s4.dcf === s3.dcf, JSON.stringify([s3, s4]));
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
     sec('8 · Abschluss');
     check('keine unbehandelte Ausnahme im gesamten Ablauf', exceptions.length === 0, exceptions.join(' | '));
     const nonFont = external.filter(u => !/^https:\/\/fonts\.(googleapis|gstatic)\.com\//.test(u));

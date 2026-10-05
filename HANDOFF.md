@@ -1,5 +1,20 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Steuerquote bleibt bei „Neu berechnen“ in Prozentpunkten (V1.0.83)
+
+Ausgangsstand main `a52897b6e40189500e7cbd733a1bdb9354ef5188`; Details AUDIT
+**§13.20**. Befund der Praxisabnahme (CRH FY2025). *Ursache:*
+`recalcFromAssumptions` normalisierte `as-tax` wie RF/ERP/CoD auf einen Bruch
+(21.71 ⇒ 0.2171), obwohl Import, DCF-Kern und Kennzahlen Prozentpunkte führen
+(`1 − taxRate / 100`). Jede Übernahme der Annahmen rechnete danach mit ~0,2 %
+Steuern: CRH DCF 91.68 ⇒ 124.09 je Aktie ohne jede Änderung; `tax_rate` als
+„manuell“ geführt. *Korrektur:* `normalizeTaxRatePctInput` (0..1 ⇒ × 100,
+> 1 unverändert), nur für `as-tax`. *Tests:* `tax-rate-unit` (6; 5 rot auf
+`a52897b`), Browser §15 (+6; 4 rot auf `a52897b`). Node 416 → 422, Browser
+242 → 248; Rechenprüfungen 1700, Audit 38 unverändert. Kein Deployment.
+
+---
+
 ## Ersatzreihen löschen keinen Periodenkontext (V1.0.82)
 
 Ausgangsstand main `00879f678fd64b642923e877af065afef125832b`; Details AUDIT
