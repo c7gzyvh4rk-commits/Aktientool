@@ -1,4 +1,4 @@
-# Realdaten-Audit (MCD, JNJ) — Wiederholung
+# Realdaten-Audit (MCD, JNJ; Praxisabnahme CRH) — Wiederholung
 
 Skripte, die nicht zu `npm test` gehören.
 
@@ -201,6 +201,25 @@ Skripte, die nicht zu `npm test` gehören.
    fehlende Engine-Werte mit Zielwert **und** Engine-Grund. Dazu Fallprüfungen
    (TTM angefordert, FY verwendet, Rückfall ausgewiesen, Fundamentaldaten
    unverändert). Die Kontrollwerte sind Auditbelege, kein Produktcode.
+
+7. **Unabhängige Bewertungskontrolle (Praxisabnahme CRH, Produktstand ab V1.0.84)** — nach Schritt 1,
+   den Originalberichten und dem Replay **mit** `--price`, ohne Netz und ohne Browser:
+
+   ```sh
+   node tests/real-data/valuation-control.mjs CRH [--md tabelle.md]
+   ```
+
+   Rechnet DCF (FCFF, 10 Jahre, Gordon), Szenarien, RIM, Synthese,
+   Sicherheitsabschlag, Einstiegspreis, Reverse DCF (Bisektion), Altman Z″,
+   Piotroski und Net Debt/EBITDA **ohne Produktcode** nach — nur aus den gegen
+   das Original geprüften Belegen (`evidence/<T>.json`) und den dort unter
+   `valuationControl` ausdrücklich ausgewiesenen Annahmen (WACC/CoE/g_T
+   heuristisch, Kurs als Annahme, Regelparameter). Verglichen wird mit der
+   Replay-Erfassung (`out/<T>-report.json`) gegen die im Beleg festgelegten
+   Toleranzen; Werte, die der Replay-Bericht nicht erfasst (Z″, Piotroski, MoS,
+   Einstiegspreis), stehen mit Herkunft unter `valuationControl.engineObserved`.
+   Exit 0 = alle Vergleiche in Toleranz · 1 = Abweichung · 2 = nicht ausführbar.
+   Bericht: `AUDIT-PRAXISABNAHME-CRH.md`.
 
 **Original-XBRL (seit D2).** Company Facts enthält keine Berichtspräzision. Der
 Import lädt deshalb für Berichte, die an einem Quartalswiderspruch der jüngsten
