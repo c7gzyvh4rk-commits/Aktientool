@@ -9,7 +9,8 @@
 // DCF 91.68 je Aktie nach dem Import, 124.09 nach „Neu berechnen“ ohne jede
 // Aenderung (Kern rechnet mit 0,2171 % Steuern); tax_rate zudem als „manuell“
 // markiert. Der Browser-Ablauf steht in tests/browser/acceptance.mjs §15.
-// V1.0.85: Einheit eindeutig Prozent (Tests 2, 3, 3b, 3c); Browser §17.
+// V1.0.85: Einheit eindeutig Prozent (Tests 2, 3b, 3c; Test 3 = Gegenprobe der
+// bestehenden Bereichsregeln, vorher und nachher gruen); Browser §17.
 // ─────────────────────────────────────────────────────────────────────────────
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -41,7 +42,7 @@ test('3 · Wertebereich: negativ, > 100, leer, nicht numerisch, unendlich ⇒ ni
     assert.equal(S.normalizeTaxRatePctInput(x).value, null, String(x));
   }
   assert.match(S.normalizeTaxRatePctInput(-1).warning, /Negative/);
-  assert.match(S.normalizeTaxRatePctInput(150).warning, /> 100 %/);
+  assert.match(S.normalizeTaxRatePctInput(150).warning, /> 100/);
   assert.equal(S.normalizeTaxRatePctInput(21.71).warning, null);
   assert.match(S.normalizeTaxRatePctInput(35).warning, /> 30 %/);
 });

@@ -1651,7 +1651,7 @@ Toleranzen unverändert.
 
 **Nachweise.** `tests/tax-rate-unit.test.mjs` 8 (Test 2 der V1.0.83-Fassung
 erwartete „0.2171 ⇒ 21.71“, also das Fehlverhalten, und ist ersetzt; neu 3b, 3c;
-auf `beb041f` 4 rot, Gegenproben 1, 4, 5, 6 grün). Browser §15.4/§15.5 auf die
+auf `beb041f` 3 rot, Gegenproben 1, 3, 4, 5, 6 grün). Browser §15.4/§15.5 auf die
 Prozenteinheit umgestellt, §17 neu (24 Prüfungen: 0 %, 0,5 %, 1 %, 21,71 %, 35 %;
 Kursänderung; bewusste Änderung; unzulässige Eingaben; Export und Wiederimport);
 auf `beb041f` 267/281, 14 rot. `tests/real-data/valuation-control.test.mjs` 9 auf

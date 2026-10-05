@@ -16,7 +16,7 @@ erfasst sie aus dem bewerteten Zustand (`fy.valuationResults`, dazu
 Produktdatei-SHA-256 und Änderungsstatus); das Werkzeug vergleicht nur dagegen,
 prüft die Erfassung (Ticker, Basis, Kurs/WACC/CoE/g_T, Commit, Hash) und wertet
 Fehlendes als fehlenden Nachweis. Toleranzen unverändert.
-*Tests:* `tax-rate-unit` 8 (Test 2 ersetzt, 3b/3c neu; 4 rot auf `beb041f`),
+*Tests:* `tax-rate-unit` 8 (Test 2 ersetzt, 3b/3c neu; 3 rot auf `beb041f`),
 Browser §15.4/15.5 angepasst und §17 neu (+24; 14 rot auf `beb041f`),
 `valuation-control.test.mjs` 9 (altes Werkzeug: verfälschte oder fehlende
 Erfassung trotzdem 26/26). Node 430 → 432, Audit 38 → 47, Browser 257 → 281;
