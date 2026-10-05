@@ -61,3 +61,37 @@ test('5 · Gegenproben: Yahoo-Kurs beim Import bzw. angegebene Quelle bleiben un
   const d = S.computeMarketDataDiagnostics(Object.assign(diagMj(true), { market: { price: 81.96, manual_overrides: { price: 80 } } }));
   assert.equal(d.price.source, 'manual override');
 });
+
+// V1.0.84 · QCE-Score und Datennote mit den Feldern, die die Engine tatsaechlich
+// liefert (qceScore.value, dataQuality.grade). Bis V1.0.83 lasen Uebersicht und
+// Snapshot/CSV qceScore.total und dataQuality.label (nur in Alt-Fixtures) ⇒ leer;
+// der Risikohinweis „Kapitaleffizienz schwach“ (≤ 4) wurde nie ausgeloest.
+const snapCtx = (quality, dq) => ({
+  masterJson: { schema_version: '4.0', meta: { ticker: 'X', company_name: 'X', as_of_date: '2026-10-05', currency: 'USD' },
+    fundamentals: { revenue: [1000], shares_diluted: [100] }, valuation: { wacc_components: { tax_rate: 25 } }, market: { price: 20 } },
+  quality, valuation: { modelResults: {}, router: {} }, synthesis: { buyPrice: 1, range: { base: 2 } },
+  dataQuality: dq, qualityOverrides: [], importedSnapshot: null, masterJsonMode: 'full',
+  manualAssumptionFields: [], baseRateWarnings: [], id: 't1', now: new Date('2026-10-05T00:00:00Z')
+});
+
+test('6 · Snapshot (Quelle der CSV): QCE aus qceScore.value, Datennote aus dataQuality.grade', () => {
+  const rec = S.buildSnapshotRecord(snapCtx({ verdict: 'investable_mid', qceScore: { value: 8.9 }, hardStops: [] }, { grade: 'B' }));
+  assert.equal(rec._fc.qceScore, 8.9);
+  assert.equal(rec._fc.dataQuality, 'B');
+});
+
+test('7 · _qceValue: value vor total (Alt-Fixtures), sonst null — kein 0-Ersatz', () => {
+  assert.equal(S._qceValue({ value: 3.5 }), 3.5);
+  assert.equal(S._qceValue({ total: 7 }), 7);
+  assert.equal(S._qceValue({ value: 0 }), 0);
+  assert.equal(S._qceValue({}), null);
+  assert.equal(S._qceValue(null), null);
+  assert.doesNotMatch(S.buildSnapshotRecord.toString(), /qceScore\.total/);
+});
+
+test('8 · Uebersicht liest den QCE-Wert ueber _qceValue (Zeile und Risikohinweis)', () => {
+  const all = Object.values(S).filter(f => typeof f === 'function').map(f => f.toString()).join('\n');
+  assert.doesNotMatch(all, /q\.qceScore\.total/);
+  assert.match(all, /_ovFactRow\('Qualität und Kapitaleffizienz', ovNum\(_qceValue\(q\.qceScore\)/);
+  assert.match(all, /_qceValue\(q\.qceScore\) <= 4\)\s*\n\s*add\('Kapitaleffizienz schwach'/);
+});

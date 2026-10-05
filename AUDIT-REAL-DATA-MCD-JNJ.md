@@ -1558,7 +1558,7 @@ als `unitWarnings`); danach wird er als Bruch gelesen und in Prozentpunkte
 überführt. Ein Master-JSON mit `tax_rate: 0.21` (Bruch) wird ebenso erst beim
 „Neu berechnen“ umgestellt. Keine stille Umdeutung beim Laden (unverändert).
 
-### 13.21 · Anzeige folgt dem aktuellen Stand: Schema-Befunde, MoS-Obergrenze, Kurs-Herkunft, Einheiten (V1.0.84)
+### 13.21 · Anzeige und Export folgen dem aktuellen Stand (V1.0.84)
 
 **Ausgangsstand.** main `f785bf8b7aecc9f7ad1a9ae1adbfb80e5febb89c` (Merge PR #9,
 V1.0.83); Branch `claude/schema-criticals-recalc`. Zweiter Befund der
@@ -1591,8 +1591,13 @@ der Import keinen Yahoo-Kurs hatte (`meta._sec_fetch.price_missing`); jetzt
 angegebene `market.source` bleiben unverändert. (d) Risk-free Rate und ERP
 (Brüche 0.043/0.055) erschienen als „0.04 %“/„0.06 %“; jetzt 4.30 %/5.50 %.
 (e) Heuristik-Kasten: Einträge ohne Zahlenwert zeigten „= undefined%“; jetzt
-Stufe bzw. Meldung. Werte unverändert.
+Stufe bzw. Meldung. (f) QCE-Score: Die Engine liefert `qceScore.value`;
+Übersicht (Zeile „Qualität und Kapitaleffizienz“, Risikohinweis „Kapitaleffizienz
+schwach“ bei ≤ 4) und Snapshot/CSV lasen `qceScore.total` (nur in Alt-Fixtures)
+— die Zeile fehlte immer, der Hinweis wurde nie ausgelöst, die CSV-Spalte blieb
+leer. Ebenso las der Snapshot `dataQuality.label` statt `grade`. Jetzt
+`_qceValue` (value vor total, sonst null) bzw. `label || grade`. Werte unverändert.
 
-**Nachweise.** `tests/display-current-state.test.mjs` (5; auf `f785bf8` 2 rot:
-Bindung, Kurs-Herkunft; Validierungsregel und Gegenproben grün) und Browser §16
-(8; 16.2–16.7 rot auf `f785bf8`, 16.1 grün).
+**Nachweise.** `tests/display-current-state.test.mjs` (8; auf `f785bf8` 5 rot,
+Validierungsregel und Gegenproben grün) und Browser §16 (9; 16.2–16.8 rot auf
+`f785bf8`, 16.1 grün).

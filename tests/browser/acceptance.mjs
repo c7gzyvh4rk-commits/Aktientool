@@ -944,6 +944,13 @@ async function main() {
         check('16.6 Marktdaten-Tabelle: Risk-free 4.30 %, ERP 5.50 % (Bruch als Prozent)',
           /Risk-free Rate\s+4\.30 %/.test(as) && /ERP\s+5\.50 %/.test(as), (as.match(/Risk-free Rate[^\n]*\n?[^\n]*/) || [''])[0]);
         check('16.7 Annahmen ohne „undefined“', !/undefined/.test(as), (as.match(/[^\n]*undefined[^\n]*/) || [''])[0]);
+        // QCE-Zeile in der Uebersicht (Wert aus qceScore.value), sofern ein Score vorliegt.
+        const qv = await ev(`(state.quality && state.quality.qceScore && state.quality.qceScore.value != null) ? state.quality.qceScore.value : null`);
+        const ov2 = await tab('overview');
+        check('16.8 Uebersicht: Zeile „Qualität und Kapitaleffizienz“ mit dem Engine-Wert',
+          qv == null ? !/Qualität und Kapitaleffizienz\s+\d/.test(ov2)
+                     : new RegExp('Qualität und Kapitaleffizienz\\s+' + qv.toFixed(1).replace('.', ',') + ' von 10').test(ov2),
+          String(qv) + ' · ' + ((ov2.match(/Qualität und Kapitaleffizienz[^\n]*\n?[^\n]*/) || [''])[0]));
       }
     }
 

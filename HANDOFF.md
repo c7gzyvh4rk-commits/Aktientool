@@ -1,6 +1,6 @@
 # HANDOFF — US-Aktienbewertungstool
 
-## Anzeige folgt dem aktuellen Stand: Schema-Befunde, MoS-Obergrenze, Kurs-Herkunft, Einheiten (V1.0.84)
+## Anzeige und Export folgen dem aktuellen Stand (V1.0.84)
 
 Ausgangsstand main `f785bf8b7aecc9f7ad1a9ae1adbfb80e5febb89c`; Details AUDIT
 **§13.21**. Befund der Praxisabnahme (CRH): Nach Kurseingabe blieb in der
@@ -11,9 +11,11 @@ Zusätzlich: MoS-Aufschlüsselung „Cap aktiv“ nur bei greifender Obergrenze
 (`safetyDiscount.capActive`; vorher bei jeder multiplikativen Zusammensetzung),
 D&A-Beschriftung ohne doppelte Maskierung, von Hand gesetzter Kurs nach
 SEC-Import ohne Kurs nicht mehr als „Yahoo Finance“, RF/ERP als Prozent statt
-„0.04 %“, kein „undefined%“ im Heuristik-Kasten. Reine Anzeige, keine
-Wertwirkung. *Tests:* `display-current-state` (5; 2 rot auf `f785bf8`), Browser
-§16 (+8; 16.2–16.7 rot auf `f785bf8`). Node 422 → 427, Browser 248 → 256;
+„0.04 %“, kein „undefined%“ im Heuristik-Kasten, QCE-Score aus `qceScore.value`
+(Übersichtszeile und Hinweis „Kapitaleffizienz schwach“ fehlten bisher immer;
+CSV-Spalten QCE/Datennote waren leer). Reine Anzeige/Export, keine Wertwirkung.
+*Tests:* `display-current-state` (8; 5 rot auf `f785bf8`), Browser §16 (+9;
+16.2–16.8 rot auf `f785bf8`). Node 422 → 430, Browser 248 → 257;
 Rechenprüfungen 1700, Audit 38 unverändert. Kein Deployment.
 
 ---

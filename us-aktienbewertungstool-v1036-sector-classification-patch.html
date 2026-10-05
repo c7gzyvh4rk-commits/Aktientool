@@ -12342,6 +12342,14 @@ function _qceSbcOverRev(mj) {
  *
  * Diagnostic Only: kein Einfluss auf Einstiegszone/MoS/Verdict.
  */
+// V1.0.84: Zahlenwert des QCE-Scores. Das Ergebnis fuehrt ihn als `value`; aeltere
+// Fixtures/Snapshots als `total`. Fehlt beides ⇒ null (kein 0-Ersatz).
+function _qceValue(qce) {
+  if (!qce) return null;
+  const v = qce.value != null ? qce.value : qce.total;
+  return (typeof v === 'number' && isFinite(v)) ? v : null;
+}
+
 function computeQualityCapitalEfficiencyScore(qr, mj) {
   if (!qr || !mj) {
     return { status: 'insufficient_data', value: null, label: 'n/a',
@@ -23782,8 +23790,10 @@ function renderOverview() {
     body += _ovFactRow('Qualitätsurteil', q ? verdictLbl.text : null, 'hist', q ? verdictLbl.note : 'Die Qualitätsprüfung wurde nicht ausgeführt.');
     body += _ovMetricRow('Piotroski F-Score', q && q.scores && q.scores.piotroski, 'hist',
       'neun Ja/Nein-Prüfungen zu Ertrag, Verschuldung und Effizienz; je höher, desto solider', 0, ' von 9');
-    if (q && q.qceScore && q.qceScore.total != null)
-      body += _ovFactRow('Qualität und Kapitaleffizienz', ovNum(q.qceScore.total, 1) + ' von 10', 'hist',
+    // V1.0.84: Der Score steht in qceScore.value (computeQualityCapitalEfficiencyScore);
+    // bis V1.0.83 wurde nur .total gelesen (gibt es nur in Alt-Fixtures) ⇒ Zeile fehlte immer.
+    if (q && q.qceScore && _qceValue(q.qceScore) != null)
+      body += _ovFactRow('Qualität und Kapitaleffizienz', ovNum(_qceValue(q.qceScore), 1) + ' von 10', 'hist',
         'zusammengefasster Wert aus Rendite, Verschuldung und Cash-Umwandlung — nur Diagnose');
     body += _ovMetricRow('Kapitalrendite minus Kapitalkosten', q && q.descriptive && q.descriptive.roicMinusWacc, 'hist',
       'verdient das Unternehmen mehr als seine Finanzierung kostet? Positiv ist gut', 1, ' Prozentpunkte');
@@ -24096,8 +24106,9 @@ function _ovKippenBlock(mj, q, s) {
   else if (s && s._modelDivergenceRangeOnly && s._divergenceRatio != null)
     add('Nur Bandbreite verwendbar', 'Streuung um das ' + ovNum(s._divergenceRatio, 1) + '-Fache — ein einzelner Punktwert ist nicht belastbar.');
 
-  if (q && q.qceScore && q.qceScore.total != null && q.qceScore.total <= 4)
-    add('Kapitaleffizienz schwach', 'Wert ' + ovNum(q.qceScore.total, 1) + ' von 10 — die Kapitaleffizienz ist nicht ausreichend belegt.');
+  // V1.0.84: wie oben — bis V1.0.83 wurde dieser Hinweis nie ausgeloest.
+  if (q && q.qceScore && _qceValue(q.qceScore) != null && _qceValue(q.qceScore) <= 4)
+    add('Kapitaleffizienz schwach', 'Wert ' + ovNum(_qceValue(q.qceScore), 1) + ' von 10 — die Kapitaleffizienz ist nicht ausreichend belegt.');
 
   const heuF = mj ? getHeuristicInputsUsed(mj) : [];
   if (heuF.length > 0)
@@ -27201,9 +27212,10 @@ function buildSnapshotRecord(ctx) {
       range_base:         synthesis && synthesis.range && synthesis.range.base,
       buyPrice:           synthesis && synthesis.buyPrice,
       deepValuePrice:     synthesis && synthesis.deepValuePrice,
-      dataQuality:        dataQuality && dataQuality.label,
+      // V1.0.84: state.dataQuality fuehrt die Note als `grade` (A–D); `label` gibt es nicht.
+      dataQuality:        dataQuality && (dataQuality.label || dataQuality.grade || null),
       dataQualityScore:   dataQuality && dataQuality.score,
-      qceScore:           quality && quality.qceScore && quality.qceScore.total,
+      qceScore:           quality && quality.qceScore ? _qceValue(quality.qceScore) : null,
       topWarnings:        (quality && Array.isArray(quality.hardStops))
                             ? quality.hardStops.filter(h => h.triggered && !h.overridden).map(h => h.name).slice(0, 5)
                             : [],
