@@ -26,14 +26,30 @@
 //   und Produktdatei-Hash vorhanden, Produktdatei ohne lokale Aenderung,
 //   tatsaechlich verwendete Datenbasis = erwartete, Kurs/WACC/CoE/g_T der
 //   Erfassung = ausgewiesene Annahmen. Sonst Fehlschlag.
+//   3. ZUORDNUNG — verifyProductBinding() (seit V1.0.86): Der abzunehmende
+//      Produktstand wird UNABHAENGIG vom Bericht angegeben
+//      (--product-commit REV) und per Git auf einen vorhandenen Commit
+//      aufgeloest; der erwartete SHA-256 entsteht aus den Bytes der
+//      Produktdatei in diesem Commit. Der Erfassungscommit des Berichts muss
+//      existieren, seine Produktdatei muss den gemeldeten Hash haben, und dieser
+//      Hash muss dem Zielstand entsprechen. Ein anderer Commit mit bytegleicher
+//      Produktdatei (Merge, reine Doku-Commits) ist zulaessig und wird als
+//      „inhaltsgleich“ ausgewiesen. Umfang der Inhaltspruefung: genau die
+//      Produktdatei PRODUCT_FILE — sie enthaelt das gesamte ausfuehrbare
+//      Produkt (ein Inline-<script>, keine weiteren Skripte; extern nur ein
+//      Web-Font-Stylesheet, das der Replay abweist).
 // Exit: 0 = alle Vergleiche in Toleranz und Erfassung passend · 1 = Abweichung,
 //       fehlender oder unpassender Nachweis · 2 = nicht ausfuehrbar.
 // ═══════════════════════════════════════════════════════════════════════════
 import { readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+export const PRODUCT_FILE = 'us-aktienbewertungstool-v1036-sector-classification-patch.html';
+const REPO_DEFAULT = join(HERE, '..', '..');
 
 // Die sechs Ergebnisse, die bis V1.0.84 aus engineObserved kamen.
 export const CURRENT_RESULT_KEYS = ['altmanZ', 'piotroski', 'g1', 'mosTotal', 'entryPrice', 'deepValuePrice'];
@@ -169,8 +185,67 @@ export function checkCapture(report, VC, ticker) {
   return issues;
 }
 
+// ── Zuordnung Erfassung ↔ ausdruecklich gewaehlter Produktstand (Git) ────────
+const isSha40 = (x) => /^[0-9a-f]{40}$/.test(String(x || ''));
+const isSha64 = (x) => /^[0-9a-f]{64}$/.test(String(x || ''));
+const short = (x) => String(x).slice(0, 12);
+
+// Produktdatei in einem Commit: { ok, rev, commit, sha256 } oder { ok:false, reason }.
+// Keine Shell (execFileSync), Revisionen mit fuehrendem „-“ werden abgewiesen.
+export function productAtCommit(repoDir, rev, file = PRODUCT_FILE) {
+  if (typeof rev !== 'string' || !rev.trim() || rev.startsWith('-') || /\s/.test(rev)) {
+    return { ok: false, rev, reason: 'ungueltige Revision ' + JSON.stringify(rev) };
+  }
+  const git = (args) => execFileSync('git', args, { cwd: repoDir, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 256 * 1024 * 1024 });
+  let commit;
+  try { commit = git(['rev-parse', '--verify', '--quiet', rev + '^{commit}']).toString().trim(); }
+  catch { return { ok: false, rev, reason: 'Commit ' + rev + ' ist im Repository ' + repoDir + ' nicht vorhanden' }; }
+  let bytes;
+  try { bytes = git(['cat-file', 'blob', commit + ':' + file]); }
+  catch { return { ok: false, rev, commit, reason: 'Produktdatei ' + file + ' fehlt in Commit ' + short(commit) }; }
+  return { ok: true, rev, commit, sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length };
+}
+
+// Verbindliche Zuordnung. targetRev kommt NICHT aus dem Bericht.
+export function verifyProductBinding(report, { repoDir = REPO_DEFAULT, targetRev } = {}) {
+  const issues = [];
+  const target = productAtCommit(repoDir, targetRev);
+  if (!target.ok) issues.push('Zielstand: ' + target.reason);
+  let capture = null;
+  if (!report) {
+    issues.push('kein Replay-Bericht');
+  } else {
+    if (report.productFileChanged !== 'nein') {
+      issues.push('Produktdatei war bei der Erfassung lokal veraendert oder ihr Status ist unbekannt (' + report.productFileChanged + ') — keine Commit-Zuordnung moeglich');
+    }
+    if (!isSha40(report.commit)) {
+      issues.push('Erfassungscommit fehlt oder ist kein vollstaendiger SHA (' + report.commit + ')');
+    } else {
+      capture = productAtCommit(repoDir, report.commit);
+      if (!capture.ok) issues.push('Erfassungscommit: ' + capture.reason);
+      else if (capture.commit !== report.commit) issues.push('Erfassungscommit ' + report.commit + ' loest auf ' + capture.commit + ' auf');
+    }
+    if (!isSha64(report.productSha256)) {
+      issues.push('Produkt-Hash der Erfassung fehlt oder ist kein SHA-256 (' + report.productSha256 + ')');
+    } else {
+      if (capture && capture.ok && capture.sha256 !== report.productSha256) {
+        issues.push('gemeldeter Produkt-Hash ' + short(report.productSha256) + '… passt nicht zur Produktdatei im Erfassungscommit ' + short(capture.commit) + ' (' + short(capture.sha256) + '…)');
+      }
+      if (target.ok && target.sha256 !== report.productSha256) {
+        issues.push('erfasste Produktdatei ' + short(report.productSha256) + '… ≠ Zielstand ' + short(target.commit) + ' (' + short(target.sha256) + '…)');
+      }
+    }
+  }
+  const ok = issues.length === 0;
+  const sameCommit = !!(ok && capture && capture.commit === target.commit);
+  const contentIdentical = !!(ok && capture && capture.commit !== target.commit);
+  return { ok, issues, scope: PRODUCT_FILE, target, capture, sameCommit, contentIdentical,
+    relation: !ok ? 'nicht belegt' : sameCommit ? 'gleicher Commit' : 'inhaltsgleich (anderer Commit, Produktdatei bytegleich)' };
+}
+
 // ── Vergleich SOLL ↔ IST (nur aktuelle Erfassung) ──────────────────────────
-export function compareCapture(C, report, VC, ticker) {
+// binding: Ergebnis von verifyProductBinding. Ohne gepruefte Zuordnung kein Erfolg.
+export function compareCapture(C, report, VC, ticker, binding) {
   const TOL = VC.tolerances;
   const fy = (report && report.fy) || {}, mi = fy.modelInputs || {}, d = mi.dcf || {}, q = fy.quality || {};
   const vr = fy.valuationResults || {};
@@ -205,6 +280,8 @@ export function compareCapture(C, report, VC, ticker) {
   cmp('Einstiegspreis (USD)', C.entry, vr.entryPrice, TOL.entryPrice, 'USD', 'entryPrice');
   cmp('Tiefer Pruefpreis (USD)', C.deep, vr.deepValuePrice, TOL.entryPrice, 'USD', 'deepValuePrice');
   const captureIssues = checkCapture(report, VC, ticker);
+  if (!binding) captureIssues.push('Produktzuordnung nicht geprueft (kein Zielstand angegeben)');
+  else if (!binding.ok) for (const i of binding.issues) captureIssues.push('Produktzuordnung: ' + i);
   const failed = rows.filter(r => !r.ok);
   return { rows, captureIssues, ok: failed.length === 0 && captureIssues.length === 0, failed };
 }
@@ -213,9 +290,18 @@ export function compareCapture(C, report, VC, ticker) {
 async function main() {
   const { loadEvidence, filingIndex, verifyEvidence } = await import('./evidence.mjs');
   const a = process.argv.slice(2);
-  let md = null; const tickers = [];
-  for (let i = 0; i < a.length; i++) { if (a[i] === '--md') md = a[++i]; else tickers.push(a[i].toUpperCase()); }
-  if (tickers.length !== 1) { console.error('Aufruf: valuation-control.mjs TICKER [--md datei]'); process.exit(2); }
+  let md = null, targetRev = null, repoDir = REPO_DEFAULT; const tickers = [];
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] === '--md') md = a[++i];
+    else if (a[i] === '--product-commit') targetRev = a[++i];
+    else if (a[i] === '--repo') repoDir = a[++i];
+    else tickers.push(a[i].toUpperCase());
+  }
+  if (tickers.length !== 1 || !targetRev) {
+    console.error('Aufruf: valuation-control.mjs TICKER --product-commit REV [--repo DIR] [--md datei]\n' +
+      '  --product-commit: der ausdruecklich abzunehmende Produktstand (Commit/Branch/Tag), unabhaengig vom Bericht.');
+    process.exit(2);
+  }
   const T = tickers[0];
   const ev = loadEvidence(T);
   if (!ev || !ev.valuationControl) { console.error('NICHT AUSFUEHRBAR: evidence/' + T + '.json ohne valuationControl'); process.exit(2); }
@@ -228,11 +314,14 @@ async function main() {
   const v = (id) => { if (!res[id]) throw new Error('Beleg ' + id + ' fehlt'); return res[id].expected; };
   const VC = ev.valuationControl;
   const C = computeControl(v, VC);
-  const R = compareCapture(C, report, VC, T);
+  const B = verifyProductBinding(report, { repoDir, targetRev });
+  const R = compareCapture(C, report, VC, T, B);
   const f = (x, dd = 6) => x == null ? '—' : (typeof x === 'number' ? x.toFixed(dd) : String(x));
   const vr = (report.fy && report.fy.valuationResults) || {}, inp = vr.inputs || {};
   console.log(`${T}: ${R.rows.length - R.failed.length}/${R.rows.length} Kontrollvergleiche in Toleranz (gegen aktuelle Erfassung) · Erfassung ${R.captureIssues.length ? 'UNPASSEND' : 'passend'}`);
   console.log(`  Erfassung: Produkt ${report.commit} · Produktdatei sha256 ${report.productSha256} (lokal geaendert: ${report.productFileChanged}) · Lauf ${report.runAt}`);
+  console.log(`  Zielstand: ${targetRev} ⇒ ${B.target.ok ? B.target.commit + ' · Produktdatei sha256 ' + B.target.sha256 + ' (aus Git, ' + B.target.bytes + ' Bytes)' : 'NICHT AUFLOESBAR'}`);
+  console.log(`  Zuordnung (${B.scope}): ${B.relation}${B.capture && B.capture.ok ? ' · Erfassungscommit-Produktdatei sha256 ' + B.capture.sha256 : ''}`);
   console.log(`  Datenbasis ${inp.dataBasisRequested}/${inp.dataBasisSelected} · Kurs ${inp.price} (Annahme ${VC.assumptions.price}) · Steuer ${inp.taxRatePct} % · WACC ${inp.wacc} · CoE ${inp.coe} · g_T ${inp.growthTerminal} · Urteil ${inp.verdict} · Position ${inp.synthesisPosition}`);
   for (const i of R.captureIssues) console.log('  UNPASSENDE ERFASSUNG ' + i);
   for (const r of R.failed) console.log('  ' + (r.missing ? 'FEHLENDER NACHWEIS ' : 'ABWEICHUNG ') + r.label + ': Kontrolle ' + f(r.ctrl) + ' · aktuelle Erfassung ' + f(r.eng) + ' · Toleranz ' + r.tol);
@@ -243,6 +332,7 @@ async function main() {
     const out = ['| Groesse | Kontrolle (Original + Annahmen) | aktuelle Erfassung (Replay) | Abw. | Toleranz | ✓ |', '|---|---|---|---|---|---|'];
     for (const r of R.rows) out.push(`| ${r.label} | ${f(r.ctrl)} | ${r.missing ? 'fehlt' : f(r.eng)} | ${r.diff == null ? '—' : r.diff.toExponential(2)} | ${r.tol} | ${r.ok ? '✓' : '✗'} |`);
     out.push('', 'Erfassung: Produkt `' + report.commit + '`, Produktdatei SHA-256 `' + report.productSha256 + '`, Datenbasis ' + inp.dataBasisSelected + ', Kurs ' + inp.price + '. ' + (R.captureIssues.length ? 'UNPASSEND: ' + R.captureIssues.join('; ') : 'passend.'));
+    out.push('', 'Zielstand `' + targetRev + '` ⇒ `' + (B.target.commit || '—') + '`, Produktdatei SHA-256 `' + (B.target.sha256 || '—') + '` (aus Git). Zuordnung: ' + B.relation + '.');
     writeFileSync(md, out.join('\n') + '\n');
   }
   process.exit(R.ok ? 0 : 1);

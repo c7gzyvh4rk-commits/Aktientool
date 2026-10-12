@@ -1657,3 +1657,48 @@ Kursänderung; bewusste Änderung; unzulässige Eingaben; Export und Wiederimpor
 auf `beb041f` 267/281, 14 rot. `tests/real-data/valuation-control.test.mjs` 9 auf
 einer Teilmenge eines echten CRH-Laufs; das Werkzeug von `beb041f` meldete auf
 demselben Bericht mit sechs verfälschten bzw. ohne erfasste Werte jeweils 26/26.
+
+### 13.23 · WACC mit Steuer in Prozentpunkten; verbindliche Produktzuordnung (V1.0.86)
+
+**Ausgangsstand.** main `29a5a21d6025fc7f73d09828132ceffc19a7e198` (Merge PR #12);
+Branch `claude/wacc-tax-pct-product-binding`. Zwei Befunde aus dem Review von PR #12.
+
+**Befund 1 · Ursache (WACC-Ableitung).** §13.22 machte `tax_rate` in Speicherung,
+Anzeige und Eingabe zu Prozentpunkten, liess die WACC-Pfade aber bewusst unberuehrt.
+Diese rechneten `trPct = tr > 1 ? tr : tr × 100`. Verbraucher, alle korrigiert auf
+`trPct = tax_rate` (Faktor `1 − tax_rate / 100`):
+* `applyDerivedFieldsV4` (D-03/D-04, fuehrende Ableitung: Import, Neuberechnung,
+  Snapshot-/Growth-Laeufe);
+* `deriveCostOfCapital` (Neuberechnung nach Komponenten-Edit in
+  `recalcFromAssumptions`);
+* `validateMasterJson` (Abgleich WACC-Komponenten ↔ `wacc_derived`; Legacy-Hilfe,
+  nicht im aktiven Importpfad).
+Weitere Steuerverbraucher (DCF-Kern, ROIC, ROIC-Trend, Mid-Cycle, EPV, Monte Carlo)
+rechneten schon `1 − taxRate / 100`. RF/ERP/Kd (Brüche, Kd in `deriveCostOfCapital`
+weiter `> 1 ? : × 100`), Gewichte, Untergrenze (`max(Sektor, RF + 4 pp)`) und
+manuelle Overrides unverändert. Keine Umdeutung gespeicherter Werte < 1.
+
+**Kontrollrechnung.** RF 4 %, ERP 6 %, Beta 1 ⇒ CoE 10 %; Kd 5 %; 50/50:
+0,5 % ⇒ 7.4875 % (bisher 6.25 %), 1 % ⇒ 7.475 % (bisher 5 %).
+
+**Fixtures.** Die sechs Rechenprüfungen, die eine Umstellung in §13.22 brach,
+einzeln: `tax_rate: 0.21` meinte in allen vier Fixtures 21 % ⇒ 21
+(`_makeBaseValuation`, Growth-`_makeMj`, G-10, `_mkGoldenMj`). GT-3: Reverse DCF
+21.6539 wie zuvor (22.083 nur mit 0,21 % im WACC). T-BRL1b: Divergenz 3.05 nur
+durch Einheitenmischung, konsistent 2.83 ⇒ CapEx auf Umsatzbasis, 3.98 (in allen
+Kombinationen > 3). F3 P75: gemessener Wert, neu 5.563015589041687 (identisch auf
+`29a5a21` mit `tax_rate` 21).
+
+**Befund 2 · Ursache (Auditwerkzeug).** `checkCapture` prüfte Commit und
+Produkt-Hash des Replay-Berichts nur auf das Format (`a`×40/`b`×64 akzeptiert).
+**Korrektur.** `valuation-control.mjs --product-commit REV`: Zielstand
+unabhängig vom Bericht, per `git rev-parse` aufgelöst, SHA-256 aus
+`git cat-file blob <commit>:<Produktdatei>`; Erfassungscommit vorhanden, seine
+Produktdatei = gemeldeter Hash = Zielstand; lokale Änderung ⇒ keine Zuordnung;
+bytegleiche Produktdatei in anderem Commit ⇒ „inhaltsgleich“. Umfang: die
+Produktdatei (einziges ausführbares Produkt).
+
+**Nachweise.** `tests/wacc-tax-unit.test.mjs` (10; 7 rot auf `29a5a21`),
+Browser §18 (24; 5 rot), `tests/real-data/valuation-control.binding.test.mjs`
+(10; isolierte Git-Repositories) und `valuation-control.test.mjs` Test 8.
+

@@ -1050,6 +1050,135 @@ async function main() {
     }
 
     // ══════════════════════════════════════════════════════════════════════
+    sec('18 · WACC aus Komponenten mit Steuer in Prozentpunkten (V1.0.86)');
+    {
+      // Befund Review PR #12: Die WACC-Pfade deuteten tax_rate ≤ 1 als Bruch
+      // (`tr > 1 ? tr : tr × 100`): 0,5 % ⇒ 50 %, 1 % ⇒ 100 %. Hier sind ALLE
+      // Komponenten gesetzt, kein wacc_derived/CoE vorgegeben ⇒ der WACC wird
+      // tatsaechlich aus ihnen abgeleitet (Flag „derived“), oberhalb der
+      // Untergrenze 9,5 % (high_growth). Unabhaengige Kontrollrechnung:
+      // RF 4 %, ERP 6 %, Beta 1.5 ⇒ CoE 13 %; Kd 6 %; Gewichte 0.7/0.3.
+      const ctrl = (t, coe = 13) => 0.7 * coe + 0.3 * 6 * (1 - t / 100);
+      const RND = 5e-5 + 1e-12;   // Produkt rundet den WACC auf 4 Nachkommastellen
+      const withComp = (t) => {
+        const m = FX.corePeriodMj('valid');
+        const v = Object.assign({}, m.valuation);
+        delete v.wacc_derived; delete v.cost_of_equity; delete v.cost_of_equity_derived;
+        v.wacc_components = { risk_free: 0.04, risk_free_rate: 0.04, equity_risk_premium: 0.06, beta: 1.5,
+          cost_of_debt_pretax: 0.06, tax_rate: t, debt_weight: 0.3, equity_weight: 0.7 };
+        m.valuation = v;
+        return m;
+      };
+      const st = `({ tax: state.masterJson.valuation.wacc_components.tax_rate,
+        wacc: state.masterJson.valuation.wacc_derived, coe: state.masterJson.valuation.cost_of_equity_derived,
+        waccFlag: (state.masterJson.valuation._derivationFlags || {}).wacc_derived,
+        coeFlag: (state.masterJson.valuation._derivationFlags || {}).cost_of_equity_derived,
+        floor: !!(state.masterJson.valuation._derivationFlags || {}).wacc_floor_applied,
+        coreTax: state.valuation.modelResults.dcf && state.valuation.modelResults.dcf._coreTaxRatePct,
+        dcf: state.valuation.modelResults.dcf && state.valuation.modelResults.dcf.base,
+        rim: state.valuation.modelResults.rim && state.valuation.modelResults.rim.base,
+        range: state.synthesis && state.synthesis.range ? JSON.stringify(state.synthesis.range) : null,
+        price: state.masterJson.market.price,
+        field: document.getElementById('as-tax') ? document.getElementById('as-tax').value : null })`;
+      const recalc = async () => {
+        await ev('window.__accPrevVal = state.valuation; true');
+        await click(byText('#assumptions-output button', '/^\\s*Neu berechnen\\s*$/'), 'Neu berechnen');
+        await waitFor('state.valuation !== window.__accPrevVal', 5000);
+        await sleep(150);
+      };
+      const waccCard = `Array.from(document.querySelectorAll('#assumptions-output .card-title')).find(e => /WACC-Komponenten/.test(e.textContent))`;
+      const openWacc = async () => { if (await ev(`${waccCard}.parentElement.classList.contains('collapsed')`)) await click(waccCard, 'Karte WACC-Komponenten'); };
+      const near = (x, y) => typeof x === 'number' && Math.abs(x - y) < RND;
+      const dcfAt = {};
+      for (const t of [0, 0.5, 1, 1.01, 21.71]) {
+        const status = await importViaUi(withComp(t));
+        if (!check(`18.${t} Import mit vollstaendigen WACC-Komponenten, Steuer ${t} %`, /Import OK/.test(status), status)) continue;
+        await tab('assumptions');
+        const a = await ev(st);
+        dcfAt[t] = a.dcf;
+        check(`18.${t} WACC aus Komponenten abgeleitet = Kontrolle ${ctrl(t).toFixed(5)} % (Steuer ${t} %)`,
+          a.waccFlag === 'derived' && !a.floor && a.coe === 13 && near(a.wacc, ctrl(t)) && a.tax === t && a.coreTax === t && a.field === String(t),
+          JSON.stringify(a));
+        await recalc();
+        const b = await ev(st);
+        await recalc();
+        const c = await ev(st);
+        check(`18.${t} zweimal „Neu berechnen“ ohne Aenderung: Steuer, WACC (abgeleitet) und DCF stabil`,
+          [b, c].every(x => x.tax === t && x.coreTax === t && x.wacc === a.wacc && x.waccFlag === 'derived' && x.dcf === a.dcf),
+          JSON.stringify([a, b, c]));
+      }
+      const status = await importViaUi(withComp(0.5));
+      if (check('18.K Import (0,5 %, abgeleiteter WACC) fuer Kurs-, Aenderungs-, Override- und Exportpruefung', /Import OK/.test(status), status)) {
+        await tab('assumptions');
+        const a = await ev(st);
+        await typeInto(`document.getElementById('as-price')`, String(Math.round((a.price || 20) * 1.37 * 100) / 100), 'Kurs');
+        await recalc();
+        const b = await ev(st);
+        check('18.K nur Kurs geaendert: Steuer 0,5 %, WACC, DCF, RIM und Spanne unveraendert',
+          b.price !== a.price && b.tax === 0.5 && b.wacc === a.wacc && b.waccFlag === 'derived' && b.dcf === a.dcf && b.rim === a.rim && b.range === a.range,
+          JSON.stringify([a, b]));
+        // Bewusste Steueraenderung 0,5 % ⇒ 21,71 %: WACC = Kontrolle, DCF = DCF eines Imports mit 21,71 %.
+        await openWacc();
+        await typeInto(`document.getElementById('as-tax')`, '21.71', 'Steuerquote');
+        await recalc();
+        const c = await ev(st);
+        check('18.E Steuer 0,5 % ⇒ 21,71 %: WACC aus Komponenten neu (Kontrolle), DCF wie beim Import mit 21,71 %',
+          c.tax === 21.71 && c.coreTax === 21.71 && near(c.wacc, ctrl(21.71)) && c.wacc < b.wacc && c.dcf === dcfAt[21.71] && c.dcf !== b.dcf,
+          JSON.stringify([b, c, dcfAt[21.71]]));
+        // Manueller WACC bleibt bei Steueraenderung erhalten.
+        await openWacc();
+        await typeInto(`document.getElementById('as-wacc')`, '11.25', 'WACC');
+        await recalc();
+        await openWacc();
+        await typeInto(`document.getElementById('as-tax')`, '1', 'Steuerquote');
+        await recalc();
+        const d = await ev(st);
+        check('18.M manueller WACC 11.25 bleibt bei Steueraenderung auf 1 % erhalten',
+          d.tax === 1 && d.wacc === 11.25 && d.waccFlag === 'manual', JSON.stringify(d));
+        // Manuelle CoE: WACC aus manueller CoE und Steuer 0,5 % (frischer Import).
+        const s2 = await importViaUi(withComp(0.5));
+        if (check('18.C Import (0,5 %) fuer manuelle CoE', /Import OK/.test(s2), s2)) {
+          await tab('assumptions');
+          await openWacc();
+          await typeInto(`document.getElementById('as-coe')`, '14', 'CoE');
+          await recalc();
+          const e = await ev(st);
+          check('18.C manuelle CoE 14 bleibt als manuell erhalten, Steuer 0,5 % unveraendert',
+            e.coe === 14 && e.coeFlag === 'manual' && e.tax === 0.5 && e.coreTax === 0.5, JSON.stringify(e));
+          // Nicht Gegenstand dieses Befunds (Aufrufreihenfolge in recalcFromAssumptions,
+          // unveraendert): der WACC wird in diesem Schritt nicht aus der manuellen CoE neu
+          // gebildet. Die Funktionsebene (CoE-Flag „manual“ ⇒ WACC aus manueller CoE mit
+          // Steuer in Prozentpunkten) prueft tests/wacc-tax-unit.test.mjs 5b.
+          console.log('  info  18.C WACC nach manueller CoE: ' + e.wacc + ' (Flag ' + e.waccFlag + '; aus CoE 14 waere ' + ctrl(0.5, 14).toFixed(4) + ')');
+        }
+        // Export und Wiederimport mit niedriger Steuerquote und abgeleitetem WACC.
+        const s3 = await importViaUi(withComp(0.5));
+        if (check('18.X Import (0,5 %) fuer Export', /Import OK/.test(s3), s3)) {
+          await tab('assumptions');
+          const f = await ev(st);
+          await openSettings();
+          await click(byText('#settings-card button', '/JSON herunterladen/'), 'JSON herunterladen');
+          const file = await waitDownload('_master.json');
+          let exported = null;
+          try { exported = JSON.parse(readFileSync(file, 'utf8')); } catch { /* unten geprueft */ }
+          const ex = exported && exported.valuation;
+          check('18.X Export: tax_rate 0.5 und abgeleiteter WACC im Master-JSON',
+            ex && ex.wacc_components.tax_rate === 0.5 && ex.wacc_derived === f.wacc && near(f.wacc, ctrl(0.5)), JSON.stringify(ex && { tax: ex.wacc_components.tax_rate, wacc: ex.wacc_derived }));
+          if (exported) {
+            const s4 = await importViaUi(exported);
+            await tab('assumptions');
+            const g = await ev(st);
+            await recalc();
+            const h = await ev(st);
+            check('18.X Wiederimport und „Neu berechnen“: 0,5 %, WACC und DCF unveraendert',
+              /Import OK/.test(s4) && [g, h].every(x => x.tax === 0.5 && x.wacc === f.wacc && x.dcf === f.dcf && x.field === '0.5'),
+              JSON.stringify([f, g, h]) + ' ' + s4);
+          }
+        }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
     sec('8 · Abschluss');
     check('keine unbehandelte Ausnahme im gesamten Ablauf', exceptions.length === 0, exceptions.join(' | '));
     const nonFont = external.filter(u => !/^https:\/\/fonts\.(googleapis|gstatic)\.com\//.test(u));

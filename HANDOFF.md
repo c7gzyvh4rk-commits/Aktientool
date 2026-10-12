@@ -1,5 +1,36 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Zweites Nachreview: WACC-Steuer in Prozentpunkten, verbindliche Produktzuordnung (V1.0.86)
+
+Ausgangsstand main `29a5a21d6025fc7f73d09828132ceffc19a7e198` (PR #12, am
+2026-10-12 als Remote-Stand bestätigt); Details AUDIT **§13.23** und
+`AUDIT-PRAXISABNAHME-CRH.md` §7.5/§7.6.
+*Befund 1:* `applyDerivedFieldsV4`, `deriveCostOfCapital` und die
+Komponentenprüfung in `validateMasterJson` deuteten `tax_rate` nach
+Größenordnung (`tr > 1 ? tr : tr × 100`). Beispiel RF 4 %, ERP 6 %, Beta 1,
+Kd 5 %, 50/50: korrekt **7.4875 %** (0,5 %) bzw. **7.475 %** (1 %), bisher 6.25 %
+bzw. 5 %. *Korrektur:* überall `1 − tax_rate / 100`; RF/ERP/Kd/Gewichte,
+Untergrenze und Overrides unverändert. *Fixtures:* `tax_rate: 0.21` (gemeint
+21 %) ⇒ 21 in `_makeBaseValuation`, Growth-`_makeMj`, G-10, `_mkGoldenMj`;
+GT-3 bleibt 21.6539; T-BRL1b CapEx auf Umsatzbasis (Divergenz 3.98×, vorher nur
+durch Einheitenmischung 3.05); F3 P75 neu gemessen 5.563015589041687 (gleich auf
+`29a5a21` mit 21).
+*Befund 2:* `valuation-control.mjs` akzeptierte formal gültige, aber erfundene
+Commit-/Hash-Angaben (`a`×40/`b`×64). *Korrektur:* `--product-commit REV`
+(Pflicht) ⇒ Git-Auflösung, erwarteter SHA-256 aus den Commit-Bytes der
+Produktdatei, Erfassungscommit geprüft, bytegleiche Produktdatei in anderem
+Commit als „inhaltsgleich“ ausgewiesen.
+*Tests:* `wacc-tax-unit` 10 (7 rot auf `29a5a21`), Browser §18 +24 (5 rot),
+`valuation-control.binding` 10 (isolierte Git-Repos) und `valuation-control`
+Test 8. Node 432 → 442, Audit 47 → 58, Browser 281 → 305; Rechenprüfungen 1700.
+CRH auf `5159e8c` wiederholt: alle Kennwerte bitgleich, Zuordnung belegt.
+Offen bleiben FY nur im dokumentierten Umfang, TTM nicht abgenommen,
+Nutzerbrowser offen, Kurs 81.96 als Annahme, Modellvereinfachungen (Bericht §9).
+Folgeauftrag: WACC aus manueller CoE bei „Neu berechnen“ (Bericht §9.10).
+Kein Deployment.
+
+---
+
 ## Nachreview der Praxisabnahme: Steuerquote in Prozent, Kontrolle gegen aktuelle Erfassung (V1.0.85)
 
 Ausgangsstand main `beb041f0d57e89b95ae0ce3ec71a4def2f851ca2` (PR #11); Details
@@ -30,12 +61,13 @@ Kein Deployment.
 Bericht: `AUDIT-PRAXISABNAHME-CRH.md`. Ausgangsstand main `a52897b` (PR #8);
 während der Abnahme integriert: PR #9 (V1.0.83, Steuerquote bei „Neu berechnen“:
 DCF 91.68 ⇒ 124.09 ohne Änderung) und PR #10 (V1.0.84, Anzeige/Export); nach
-dem Nachreview V1.0.85 (oben). Aktueller Prüfstand **`545427e`**, alle
-CRH-Prüfungen dort wiederholt. *Status, getrennt:*
+dem Nachreview V1.0.85 (oben). Aktueller Prüfstand: Produktdatei `6b6d865e…3ccf`
+(V1.0.86, Erfassung `5159e8c`), alle CRH-Prüfungen dort wiederholt. *Status, getrennt:*
 * **FY:** Ablauf und Rechenkonsistenz geprüft, unter den ausgewiesenen Annahmen
   (WACC/CoE/g₁/g_T heuristisch) und Vereinfachungen (Import → FY → DCF/RIM →
   Synthese → MoS 35.2 % → Einstieg 51.08 → Anzeige → Export → Wiederimport;
-  unabhängige Kontrolle 26/26 gegen die aktuelle Erfassung, Belege 100/100,
+  unabhängige Kontrolle 26/26 gegen die aktuelle, per Git dem Zielstand
+  zugeordnete Erfassung, Belege 100/100,
   Kontrollposten 39/39, Anzeige ↔ Engine 58/58).
 * **TTM:** nicht abgenommen (korrekter FY-Rückfall: CapEx-Tagwechsel, Q4-D&A,
   Q4-Aktien).

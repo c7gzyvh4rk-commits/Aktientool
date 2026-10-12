@@ -1,13 +1,13 @@
 {
- "_note": "Teilmenge eines echten Replay-Berichts (CRH, Lauf 2026-10-05T14:40:27.787Z), erzeugt mit make-valuation-control-capture.mjs. Nur fuer valuation-control.test.mjs.",
+ "_note": "Teilmenge eines echten Replay-Berichts (CRH, Lauf 2026-10-12T06:15:35.476Z), erzeugt mit make-valuation-control-capture.mjs. Nur fuer valuation-control.test.mjs.",
  "ticker": "CRH",
- "commit": "545427e9105db7e748a2f2eaa2986cf9a19ff265",
- "productSha256": "a49d96b793d6cb35aba36b46107a429720a2c50f106c3b3f0d11aa7c81792bed",
+ "commit": "5159e8cd3143acf8ab13b57c7d326e920e6fad2e",
+ "productSha256": "6b6d865e617acb570f61cc65cec793743bb96303b022fe140f539d7aff283ccf",
  "productFileChanged": "nein",
  "imported": true,
  "selftest": false,
  "priceAssumption": 81.96,
- "runAt": "2026-10-05T14:40:27.787Z",
+ "runAt": "2026-10-12T06:15:35.476Z",
  "fy": {
   "basis": {
    "requested": "fy",

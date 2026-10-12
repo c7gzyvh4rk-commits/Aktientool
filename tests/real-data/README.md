@@ -202,14 +202,33 @@ Skripte, die nicht zu `npm test` gehören.
    (TTM angefordert, FY verwendet, Rückfall ausgewiesen, Fundamentaldaten
    unverändert). Die Kontrollwerte sind Auditbelege, kein Produktcode.
 
-7. **Unabhängige Bewertungskontrolle (Praxisabnahme CRH, Produktstand ab V1.0.85)** — nach Schritt 1,
+7. **Unabhängige Bewertungskontrolle (Praxisabnahme CRH, Produktstand ab V1.0.86)** — nach Schritt 1,
    den Originalberichten und dem Replay **mit** `--price` auf einem **committeten**
    Produktstand, ohne Netz und ohne Browser:
 
    ```sh
    node tests/real-data/replay-import.mjs CRH --price 81.96
-   node tests/real-data/valuation-control.mjs CRH [--md tabelle.md]
+   node tests/real-data/valuation-control.mjs CRH --product-commit <REV> [--repo DIR] [--md tabelle.md]
    ```
+
+   **Verbindliche Produktzuordnung (seit V1.0.86).** `--product-commit` ist
+   Pflicht und nennt den ausdrücklich abzunehmenden Stand (Commit, Branch oder
+   Tag, z. B. `origin/main` nach einem Merge). Er wird **unabhängig vom
+   Bericht** per Git aufgelöst; der erwartete SHA-256 entsteht aus den Bytes der
+   Produktdatei in diesem Commit (`git cat-file blob`). Geprüft wird außerdem,
+   dass der Erfassungscommit des Berichts existiert und seine Produktdatei genau
+   den gemeldeten Hash hat. Ergebnis:
+   * „gleicher Commit“ — Erfassung auf dem Zielstand;
+   * „inhaltsgleich (anderer Commit, Produktdatei bytegleich)“ — z. B. Erfassung
+     auf dem PR-Head, Ziel der Merge-Commit oder ein späterer Doku-Commit;
+   * sonst „nicht belegt“ mit Grund (Commit unbekannt, Produktdatei fehlt, Hash
+     passt nicht zum Erfassungscommit, Produktdatei ≠ Zielstand, lokal geänderte
+     Produktdatei, fehlende Angaben) ⇒ Exit 1. Ohne `--product-commit` Exit 2.
+   Umfang der Inhaltsprüfung: die Produktdatei
+   `us-aktienbewertungstool-v1036-sector-classification-patch.html`; sie enthält
+   das gesamte ausführbare Produkt (ein Inline-Skript, keine weiteren Skripte).
+   `--repo` wählt das Repository (Default: dieses). Die Git-Logik testet
+   `valuation-control.binding.test.mjs` in isolierten temporären Repositories.
 
    **Sollseite.** Rechnet DCF (FCFF, 10 Jahre, Gordon), Szenarien, RIM, Synthese,
    Sicherheitsabschlag, Einstiegspreis, Reverse DCF (Bisektion), Altman Z″,

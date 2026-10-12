@@ -9462,7 +9462,8 @@ function applyDerivedFieldsV4(mj) {
         const weN = total > 0 ? we / total : we;
         const wdN = total > 0 ? wd / total : wd;
         // tr erwartet Prozent (22.6); kd als Dezimal → *100 für After-tax kd in %
-        const trPct = tr > 1 ? tr : tr * 100; // Normalisierung: falls Dezimal übergeben
+        // V1.0.86: tax_rate ist in Prozentpunkten (0.5 = 0,5 %) — keine Deutung nach Groessenordnung.
+        const trPct = tr;
         // CoE-Basis für WACC: manueller Wert hat Vorrang
         const coeForWacc = _manualCoe ? val.cost_of_equity_derived : coePct;
         const waccPct = parseFloat((weN * coeForWacc + wdN * (kd * 100) * (1 - trPct / 100)).toFixed(4));
@@ -9961,8 +9962,8 @@ function deriveCostOfCapital(mj) {
   // WACC ableitbar, wenn entweder CoE gerade abgeleitet wurde ODER manuell gesetzt ist
   const _coeAvailable = coeDerived || (_manualCoe && mj.valuation.cost_of_equity_derived != null);
   if (_coeAvailable && kd != null && tr != null && wd != null && we != null) {
-    // tr: Normalisierung falls als Dezimal (0.226) statt Prozent (22.6) übergeben
-    const trPct = tr > 1 ? tr : tr * 100;
+    // V1.0.86: tax_rate ist in Prozentpunkten (0.5 = 0,5 %) — keine Deutung nach Groessenordnung.
+    const trPct = tr;
     // kd als Dezimal → *100 für %-Rechnung
     const kdPct = kd > 1 ? kd : kd * 100;
     if (!_manualWacc) {
@@ -22994,7 +22995,7 @@ function validateMasterJson(mj) {
       wc.debt_weight != null && wc.equity_weight != null && mj.valuation.wacc_derived != null) {
     const coe  = (wc.risk_free + wc.beta * wc.equity_risk_premium) * 100; // Dezimal → %
     const kdPct = wc.cost_of_debt_pretax > 1 ? wc.cost_of_debt_pretax : wc.cost_of_debt_pretax * 100;
-    const trPct = wc.tax_rate > 1 ? wc.tax_rate : wc.tax_rate * 100;
+    const trPct = wc.tax_rate; // V1.0.86: Prozentpunkte, keine Deutung nach Groessenordnung
     const wacc = wc.equity_weight * coe + wc.debt_weight * kdPct * (1 - trPct / 100);
     if (Math.abs(wacc - mj.valuation.wacc_derived) > 0.5)
       warnings.push(`WACC-Komponenten (${wacc.toFixed(2)}%) weichen von wacc_derived (${mj.valuation.wacc_derived}%) ab.`);
@@ -32612,7 +32613,7 @@ function _makeBaseValuation() {
       risk_free:            0.045,
       equity_risk_premium:  0.055,
       beta:                 1.1,
-      tax_rate:             0.21,
+      tax_rate:             21, // V1.0.86: Prozentpunkte (21 %), bis V1.0.85 als 0.21 gefuehrt
       cost_of_debt_pretax:  0.05,
       debt_weight:          0.20,
       equity_weight:        0.80
@@ -38197,6 +38198,12 @@ const REGRESSION_FIXTURES = [
     mj.fundamentals.revenue = [1210, 1100, 1000, 900, 800];
     mj.fundamentals.ebit    = [242, 220, 190, 162, 140];
     mj.fundamentals.fcf     = [200, 180, 155, 130, 100];
+    // V1.0.86: CapEx auf dieselbe ~1.200-Mio-Basis wie der Umsatz (6 % wie im
+    // Basisdatensatz); der Widerspruch bleibt ueber EBITDA/D&A, CFO und Bilanz auf
+    // 5.000-Mio-Basis. Bis V1.0.85 lag die Divergenz nur wegen der gemischten
+    // Steuereinheit (WACC mit 21 %, Kern mit 0,21 %) knapp ueber 3 (3.05); mit
+    // durchgaengig 21 % waren es 2.83. Jetzt 3.98 — unabhaengig von der Steuereinheit.
+    mj.fundamentals.capex   = [73, 66, 60, 54, 48];
     mj.valuation.growth_stage1    = 8;
     mj.valuation.growth_terminal  = 2.5;
     return mj;
@@ -39565,7 +39572,7 @@ function _testGrowthEngine() {
         growth_stage1: 0.20, growth_terminal: 0.03,
         wacc_derived: 0.10, cost_of_equity_derived: 0.12,
         wacc_components: { risk_free:0.045, equity_risk_premium:0.055,
-          beta:1.2, tax_rate:0.21, cost_of_debt_pretax:0.06,
+          beta:1.2, tax_rate:21, cost_of_debt_pretax:0.06, // V1.0.86: Prozentpunkte (21 %), bis V1.0.85 als 0.21 gefuehrt
           debt_weight:0.20, equity_weight:0.80 },
         fcf_starting_point: { method:'ttm', value:null },
         fade: { enabled: false },
@@ -39833,7 +39840,7 @@ function _testGrowthEngine() {
           fcf_starting_point:{method:'ttm',value:null},
           fade:{enabled:false},
           wacc_components:{risk_free:0.045,equity_risk_premium:0.055,beta:1.1,
-            tax_rate:0.21,cost_of_debt_pretax:0.05,debt_weight:0.20,equity_weight:0.80},
+            tax_rate:21,cost_of_debt_pretax:0.05,debt_weight:0.20,equity_weight:0.80}, // V1.0.86: Prozentpunkte (21 %), bis V1.0.85 als 0.21 gefuehrt
         },
         market:{price:45.00,market_cap:45000,price_currency:'USD'},
         quality_inputs:{piotroski:{}},
@@ -44428,7 +44435,7 @@ function _testGoldenCases() {
         wacc_derived: 0.09, cost_of_equity_derived: 0.10,
         wacc_components: {
           risk_free: 0.045, equity_risk_premium: 0.055,
-          beta: 1.1, tax_rate: 0.21,
+          beta: 1.1, tax_rate: 21, // V1.0.86: Prozentpunkte (21 %), bis V1.0.85 als 0.21 gefuehrt
           cost_of_debt_pretax: 0.05,
           debt_weight: 0.20, equity_weight: 0.80
         },
@@ -46536,8 +46543,13 @@ function _testChat9Fixes() {
     // (gemessen auf cd1be7e mit demselben Fixture).
     check('P25 unverändert 2.79415505393804',
       Math.abs(sres.decisionRangeLow - 2.79415505393804) < 1e-12, sres.decisionRangeLow);
-    check('P75 unverändert 7.262863118767878',
-      Math.abs(sres.decisionRangeHigh - 7.262863118767878) < 1e-12, sres.decisionRangeHigh);
+    // V1.0.86: T-01 fuehrt tax_rate jetzt als 21 (Prozentpunkte) statt 0.21.
+    // Bis V1.0.85 rechnete der WACC damit 21 %, der DCF-Kern aber 0,21 % — der
+    // alte P75 7.262863118767878 enthielt diese Mischung. Neu gemessen; derselbe
+    // Wert ergibt sich auf V1.0.85 (29a5a21) mit tax_rate 21 (WACC 9.23 dort wie
+    // hier). P25 haengt nicht von der Steuerquote ab und bleibt.
+    check('P75 unverändert 5.563015589041687 (Steuer 21 % in WACC und Kern)',
+      Math.abs(sres.decisionRangeHigh - 5.563015589041687) < 1e-12, sres.decisionRangeHigh);
 
     const rows = ovScenarioRows(mj, sres);
     const p25 = scen(rows, 'p25'), p75 = scen(rows, 'p75');
