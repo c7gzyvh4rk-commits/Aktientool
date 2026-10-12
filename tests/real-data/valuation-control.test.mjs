@@ -31,7 +31,12 @@ const byId = Object.fromEntries(EV.items.map(i => [i.id, i.value]));
 const v = (id) => { if (!(id in byId)) throw new Error('Beleg ' + id + ' fehlt'); return byId[id]; };
 const C = computeControl(v, VC);
 const fresh = () => JSON.parse(JSON.stringify(CAP));
-const run = (rep, vc = VC) => compareCapture(C, rep, vc, 'CRH');
+// Die Git-Zuordnung (verifyProductBinding) pruefen valuation-control.binding.test.mjs
+// in isolierten Repositories. Hier geht es um die Werte: als Zuordnung dient
+// ein bestandenes Ergebnis; Test 8 zeigt, dass ohne bzw. mit fehlgeschlagener
+// Zuordnung kein Erfolg moeglich ist.
+const BOUND = { ok: true, issues: [] };
+const run = (rep, vc = VC, binding = BOUND) => compareCapture(C, rep, vc, 'CRH', binding);
 const row = (R, key) => R.rows.find(r => r.key === key);
 
 test('0 · Toleranzen unveraendert (Beleg)', () => {
@@ -151,4 +156,14 @@ test('7 · Sollseite unabhaengig: Aenderung der Erfassung aendert die Kontrolle 
   const R = run(rep);
   for (const k of CURRENT_RESULT_KEYS) assert.equal(row(R, k).ctrl, row(run(fresh()), k).ctrl, k);
   assert.equal(R.ok, false);
+});
+
+test('8 · ohne oder mit fehlgeschlagener Produktzuordnung kein Erfolg (Werte im Uebrigen passend)', () => {
+  const none = compareCapture(C, fresh(), VC, 'CRH');
+  assert.equal(none.ok, false);
+  assert.ok(none.captureIssues.some(i => /Produktzuordnung nicht geprueft/.test(i)));
+  const bad = run(fresh(), VC, { ok: false, issues: ['erfasste Produktdatei ≠ Zielstand'] });
+  assert.equal(bad.ok, false);
+  assert.ok(bad.captureIssues.some(i => /^Produktzuordnung: erfasste Produktdatei/.test(i)));
+  assert.deepEqual(bad.failed.map(r => r.label), [], 'Werte selbst bleiben in Toleranz');
 });
