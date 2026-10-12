@@ -1,5 +1,40 @@
 # HANDOFF — US-Aktienbewertungstool
 
+## Manuelle CoE wirkt beim ersten „Neu berechnen“ auf den WACC (V1.0.87)
+
+Ausgangsstand main `1bc4cec7e462156c2b012905fcf8aeac198455aa` (PR #13, am
+2026-10-12 als Remote-Stand bestätigt); keine `AGENTS.md`. Eigener Worktree,
+Branch `claude/happy-bohr-pqf8sn`. Details AUDIT **§13.24** und
+`AUDIT-PRAXISABNAHME-CRH.md` §7.7 (vorher Grenze §9.10, jetzt geschlossen).
+*Ursache:* `recalcFromAssumptions` setzte die Herkunft „manual“ einer direkt
+geänderten CoE erst nach `deriveCostOfCapital`; der WACC entstand aus der alten
+CoE, erst der zweite Klick korrigierte ihn. Kontrollfall RF 4 %, ERP 6 %,
+Beta 1,5 (CoE 13), Kd 5 %, 50/50, `tax_rate: 0.5`: Import **8.9875 %**, CoE 15
+⇒ Soll **9.9875 %**; auf `1bc4cec` nach dem ersten Klick 8.9875 (DCF 44.69
+unverändert), nach dem zweiten 9.9875 (DCF 30.66). Im selben Schritt: ein beim
+Import durch die Untergrenze angehobener WACC (Rohwert 7.4875, verwendet 8) fiel
+bei unverändertem Klick auf den Rohwert und wurde beim nächsten zum manuellen
+Override; `wacc_components.derived.wacc` blieb stehen.
+*Korrektur:* Flags „manual“ (CoE/WACC) vor der Ableitung; `derived.wacc`/
+`.cost_of_equity` nachgeführt; abgeleiteter WACC mit derselben Untergrenze wie
+beim Import (`computeWaccFloorV4`, Regel unverändert aus `applyDerivedFieldsV4`
+ausgelagert). Keine neue Formel, Modelle/Steuer/TTM/Schulden/Untergrenzen
+unverändert. Ergebnis: erster Klick 9.9875 % „derived“, von DCF und Szenarien
+verwendet, bitgleich zu einem unabhängigen Import mit CoE 15 „manual“; manueller
+WACC 11.25 bleibt bei CoE-, Kd- und Beta-Änderung.
+*Tests:* `coe-wacc-recalc` 17 (Harness `tests/recalc-harness.mjs`; 10 rot auf
+`1bc4cec`), Browser §19 neu (18) und §18.C mit Erwartung (9 rot auf `1bc4cec`).
+Node 442 → 459, Browser 305 → 324, Audit 58, Rechenprüfungen 1700.
+CRH auf `a6bb5d7` (Produktdatei `0c56cef9…8501`) wiederholt: Replay 58/58,
+Kontrolle 100/100 · 39/39 · 7/7, `valuation-control --product-commit a6bb5d7`
+26/26 „gleicher Commit“; Steuer 21.71 %, DCF 91.68, Einstieg 51.08; Ablauf mit
+3× „Neu berechnen“, TTM ↔ FY, Export, Wiederimport bitgleich (auch zu `1bc4cec`).
+Offen: FY nur im dokumentierten Umfang, TTM nicht abgenommen, Nutzerbrowser
+offen, Kurs 81.96 als Annahme, Modellvereinfachungen, zwei WACC-Ableitungen mit
+unterschiedlichen Voraussetzungen (Bericht §9.11). Kein Deployment.
+
+---
+
 ## Zweites Nachreview: WACC-Steuer in Prozentpunkten, verbindliche Produktzuordnung (V1.0.86)
 
 Ausgangsstand main `29a5a21d6025fc7f73d09828132ceffc19a7e198` (PR #12, am

@@ -1702,3 +1702,50 @@ Produktdatei (einziges ausführbares Produkt).
 Browser §18 (24; 5 rot), `tests/real-data/valuation-control.binding.test.mjs`
 (10; isolierte Git-Repositories) und `valuation-control.test.mjs` Test 8.
 
+### 13.24 · Manuelle CoE wirkt beim ersten „Neu berechnen“ auf den WACC (V1.0.87)
+
+**Ausgangsstand.** main `1bc4cec7e462156c2b012905fcf8aeac198455aa` (Merge PR #13);
+Branch `claude/happy-bohr-pqf8sn`. Befund aus `AUDIT-PRAXISABNAHME-CRH.md` §9.10.
+
+**Ursache (Aufrufreihenfolge).** `recalcFromAssumptions` erkannte eine direkt
+geänderte CoE (`_coeDirectEdit`), setzte `_derivationFlags.cost_of_equity_derived =
+'manual'` aber erst nach `deriveCostOfCapital(mj)`. Diese sah „derived“, schrieb die
+Komponenten-CoE, bildete daraus den WACC und markierte ihn „derived“; danach wurde
+nur die manuelle CoE zurückgeschrieben. Erst der nächste Klick bildete den WACC aus
+der manuellen CoE. `deriveCostOfCapital` schreibt zudem `wacc_components.derived`
+nicht; dieser Spiegel (Synthese: ROIC − WACC, ROE − CoE) blieb auf dem Importwert.
+Ebenfalls im selben Schritt: `deriveCostOfCapital` kennt die WACC-Untergrenze nicht.
+Ein beim Import angehobener WACC fiel bei unverändertem „Neu berechnen“ auf den
+Rohwert, und der nächste Klick las den weiter angezeigten Wert als Direkteingabe
+(manueller Override).
+
+**Kontrollrechnung (unabhängig).** RF 4 %, ERP 6 %, Beta 1,5 ⇒ CoE 13 %; Kd 5 %;
+50/50; Steuer 0,5 % (`tax_rate: 0.5`): WACC = 0,5 · 13 + 0,5 · 5 · 0,995 =
+8.9875 %; CoE 15 ⇒ 9.9875 %; CoE 17 ⇒ 10.9875 %; CoE 17, Kd 6 % ⇒ 11.485 %;
+CoE 11 ⇒ 7.9875 % < Untergrenze 8 % (standard_nonfin, max(8, RF + 4)).
+
+**Reproduktion auf `1bc4cec`** (Import → Annahmen → nur CoE 15 → ein Klick):
+WACC 8.9875 „derived“, verwendet 8.9875, DCF-Basis 44.6894; zweiter Klick 9.9875,
+DCF 30.6615. Untergrenzenfall (Beta 1): Import 8 (Rohwert 7.4875), erster
+unveränderter Klick 7.4875 (DCF 64.24 ⇒ 77.86), zweiter 8 „manual“.
+
+**Korrektur.** In `recalcFromAssumptions`: Flags „manual“ für CoE und WACC vor
+`deriveCostOfCapital`; nach der Ableitung `derived.cost_of_equity`/`derived.wacc`
+nachgeführt; ein dort abgeleiteter WACC unterliegt der Untergrenze aus
+`computeWaccFloorV4` (die bisherige Regel aus `applyDerivedFieldsV4`, unverändert
+ausgelagert und dort weiter verwendet), mit `wacc_floor_applied` und
+`_heuristicDetails.wacc_floor.previous` = Rohwert wie beim Import. Manueller WACC
+wie bisher nur Warnung. Keine neue WACC-Formel.
+
+**Nachweise.** `tests/coe-wacc-recalc.test.mjs` (17; Ablauf über
+`tests/recalc-harness.mjs`: produktiver Import, von `renderAssumptions` geschriebenes
+Formular, `recalcFromAssumptions`; Vergleich mit einem unabhängig importierten
+Referenzzustand mit denselben endgültigen Annahmen, einschließlich des in DCF und
+Szenarien verwendeten WACC) — auf `1bc4cec` 10 rot, 7 Gegenproben grün. Browser
+§19 (18) und §18.C (sachliche Erwartung statt Protokoll) — auf `1bc4cec` 9 rot.
+Endstand: 1700 · Node 459/459 · Audit 58/58 · Browser 324/324. CRH auf `a6bb5d7`
+bitgleich zu V1.0.86 (`AUDIT-PRAXISABNAHME-CRH.md` §10).
+
+**Nicht geändert, beobachtet.** `applyDerivedFieldsV4` und `deriveCostOfCapital`
+haben unterschiedliche Voraussetzungen (Beta, Aufschläge, Gewichtsnormierung);
+Bericht §9.11.
