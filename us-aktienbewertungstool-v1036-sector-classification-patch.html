@@ -8962,6 +8962,30 @@ function computeDebtMateriality(mj) {
   return { level: 'unknown', detail: `netDebt=${netDebt.toFixed(0)}M > 0, aber kein market_cap für Debt-Weight` };
 }
 
+// V1.0.17: WACC-Untergrenze = max(Sektor-Floor, risk_free_rate + 4 pp).
+// V1.0.87: unveraendert aus applyDerivedFieldsV4 herausgeloest, damit der in
+// recalcFromAssumptions abgeleitete WACC dieselbe Regel nutzt (keine Kopie).
+function computeWaccFloorV4(mj, wcIn) {
+  const WACC_FLOORS = {
+    standard_nonfin:    8.0,
+    asset_light:        8.0,
+    retail:             8.0,
+    buyback_compounder: 8.0,
+    dividend_aristocrat:7.5,
+    cyclical:           9.0,
+    financial:          8.5,
+    high_growth:        9.5
+  };
+  const wc = wcIn || (mj && mj.valuation && mj.valuation.wacc_components) || {};
+  const _clsFloor = (mj && mj.meta && mj.meta.sub_classification) || 'standard_nonfin';
+  const _sectorFloor = WACC_FLOORS[_clsFloor] ?? 8.5;
+  // Dynamischer rf-Floor: rf + 4pp (rf in Dezimal, Floor in %)
+  const _rfForFloor = wc.risk_free_rate ?? wc.risk_free;
+  const _rfFloorContrib = (_rfForFloor != null) ? (_rfForFloor * 100 + 4.0) : null;
+  const _waccFloor = (_rfFloorContrib != null) ? Math.max(_sectorFloor, _rfFloorContrib) : _sectorFloor;
+  return { floor: _waccFloor, sectorFloor: _sectorFloor, rfFloorContrib: _rfFloorContrib, subClassification: _clsFloor };
+}
+
 function applyDerivedFieldsV4(mj) {
   if (!mj) return { applied: [] };
   const applied = [];
@@ -9534,22 +9558,10 @@ function applyDerivedFieldsV4(mj) {
   // V1.0.17: WACC-Floors — nach WACC-Berechnung/Heuristik sektoralen Mindest-WACC erzwingen
   // Effektiver Floor = max(sektor_floor, risk_free_rate + 4pp) — falls rf vorhanden
   // Ausnahme: manueller WACC → nur Warnung, kein automatischer Floor
-  const WACC_FLOORS = {
-    standard_nonfin:    8.0,
-    asset_light:        8.0,
-    retail:             8.0,
-    buyback_compounder: 8.0,
-    dividend_aristocrat:7.5,
-    cyclical:           9.0,
-    financial:          8.5,
-    high_growth:        9.5
-  };
-  const _clsFloor = (mj.meta && mj.meta.sub_classification) || 'standard_nonfin';
-  const _sectorFloor = WACC_FLOORS[_clsFloor] ?? 8.5;
-  // Dynamischer rf-Floor: rf + 4pp (rf in Dezimal, Floor in %)
-  const _rfForFloor = wc.risk_free_rate ?? wc.risk_free;
-  const _rfFloorContrib = (_rfForFloor != null) ? (_rfForFloor * 100 + 4.0) : null;
-  const _waccFloor = (_rfFloorContrib != null) ? Math.max(_sectorFloor, _rfFloorContrib) : _sectorFloor;
+  // V1.0.87: Regel unveraendert in computeWaccFloorV4 ausgelagert — dieselbe
+  // Untergrenze gilt fuer den in recalcFromAssumptions abgeleiteten WACC.
+  const { floor: _waccFloor, sectorFloor: _sectorFloor, rfFloorContrib: _rfFloorContrib,
+          subClassification: _clsFloor } = computeWaccFloorV4(mj, wc);
   const _waccNow = val.wacc_derived;
   if (_waccNow != null) {
     if (_manualWacc) {
@@ -22823,6 +22835,11 @@ function recalcFromAssumptions() {
   if (_coeManualOverride && mj.valuation.cost_of_equity_derived != null) {
     _manualCoeVal = mj.valuation.cost_of_equity_derived;
     mj.valuation.wacc_components.derived.cost_of_equity = _manualCoeVal;
+    // V1.0.87: Herkunft VOR der Ableitung setzen. Bis V1.0.86 stand das Flag
+    // hier noch auf „derived“: deriveCostOfCapital ueberschrieb die CoE, bildete
+    // den WACC aus der alten CoE, und erst danach wurde die manuelle CoE
+    // zurueckgeschrieben — der WACC folgte erst beim naechsten Klick.
+    mj.valuation._derivationFlags.cost_of_equity_derived = 'manual';
     // Bestehende Override-Struktur nutzen
     if (!mj.valuation.assumptions.coe_override_pct || typeof mj.valuation.assumptions.coe_override_pct !== 'object') {
       mj.valuation.assumptions.coe_override_pct = { value: _manualCoeVal, source_type: 'manual', notes: 'user override (assumptions tab)' };
@@ -22837,6 +22854,7 @@ function recalcFromAssumptions() {
     _manualWaccVal = mj.valuation.wacc_derived;
     mj.valuation.wacc_components.derived.wacc = _manualWaccVal;
     mj.valuation.wacc_components.derived.wacc_override = _manualWaccVal;
+    mj.valuation._derivationFlags.wacc_derived = 'manual';   // V1.0.87: vor der Ableitung
   }
 
   // V1.0.21: manual_overrides aus JSON-Block persistent anwenden (Vorrang vor Yahoo/derived)
@@ -22858,8 +22876,9 @@ function recalcFromAssumptions() {
     mj.valuation.wacc_components.equity_risk_premium = _mo_wc.equity_risk_premium;
   }
 
-  // deriveCostOfCapital aufrufen — er wird den manuellen Wert ggf. überschreiben,
-  // aber wir schreiben ihn direkt danach zurück.
+  // deriveCostOfCapital respektiert die oben gesetzten Flags „manual“: eine
+  // manuelle CoE fliesst in den abgeleiteten WACC ein, ein manueller WACC
+  // bleibt stehen. Das Zurueckschreiben unten bleibt als Absicherung.
   const derived = deriveCostOfCapital(mj);
 
   // Manuelle Werte wiederherstellen (CoE zuerst, weil WACC ggf. davon abhängt)
@@ -22873,6 +22892,8 @@ function recalcFromAssumptions() {
     // Kein manueller Override aktiv → normale Logik: derived/snap-tracking
     if (derived.coe) {
       state.manualAssumptionFields.delete('cost_of_equity_derived');
+      // V1.0.87: Spiegel fuer die Verbraucher von wacc_components.derived (Synthese)
+      mj.valuation.wacc_components.derived.cost_of_equity = mj.valuation.cost_of_equity_derived;
     } else if (mj.valuation.cost_of_equity_derived !== (snap.cost_of_equity_derived ?? null)) {
       // Wert weicht von Snapshot ab, aber nicht durch Komponenten-Derivation gesetzt
       state.manualAssumptionFields.add('cost_of_equity_derived');
@@ -22890,6 +22911,26 @@ function recalcFromAssumptions() {
   } else {
     if (derived.wacc) {
       state.manualAssumptionFields.delete('wacc_derived');
+      // V1.0.87: Der hier abgeleitete WACC unterliegt derselben Untergrenze wie
+      // in applyDerivedFieldsV4 (computeWaccFloorV4, Regel unveraendert). Bis
+      // V1.0.86 fiel ein beim Import angehobener WACC bei unveraendertem
+      // „Neu berechnen“ auf den Rohwert zurueck, und der naechste Klick machte
+      // den weiter angezeigten Wert zum manuellen Override.
+      const _wv = mj.valuation;
+      const _fl = computeWaccFloorV4(mj);
+      if (_wv.wacc_derived < _fl.floor) {
+        if (!_wv._heuristicDetails) _wv._heuristicDetails = {};
+        _wv._derivationFlags.wacc_floor_applied = true;
+        _wv._heuristicDetails.wacc_floor = {
+          previous: _wv.wacc_derived, floor: _fl.floor, sector_floor: _fl.sectorFloor,
+          rf_floor_contrib: _fl.rfFloorContrib, sub_classification: _fl.subClassification
+        };
+        _wv.wacc_derived = _fl.floor;
+      } else {
+        delete _wv._derivationFlags.wacc_floor_applied;
+        if (_wv._heuristicDetails) delete _wv._heuristicDetails.wacc_floor;
+      }
+      _wv.wacc_components.derived.wacc = _wv.wacc_derived;
     } else if (mj.valuation.wacc_derived !== (snap.wacc_derived ?? null)) {
       state.manualAssumptionFields.add('wacc_derived');
       mj.valuation._derivationFlags.wacc_derived = 'manual';
