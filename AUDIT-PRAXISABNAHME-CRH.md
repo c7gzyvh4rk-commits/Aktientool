@@ -1,6 +1,6 @@
 # Praxisabnahme mit einem vollständigen Realdatenfall — CRH plc (FY2025)
 
-**Urteil** (Stand nach dem zweiten Nachreview, V1.0.86; Produktdatei SHA-256 `6b6d865e617acb570f61cc65cec793743bb96303b022fe140f539d7aff283ccf`, eingeführt mit `0e9286af131e8db224bb796a3c1b5acd6fb12269`, Erfassung auf `5159e8cd3143acf8ab13b57c7d326e920e6fad2e`; Zuordnung per Git verifiziert, §6). Die Bereiche sind getrennt zu lesen:
+**Urteil** (Stand nach der Korrektur V1.0.87, CoE/WACC bei „Neu berechnen“; Produktdatei SHA-256 `0c56cef948b23d9317ede5b0b4246b0cf4704a5a8a65c4bd41aa11ad23648501`, eingeführt und erfasst mit `a6bb5d79aabeedccfeb017af96c73377527c547e`; Zuordnung per Git verifiziert, §6). Alle CRH-Kennwerte sind bitgleich zu V1.0.86 (`6b6d865e…3ccf`, Erfassung `5159e8c`). Die Bereiche sind getrennt zu lesen:
 
 | Bereich | Status | Umfang und Vorbehalt |
 |---|---|---|
@@ -10,7 +10,7 @@
 | **Kursabhängige Ergebnisse** (Reverse DCF, Abstand zum Kurs, Einordnung „Beobachten/expensive“) | **nur unter der Kursannahme 81.96 USD geprüft** | Der Kurs ist nicht primär verifiziert (§3). Rechenweg geprüft, nicht der Kurs. |
 | **Minderheiten, Equity-Beteiligungen, Operating-Leasing, Aktienbasis, SBC** | **abgegrenzt, nicht abgenommen** | Vereinfachungen der Brücke und des FCFF (§9.5), ausgewiesen und unverändert. |
 
-Zusätzlich offen sind die Grenzen in §9 (u. a. Steuerquote-Altzustände, §9.9; WACC aus manueller CoE in der Neuberechnung, §9.10). Die WACC-Steuereinheit ist seit V1.0.86 behoben (§7.5). Ein erfolgreicher Fall belegt diesen Ablauf für diese Daten. Er belegt weder die Zuverlässigkeit für andere Unternehmen noch allgemeine Modellgültigkeit oder Fehlerfreiheit; eine vollständige Produktfreigabe ist damit nicht verbunden. Kein Deployment.
+Zusätzlich offen sind die Grenzen in §9 (u. a. Steuerquote-Altzustände, §9.9; unterschiedliche Voraussetzungen der beiden WACC-Ableitungen, §9.11). Die WACC-Steuereinheit ist seit V1.0.86 behoben (§7.5), der WACC aus manueller CoE beim ersten „Neu berechnen“ seit V1.0.87 (§7.7, vorher §9.10). Ein erfolgreicher Fall belegt diesen Ablauf für diese Daten. Er belegt weder die Zuverlässigkeit für andere Unternehmen noch allgemeine Modellgültigkeit oder Fehlerfreiheit; eine vollständige Produktfreigabe ist damit nicht verbunden. Kein Deployment.
 
 ---
 
@@ -29,6 +29,7 @@ Zusätzlich offen sind die Grenzen in §9 (u. a. Steuerquote-Altzustände, §9.9
   * Alle Realdaten-, Anzeige- und Exportprüfungen in diesem Bericht wurden **auf `b3f0c1e` wiederholt**.
 * **Nachreview (V1.0.85).** Referenz main `beb041f0d57e89b95ae0ce3ec71a4def2f851ca2` (Merge PR #11, dieser Bericht). Das Nachreview fand zwei konkrete Befunde (§7.3, §7.4). Behoben auf Branch `claude/tax-pct-and-current-capture` (eigener Worktree, Hauptcheckout unverändert); Produktstand danach `545427e`, Produktdatei SHA-256 `a49d96b7…2bed`. **Alle CRH-Prüfungen wurden auf diesem Stand wiederholt** (§10), mit demselben Datenstichtag 2026-10-05, demselben Cache (Quell-Hashes §3) und denselben Annahmen. Abweichungen gegenüber `b3f0c1e`: keine in den Bewertungswerten (alle Kennwerte bitgleich, §8); die Zählung der Testläufe ändert sich (§10).
 * **Zweites Nachreview (V1.0.86).** Referenz main `29a5a21d6025fc7f73d09828132ceffc19a7e198` (Merge PR #12), am 2026-10-12 per `git fetch` als aktueller Remote-Stand bestätigt. Zwei Befunde (§7.5, §7.6), behoben auf Branch `claude/wacc-tax-pct-product-binding` (eigener Worktree). Produktdatei danach SHA-256 `6b6d865e…3ccf` (Commit `0e9286a`); Erfassung auf `5159e8c` (Produktdatei bytegleich). **Alle CRH-Prüfungen wurden auf diesem Stand wiederholt** (§10): gleicher Datenstichtag 2026-10-05, gleicher Cache, gleiche Annahmen. Alle Bewertungswerte bitgleich zu `545427e` und `b3f0c1e` (CRH-Steuer 21.71 % > 1, der WACC ist bei CRH heuristisch 9 %).
+* **Korrektur CoE/WACC bei „Neu berechnen“ (V1.0.87).** Referenz main `1bc4cec7e462156c2b012905fcf8aeac198455aa` (Merge PR #13), am 2026-10-12 per `git fetch` als aktueller Remote-Stand bestätigt. Befund §9.10 behoben (§7.7) auf Branch `claude/happy-bohr-pqf8sn` (eigener Worktree, Hauptcheckout unverändert). Produktdatei danach SHA-256 `0c56cef9…8501` (Commit `a6bb5d7`, zugleich Erfassungscommit). **Alle CRH-Prüfungen wurden auf diesem Stand wiederholt** (§8, §10): gleicher Datenstichtag 2026-10-05, Company Facts und Submissions bytegleich zu §3, gleiche Annahmen. Alle Bewertungswerte bitgleich zu V1.0.86; der gesamte Ablauf (Import, Kurs, 3× „Neu berechnen“, TTM ↔ FY, Export, Wiederimport, 2× „Neu berechnen“) ergibt auf `1bc4cec` und `a6bb5d7` bitgleiche Werte. CRH ist dafür ein Erhaltungstest (WACC heuristisch, kein Beta); den Fehler selbst weist der Komponentenfall in §7.7 nach.
 
 ## 2 · Fallauswahl (vor der Ergebnisprüfung)
 
@@ -143,11 +144,11 @@ Die CL- und LMT-Sperren sind berechtigt und bleiben als Sperrfälle dokumentiert
 | Gewichte, MoS-Bausteine | DCF 70 % / RIM 30 %; investable_mid 20 %, Heuristik +10 pp, Buyback +10 pp, Cap 50 % | **Regeln** des Produkts |
 | Kurs | 81.96 USD | **manuell** (§3) |
 
-**Unabhängige Kontrollrechnung.** `tests/real-data/valuation-control.mjs CRH --product-commit <Zielstand>`, ohne Produktcode, nur geprüfte Belege und die obigen Annahmen: **26/26 innerhalb der Toleranz, Erfassung passend, Zuordnung zum Zielstand belegt** (Erfassung `5159e8c`, §10).
+**Unabhängige Kontrollrechnung.** `tests/real-data/valuation-control.mjs CRH --product-commit <Zielstand>`, ohne Produktcode, nur geprüfte Belege und die obigen Annahmen: **26/26 innerhalb der Toleranz, Erfassung passend, Zuordnung zum Zielstand belegt** (Erfassung `a6bb5d7`, §10).
 * **Sollseite:** eigene Formeln aus den gegen das Original-iXBRL geprüften Belegen und den Annahmen; kein Produktcode, kein Engine-Wert.
 * **Istseite:** ausschließlich die **aktuelle** Replay-Erfassung desselben Laufs (`out/CRH-report.json`). Seit V1.0.85 gilt das auch für Altman Z″, Piotroski, g₁, Sicherheitsabschlag, Einstiegs- und tiefen Prüfpreis (`fy.valuationResults`, aus dem bewerteten Zustand erfasst). Bis V1.0.84 standen dort historische Werte (§7.4).
 * **Verbindliche Produktzuordnung (seit V1.0.86):** Der Zielstand wird mit `--product-commit` unabhängig vom Bericht angegeben, per Git auf einen vorhandenen Commit aufgelöst, und der erwartete SHA-256 entsteht aus den Bytes der Produktdatei in diesem Commit. Der Erfassungscommit des Berichts muss existieren, seine Produktdatei muss den gemeldeten Hash haben, und dieser muss dem Zielstand entsprechen. Ein anderer Commit mit bytegleicher Produktdatei (Merge, Doku-Commits) gilt als „inhaltsgleich“ und wird so ausgewiesen. Umfang: die Produktdatei; sie enthält das gesamte ausführbare Produkt (ein Inline-Skript, keine weiteren Skripte; extern nur ein Web-Font-Stylesheet, das der Replay abweist).
-* **Erfassung dokumentiert und geprüft:** Erfassungscommit `5159e8cd3143acf8ab13b57c7d326e920e6fad2e`, Produktdatei SHA-256 `6b6d865e617acb570f61cc65cec793743bb96303b022fe140f539d7aff283ccf` ohne lokale Änderung, gegen Zielstand `5159e8c` „gleicher Commit“, gegen `0e9286a` „inhaltsgleich“; Unternehmen CRH, Datenbasis fy (angefordert und verwendet), Kurs 81.96, Steuer 21.71 %, WACC 9, CoE 10, g_T 2.5, Urteil investable_mid, Position expensive.
+* **Erfassung dokumentiert und geprüft:** Erfassungscommit `a6bb5d79aabeedccfeb017af96c73377527c547e`, Produktdatei SHA-256 `0c56cef948b23d9317ede5b0b4246b0cf4704a5a8a65c4bd41aa11ad23648501` ohne lokale Änderung, gegen Zielstand `a6bb5d7` „gleicher Commit“, gegen `1bc4cec` (V1.0.86) „nicht belegt“ (andere Produktdatei, Gegenprobe); bis V1.0.86 Erfassung `5159e8c` mit `6b6d865e…3ccf`; Unternehmen CRH, Datenbasis fy (angefordert und verwendet), Kurs 81.96, Steuer 21.71 %, WACC 9, CoE 10, g_T 2.5, Urteil investable_mid, Position expensive.
 * **DCF:**
   * FCFF₁ = 4,214.8 Mio.; Umsatzbasis 37,447 × 1.0481ᵗ.
   * NOPAT = U·14.527 %·(1 − 21.71 %), + D&A-Quote, − CapEx-Quote, − OWC-Quote·ΔU.
@@ -234,11 +235,27 @@ Alle Befunde wurden minimal reproduziert, getestet (Gegenlauf rot), reviewt und 
    * Nachweis: `tests/real-data/valuation-control.binding.test.mjs` (10, isolierte temporäre Git-Repositories): passender Commit ⇒ ok; nicht vorhandener Commit, Commit mit anderer Produktdatei, falscher Hash, Ziel-Hash mit widersprüchlichem Erfassungscommit, fehlende Metadaten, lokal geänderte Datei, frühere Erfassung für neuen Zielstand ⇒ Fehlschlag; zwei Commits mit bytegleicher Produktdatei ⇒ ok, „inhaltsgleich“. Dazu `valuation-control.test.mjs` Test 8 (ohne Zuordnung kein Erfolg). Auf `29a5a21`: Test 8 rot, die Binding-Datei ist nicht ladbar (Export fehlt), die übrigen neun Wertetests grün.
    * Am echten Fall: Die CRH-Erfassung auf `5159e8c` besteht gegen `5159e8c` (gleicher Commit) und `0e9286a` (inhaltsgleich) und scheitert gegen `29a5a21` und `545427e` („erfasste Produktdatei 6b6d865e617a… ≠ Zielstand … (a49d96b793d6…)“). Die frühere Erfassung aus PR #12 (`545427e`) scheitert gegen den neuen Zielstand. Ohne `--product-commit` bricht das Werkzeug ab (Exit 2).
 
+**Korrektur CoE/WACC bei „Neu berechnen“ (V1.0.87, ein PR; vorher §9.10).**
+
+7. **WACC folgte einer manuellen CoE erst beim zweiten „Neu berechnen“** (Ursache in der Aufrufreihenfolge von `recalcFromAssumptions`).
+   * `recalcFromAssumptions` erkannte die geänderte CoE, setzte die Herkunft `cost_of_equity_derived = 'manual'` aber erst **nach** `deriveCostOfCapital`. Die Ableitung überschrieb die CoE mit dem Komponentenwert, bildete daraus den WACC und markierte ihn „derived“; danach wurde nur die CoE zurückgeschrieben. Erst der nächste Klick (Flag jetzt „manual“) bildete den WACC aus der manuellen CoE. Zusätzlich blieb `wacc_components.derived.wacc` (gelesen u. a. von der Synthese, ROIC − WACC) auf dem Importwert stehen.
+   * **Unabhängiger Kontrollfall** (vollständige Komponenten, WACC tatsächlich abgeleitet, oberhalb der Untergrenze 8 % = max(standard_nonfin 8 %, RF 4 % + 4 pp)): RF 4 %, ERP 6 %, Beta 1,5 ⇒ CoE 13 %; Kd vor Steuern 5 %; Gewichte 50/50; `tax_rate: 0.5` (0,5 %). Ausgangs-WACC 0,5 · 13 + 0,5 · 5 · (1 − 0,5/100) = **8.9875 %**; CoE von Hand 15 ⇒ Soll **9.9875 %** nach dem ersten Klick.
+   * **Reproduziert auf `1bc4cec`** über den produktiven Ablauf (Import über die Oberfläche → Reiter Annahmen → nur CoE 15 → ein Klick; Node mit DOM-Attrappe und Chromium): CoE 15 „manual“, **WACC 8.9875 % „derived“**, von der DCF verwendeter Satz 8.9875 %, DCF-Basis 44.6894 (wie vor der Änderung); zweiter Klick ohne Änderung ⇒ WACC 9.9875 %, DCF-Basis 30.6615 (verzögerte Korrektur); `derived.wacc` blieb 8.9875. Browser §18.C protokollierte denselben Effekt (WACC 10.891 statt 11.591 aus CoE 14).
+   * **Zweiter, im selben Ableitungsschritt gefundener Befund.** `deriveCostOfCapital` kennt die WACC-Untergrenze nicht. Bei einem beim Import angehobenen WACC (Beta 1 ⇒ Rohwert 7.4875 %, verwendet 8 %) fiel der WACC beim **unveränderten** „Neu berechnen“ auf 7.4875 % (DCF 64.24 ⇒ 77.86); beim nächsten Klick las die Erkennung den weiter angezeigten Wert 8 als Direkteingabe und machte ihn zum manuellen Override. Die Untergrenze selbst ist unverändert.
+   * **Korrektur** (nur `recalcFromAssumptions` und eine Auslagerung):
+     * Herkunft „manual“ für CoE bzw. WACC wird **vor** `deriveCostOfCapital` gesetzt; die bestehende Vorrangregel der Ableitung („manuelle CoE fließt in den WACC ein, manueller WACC bleibt stehen“) greift damit schon beim ersten Klick. Das Zurückschreiben danach bleibt als Absicherung.
+     * Nach der Ableitung werden `wacc_components.derived.cost_of_equity` bzw. `.wacc` nachgeführt.
+     * Ein in der Neuberechnung **abgeleiteter** WACC unterliegt derselben Untergrenze wie beim Import. Dazu ist die unveränderte Regel aus `applyDerivedFieldsV4` in `computeWaccFloorV4` ausgelagert und wird an beiden Stellen verwendet (keine Kopie, keine neue Formel). Rohwert und Untergrenze stehen wie beim Import in `_heuristicDetails.wacc_floor`; liegt der neue WACC darüber, entfällt das Kennzeichen. Manueller WACC: weiterhin keine Anhebung.
+     * Keine neue WACC-Formel, keine Änderung an Bewertungsmodellen, Steuer-Einheit, TTM, Schuldenumfang oder Untergrenzen.
+   * **Ergebnis auf `a6bb5d7`:** WACC vor der CoE-Änderung **8.9875 %**, nach dem ersten Klick **9.9875 %** („derived“, von DCF und Szenarien verwendet, `derived.wacc` gleich, Feld zeigt 9.9875), DCF-Basis 30.6615 — bitgleich (DCF, RIM, Spanne, Szenario-WACC) mit einem **unabhängig aufgebauten Referenzzustand**: frischer Import derselben Daten mit CoE 15 als „manual“. Weitere Klicks ändern nichts.
+   * **Nachweis:** `tests/coe-wacc-recalc.test.mjs` (17, über `tests/recalc-harness.mjs`: produktiver Import, das von `renderAssumptions` geschriebene Formular, `recalcFromAssumptions`) und Browser §19 (18, echte Klicks und Tastatureingaben) sowie §18.C mit sachlicher Erwartung (bisher nur protokolliert). Abgedeckt: Fehlerfall erster Klick; zweiter und dritter Klick stabil; weitere CoE-Änderung 15 ⇒ 17 (10.9875 %) und 11 ⇒ Rohwert 7.9875 %, verwendet 8 % wie beim Import; bereits manuelle CoE + Kd 5 ⇒ 6 % (11.485 % bei CoE 17); ausdrücklich manueller WACC 11.25 bleibt bei CoE-, Kd- und Beta-Änderung; CoE 15 und WACC 12 im selben Klick (beide manuell, Bewertung mit 12/15); reine Kursänderung; Untergrenze beim Import bleibt bei unveränderten Klicks; Export „JSON herunterladen“ und Wiederimport mit Herkunft, danach zweimal „Neu berechnen“ ohne Wirkung; ohne Beta (heuristischer WACC) kein verzögerter Wechsel mehr.
+   * **Rot/Grün:** auf `1bc4cec` Node 10 von 17 rot (Gegenproben 0, 1, 5, 6, 7, 8, 11b grün), Browser **315/324** (9 rot: 18.C, 19.1 ×2, 19.2, 19.3, 19.4, 19.F, 19.X ×2; Gegenproben 19.R, 19.0, 19.5, 19.6, 19.7 grün). Auf `a6bb5d7` 17/17 und 324/324. Bestehende Erwartungen unverändert.
+
 ## 8 · Anzeige, Export, Browser
 
 **Browser.** Chromium **141.0.7390.37**, headless (`/opt/pw-browsers/chromium`), 1400×1000. Es lief ohne Netz außer den lokal bedienten SEC-Antworten; die Web-Fonts wurden abgewiesen.
 
-**Abläufe auf `b3f0c1e`, auf `545427e` und auf dem Stand V1.0.86 (`5159e8c`) wiederholt** (echte Klicks und Tastatureingaben):
+**Abläufe auf `b3f0c1e`, auf `545427e`, auf dem Stand V1.0.86 (`5159e8c`) und auf V1.0.87 (`a6bb5d7`) wiederholt** (echte Klicks und Tastatureingaben):
 * „Daten abrufen“ → „Daten übernehmen & berechnen“;
 * Kurs im Reiter Annahmen eingegeben, „Neu berechnen“;
 * alle Reiter (Übersicht, Qualität, Bewertung, Wachstum, Markt-Vergleich, Annahmen, SEC-Daten);
@@ -254,7 +271,7 @@ Alle Befunde wurden minimal reproduziert, getestet (Gegenlauf rot), reviewt und 
 * Export: Unternehmen, Periode 2025-12-31, Einheiten (Mio. USD/Mio. Aktien), Annahmen (g₁, g_T, WACC, Steuer, RF/ERP), Ergebnisse (DCF, Spanne, Einstieg, MoS, Position, Urteil), Datenbasis mit Rückfallgründen und CSV mit Datennote B und QCE 8.89 stimmen mit der Anzeige überein.
 * Wiederimport: alle Kennwerte identisch (DCF, RIM, DDM, Spanne, Einstieg, Tiefpreis, MoS, Reverse DCF, Z″, Piotroski).
 
-**Steuerquote und kursunabhängige Werte vor und nach unverändertem „Neu berechnen“ (CRH; auf `545427e` und `5159e8c` identisch).** Das Feld zeigt „21.71“ unter „Steuerquote (%)“. CRH ist hier ein Erhaltungstest: Der WACC ist heuristisch (9 %, kein Beta), die Steuerquote 21,71 % > 1. Niedrige Steuerquoten mit tatsächlich abgeleitetem WACC weist §7.5 nach (Browser §18).
+**Steuerquote und kursunabhängige Werte vor und nach unverändertem „Neu berechnen“ (CRH; auf `545427e`, `5159e8c`, `1bc4cec` und `a6bb5d7` identisch).** Das Feld zeigt „21.71“ unter „Steuerquote (%)“. CRH ist hier ein Erhaltungstest: Der WACC ist heuristisch (9 %, kein Beta), die Steuerquote 21,71 % > 1. Niedrige Steuerquoten mit tatsächlich abgeleitetem WACC weist §7.5 nach (Browser §18).
 
 | Zustand | Steuer | DCF Base / kons. / opt. | RIM | Spanne | Einstieg / Tiefpreis | MoS | Z″ / Piotroski | Reverse DCF |
 |---|---|---|---|---|---|---|---|---|
@@ -264,13 +281,13 @@ Alle Befunde wurden minimal reproduziert, getestet (Gegenlauf rot), reviewt und 
 | TTM angefordert / zurück FY | 21.71 | gleich | gleich | gleich | gleich | gleich | gleich | gleich |
 | Wiederimport des Exports, dann „Neu berechnen“ | 21.71 | gleich | gleich | gleich | gleich | gleich | gleich | gleich |
 
-„gleich“ heißt bitgleich zur Zeile darüber. Export `CRH_master.json`: `tax_rate` 21.71, Kurs 81.96. Die Werte sind identisch mit denen auf `b3f0c1e`.
+„gleich“ heißt bitgleich zur Zeile darüber. Export `CRH_master.json`: `tax_rate` 21.71, Kurs 81.96, WACC 9 und CoE 10 „heuristic“, `derived.wacc` 9. Die Werte sind identisch mit denen auf `b3f0c1e`. Auf V1.0.87 (`a6bb5d7`) per Skript in Chromium 141 wiederholt (produktiver SEC-Weg mit Cache-Antworten, Kurs, 3× „Neu berechnen“, TTM ↔ FY, Inhalt von „JSON herunterladen“, Wiederimport in frische Seite, 2× „Neu berechnen“): alle Werte bitgleich, ebenso derselbe Lauf auf `1bc4cec`; 0 Ausnahmen. Nach dem Wiederimport ist die Liste der als manuell geführten Felder leer (Import setzt sie zurück, vorher g₁, g_T, Kurs, §9.1); Werte und Herkunftsflags unverändert.
 
 **Nutzertest im tatsächlich verwendeten Browser: offen.** Browser und Version des Nutzers sind hier nicht belastbar bekannt; ein Chromium-Test gilt nicht als Test eines anderen Browsers. Es gibt zwei verschiedene Tests; nur der erste hat feste Erwartungswerte.
 
 **A · Reproduzierter Auditdatenstand (feste Erwartungswerte).** Nur so sind die Zahlen unten verbindlich, denn nur dann sind Daten und Stichtag dieselben wie in der Abnahme.
 * Voraussetzung: der Datenstand 2026-10-05 (Quell-Hashes §3), erzeugt mit `fetch-sources.mjs CRH --cutoff 2026-10-05` und `fetch-filings.mjs … --cutoff 2026-10-05`, im Browser über dieselbe lokale Bereitstellung wie im Replay. Wer das nicht einrichten kann, macht Test B.
-1. main ab dem Merge von V1.0.86 auschecken (Produktdatei SHA-256 `6b6d865e…3ccf`; prüfbar mit `sha256sum`) und `us-aktienbewertungstool-v1036-sector-classification-patch.html` im eigenen Browser öffnen. „Yahoo“ aus.
+1. main ab dem Merge von V1.0.87 auschecken (Produktdatei SHA-256 `0c56cef9…8501`; prüfbar mit `sha256sum`) und `us-aktienbewertungstool-v1036-sector-classification-patch.html` im eigenen Browser öffnen. „Yahoo“ aus.
 2. Ticker `CRH`, „Daten abrufen“, „Daten übernehmen & berechnen“. Erwartet: „CRH PUBLIC LTD CO importiert und berechnet“, Übersicht mit „Kein Kurs verfügbar“.
 3. Reiter **Annahmen**: Feld „Steuerquote (%)“ zeigt **21.71**. Kurs 81.96 eintragen, „Neu berechnen“. Erwartet in der Übersicht: Einstiegszone **51,08**, Basis **78,83**, Sicherheitsabschlag **35 %**, „Beobachten“; **kein** „market.price fehlt“.
 4. Ohne Änderung noch zweimal „Neu berechnen“: Steuerquote bleibt **21.71**, DCF-Basiswert (Reiter **Bewertung**) bleibt **91.68**, Einstiegszone **51,08**.
@@ -317,11 +334,28 @@ Browser, Version, Test (A oder B), Datum und Abweichungen bitte notieren. Erst d
    * veralteter Text `_owcDefinition` (Rechnung korrekt);
    * Snapshot-Felder `*_ttm` mit FY-Werten (daneben korrekt `latest_fy_*`, `data_basis`).
 9. **Steuerquote-Altzustände.** Seit V1.0.85 wird ein gespeichertes `tax_rate` unter 1 nicht mehr umgedeutet: Ein vor V1.0.83 durch „Neu berechnen“ entstandener Bruch (z. B. 0.2171) oder ein Master-JSON mit `tax_rate: 0.21` wird als 0,2171 % bzw. 0,21 % angezeigt **und gerechnet**, auch nach „Neu berechnen“. Der Kern meldet solche Werte weiter als `unitWarnings` („sieht nach einem Bruch aus … bewusst NICHT still umgerechnet“). Abhilfe: Steuerquote im Feld in Prozent eintragen. Das ist die Folge der Vorgabe, die Einheit nicht aus der Größenordnung abzuleiten (AUDIT §13.22). Seit V1.0.86 gilt dasselbe für den WACC aus Komponenten.
-10. **WACC aus manueller CoE bei „Neu berechnen“.** Wird nur die CoE von Hand gesetzt, bleibt sie erhalten, aber `recalcFromAssumptions` bildet den WACC in diesem Schritt noch aus der zuvor abgeleiteten CoE (Aufrufreihenfolge, schon auf `29a5a21`; Browser §18 18.C protokolliert den Wert). Auf Funktionsebene wird der WACC aus einer manuellen CoE korrekt gebildet (Node-Test 5b). Nicht Gegenstand dieses Auftrags; als Folgeauftrag vorgeschlagen. Die frühere Grenze „WACC deutet `tax_rate` ≤ 1 als Bruch“ ist mit V1.0.86 behoben (§7.5).
+10. ~~**WACC aus manueller CoE bei „Neu berechnen“.**~~ **Geschlossen mit V1.0.87 (§7.7)**, geprüft über den produktiven Neuberechnungspfad einschließlich des ersten Klicks (Node und Chromium). Bis V1.0.86 bildete `recalcFromAssumptions` den WACC beim ersten Klick aus der zuvor abgeleiteten CoE (Aufrufreihenfolge). Die frühere Grenze „WACC deutet `tax_rate` ≤ 1 als Bruch“ ist mit V1.0.86 behoben (§7.5).
+11. **Zwei WACC-Ableitungen mit unterschiedlichen Voraussetzungen** (beobachtet bei §7.7, nicht geändert). `applyDerivedFieldsV4` (Import) bildet CoE und WACC nur mit RF, ERP **und Beta**, rechnet Größen- und Firmenaufschlag ein und normiert die Gewichte. `deriveCostOfCapital` (Neuberechnung) bildet den WACC auch ohne Beta, wenn die CoE manuell ist, ohne Aufschläge und ohne Normierung. Folge: Ohne Beta, aber mit Kd, Steuer und Gewichten wird bei manueller CoE in der Neuberechnung ein WACC abgeleitet, den ein Import desselben Stands nicht ableitet (dort heuristisch). Seit V1.0.87 geschieht das ab dem ersten Klick ohne spätere Änderung (Node-Test 11); bei CRH ohne Wirkung (kein Beta, kein Kd ⇒ WACC bleibt heuristisch, Test 11b). Folgeauftrag: Ableitungsregeln vereinheitlichen (fachliche Entscheidung).
 
 ## 10 · Ausgeführte Prüfungen
 
-**Stand nach dem zweiten Nachreview (V1.0.86).** Produktdatei SHA-256 `6b6d865e617acb570f61cc65cec793743bb96303b022fe140f539d7aff283ccf` (Commit `0e9286a`), ohne lokale Änderung; Testsuiten auf dem finalen PR-Head (siehe PR):
+**Stand V1.0.87 (Korrektur CoE/WACC bei „Neu berechnen“).** Produktcommit `a6bb5d79aabeedccfeb017af96c73377527c547e`, Produktdatei SHA-256 `0c56cef948b23d9317ede5b0b4246b0cf4704a5a8a65c4bd41aa11ad23648501`, ohne lokale Änderung; Chromium 141.0.7390.37, `TMPDIR=/tmp/cb`. Quellen am 2026-10-12 mit `--cutoff 2026-10-05` neu geladen: Company Facts `bafbd0d6…3daa` und Submissions `7a90c486…abeb` **bytegleich zu §3** (0 Fakten nach dem Stichtag); die zehn iXBRL-Hauptdokumente haben bei diesem Abruf andere SHA-256 als in §3 (z. B. 10-K FY2025 `74cbbd63…5319`), alle 100 Belege sind darin unverändert bestätigt (`control-calcs`). Der Replay liest nur Company Facts und Submissions.
+
+| Befehl | Ergebnis |
+|---|---|
+| `npm test` | 1700 Rechenprüfungen · Node 459/459 · Exit 0 (neu: `coe-wacc-recalc` 17) |
+| `npm run test:audit-tool` | 58/58 · Exit 0 (unverändert) |
+| `TMPDIR=/tmp/cb npm run test:browser` | 324/324 · Exit 0 (neu: §19 mit 18 Prüfungen, §18.C +1) |
+| dieselben Suiten mit der Produktdatei von `1bc4cec` | Node-Datei `coe-wacc-recalc` 7/17 (10 rot, Gegenproben grün) · Browser 315/324 (9 rot) |
+| `replay-import.mjs CRH --price 81.96` | Erfassung auf `a6bb5d7` (lokal geändert: nein) · Anzeige ↔ Engine 58/58 · Fundamentaldaten unverändert · Exit 0 |
+| `control-calcs.mjs CRH` | 100/100 Belege · 39/39 · Fallprüfungen 7/7 · Exit 0 |
+| `valuation-control.mjs CRH --product-commit a6bb5d7` | 26/26 · Erfassung passend · Zuordnung „gleicher Commit“ · Steuer 21.71 %, WACC 9, CoE 10, MoS 35.2 %, Einstieg 51.08 · Exit 0 |
+| `valuation-control.mjs CRH --product-commit 1bc4cec` | Zuordnung nicht belegt (Produktdatei `6b6d865e…` ≠ erfasste `0c56cef9…`) · Exit 1 (Gegenprobe) |
+| CRH-Ablauf in Chromium (Import, Kurs, 3× „Neu berechnen“, TTM ↔ FY, Export, Wiederimport, 2× „Neu berechnen“) | DCF 91.680457 / 48.707964 / 152.105017, RIM 48.837720, Spanne 43.2074 / 78.8276 / 128.7843, Einstieg 51.080308, Tiefpreis 27.998398, MoS 0.352 · alle Schritte bitgleich · auf `1bc4cec` bitgleich; Reverse DCF 3.56485 % aus dem Replay |
+
+Die Kontrollrechnungen und Toleranzen sind unverändert. Nach dem Merge ist die Zuordnung gegen main zu bestätigen: `valuation-control.mjs CRH --product-commit origin/main` muss „inhaltsgleich“ melden (siehe PR).
+
+**Stand nach dem zweiten Nachreview (V1.0.86)** (zum Vergleich). Produktdatei SHA-256 `6b6d865e617acb570f61cc65cec793743bb96303b022fe140f539d7aff283ccf` (Commit `0e9286a`), ohne lokale Änderung; Testsuiten auf dem finalen PR-Head (siehe PR):
 
 | Befehl | Ergebnis |
 |---|---|
